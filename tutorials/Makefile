@@ -28,7 +28,8 @@ install:
 	$(PYTHON) -m pip install -r requirements.txt
 
 install-min:
-	$(PYTHON) -m pip install $$(grep -v sentence-transformers requirements.txt | grep -v '^torch')
+	awk '!/sentence-transformers/ && !/^torch/ && !/^[[:space:]]*#/ && !/^[[:space:]]*$$/' requirements.txt > /tmp/nopaldb-tutorial-requirements.txt
+	$(PYTHON) -m pip install -r /tmp/nopaldb-tutorial-requirements.txt
 
 jupyter:
 	cd $(NOTEBOOKS_DIR) && $(PYTHON) -m jupyter notebook
