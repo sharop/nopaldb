@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NDBStudio Web</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="/assets/styles.css?v=1776463844" />
+  <!-- CodeMirror 6 from CDN -->
+  <link rel="stylesheet" href="https://esm.sh/@codemirror/view@6/dist/index.css" />
+  <script>
+    window.__ndbStudioBooted = false;
+    window.__ndbStudioBootError = null;
+    window.addEventListener("error", function (event) {
+      const message = event && event.message ? event.message : "Unknown frontend error";
+      window.__ndbStudioBootError = message;
+      const launcherStatus = document.getElementById("launcherStatus");
+      const runSummary = document.getElementById("runSummary");
+      if (launcherStatus) {
+        launcherStatus.textContent = "Frontend boot error: " + message;
+      }
+      if (runSummary) {
+        runSummary.textContent = "Frontend boot error: " + message;
+      }
+    });
+    window.addEventListener("unhandledrejection", function (event) {
+      const reason = event && event.reason ? String(event.reason) : "Unhandled promise rejection";
+      window.__ndbStudioBootError = reason;
+      const launcherStatus = document.getElementById("launcherStatus");
+      const runSummary = document.getElementById("runSummary");
+      if (launcherStatus) {
+        launcherStatus.textContent = "Frontend boot error: " + reason;
+      }
+      if (runSummary) {
+        runSummary.textContent = "Frontend boot error: " + reason;
+      }
+    });
+    document.addEventListener("DOMContentLoaded", function () {
+      window.setTimeout(function () {
+        if (!window.__ndbStudioBooted && !window.__ndbStudioBootError) {
+          const msg = "Frontend script did not finish booting. Try a hard refresh or check browser compatibility.";
+          const launcherStatus = document.getElementById("launcherStatus");
+          const runSummary = document.getElementById("runSummary");
+          if (launcherStatus) launcherStatus.textContent = msg;
+          if (runSummary) runSummary.textContent = msg;
+        }
+      }, 1200);
+    });
+  </script>
+</head>
+
+<body>
+  <section id="projectLauncher" class="project-launcher app-view" hidden>
+    <div class="project-launcher-card">
+      <div class="brand-block launcher-brand">
+        <img class="brand-icon" src="/assets/icon.svg" alt="NopalDB" />
+        <div>
+          <p class="eyebrow">NopalDB Research Workbench</p>
+          <h1>Project Launcher</h1>
+        </div>
+      </div>
+      <p id="launcherStatus" class="run-summary launcher-status">Choose a project to start the workbench.</p>
+      <div class="launcher-grid">
+        <section class="panel launcher-panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">Recent</p>
+              <h2>Projects</h2>
+            </div>
+            <button id="launcherCreateButton" class="ghost-button" type="button">+ Create project</button>
+          </div>
+          <div id="launcherProjectList" class="launcher-project-list"></div>
+        </section>
+        <section class="panel launcher-panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">Advanced</p>
+              <h2>Open Or Create From Path</h2>
+            </div>
+          </div>
+          <div class="launcher-form">
+            <label class="field-label" for="launcherPathInput">Database path</label>
+            <input id="launcherPathInput" class="path-input" type="text" placeholder="/path/to/project.db"
+              spellcheck="false" />
+            <div class="launcher-actions">
+              <button id="launcherOpenPathButton" type="button">Open existing</button>
+              <button id="launcherCreatePathButton" class="ghost-button" type="button">Create here</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </section>
+
+  <section id="appShell" class="shell app-view" hidden>
+    <header class="topbar">
+      <div class="brand-block">
+        <img class="brand-icon" src="/assets/icon.svg" alt="NopalDB" />
+        <div>
+          <p class="eyebrow">NopalDB Workbench</p>
+          <h1>NDBStudio Web</h1>
+          <p id="projectHeadline" class="project-headline">Open a project to start exploring.</p>
+        </div>
+      </div>
+      <div class="topbar-tools">
+        <div class="project-menu-group">
+          <button id="projectMenuButton" class="ghost-button compact-button" type="button">Project</button>
+          <div id="projectMenuDropdown" class="project-menu-dropdown" hidden>
+            <div class="project-menu-header">
+              <div>
+                <p class="panel-kicker">Context</p>
+                <h3>Project</h3>
+              </div>
+              <span id="projectMenuCurrent" class="badge">No project</span>
+            </div>
+            <div class="project-menu-actions">
+              <button id="projectMenuLauncherButton" class="ghost-button" type="button">Back to launcher</button>
+              <button id="projectMenuCreateButton" class="ghost-button" type="button">Create project</button>
+              <button id="projectMenuCloseButton" class="ghost-button" type="button">Close project</button>
+            </div>
+            <div class="project-menu-field">
+              <label class="field-label" for="dbPathInput">Open by path</label>
+              <div class="project-menu-inline">
+                <input id="dbPathInput" class="path-input" type="text" placeholder="/path/to/graph.db (advanced)"
+                  spellcheck="false" />
+                <button id="openDbButton" type="button">Open</button>
+              </div>
+            </div>
+            <div class="project-menu-field">
+              <label class="field-label" for="projectSelect">Switch project</label>
+              <select id="projectSelect">
+                <option value="">No projects</option>
+              </select>
+            </div>
+            <div class="project-menu-footer">
+              <button id="newProjectButton" class="ghost-button" type="button">+ New</button>
+              <button id="editProjectButton" class="ghost-button" type="button">Edit</button>
+              <button id="deleteProjectButton" class="ghost-button" type="button">Delete</button>
+            </div>
+          </div>
+        </div>
+        <button id="themeToggle" class="theme-toggle ghost-button compact-button" type="button">Dark</button>
+        <div class="topbar-meta">
+          <span id="projectContextBadge" class="badge badge-primary">No project</span>
+          <span id="statusBadge" class="badge badge-accent" role="status" aria-live="polite">booting</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="workspace-shell">
+      <section class="main-column">
+        <section class="panel panel-editor">
+          <div class="query-tabbar">
+            <div id="queryTabs" class="query-tabs"></div>
+            <div class="query-tab-actions">
+              <button id="newTabButton" class="ghost-button" type="button">+ New tab</button>
+              <button id="renameTabButton" class="ghost-button" type="button">Rename</button>
+              <button id="closeTabButton" class="ghost-button" type="button">Close</button>
+            </div>
+          </div>
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">Query</p>
+              <h2>Editor</h2>
+            </div>
+            <div class="controls editor-toolbar">
+              <div class="editor-secondary-actions">
+                <div class="saved-queries-group" style="position:relative;">
+                  <button id="saveQueryButton" class="ghost-button compact-button" type="button">Save</button>
+                  <button id="savedQueriesButton" class="ghost-button compact-button" type="button">Saved</button>
+                  <div id="savedQueriesDropdown" class="history-dropdown"
+                    style="display:none; position:absolute; top:40px; right:0;">
+                    <div id="savedQueriesList" class="history-list"></div>
+                  </div>
+                </div>
+                <div class="history-group" style="position:relative;">
+                  <button id="historyButton" class="ghost-button compact-button" type="button">History</button>
+                  <div id="historyDropdown" class="history-dropdown"
+                    style="display:none; position:absolute; top:40px; right:0;">
+                    <input id="historySearch" class="history-search" type="text" placeholder="Search queries..." />
+                    <div id="historyList" class="history-list"></div>
+                  </div>
+                </div>
+                <button id="referenceButton" class="ghost-button compact-button" type="button">Reference</button>
+              </div>
+              <div class="editor-primary-actions">
+                <select id="runMode">
+                  <option value="run">Run</option>
+                  <option value="explain">Explain</option>
+                  <option value="profile">Profile</option>
+                </select>
+                <button id="runButton" class="primary-button" type="button">Execute <kbd>⌘↵</kbd></button>
+              </div>
+            </div>
+          </div>
+          </div>
+          <div class="editor-container">
+            <div id="cmEditor" class="cm-editor-host"></div>
+          </div>
+          <div id="autocompleteWrap" class="autocomplete-wrap" style="display:none"></div>
+          <div id="runSummary" class="run-summary" role="status" aria-live="polite">Ready.</div>
+        </section>
+
+        <section class="panel panel-workspace">
+          <div class="panel-header panel-header-tabs">
+            <div>
+              <p class="panel-kicker">Workbench</p>
+              <h2>Workspace</h2>
+            </div>
+            <div class="tab-strip" role="tablist">
+                            <button id="tabResults" class="ghost-button is-active" type="button" role="tab"
+                aria-selected="true">Results <kbd>⌘1</kbd></button>
+              <button id="tabGraph" class="ghost-button" type="button" role="tab" aria-selected="false">Graph
+                <kbd>⌘2</kbd></button>
+              <button id="tabTimeline" class="ghost-button" type="button" role="tab" aria-selected="false">Timeline
+                <kbd>⌘3</kbd></button>
+              <button id="tabDetail" class="ghost-button" type="button" role="tab" aria-selected="false">Run Detail
+                <kbd>⌘4</kbd></button>
+              <button id="tabFindings" class="ghost-button" type="button" role="tab" aria-selected="false">Findings
+                <kbd>⌘5</kbd></button>
+              <button id="tabRaw" class="ghost-button" type="button" role="tab" aria-selected="false" aria-controls="viewRaw">Raw JSON
+                <kbd>⌘6</kbd></button>
+            </div>
+          </div>
+
+          <section id="viewResults" class="workspace-view has-slim-toolbar is-active" role="tabpanel">
+            <div class="view-main-area">
+              <div class="view-header-minimal">
+                <h3>Results</h3>
+                <span id="resultMeta" class="badge" role="status" aria-live="polite">0 rows</span>
+              </div>
+              <p id="resultsSelectionHint" class="result-selection-hint">Select a row to focus the current finding.</p>
+              <div class="table-wrap">
+                <table id="resultsTable">
+                  <thead></thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="slim-toolbar">
+              <div class="toolbar-item" data-popover="results-info">
+                <button class="icon-button" onclick="window.togglePopover(event, this)" title="Context Info" type="button">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+                </button>
+                <div class="toolbar-popover" id="popover-results-info">
+                  <section id="resultsSummaryCard" class="results-summary-card">
+                    <div class="results-summary-main">
+                      <p class="panel-kicker">Current result</p>
+                      <h4 id="resultsSummaryTitle">Run a query to start.</h4>
+                      <p id="resultsSummaryText" class="timeline-summary">Results will become the main lens for the current investigation.</p>
+                    </div>
+                    <div class="results-summary-meta">
+                      <span id="resultsSummaryContext" class="badge">Active tab</span>
+                      <span id="resultsSummaryCapability" class="badge">Waiting for results</span>
+                    </div>
+                  </section>
+                  <section id="onboardingCard" class="onboarding-card" hidden>
+                    <div class="onboarding-copy">
+                      <p class="panel-kicker">Start here</p>
+                      <h4>Build the first finding</h4>
+                      <p id="onboardingText" class="timeline-summary">Run a simple query, inspect the result, then use Graph or Timeline to deepen the analysis.</p>
+                    </div>
+                    <div class="onboarding-actions">
+                      <button id="onboardingLoadButton" class="ghost-button compact-button" type="button">Load starter query</button>
+                      <button id="onboardingRunButton" class="ghost-button compact-button" type="button">Run starter query</button>
+                      <button id="onboardingReferenceButton" class="ghost-button compact-button" type="button">Open reference</button>
+                      <button id="onboardingDismissButton" class="ghost-button compact-button" type="button">Dismiss</button>
+                    </div>
+                  </section>
+                </div>
+              </div>
+              <div class="toolbar-item" data-popover="results-actions">
+                <button class="icon-button" onclick="window.togglePopover(event, this)" title="Actions" type="button">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                </button>
+                <div class="toolbar-popover" id="popover-results-actions">
+                  <div class="popover-header"><h4>Actions</h4></div>
+                  <div id="resultsActions" class="results-next-actions-vertical">
+                    <button id="resultsFocusGraphButton" class="ghost-button compact-button" type="button">Focus in graph</button>
+                    <button id="resultsRunDetailButton" class="ghost-button compact-button" type="button">Open run detail</button>
+                    <button id="resultsPinRunButton" class="ghost-button compact-button" type="button">Pin run</button>
+                    <button id="resultsSaveFindingButton" class="ghost-button compact-button" type="button">Save finding</button>
+                    <button id="resultsSaveQueryButton" class="ghost-button compact-button" type="button">Save query</button>
+                    <button id="resultsOpenTabButton" class="ghost-button compact-button" type="button">Open in new tab</button>
+                  </div>
+                </div>
+              </div>
+              <div class="toolbar-item" data-popover="results-export">
+                <button id="exportButton" class="icon-button" onclick="window.togglePopover(event, this)" onclick="window.togglePopover(event, this)" title="Export" type="button">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                </button>
+                <div class="toolbar-popover" id="popover-results-export">
+                  <div class="popover-header"><h4>Export</h4></div>
+                  <div id="exportDropdown" class="export-dropdown-vertical">
+                    <button type="button" class="ghost-button compact-button" data-export="csv">CSV</button>
+                    <button type="button" class="ghost-button compact-button" data-export="json">JSON</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          
+        <section id="viewRaw" class="workspace-view" role="tabpanel">
+          <div class="view-main-area">
+            <div class="view-header-minimal">
+              <h3>Raw JSON</h3>
+              <div class="toolbar-group">
+                <button id="rawCopyButton" class="ghost-button compact-button" type="button">Copy to Clipboard</button>
+              </div>
+            </div>
+            <div class="view-content-minimal">
+              <pre id="rawContent" class="raw-json-view" style="margin: 0; padding: 16px; background: var(--bg-surface-2); border-radius: 4px; overflow: auto; height: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; color: var(--text-primary); white-space: pre-wrap; word-break: break-all;"></pre>
+            </div>
+          </div>
+        </section>
+        <section id="viewGraph" class="workspace-view has-slim-toolbar" role="tabpanel">
+            <div class="view-main-area">
+              <div class="view-header-minimal">
+                <h3>Graph</h3>
+                <span id="graphMeta" class="badge">0 nodes</span>
+              </div>
+              <div id="graphLegend" class="graph-legend"></div>
+              <div id="graphPane" class="graph-pane"></div>
+              <div id="graphInspectorPanel" class="graph-detail-panel">
+                <div class="graph-detail-header">
+                  <h4>Node Detail</h4>
+                  <button id="graphInspectorToggle" class="ghost-button" type="button">Collapse</button>
+                </div>
+                <div id="graphInspectorContent" class="graph-detail-content"></div>
+              </div>
+            </div>
+            <div class="slim-toolbar">
+              <div class="toolbar-item" data-popover="graph-info">
+                <button class="icon-button" onclick="window.togglePopover(event, this)" title="Graph Mode" type="button">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+                </button>
+                <div class="toolbar-popover" id="popover-graph-info">
+                  <section id="graphModeBanner" class="graph-mode-banner">
+                    <div class="graph-mode-copy">
+                      <p class="panel-kicker">Current graph mode</p>
+                      <h4 id="graphModeTitle">Dataset view</h4>
+                      <p id="graphModeText" class="timeline-summary">The graph shows the current dataset context. Double-click any node to fetch and expand its neighbors.</p>
+                    </div>
+                    <div class="graph-mode-meta">
+                      <span id="graphModeSource" class="badge">Source: dataset</span>
+                      <span id="graphModeScope" class="badge">Scope: full graph</span>
+                    </div>
+                  </section>
+                </div>
+              </div>
+              
+              <div class="toolbar-item" data-popover="graph-scope">
+                <button class="icon-button" onclick="window.togglePopover(event, this)" title="Scope & Limits" type="button">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                </button>
+                <div class="toolbar-popover" id="popover-graph-scope">
+                  <div class="popover-header"><h4>Scope</h4></div>
+                  <div class="popover-content">
+                    <label class="field-label">Depth</label>
+                    <select id="graphHopSelect">
+                      <option value="1">Depth 1</option>
+                      <option value="2">Depth 2</option>
+                    </select>
+                    <label class="field-label" style="margin-top: 8px;">Limit</label>
+                    <select id="graphLimitSelect">
+                      <option value="25">25</option>
+                      <option value="50" selected>50</option>
+                      <option value="100">100</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div class="toolbar-item" data-popover="graph-layout">
+                <button class="icon-button" onclick="window.togglePopover(event, this)" title="Layout & View" type="button">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
+                </button>
+                <div class="toolbar-popover" id="popover-graph-layout">
+                  <div class="popover-header"><h4>Layout</h4></div>
+                  <div class="popover-content">
+                    <div class="layout-selector" style="margin-bottom:8px">
+                      <button id="layoutRadialButton" class="ghost-button compact-button is-active" type="button">Radial</button>
+                      <button id="layoutForceButton" class="ghost-button compact-button" type="button">Force</button>
+                    </div>
+                    <button id="graphFitButton" class="ghost-button compact-button" type="button" style="width:100%; margin-bottom:4px;">Fit to Screen</button>
+                    <button id="graphResetButton" class="ghost-button compact-button" type="button" style="width:100%;">Reset View</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="toolbar-item" data-popover="graph-filter">
+                <button class="icon-button" onclick="window.togglePopover(event, this)" title="Filters" type="button">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>
+                </button>
+                <div class="toolbar-popover" id="popover-graph-filter">
+                  <div class="popover-header"><h4>Type Filter</h4></div>
+                  <div class="popover-content">
+                    <select id="graphTypeFilter">
+                      <option value="">All types</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div class="toolbar-item" data-popover="graph-search">
+                <button class="icon-button" onclick="window.togglePopover(event, this)" title="Search Node" type="button">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                </button>
+                <div class="toolbar-popover" id="popover-graph-search">
+                  <div class="popover-header"><h4>Search</h4></div>
+                  <div class="popover-content">
+                    <input id="graphSearchInput" class="graph-search" type="text" placeholder="Find node by label or property" style="margin-bottom:8px;" />
+                    <div class="graph-search-row">
+                      <button id="graphSearchNextButton" class="ghost-button compact-button" type="button" style="width:100%;">Next match</button>
+                    </div>
+                    <div style="margin-top:8px;"><span id="graphSearchMeta" class="badge">Search: off</span></div>
+                  </div>
+                </div>
+              </div>
+              
+              <div class="toolbar-divider"></div>
+              
+              <div class="toolbar-item">
+                <button id="graphReloadButton" class="icon-button" onclick="window.togglePopover(event, this)" title="Reload Database" type="button">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                </button>
+              </div>
+              
+              <div class="toolbar-item">
+                <button id="graphExportSvgButton" class="icon-button" onclick="window.togglePopover(event, this)" title="Download SVG" type="button">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                </button>
+              </div>
+
+            </div>
+          </section>
+
+          <section id="viewTimeline" class="workspace-view" role="tabpanel">
+            <div class="view-toolbar">
+              <div>
+                <p class="panel-kicker">Session</p>
+                <h3>Timeline</h3>
+              </div>
+              <div class="controls">
+                <select id="timelineModeFilter">
+                  <option value="">All modes</option>
+                  <option value="run">Run</option>
+                  <option value="explain">Explain</option>
+                  <option value="profile">Profile</option>
+                </select>
+                <label class="check-inline">
+                  <input id="timelinePinnedOnly" type="checkbox" />
+                  <span>Pinned only</span>
+                </label>
+                <span id="timelineMeta" class="badge">0 entries</span>
+              </div>
+            </div>
+            <div class="detail-controls timeline-controls">
+              <input id="timelineFilterInput" class="graph-search" type="text"
+                placeholder="Filter timeline by query, summary or run id" />
+              <select id="timelineRerunMode">
+                <option value="">Original mode</option>
+                <option value="run">Run</option>
+                <option value="explain">Explain</option>
+                <option value="profile">Profile</option>
+              </select>
+              <button id="timelineRerunSelected" class="ghost-button" type="button">Rerun selected</button>
+              <button id="timelineLoadSelected" class="ghost-button" type="button">Load to editor</button>
+            </div>
+            <div id="timelinePane" class="timeline-pane"></div>
+          </section>
+
+          <section id="viewDetail" class="workspace-view" role="tabpanel">
+            <div class="view-toolbar">
+              <div>
+                <p class="panel-kicker">Session</p>
+                <h3>Run Detail</h3>
+              </div>
+              <div class="controls">
+                <span id="detailMeta" class="badge">no selection</span>
+                <button id="detailDagButton" class="ghost-button" type="button">DAG</button>
+                <button id="detailImpactButton" class="ghost-button" type="button">Impact</button>
+              </div>
+            </div>
+            <div id="detailPane" class="list-pane detail-pane"></div>
+          </section>
+
+          <section id="viewFindings" class="workspace-view" role="tabpanel">
+            <div class="view-toolbar">
+              <div>
+                <p class="panel-kicker">Knowledge</p>
+                <h3>Findings</h3>
+              </div>
+              <div class="controls">
+                <button id="findingsCaptureButton" class="ghost-button compact-button" type="button">Capture current
+                  finding</button>
+                <span id="findingsMeta" class="badge">0 findings</span>
+              </div>
+            </div>
+            <section class="project-notebook-card">
+              <div class="results-summary-main">
+                <p class="panel-kicker">Project notebook</p>
+                <h4>Working notes for this project</h4>
+                <p class="timeline-summary">Use this space for hypotheses, context and next questions. Structured
+                  findings below keep links to the actual runs.</p>
+              </div>
+              <div class="project-notebook-actions">
+                <button id="projectNotesSaveButton" class="ghost-button compact-button" type="button">Save
+                  notes</button>
+              </div>
+            </section>
+            <textarea id="projectNotesInput" class="project-notes-input" rows="6"
+              placeholder="Add project-level notes, hypotheses or interpretation here..."></textarea>
+            <div id="findingsPane" class="findings-pane"></div>
+          </section>
+        </section>
+      </section>
+
+      <aside id="schemaSidebar" class="panel panel-sidebar">
+        <div class="panel-header sidebar-header">
+          <div>
+            <p class="panel-kicker">Model</p>
+            <h2>Schema & Stats</h2>
+          </div>
+          <button id="sidebarToggle" class="ghost-button" type="button">Collapse</button>
+        </div>
+        <div class="sidebar-body">
+          <section class="subpanel">
+            <div class="panel-header subpanel-header">
+              <div>
+                <p class="panel-kicker">Stats</p>
+                <h3>Database</h3>
+              </div>
+              <span id="statsMeta" class="badge">0 nodes</span>
+            </div>
+            <div id="statsPane" class="list-pane"></div>
+          </section>
+          <section class="subpanel">
+            <div class="panel-header subpanel-header">
+              <div>
+                <p class="panel-kicker">Schema</p>
+                <h3>Types</h3>
+              </div>
+              <span id="schemaMeta" class="badge">0 types</span>
+            </div>
+            <div id="schemaPane" class="list-pane"></div>
+          </section>
+          <section class="subpanel">
+            <div class="panel-header subpanel-header">
+              <div>
+                <p class="panel-kicker">Guide</p>
+                <h3>Suggested Queries</h3>
+              </div>
+              <span id="suggestedQueriesMeta" class="badge">0 ideas</span>
+            </div>
+            <div id="suggestedQueriesPane" class="list-pane"></div>
+          </section>
+        </div>
+      </aside>
+    </main>
+  </section>
+
+  <div id="toastContainer" class="toast-container"></div>
+  <div id="graphContextMenu" class="graph-context-menu" style="display:none"></div>
+  <div id="modalContainer"></div>
+
+  <script defer src="/assets/main.js?v=1776463844"></script>
+  <script defer src="/assets/api.js?v=1776463844"></script>
+  <script defer src="/assets/editor.js?v=1776463844"></script>
+  <script defer src="/assets/graph.js?v=1776463844"></script>
+  <script defer src="/assets/ui.js?v=1776463844"></script>
+</body>
+
+</html>

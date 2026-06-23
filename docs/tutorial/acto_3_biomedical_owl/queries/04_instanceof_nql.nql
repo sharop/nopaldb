@@ -1,0 +1,14 @@
+// Acto 3, Paso 5: instanceOf NQL — individuos transitivamente instancias de Disease.
+//
+// El predicado WHERE instanceOf(n, "Disease") combina la TaxonomyIndex con
+// el executor NQL para incluir individuos de subclases directas e indirectas:
+//   ViralInfection ⊑ Infection ⊑ Disease  →  Covid19, Influenza, Dengue
+//   BacterialInfection ⊑ Infection ⊑ Disease  →  Tuberculosis, StrepThroat
+//
+// Resultado esperado: 5 individuos.
+// Requiere feature: reasoner.
+
+find n.label as clase, n.name as nombre
+from (n)
+where instanceOf(n, "Disease")
+order by clase, nombre

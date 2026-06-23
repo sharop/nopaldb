@@ -1,0 +1,7 @@
+// Acto 4, Paso 3: enumerar transfers de alto valor.
+
+find a.id, b.id, e.amount, e.timestamp
+from (a:Account) -[e:TRANSFERS]-> (b:Account)
+where e.amount > 900000
+order by e.amount desc
+limit 100

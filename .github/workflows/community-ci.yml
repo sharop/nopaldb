@@ -1,0 +1,46 @@
+name: Community CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check default features
+        run: cargo check -p nopaldb
+
+      - name: Check nopaldb-mcp
+        run: cargo check -p nopaldb-mcp
+
+      - name: Clippy (semantic)
+        run: cargo clippy -p nopaldb --features semantic -- -D warnings
+
+      - name: Test core tier
+        run: cargo test -p nopaldb --features core --lib
+
+      # Sin python: el link de tests PyO3 se valida via maturin, no aqui
+      - name: Test semantic tier (rust-only)
+        run: cargo test -p nopaldb --features core,reasoner,owl-import,shacl --lib
+
+      - name: Test ndbstudio
+        run: cargo test -p ndbstudio

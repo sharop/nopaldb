@@ -1,0 +1,90 @@
+name: Tutorial Smoke
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Compila las combinaciones de features que el smoke de tutoriales no cubre.
+  # El build default (sled, sin algorithms) se rompió en el pasado sin que CI lo viera.
+  feature-matrix-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check default features
+        run: cargo check -p nopaldb
+
+      - name: Check nopaldb-mcp (default y sin risk)
+        run: |
+          cargo check -p nopaldb-mcp
+          cargo check -p nopaldb-mcp --no-default-features
+
+  tutorial-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tutorial dependencies
+        run: make -C tutorials install-min
+
+      - name: Generate deterministic tutorial databases
+        run: |
+          rm -rf \
+            test_dbs/florentine_families.db \
+            test_dbs/synthetic_offshore.db \
+            test_dbs/biomedical.db \
+            test_dbs/synthetic_fraud.db
+          python nopaldb/examples/florentine_families_dataset.py \
+            --db test_dbs/florentine_families.db --reset
+          python tutorials/shared/synthetic_offshore_dataset.py \
+            --db test_dbs/synthetic_offshore.db --reset
+          python tutorials/shared/synthetic_fraud_dataset.py \
+            --db test_dbs/synthetic_fraud.db --reset
+
+      - name: Run Rust tutorial examples
+        run: |
+          cargo run -p nopaldb --example tutorial_acto_1_florentine \
+            --features core \
+            -- test_dbs/florentine_families.db
+          cargo run -p nopaldb --example tutorial_acto_2_synthetic_offshore_paths \
+            --features core \
+            -- test_dbs/synthetic_offshore.db
+          cargo run -p nopaldb --example tutorial_acto_3_biomedical \
+            --no-default-features \
+            --features storage-sled,reasoner,owl-import,algorithms,analytics,hypergraph,ml \
+            -- test_dbs/biomedical.db tutorials/data/biomedical.ttl
+          cargo run -p nopaldb --example tutorial_acto_4_fraud_finalboss \
+            --features core \
+            -- test_dbs/synthetic_fraud.db
+
+      - name: Execute tutorial notebooks
+        run: make -C tutorials nbexec-ci NBEXEC_OUT=/tmp/tutorial-nbexec
+
+      - name: Check tutorial smoke did not rewrite tracked files
+        run: git diff --exit-code

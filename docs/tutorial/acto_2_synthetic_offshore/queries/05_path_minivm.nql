@@ -1,0 +1,13 @@
+// Acto 2, Paso 5: reducer escalar sobre aristas (path_sum).
+// "Suma del amount controlado a lo largo de cadenas de hasta 3 hops."
+// path_sum("amount") suma la propiedad `amount` de cada edge en el path.
+// Esto exhibe el routing de path queries con reducers (F3).
+
+find a.name as origen,
+     b.name as destino,
+     path.depth as hops,
+     path_sum("amount") as flujo_total
+from (a:OffshoreEntity) -[:CONTROLS]-> {1,3} (b)
+where a.name = "Atlas Fiduciary Holdings"
+order by flujo_total desc
+limit 10

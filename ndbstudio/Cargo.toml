@@ -1,0 +1,45 @@
+[package]
+name = "ndbstudio"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Interactive TUI explorer for NopalDB - A minimalist, keyboard-driven graph database browser"
+keywords = ["database", "graph", "tui", "terminal", "explorer"]
+categories = ["command-line-utilities", "database"]
+
+[[bin]]
+name = "ndbstudio"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace dependencies
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+axum = { version = "0.8", optional = true }
+
+# TUI framework
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+
+# NopalDB integration
+nopaldb = { path = "../nopaldb", features = ["core"] }
+
+# Additional dependencies
+syntect = "5"
+chrono = "0.4"
+unicode-width = "0.1"
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"
+
+[features]
+default = ["web"]
+# Local web workbench backend
+web = ["dep:axum"]
+# Session/workbench architecture (phase 0)
+session-v2 = []

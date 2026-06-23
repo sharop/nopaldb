@@ -1,0 +1,10 @@
+// Acto 2, Paso 1: schema discovery via NQL.
+// Cuenta nodos por etiqueta. Util para entender que cargo el generador.
+// Resultado esperado (con n_entities=80, n_officers=50):
+//   OffshoreEntity ~52, ShellCompany ~28, Officer 50, Jurisdiction 4, Intermediary 5
+//   (los conteos varian con seed; el orden por count desc es robusto)
+
+find n.label as etiqueta, count(*) as total
+from (n)
+group by n.label
+order by total desc

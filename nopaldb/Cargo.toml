@@ -1,0 +1,145 @@
+[package]
+name = "nopaldb"
+version = "0.4.27"
+authors = ["NopalDB Contributors"]
+description = "High-performance graph database with ACID transactions, MVCC time-travel, and Arrow analytics"
+keywords = ["graph", "database", "embedded", "mvcc", "arrow"]
+categories = ["database", "database-implementations", "data-structures", "algorithms"]
+edition = "2024"
+repository = "https://github.com/sharop/nopaldb"
+license = "AGPL-3"
+exclude = [
+    "bench*",
+    "examples",
+    "bindings",
+    "scripts",
+    "experiments",
+    "python/nopaldb/*.so",
+    "python/nopaldb/*.dylib",
+    "python/nopaldb/*.dll",
+    "*.a",
+]
+
+
+
+[lib]
+name = "nopaldb"
+crate-type = ["rlib", "cdylib"]
+
+
+[dependencies]
+anyhow = "1.0"
+async-recursion = "1.0"
+bytes = "1.0"
+log = "0.4"
+rand = "0.8"
+sled = "0.34"                                       # Embedded storage
+serde = { version = "1.0", features = ["derive"] }  # Data serialization
+serde_json = "1.0"                                  # Data serialization
+thiserror = "2.0"                # Error handling (highly recommended)
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+uuid = { version = "1.2.2", default-features = false, features = ["std", "v4", "serde"] }
+futures = "0.3"
+arrow= { version="57", optional = true }
+parquet= { version="57", optional = true }
+# Query Language (NQL)
+pest = "2"
+pest_derive = "2"
+lazy_static = "1"
+rmp-serde = "1.3"
+pyo3 = { version = "0.28", features = ["extension-module"], optional = true}
+rayon = "1.11.0"
+bytemuck = { version = "1", features = [] }
+tantivy = { version = "0.25", optional = true }  # Full-text search engine
+bincode = "1.3.3"                    # Fast binary serialization
+chrono = { version = "0.4", features = ["serde"] }
+hnsw_rs = { version = "0.3", optional = true }  # HNSW ANN index (incremental, persistent, SIMD optional)
+regex = { version = "1", optional = true }      # SHACL sh:pattern constraint evaluation
+
+
+[dev-dependencies]
+tempfile = "3.19"
+tokio-test = "0.4"
+num_cpus = "1.16"
+env_logger = "0.11"              # For test logging
+
+
+[features]
+default = ["storage-sled"]
+
+# Atomic features
+embeddings = []
+embeddings-index = ["embeddings", "hnsw_rs"]
+hnsw-simd = ["embeddings-index", "hnsw_rs/simdeez_f"]  # SIMD acceleration (x86_64 only)
+storage-sled = []
+python = ["pyo3"]
+analytics = ["arrow", "parquet"]
+ml = ["analytics"]
+algorithms = []
+hypergraph = []
+reasoner = []
+owl-import = ["reasoner"]
+shacl = ["regex"]
+fulltext = ["tantivy"]
+
+# Python compound features
+python-reasoner = ["python", "reasoner"]
+python-owl = ["python", "owl-import"]
+python-full = ["python", "python-reasoner", "python-owl", "full"]
+
+# --- Tier meta-features ---
+core       = ["storage-sled", "analytics", "algorithms", "ml", "hypergraph", "embeddings", "embeddings-index", "fulltext"]
+semantic   = ["core", "reasoner", "owl-import", "shacl"]
+full       = ["semantic"]
+
+
+[[test]]
+name = "owl_import_integration_test"
+required-features = ["owl-import"]
+
+[[test]]
+name = "rdf_roundtrip_test"
+required-features = ["owl-import"]
+
+[[test]]
+name = "shacl_validation_test"
+required-features = ["shacl"]
+
+[[test]]
+name = "nql_regression_agg_algo_bool_test"
+required-features = ["core"]
+
+[[example]]
+name = "gnn_node_classification"
+required-features = []
+
+[[example]]
+name = "gnn_graph_embeddings"
+required-features = []
+
+[[example]]
+name = "gnn_link_prediction"
+required-features = []
+
+[[example]]
+name = "quickstart"
+path = "examples/arrow/quickstart.rs"
+required-features = ["analytics"]
+
+[[example]]
+name = "test_index_usage"
+path = "examples/test_index_usage.rs"
+required-features = []
+
+[[example]]
+name = "test_index_simple"
+path = "examples/test_index_simple.rs"
+
+[[example]]
+name = "debug_index_manager"
+path = "examples/debug_index_manager.rs"
+
+[[example]]
+name = "tutorial_acto_3_biomedical"
+path = "examples/tutorial_acto_3_biomedical.rs"
+required-features = ["storage-sled", "reasoner", "owl-import", "algorithms", "analytics", "hypergraph", "ml"]

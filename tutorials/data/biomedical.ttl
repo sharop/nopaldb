@@ -1,0 +1,51 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+# ---- Class hierarchy ----
+:Disease         rdf:type owl:Class .
+:Infection       rdf:type owl:Class ; rdfs:subClassOf :Disease .
+:ViralInfection      rdf:type owl:Class ; rdfs:subClassOf :Infection .
+:BacterialInfection  rdf:type owl:Class ; rdfs:subClassOf :Infection .
+
+:Treatment       rdf:type owl:Class .
+:Antiviral       rdf:type owl:Class ; rdfs:subClassOf :Treatment .
+:Antibiotic      rdf:type owl:Class ; rdfs:subClassOf :Treatment .
+
+# ---- Disease instances ----
+:Covid19      rdf:type :ViralInfection ;
+              :name "Covid19" ;
+              :agent "SARS-CoV-2" .
+
+:Influenza    rdf:type :ViralInfection ;
+              :name "Influenza" ;
+              :agent "Influenza A" .
+
+:Dengue       rdf:type :ViralInfection ;
+              :name "Dengue" ;
+              :agent "DENV-2" .
+
+:Tuberculosis rdf:type :BacterialInfection ;
+              :name "Tuberculosis" ;
+              :agent "Mycobacterium tuberculosis" .
+
+:StrepThroat  rdf:type :BacterialInfection ;
+              :name "StrepThroat" ;
+              :agent "Streptococcus pyogenes" .
+
+# ---- Treatment instances ----
+:Remdesivir   rdf:type :Antiviral ;
+              :name "Remdesivir" ;
+              :route "intravenous" .
+
+:Oseltamivir  rdf:type :Antiviral ;
+              :name "Oseltamivir" ;
+              :route "oral" .
+
+:Amoxicillin  rdf:type :Antibiotic ;
+              :name "Amoxicillin" ;
+              :route "oral" .
+
+:Rifampicin   rdf:type :Antibiotic ;
+              :name "Rifampicin" ;
+              :route "oral" .

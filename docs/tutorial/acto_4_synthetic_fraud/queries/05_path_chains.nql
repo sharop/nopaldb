@@ -1,0 +1,8 @@
+// Acto 4, Paso 5: cadenas de transferencia 2-3 hops desde una cuenta ring.
+// La cuenta de Alice (primer Person, primer Account) es el origen mas
+// natural - el path query recorre el ciclo del ring.
+
+find a.id as origen, b.id as destino, path.depth as hops, path_sum("amount") as flujo
+from (a:Account) -[:TRANSFERS]-> {2,3} (b:Account)
+order by flujo desc
+limit 10

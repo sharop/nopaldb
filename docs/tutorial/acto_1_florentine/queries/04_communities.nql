@@ -1,0 +1,20 @@
+// Acto 1, Paso 4: deteccion de comunidades - Louvain vs Leiden.
+// community(): Louvain (modularidad). Probabilistico hasta hace poco,
+// ahora determinista en NopalDB.
+// leiden(): Leiden (Traag et al. 2019). Garantiza que cada comunidad sea
+// "well-connected" - no fragmenta. Determinista por diseno, gamma=0.1.
+//
+// Esperamos 2-3 comunidades. El supuesto: las comunidades emergentes
+// correlacionaran con las facciones historicas (Medici vs Albizzi),
+// pero no tienen por que ser identicas - son las facciones LATENTES en la
+// estructura del grafo, no las que hemos puesto como atributo.
+//
+// Comparar las dos columnas (louvain vs leiden) es el "wow moment":
+// ambas detectan comunidades sin saber nada del atributo `faction`.
+
+find f.name,
+     f.faction as faccion_historica,
+     community(f) as louvain,
+     leiden(f) as leiden
+from (f:Family)
+order by louvain, leiden, f.name

@@ -1,0 +1,38 @@
+find u.username, u.team
+from (u:User)
+limit 10
+
+find u.username, p.name
+from (u:User) -> [:MEMBER_OF] -> (p:Project)
+limit 20
+
+find s.name, count(a) as alerts
+from (a:Alert) -> [:ON_SERVICE] -> (s:Service)
+group by s.name
+order by alerts desc
+
+find u.team, degree(u) as deg, pagerank(u) as pr
+from (u:User)
+group by u.team
+order by u.team asc
+
+create index on User(ndbstudio_checked) type hash
+
+drop index User_ndbstudio_checked
+
+update (u:User)
+set u.ndbstudio_checked = "yes"
+where u.username = "user_001"
+limit 1
+
+find u.username, u.ndbstudio_checked
+from (u:User)
+where u.ndbstudio_checked = "yes"
+limit 10
+
+explain find u.username from (u:User) where u.score > 90
+
+find u.username, u.team
+from (u:User)
+limit 10
+export csv

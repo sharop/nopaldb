@@ -1,0 +1,7 @@
+// Acto 3, Paso 3: enumerar las relaciones rdfs:subClassOf importadas.
+// import_turtle crea edges con type "subClassOf" entre nodos Class.
+// Esta query muestra el arbol de herencia explicito (sin transitividad).
+
+find sub.label as subclase, parent.label as superclase
+from (sub) -[:subClassOf]-> (parent)
+order by superclase, subclase

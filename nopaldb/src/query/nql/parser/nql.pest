@@ -1,0 +1,485 @@
+// src/query/nql/parser/nql.pest
+//
+// Nopal Query Language (NQL) Grammar
+// Pest PEG Parser
+
+WHITESPACE = _{ " " | "\t" | "\n" | "\r" }
+COMMENT = _{ line_comment | block_comment }
+line_comment = _{ "//" ~ (!"\n" ~ ANY)* }
+block_comment = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+// ═══════════════════════════════════════════════════════════
+// MAIN STATEMENT STRUCTURE (v0.2)
+// ═══════════════════════════════════════════════════════════
+
+// Top-level statement (can be Query, Sketch, Commit, Delete, Update, Add)
+statement = {
+    SOI ~
+    (profile_stmt | explain_stmt | create_index_stmt | drop_index_stmt |sketch_stmt | commit_stmt | delete_stmt | update_stmt | add_stmt | query) ~
+    EOI
+}
+
+// PROFILE statement: profile <query>
+profile_stmt = {
+    ^"profile" ~ query
+}
+
+// EXPLAIN statement: explain <query>
+explain_stmt = {
+    ^"explain" ~ query
+}
+
+// CREATE INDEX statement: create index on Label(property) [type hash|btree|fulltext]
+create_index_stmt = {
+    ^"create" ~ ^"index" ~ ^"on" ~ identifier ~ "(" ~ identifier ~ ")" ~ index_type_spec?
+}
+
+index_type_keyword = { ^"hash" | ^"btree" | ^"fulltext" | ^"taxonomy" }
+
+index_type_spec = {
+    ^"type" ~ index_type_keyword
+}
+
+// DROP INDEX statement: drop index <name>
+drop_index_stmt = {
+    ^"drop" ~ ^"index" ~ identifier
+}
+
+// SKETCH statement: sketch <name> = <statement>
+sketch_stmt = {
+    ^"sketch" ~ identifier ~ "=" ~ (delete_stmt | update_stmt | add_stmt | query)
+}
+
+// COMMIT statement: commit <name>
+commit_stmt = {
+    ^"commit" ~ identifier
+}
+
+// DELETE statement: delete <pattern> [where ...] [limit ...]
+delete_stmt = {
+    ^"delete" ~ pattern ~ where_clause? ~ limit_clause?
+}
+
+// UPDATE statement: update <pattern> set <assignments> [where ...] [limit ...]
+update_stmt = {
+    ^"update" ~ pattern ~ ^"set" ~ assignment_list ~ where_clause? ~ limit_clause?
+}
+
+assignment_list = {
+    assignment ~ ("," ~ assignment)*
+}
+
+assignment = {
+    identifier ~ "." ~ identifier ~ "=" ~ expression
+}
+
+// ADD statement: add <pattern>
+add_stmt = {
+    ^"add" ~ pattern
+}
+
+// ═══════════════════════════════════════════════════════════
+// QUERY (READ) - Original structure
+// ═══════════════════════════════════════════════════════════
+
+query = {
+    query_body
+}
+
+query_body = {
+    find_clause ~
+    from_clause ~
+    where_clause? ~
+    init_clause* ~
+    gather_clause* ~
+    return_clause? ~
+    group_clause? ~
+    having_clause? ~
+    order_clause? ~
+    limit_clause? ~
+    time_clause? ~
+    export_clause?
+}
+
+// ═══════════════════════════════════════════════════════════
+// CLAUSES
+// ═══════════════════════════════════════════════════════════
+
+// FIND clause (projection)
+find_clause = {
+    ^"find" ~ distinct_kw? ~ projection_list
+}
+
+distinct_kw = { ^"distinct" }
+
+projection_list = {
+    ("*") |
+    (projection ~ ("," ~ projection)*)
+}
+
+projection = {
+    expression ~ (^"as" ~ identifier)?
+}
+
+// FROM clause (graph pattern)
+from_clause = {
+    ^"from" ~ pattern_list
+}
+
+pattern_list = {
+    pattern ~ ("," ~ pattern)*
+}
+
+pattern = {
+    node ~ (relationship ~ node)*
+}
+
+// Node: (n:Label) or (n:Label {prop: value})
+node = {
+    "(" ~
+    identifier? ~
+    label_spec? ~
+    property_map? ~
+    ")"
+}
+
+label_spec = {
+    ":" ~ identifier
+}
+
+property_map = {
+    "{" ~ (property ~ ("," ~ property)*)? ~ "}"
+}
+
+property = {
+    identifier ~ ":" ~ value
+}
+
+// Relationship: Now with proper arrow handling
+// Examples:
+//   -[:TYPE]->     (outgoing typed)
+//   <-[:TYPE]->    (bidirectional typed)
+//   ->             (outgoing untyped - any type)
+//   <-             (incoming untyped - any type)
+//   -[r]-> (   variable sola)
+//   -[:KNOWS]-> (tipo solo)
+//   -[r:KNOWS]-> (variable + tipo)
+//   <-[r]- (incoming con variable)
+relationship = {
+    arrow_with_spec |
+    arrow_pattern
+}
+
+// Arrow con especificación [variable:type]
+arrow_with_spec = {
+    arrow_left ~ "[" ~ relationship_spec? ~ "]" ~ arrow_right ~ quantifier?
+}
+
+// Flechas izquierdas (antes de [])
+arrow_left = @{
+    "->" |
+    "<-" |
+    "-"
+}
+
+// Flechas derechas (después de [])
+arrow_right = @{
+    "<-" |
+    "->" |
+    "-"
+}
+
+// Arrow patterns simples (sin especificación)
+arrow_pattern = @{
+    "<->" |
+    "->" |
+    "<-" |
+    "--"
+}
+
+// Especificación de relación: [variable] o [:type] o [variable:type] o [variable:type {props}]
+relationship_spec = {
+    identifier ~ (":" ~ identifier)? ~ property_map? |
+    ":" ~ identifier ~ property_map?
+}
+
+quantifier = {
+    "{" ~ number ~ ("," ~ number?)? ~ "}"
+}
+
+// WHERE clause (filter)
+where_clause = {
+    ^"where" ~ expression
+}
+
+init_clause = {
+    ^"init" ~ string
+}
+
+gather_clause = {
+    ^"gather" ~ string
+}
+
+return_clause = {
+    ^"return" ~ string
+}
+
+// GROUP BY clause
+group_clause = {
+    ^"group" ~ ^"by" ~ expression_list
+}
+
+// HAVING clause (post-aggregation filter)
+having_clause = {
+    ^"having" ~ expression
+}
+
+expression_list = {
+    expression ~ ("," ~ expression)*
+}
+
+// ORDER BY clause
+order_clause = {
+    ^"order" ~ ^"by" ~ order_item ~ ("," ~ order_item)*
+}
+
+order_item = {
+    expression ~ order_direction?
+}
+
+order_direction = {
+    ^"asc" | ^"desc"
+}
+
+// LIMIT clause
+limit_clause = {
+    ^"limit" ~ number ~ (^"offset" ~ number)?
+}
+
+// TIME clause (MVCC time-travel)
+time_clause = {
+    ^"at" ~ ^"timestamp" ~ number
+}
+
+// EXPORT clause (Arrow/Parquet)
+export_clause = {
+    ^"export" ~ export_format ~ export_options?
+}
+
+export_format = {
+    export_arrow |
+    export_csv |
+    export_json |
+    export_parquet
+}
+
+export_arrow = {
+    ^"arrow"
+}
+
+export_csv = {
+    ^"csv"
+}
+
+export_json = {
+    ^"json"
+}
+
+export_parquet = {
+    ^"parquet" ~ string
+}
+
+export_options = {
+    ^"with" ~ export_option ~ ("," ~ export_option)*
+}
+
+export_option = {
+    identifier ~ "=" ~ value
+}
+
+// ═══════════════════════════════════════════════════════════
+// EXPRESSIONS
+// ═══════════════════════════════════════════════════════════
+
+expression = {
+    or_expression
+}
+
+or_expression = {
+    and_expression ~ (or_op ~ and_expression)*
+}
+
+and_expression = {
+    comparison_expression ~ (and_op ~ comparison_expression)*
+}
+
+// Prevent matching prefixes like "order" as "or"
+or_op = _{
+    or_kw
+}
+
+and_op = _{
+    and_kw
+}
+
+or_kw = @{
+    ^"or" ~ !identifier_char
+}
+
+and_kw = @{
+    ^"and" ~ !identifier_char
+}
+
+comparison_expression = {
+    additive_expression ~ (comparison_op ~ additive_expression)?
+}
+
+comparison_op = {
+    "=" | "!=" | "<=" | ">=" | "<" | ">"
+}
+
+additive_expression = {
+    multiplicative_expression ~ ((add_op|sub_op) ~ multiplicative_expression)*
+}
+
+add_op = { "+" }
+sub_op = { "-" }
+
+multiplicative_expression = {
+    unary_expression ~ (("*"|"/"|"%") ~ unary_expression)*
+}
+
+unary_expression = {
+    ("!" | neg_op)? ~ primary_expression
+}
+
+neg_op = { "-" }
+
+primary_expression = {
+    function_call |
+    value |
+    property_access |
+    "(" ~ expression ~ ")"
+}
+
+property_access = {
+    identifier ~ ("." ~ identifier)*
+}
+
+function_call = {
+    identifier ~ "(" ~ (function_arg ~ ("," ~ function_arg)*)? ~ ")"
+}
+
+function_arg = {
+    "*" | expression
+}
+
+// ═══════════════════════════════════════════════════════════
+// F4-B QUOTED PATH VM
+// ═══════════════════════════════════════════════════════════
+
+vm_assignment = {
+    identifier ~ "=" ~ vm_expression
+}
+
+vm_expression = {
+    vm_or_expression
+}
+
+vm_or_expression = {
+    vm_and_expression ~ (or_op ~ vm_and_expression)*
+}
+
+vm_and_expression = {
+    vm_comparison_expression ~ (and_op ~ vm_comparison_expression)*
+}
+
+vm_comparison_expression = {
+    vm_additive_expression ~ (comparison_op ~ vm_additive_expression)?
+}
+
+vm_additive_expression = {
+    vm_multiplicative_expression ~ ((add_op | sub_op) ~ vm_multiplicative_expression)*
+}
+
+vm_multiplicative_expression = {
+    vm_unary_expression ~ ((mul_op | div_op | mod_op) ~ vm_unary_expression)*
+}
+
+mul_op = { "*" }
+div_op = { "/" }
+mod_op = { "%" }
+
+vm_unary_expression = {
+    (vm_not_kw ~ vm_unary_expression) |
+    ("!" ~ vm_unary_expression) |
+    (neg_op ~ vm_unary_expression) |
+    vm_primary_expression
+}
+
+vm_not_kw = @{
+    ^"not" ~ !identifier_char
+}
+
+vm_primary_expression = {
+    value |
+    property_access |
+    "(" ~ vm_expression ~ ")"
+}
+
+// ═══════════════════════════════════════════════════════════
+// VALUES & LITERALS
+// ═══════════════════════════════════════════════════════════
+
+value = {
+    string |
+    number |
+    boolean |
+    null
+}
+
+string = @{
+    double_quoted_string | single_quoted_string
+}
+
+double_quoted_string = @{
+    "\"" ~ double_string_inner ~ "\""
+}
+
+double_string_inner = @{
+    (
+        !("\"" | "\\") ~ ANY |
+        "\\" ~ ("\"" | "\\" | "n" | "r" | "t")
+    )*
+}
+
+single_quoted_string = @{
+    "'" ~ single_string_inner ~ "'"
+}
+
+single_string_inner = @{
+    (
+        !("'" | "\\") ~ ANY |
+        "\\" ~ ("'" | "\\" | "n" | "r" | "t")
+    )*
+}
+
+number = @{
+    "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)?
+}
+
+boolean = {
+    ^"true" | ^"false"
+}
+
+null = {
+    ^"null"
+}
+
+identifier = @{
+    ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")*
+}
+
+identifier_char = _{
+    ASCII_ALPHANUMERIC | "_"
+}

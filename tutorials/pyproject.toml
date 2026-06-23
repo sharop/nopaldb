@@ -1,0 +1,24 @@
+[project]
+name = "nopaldb-tutorials"
+version = "0.1.0"
+description = "Tutorial avanzado NopalDB en 4 actos (Florentine, Synthetic Offshore Network, Biomedical, Synthetic Fraud)"
+requires-python = ">=3.10"
+dependencies = [
+    "nopaldb==0.4.19",
+    "jupyter>=1.0",
+    "notebook>=7.0",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "matplotlib>=3.7",
+    "networkx>=3.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+embeddings = [
+    "sentence-transformers>=2.5",
+    "torch>=2.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["shared*"]

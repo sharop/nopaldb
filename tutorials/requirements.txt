@@ -1,0 +1,11 @@
+nopaldb==0.4.19
+jupyter>=1.0
+notebook>=7.0
+pandas>=2.0
+pyarrow>=14.0
+matplotlib>=3.7
+networkx>=3.0
+numpy>=1.24
+# Para Acto 2 (Synthetic Offshore Network) y Acto 4 (Synthetic Fraud) — embeddings reales
+sentence-transformers>=2.5
+torch>=2.0

@@ -1,0 +1,17 @@
+// Acto 2, Paso 3: busqueda semantica via HNSW.
+// PRECONDICION: el notebook cargo embeddings de las descripciones de cada
+// OffshoreEntity con el modelo "minilm" (all-MiniLM-L6-v2). Sin embeddings
+// esta query falla.
+//
+// `similar_to(n, "ref_name", "model")` filtra los nodos cuya descripcion es
+// semanticamente cercana al embedding del nodo de referencia (busqueda
+// aproximada via HNSW; LIMIT actua como K).
+//
+// Esperado: el primer match es "Atlas Fiduciary Holdings" (la flagship
+// plantada por el generador) - sus descripciones comparten "Atlas
+// Fiduciary" + "private banking".
+
+find e.name, e.industry, e.shell
+from (e:OffshoreEntity)
+where similar_to(e, "Atlas Fiduciary Holdings", "minilm")
+limit 5

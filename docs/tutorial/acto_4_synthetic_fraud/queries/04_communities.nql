@@ -1,0 +1,8 @@
+// Acto 4, Paso 4: community detection sobre cuentas (Leiden).
+// Agrupa cuentas por similitud topologica. El ring deberia formar un
+// cluster reconocible aunque no necesariamente UNICO (Leiden particiona
+// en muchas comunidades pequenas con grafos heterogeneos).
+
+find a.id, leiden(a) as community
+from (a:Account)
+order by community

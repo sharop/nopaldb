@@ -1,0 +1,9 @@
+// Acto 4, Paso 2: contar transferencias inbound por cuenta.
+// El ring se delata por densidad: ring accounts reciben ~14 transfers,
+// non-ring accounts <=4.
+
+find b.id, count(*) as inbound
+from (a:Account) -[:TRANSFERS]-> (b:Account)
+group by b.id
+order by inbound desc
+limit 20

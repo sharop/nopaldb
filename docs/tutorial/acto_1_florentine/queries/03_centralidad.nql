@@ -1,0 +1,19 @@
+// Acto 1, Paso 3: centralidad - que familias son estructuralmente importantes?
+// pagerank: importancia por flujo de "atencion" (PageRank clasico).
+// betweenness: cuanto pasa por una familia en los caminos mas cortos.
+// clustering: que tan tejida esta su vecindad inmediata.
+// degree: numero de aliados directos (normalizado).
+//
+// El supuesto historico clasico es que Medici dominara en pagerank y
+// betweenness - concentra poder porque es el puente entre clusters.
+// Resultado esperado: Medici en la cima de pagerank/betweenness; clustering
+// bajo (no es un cluster denso, es un broker).
+
+find f.name,
+     pagerank(f) as pr,
+     betweenness(f) as btw,
+     clustering(f) as cc,
+     degree(f) as deg
+from (f:Family)
+order by pr desc
+limit 10

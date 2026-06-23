@@ -1,0 +1,11 @@
+// Acto 2, Paso 4: path queries con cuantificadores.
+// "Cadenas de control corporativo: que entidades estan a 1-3 hops de
+// Atlas Fiduciary Holdings via CONTROLS?"
+// La sintaxis -[:R]->{1,3} pide paths de longitud 1 a 3 (BFS cuantificado).
+// path.depth proyecta la profundidad real de cada match.
+
+find a.name as origen, b.name as destino, path.depth as hops
+from (a:OffshoreEntity) -[:CONTROLS]-> {1,3} (b)
+where a.name = "Atlas Fiduciary Holdings"
+order by hops, b.name
+limit 20

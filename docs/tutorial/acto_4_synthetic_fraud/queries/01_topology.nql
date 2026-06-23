@@ -1,0 +1,8 @@
+// Acto 4, Paso 1: schema discovery + jerarquia.
+// El generador crea Person (200) + LegalEntity (~48) + ShellCompany (~12)
+// + Account (300+12) y edges OWNS, DIRECTS, CONTROLS, TRANSFERS.
+
+find n.label as etiqueta, count(*) as total
+from (n)
+group by n.label
+order by total desc

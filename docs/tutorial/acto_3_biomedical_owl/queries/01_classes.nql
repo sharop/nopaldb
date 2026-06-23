@@ -1,0 +1,12 @@
+// Acto 3, Paso 1: enumerar las clases OWL importadas.
+// El TTL contiene 7 clases (Disease, Infection, ViralInfection,
+// BacterialInfection, Treatment, Antiviral, Antibiotic). El importer las
+// crea como nodos. Cada rdf:type owl:Class genera un nodo cuyo label es
+// el nombre de la clase y su `kind` interno = Class.
+
+find n.label as clase
+from (n)
+where n.label = "Disease" or n.label = "Infection"
+   or n.label = "ViralInfection" or n.label = "BacterialInfection"
+   or n.label = "Treatment" or n.label = "Antiviral" or n.label = "Antibiotic"
+order by clase

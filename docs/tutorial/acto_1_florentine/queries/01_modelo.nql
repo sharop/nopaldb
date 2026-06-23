@@ -1,0 +1,7 @@
+// Acto 1, Paso 1: validar el modelo de datos.
+// Confirma que cargamos 15 familias y proyecta una muestra ordenada.
+// Resultado esperado: 15 filas, ordenadas alfabeticamente.
+
+find f.name, f.wealth_rank, f.faction
+from (f:Family)
+order by f.name

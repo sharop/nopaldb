@@ -1,0 +1,24 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "nopaldb"
+version = "0.4.27"
+description = "Graph database with MVCC and NQL query language"
+authors = [{name = "NopalDB Contributors"}]
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+[tool.maturin]
+features = ["python-full"]
+python-source = "python"
+module-name = "nopaldb.nopaldb"
+python-packages = ["nopaldb"]

@@ -1,0 +1,24 @@
+// Acto 3 — Contraste: búsqueda de propiedades vs búsqueda semántica.
+//
+// QUERY A: búsqueda naive (grafo de propiedades)
+// Busca nodos cuyo label sea exactamente "Disease".
+// Resultado: 1 nodo (el class node Disease, sin individuos).
+//
+// find n.name as nombre, n.label as label
+// from (n)
+// where n.label = "Disease"
+//
+// ─────────────────────────────────────────────────────────────────────────
+//
+// QUERY B: búsqueda semántica (ontología + reasoner)
+// instanceOf(n, "Disease") navega la TaxonomyIndex de forma transitiva:
+//   Covid19 → ViralInfection ⊑ Infection ⊑ Disease  →  incluido
+//   Dengue  → ViralInfection ⊑ Infection ⊑ Disease  →  incluido
+//   Tuberculosis → BacterialInfection ⊑ Infection ⊑ Disease  →  incluido
+//   etc.
+// Resultado: 5 individuos (0 si se usa sólo n.label = "Disease").
+
+find n.name as nombre, n.label as tipo_directo
+from (n)
+where instanceOf(n, "Disease")
+order by tipo_directo, nombre

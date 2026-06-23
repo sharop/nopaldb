@@ -1,0 +1,11 @@
+// Acto 1, Paso 2: pattern matching directo.
+// "Con que familias esta aliada la Medici por matrimonio?"
+// Esto exhibe el pattern matching mas basico de NQL: dos nodos conectados
+// por un edge tipado, con un filtro de propiedad sobre el nodo de origen.
+// Resultado esperado: ~5 vecinas directas (Acciaiuoli, Albizzi, Barbadori,
+// Ridolfi, Salviati, Tornabuoni).
+
+find a.name as origen, b.name as aliada, b.faction as faccion_aliada
+from (a:Family) -[:MARRIAGE]-> (b:Family)
+where a.name = "Medici"
+order by b.name

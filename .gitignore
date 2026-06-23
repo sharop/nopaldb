@@ -1,0 +1,62 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDEs & OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# NopalDB Data & Logs
+*.db/
+/data/
+/examples/data/
+*.log
+/tmp/
+
+# Python bindings artifacts
+__pycache__/
+*.pyc
+.venv/
+/python/nopaldb/__pycache__/
+/python/nopaldb/*.so
+/nopaldb/python/nopaldb/*.so
+/python/nopaldb/*.dylib
+/nopaldb/python/nopaldb/*.dylib
+/python/nopaldb/*.dll
+/nopaldb/python/nopaldb/*.dll
+/python/nopaldb/*.a
+/nopaldb/python/nopaldb/*.a
+
+# QA/release artifacts
+/dist/
+/.venv-qa/
+/.venv-qa-check/
+/nopaldb/test_dbs/qa_challenge_db/
+/nopaldb/test_dbs/
+/test_dbs/
+# Embeddings precomputados de tutoriales: se versionan para que los Actos 2 y 4
+# corran offline (sin sentence-transformers), como espera el smoke de CI.
+# CocoIndex Code (ccc)
+/.cocoindex_code/
+.cocoindex_code/
+.claude/
+.cursor/
+.copilot/
+.agents/
+/skills-lock.json
+
+# Secrets / credentials (defensa preventiva)
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+.credentials
+.aws/

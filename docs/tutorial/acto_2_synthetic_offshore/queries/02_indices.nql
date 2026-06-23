@@ -1,0 +1,8 @@
+// Acto 2, Paso 2: usar el indice hash sobre OffshoreEntity(name).
+// Esta query, cuando hay un Hash index sobre `name`, debe ejecutar en O(1)
+// sobre la lookup en lugar de full scan. El indice se creo en el generador.
+// Resultado esperado: 1 fila con la entidad insignia.
+
+find e.name, e.industry, e.incorporated, e.shell, e.description
+from (e:OffshoreEntity)
+where e.name = "Atlas Fiduciary Holdings"

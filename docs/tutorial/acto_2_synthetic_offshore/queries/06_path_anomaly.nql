@@ -1,0 +1,19 @@
+// Acto 2, Paso 6: E-10 PathAnomaly.
+// PRECONDICION: el notebook registro >=1 path reference embedding con
+// `add_path_reference_embedding(name, node_model, edge_model, vector)`.
+// Sin referencias, score = 1.0 para todos.
+//
+// `path_anomaly_score(node_model, edge_model)` = 1 - cosine(path_vec, centroid_refs).
+// Score alto -> path raro vs. el patron baseline.
+// Score bajo -> path tipico.
+//
+// Aqui filtramos los paths CONTROLS hasta 3 hops y los ordenamos por
+// anomalia descendente: los mas anomalos primero.
+
+find a.name as origen,
+     b.name as destino,
+     path.depth as hops,
+     path_anomaly_score("minilm", "edge_minilm") as anomaly
+from (a:OffshoreEntity) -[:CONTROLS]-> {1,3} (b)
+order by anomaly desc
+limit 10

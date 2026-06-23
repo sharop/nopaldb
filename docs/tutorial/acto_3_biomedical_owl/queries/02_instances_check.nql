@@ -1,0 +1,10 @@
+// Acto 3, Paso 2: contar nodos por label.
+// El importer crea Class nodes (sin name) e Individual nodes (con name),
+// ambos con el mismo `label` igual al nombre de la clase. Aqui contamos
+// cuantos nodos hay por label - util para verificar que cada clase tiene
+// individuals plus el class node.
+
+find n.label as clase, count(*) as total
+from (n)
+group by n.label
+order by total desc, clase
