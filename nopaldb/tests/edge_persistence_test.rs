@@ -14,8 +14,8 @@ async fn test_edges_persist_after_reopen() -> Result<()> {
     let path = tmp.path().join("test_edge_persist");
 
     let mut saved_edge_ids = Vec::new();
-    let mut saved_alice_id = None;
-    let mut saved_charlie_id = None;
+    let  saved_alice_id;
+    let  saved_charlie_id;
 
     // === Phase 1: Create graph with nodes and edges ===
     {

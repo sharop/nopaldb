@@ -192,10 +192,8 @@ async fn detect_cycle_with_length(
     let edges = graph.edges_of(current, Direction::Outgoing).await?;
 
     for edge in edges {
-        if edge.edge_type == "TRANSFER" {
-            if detect_cycle_with_length(graph, edge.target, visited, path).await? {
-                return Ok(true);
-            }
+        if edge.edge_type == "TRANSFER" && detect_cycle_with_length(graph, edge.target, visited, path).await? {
+            return Ok(true);
         }
     }
 

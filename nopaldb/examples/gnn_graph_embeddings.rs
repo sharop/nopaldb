@@ -240,9 +240,9 @@ fn learn_embeddings(
             let start = i.saturating_sub(window_size);
             let end = (i + window_size + 1).min(walk.len());
 
-            for j in start..end {
+            for (j, &node) in walk.iter().enumerate().take(end).skip(start) {
                 if i != j {
-                    positive_pairs.push((center, walk[j]));
+                    positive_pairs.push((center, node));
                 }
             }
         }

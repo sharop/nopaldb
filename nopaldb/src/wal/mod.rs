@@ -369,10 +369,9 @@ impl WalManager {
                 | WalRecord::UpdateNode { tx_id, .. }
                 | WalRecord::DeleteNode { tx_id, .. }
                 | WalRecord::InsertEdge { tx_id, .. }
-                | WalRecord::DeleteEdge { tx_id, .. } => {
-                    if committed_txs.contains(tx_id) {
-                        replay_ops.push(record);
-                    }
+                | WalRecord::DeleteEdge { tx_id, .. }
+                if committed_txs.contains(tx_id) => {
+                    replay_ops.push(record);
                 }
                 _ => {}
             }

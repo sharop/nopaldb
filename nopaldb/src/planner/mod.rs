@@ -145,11 +145,7 @@ impl QueryPlanner {
             .unwrap_or(self.stats.total_nodes);
 
         // For equality, estimate 1 row per unique value
-        let estimated_rows = if cardinality > 0 {
-            total_nodes / cardinality
-        } else {
-            1
-        };
+        let estimated_rows = total_nodes.checked_div(cardinality).unwrap_or(1);
 
         let cost = INDEX_SEEK_BASE_COST + (estimated_rows as f64 * INDEX_SEEK_PER_ROW);
 

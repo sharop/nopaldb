@@ -61,9 +61,8 @@ fn test_add_multiple_properties() {
         result.err()
     );
 
-    if let Statement::Add(add) = result.unwrap() {
-        if let PatternElement::Node(node) = &add.pattern.elements[0] {
-            assert_eq!(node.properties.len(), 4, "Should have 4 properties");
-        }
+    if let Statement::Add(add) = result.unwrap()
+        && let PatternElement::Node(node) = &add.pattern.elements[0] {
+        assert_eq!(node.properties.len(), 4, "Should have 4 properties");
     }
 }

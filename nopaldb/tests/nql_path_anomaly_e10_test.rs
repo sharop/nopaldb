@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(result.len(), 1);
         let score = get_float(&result, 0, "anomaly");
         assert!(
-            score >= 0.0 && score <= 1.0 + 1e-5,
+            (0.0..= 1.0 + 1e-5).contains(&score),
             "score out of [0,1]: {}",
             score
         );

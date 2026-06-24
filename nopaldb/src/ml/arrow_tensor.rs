@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn test_from_float32_no_nulls_single_copy() {
-        let values = vec![1.0f32, 2.5, 3.14, -1.0];
+        let values = vec![1.0f32, 2.5, 3.2, -1.0];
         let array = Float32Array::from(values.clone());
         let tensor = MLTensor::from_arrow_array(&array).unwrap();
 

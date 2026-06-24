@@ -144,14 +144,12 @@ mod example {
         let mut results: Vec<(f32, String)> = Vec::new();
 
         for (node_id, title) in candidates {
-            match graph.get_node_embedding(*node_id, "mock-model-v1").await {
-                Ok(emb) => {
-                    let score = query.cosine_similarity(&emb);
-                    results.push((score, title.to_string()));
-                }
-                Err(_) => {} // node has no embedding for this model — skip
+            if let Ok(emb) = graph.get_node_embedding(*node_id, "mock-model-v1").await {
+                let score = query.cosine_similarity(&emb);
+                results.push((score, title.to_string()));
             }
         }
+
 
         results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         Ok(results)

@@ -247,7 +247,7 @@ async fn main() -> Result<()> {
 
         by_tier
             .entry(tier)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(format!("{} ← {}", s1, s2));
     }
 

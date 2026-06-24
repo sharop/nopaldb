@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("Results: {} rows in {:.2?}", result.rows.len(), elapsed);
 
-    if result.rows.len() > 0 {
+    if !result.is_empty() {
         println!("\nSample results:");
         for (i, row) in result.rows.iter().take(3).enumerate() {
             println!("  {}. {:?}", i + 1, row);

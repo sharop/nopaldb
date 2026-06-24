@@ -53,26 +53,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Step 4: Try direct find_nodes_indexed()...");
 
     // Get a real value from first node
-    if let Some(first_node) = nodes.first() {
-        if let Some(house_value) = first_node.properties.get("house") {
-            println!("  Searching for house: {:?}", house_value);
+    if let Some(first_node) = nodes.first()
+        && let Some(house_value) = first_node.properties.get("house") {
+        println!("  Searching for house: {:?}", house_value);
 
-            match graph
-                .find_nodes_indexed("Character", "house", house_value.clone())
-                .await
-            {
-                Ok(results) => {
-                    println!("  ✅ Found {} nodes", results.len());
-                    if !results.is_empty() {
-                        println!("    Sample: {:?}", results[0].properties.get("name"));
-                    }
+        match graph
+            .find_nodes_indexed("Character", "house", house_value.clone())
+            .await
+        {
+            Ok(results) => {
+                println!("  ✅ Found {} nodes", results.len());
+                if !results.is_empty() {
+                    println!("    Sample: {:?}", results[0].properties.get("name"));
                 }
-                Err(e) => {
-                    println!("  ❌ Error: {}", e);
-                }
+            }
+            Err(e) => {
+                println!("  ❌ Error: {}", e);
             }
         }
     }
+
     println!();
 
     // Step 5: Try with "TeamA" specifically
