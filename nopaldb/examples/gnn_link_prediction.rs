@@ -248,12 +248,12 @@ fn learn_embeddings_from_walks(
                 let start = i.saturating_sub(window_size);
                 let end = (i + window_size + 1).min(walk.len());
 
-                for j in start..end {
+                for (j, &context) in walk.iter().enumerate().take(end).skip(start){
                     if i == j {
                         continue;
                     }
 
-                    let context = walk[j];
+                    //let context = walk[j];
 
                     // Positive pair
                     let center_emb = embeddings.get(&center).unwrap().clone();

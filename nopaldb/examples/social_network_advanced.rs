@@ -157,10 +157,9 @@ async fn main() -> nopaldb::Result<()> {
         .await?;
 
     for friend in &older_friends {
-        if let Some(PropertyValue::String(name)) = friend.properties.get("name") {
-            if let Some(PropertyValue::Int(age)) = friend.properties.get("age") {
-                println!("   - {} ({} años)", name, age);
-            }
+        if let Some(PropertyValue::String(name)) = friend.properties.get("name")
+            && let Some(PropertyValue::Int(age)) = friend.properties.get("age") {
+            println!("   - {} ({} años)", name, age);
         }
     }
 
@@ -181,10 +180,9 @@ async fn main() -> nopaldb::Result<()> {
         .await?;
 
     for person in &rust_lovers {
-        if let Some(PropertyValue::String(name)) = person.properties.get("name") {
-            if let Some(PropertyValue::String(interests)) = person.properties.get("interests") {
-                println!("   - {} (intereses: {})", name, interests);
-            }
+        if let Some(PropertyValue::String(name)) = person.properties.get("name")
+            && let Some(PropertyValue::String(interests)) = person.properties.get("interests") {
+            println!("   - {} (intereses: {})", name, interests);
         }
     }
 

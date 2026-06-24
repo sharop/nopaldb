@@ -100,10 +100,9 @@ async fn find_treasure_room(graph: &Graph, entrance: uuid::Uuid) -> nopaldb::Res
     // Find last loot room in traversal
     for &node_id in result.nodes.iter().rev() {
         let node = graph.get_node(node_id).await?;
-        if let Some(PropertyValue::String(t)) = node.properties.get("type") {
-            if t == "Loot" || t == "Boss" {
-                return Ok(node_id);
-            }
+        if let Some(PropertyValue::String(t)) = node.properties.get("type")
+            && (t == "Loot" || t == "Boss") {
+            return Ok(node_id);
         }
     }
 

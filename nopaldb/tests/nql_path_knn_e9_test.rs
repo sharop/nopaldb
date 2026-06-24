@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(result.len(), 1);
         let refs = get_knn_list(&result, 0, "refs");
         // Solo ref_ab tiene score ≈ 1.0; las otras deben estar por debajo
-        assert!(refs.len() >= 1, "expected at least ref_ab");
+        assert!(!refs.is_empty(), "expected at least ref_ab");
         for (name, score) in &refs {
             assert!(
                 *score >= 0.95,

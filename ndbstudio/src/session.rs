@@ -497,7 +497,7 @@ impl SessionState {
             }
         }
 
-        impacted.sort_by(|a, b| b.impact_score.cmp(&a.impact_score));
+        impacted.sort_by_key(|b| std::cmp::Reverse(b.impact_score));
         impacted
     }
 

@@ -148,7 +148,7 @@ async fn get_cited_papers(
     Ok(cited)
 }
 
-/// Adamic-Adar Index: Suma de 1/log(degree) de vecinos comunes
+// Adamic-Adar Index: Suma de 1/log(degree) de vecinos comunes
 // Reemplazar función adamic_adar_score:
 
 /// Adamic-Adar Index mejorado

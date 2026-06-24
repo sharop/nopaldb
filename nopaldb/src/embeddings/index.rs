@@ -427,7 +427,7 @@ mod tests {
         let index = HnswIndex::build_batch(vectors, "test", 3).unwrap();
 
         // Filtrar: solo id_b y id_c
-        let allowed = vec![id_b, id_c];
+        let allowed = [id_b, id_c];
         let results = index
             .search_knn_filtered(&[1.0, 0.0, 0.0], 1, DEFAULT_EF_SEARCH, |nid| {
                 allowed.contains(nid)

@@ -78,11 +78,10 @@ async fn can_learn_skill(
     println!("\n🎯 Checking if can learn: {:?}", name);
 
     // Check level
-    if let PropertyValue::Int(req) = required_level {
-        if player_level < *req {
-            println!("  ❌ Level too low (need {})", req);
-            return Ok(false);
-        }
+    if let PropertyValue::Int(req) = required_level
+        && player_level < *req {
+        println!("  ❌ Level too low (need {})", req);
+        return Ok(false);
     }
 
     // Check prerequisites

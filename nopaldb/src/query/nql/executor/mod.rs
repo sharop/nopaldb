@@ -4235,7 +4235,7 @@ impl<'a> Executor<'a> {
             } else {
                 node_dim = Some(current_node_dim);
             }
-            combined.extend(embedding.vector.into_iter());
+            combined.extend(embedding.vector);
 
             if index < binding.edges.len() {
                 let edge = &binding.edges[index];
@@ -4251,7 +4251,7 @@ impl<'a> Executor<'a> {
                 } else {
                     edge_dim = Some(current_edge_dim);
                 }
-                combined.extend(embedding.vector.into_iter());
+                combined.extend(embedding.vector);
             }
         }
 

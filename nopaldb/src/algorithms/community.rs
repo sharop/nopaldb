@@ -1078,7 +1078,7 @@ mod tests {
 
         let num_communities = LouvainCommunity::count_communities(&communities);
         assert!(
-            num_communities >= 1 && num_communities <= 6,
+            (1..=6).contains(&num_communities),
             "Expected 1-6 communities, got {}",
             num_communities
         );
@@ -1172,7 +1172,7 @@ mod tests {
 
         let n_comm = LeidenCommunity::count_communities(&communities);
         assert!(
-            n_comm >= 1 && n_comm <= 4,
+            (1..=4).contains(&n_comm),
             "Esperaba 1-4 comunidades con gamma=0.1, obtuvo {}",
             n_comm
         );

@@ -93,10 +93,9 @@ async fn main() -> nopaldb::Result<()> {
         .await?;
 
     for lang in &web_langs {
-        if let Some(PropertyValue::String(name)) = lang.properties.get("name") {
-            if let Some(PropertyValue::Int(year)) = lang.properties.get("year") {
-                println!("   - {} (desde {})", name, year);
-            }
+        if let Some(PropertyValue::String(name)) = lang.properties.get("name")
+            && let Some(PropertyValue::Int(year)) = lang.properties.get("year") {
+            println!("   - {} (desde {})", name, year);
         }
     }
 

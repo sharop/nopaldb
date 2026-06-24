@@ -139,7 +139,7 @@ async fn test_path_result_in_where() -> Result<()> {
         .await?;
 
     // Only paths with sum > 100 pass: A->B (sum=200) and A->B->C (sum=250)
-    assert!(result.len() >= 1, "expected at least one result");
+    assert!(!result.is_empty(), "expected at least one result");
     for row in result.rows() {
         let total = row.get("total").expect("total column must exist");
         match total {
