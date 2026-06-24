@@ -4,13 +4,14 @@ NOTEBOOKS_DIR := notebooks
 NBEXEC_OUT ?= /tmp/tutorial-nbexec
 REPO_ROOT := $(shell cd .. && pwd)
 
-.PHONY: help install install-min smoke jupyter notebook nbexec-all nbexec-05 nbexec-06 clean \
+.PHONY: help install install-min install-nopaldb smoke jupyter notebook nbexec-all nbexec-05 nbexec-06 clean \
 	nbexec-ci studio-florentine studio-offshore studio-fraud
 
 help:
 	@echo "Targets:"
 	@echo "  make install          - instala todas las deps (incluye embeddings)"
 	@echo "  make install-min      - instala solo deps base (sin sentence-transformers)"
+	@echo "  make install-nopaldb  - compila e instala el paquete Python nopaldb (maturin, requiere Rust)"
 	@echo "  make jupyter          - abre Jupyter Lab/Notebook en notebooks/"
 	@echo "  make smoke            - ejecuta 00_setup_smoke_test.ipynb headless"
 	@echo "  make nbexec-all       - ejecuta los 5 notebooks headless (CI gate)"
@@ -30,6 +31,11 @@ install:
 install-min:
 	awk '!/sentence-transformers/ && !/^torch/ && !/^[[:space:]]*#/ && !/^[[:space:]]*$$/' requirements.txt > /tmp/nopaldb-tutorial-requirements.txt
 	$(PYTHON) -m pip install -r /tmp/nopaldb-tutorial-requirements.txt
+
+# Compila el crate nopaldb con maturin (lee features de nopaldb/pyproject.toml: python-full)
+# e instala el wheel en el entorno Python activo. Requiere toolchain de Rust.
+install-nopaldb:
+	$(PYTHON) -m pip install $(REPO_ROOT)/nopaldb
 
 jupyter:
 	cd $(NOTEBOOKS_DIR) && $(PYTHON) -m jupyter notebook

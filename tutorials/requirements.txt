@@ -1,4 +1,5 @@
-nopaldb==0.4.19
+# nopaldb se construye desde el código fuente con maturin (no está en PyPI):
+#   make install-nopaldb   (o: pip install ../nopaldb)
 jupyter>=1.0
 notebook>=7.0
 pandas>=2.0

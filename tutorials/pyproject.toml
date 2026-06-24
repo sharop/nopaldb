@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "Tutorial avanzado NopalDB en 4 actos (Florentine, Synthetic Offshore Network, Biomedical, Synthetic Fraud)"
 requires-python = ">=3.10"
 dependencies = [
-    "nopaldb==0.4.19",
+    # nopaldb se construye desde el código fuente con maturin (no está en PyPI):
+    #   make install-nopaldb   (o: pip install ../nopaldb)
     "jupyter>=1.0",
     "notebook>=7.0",
     "pandas>=2.0",
