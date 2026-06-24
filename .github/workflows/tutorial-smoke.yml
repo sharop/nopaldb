@@ -2,6 +2,17 @@ name: Tutorial Smoke
 
 on:
   pull_request:
+    # Solo dispara cuando cambia algo que estos jobs realmente ejercitan:
+    # el crate nopaldb (build default + wheel maturin), los tutoriales, o la
+    # configuración de build/toolchain. Cambios en docs, READMEs, ndbstudio,
+    # nopaldb-mcp (cubierto por community-ci) o python/ raíz no lo activan.
+    paths:
+      - 'tutorials/**'
+      - 'nopaldb/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/tutorial-smoke.yml'
   workflow_dispatch:
 
 permissions:
@@ -46,6 +57,9 @@ jobs:
 
       - name: Install tutorial dependencies
         run: make -C tutorials install-min
+
+      - name: Build & install nopaldb (maturin)
+        run: make -C tutorials install-nopaldb
 
       - name: Generate deterministic tutorial databases
         run: |
