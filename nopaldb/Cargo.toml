@@ -7,7 +7,8 @@ keywords = ["graph", "database", "embedded", "mvcc", "arrow"]
 categories = ["database", "database-implementations", "data-structures", "algorithms"]
 edition = "2024"
 repository = "https://github.com/sharop/nopaldb"
-license = "AGPL-3"
+license = "AGPL-3.0-only"
+readme = "README.md"
 exclude = [
     "bench*",
     "examples",
