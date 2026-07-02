@@ -1,7 +1,7 @@
 // tests/mvcc_transaction_test.rs
 
-use nopaldb::Result;
 use nopaldb::{Graph, Node, PropertyValue};
+use nopaldb::Result;
 
 #[tokio::test]
 async fn test_transaction_creates_versions() {
@@ -62,8 +62,7 @@ async fn test_transaction_creates_versions() {
         let mut tx = graph.begin_transaction().await.unwrap();
         let mut node = graph.get_node(node_id).await.unwrap();
         node.properties.insert("age".into(), PropertyValue::Int(35));
-        node.properties
-            .insert("city".into(), PropertyValue::String("NYC".into()));
+        node.properties.insert("city".into(), PropertyValue::String("NYC".into()));
         tx.add_node(node).await.unwrap();
         tx.commit().await.unwrap();
         println!("\n✅ Transaction 3: Updated Alice (age=35, city=NYC)");
@@ -112,7 +111,8 @@ async fn test_mvcc_with_concurrent_reads() -> Result<()> {
     // Crear nodo inicial
     let node_id = {
         let mut tx = graph.begin_transaction().await?;
-        let node = Node::new("Counter").with_property("value", PropertyValue::Int(0));
+        let node = Node::new("Counter")
+            .with_property("value", PropertyValue::Int(0));
         let id = tx.add_node(node).await?;
         tx.commit().await?;
         id
@@ -124,22 +124,15 @@ async fn test_mvcc_with_concurrent_reads() -> Result<()> {
     {
         let mut tx = graph.begin_transaction().await?;
         let mut node = graph.get_node(node_id).await?;
-        node.properties
-            .insert("value".into(), PropertyValue::Int(100));
+        node.properties.insert("value".into(), PropertyValue::Int(100));
         tx.add_node(node).await?;
         tx.commit().await?;
     }
 
     // Usar timestamps lógicos MVCC del historial (no reloj del sistema).
     let history = graph.history(node_id).await?;
-    let v2 = history
-        .iter()
-        .find(|v| v.version == 2)
-        .expect("v2 must exist");
-    let v1 = history
-        .iter()
-        .find(|v| v.version == 1)
-        .expect("v1 must exist");
+    let v2 = history.iter().find(|v| v.version == 2).expect("v2 must exist");
+    let v1 = history.iter().find(|v| v.version == 1).expect("v1 must exist");
     let t1 = v1.valid_from;
     let t2 = v2.valid_from;
 
@@ -221,8 +214,8 @@ async fn test_mvcc_rollback_no_version() -> Result<()> {
     // Transaction committed
     let node_id = {
         let mut tx = graph.begin_transaction().await?;
-        let node =
-            Node::new("Test").with_property("status", PropertyValue::String("committed".into()));
+        let node = Node::new("Test")
+            .with_property("status", PropertyValue::String("committed".into()));
         let id = tx.add_node(node).await?;
         tx.commit().await?;
         println!("✅ Transaction 1 committed");
@@ -239,7 +232,7 @@ async fn test_mvcc_rollback_no_version() -> Result<()> {
         let mut node = graph.get_node(node_id).await?;
         node.properties.insert(
             "status".into(),
-            PropertyValue::String("should_not_exist".into()),
+            PropertyValue::String("should_not_exist".into())
         );
         tx.add_node(node).await?;
         tx.rollback()?; // ← Rollback

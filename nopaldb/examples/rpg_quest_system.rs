@@ -8,7 +8,7 @@
 // - Dynamic quest availability
 // - Pattern matching queries
 
-use nopaldb::{Edge, Graph, Node, PropertyValue, Result};
+use nopaldb::{Graph, Node, Edge, PropertyValue, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -33,9 +33,8 @@ async fn main() -> Result<()> {
         "Learn the basic controls and mechanics",
         10,
         1,
-        "available",
-    )
-    .await?;
+        "available"
+    ).await?;
 
     let goblin_camp = create_quest(
         &graph,
@@ -44,9 +43,8 @@ async fn main() -> Result<()> {
         "Defeat the goblins threatening the village",
         50,
         3,
-        "locked",
-    )
-    .await?;
+        "locked"
+    ).await?;
 
     let forest_guardian = create_quest(
         &graph,
@@ -55,9 +53,8 @@ async fn main() -> Result<()> {
         "Prove your worth against the ancient protector",
         100,
         5,
-        "locked",
-    )
-    .await?;
+        "locked"
+    ).await?;
 
     let ancient_ruins = create_quest(
         &graph,
@@ -66,9 +63,8 @@ async fn main() -> Result<()> {
         "Uncover the secrets of the lost civilization",
         200,
         8,
-        "locked",
-    )
-    .await?;
+        "locked"
+    ).await?;
 
     let dragon_slayer = create_quest(
         &graph,
@@ -77,9 +73,8 @@ async fn main() -> Result<()> {
         "Face the ultimate challenge and save the kingdom",
         1000,
         15,
-        "locked",
-    )
-    .await?;
+        "locked"
+    ).await?;
 
     println!("✅ Created 5 quests\n");
 
@@ -109,9 +104,15 @@ async fn main() -> Result<()> {
     // CREATE PLAYER
     // ═════════════════════════════════════════════════════════
 
-    let player = create_player(&graph, "Demo Player", 1, 0, "Village Square").await?;
+    let player = create_player(
+        &graph,
+        "Sharop the Brave",
+        1,
+        0,
+        "Village Square"
+    ).await?;
 
-    println!("✅ Created player: Demo Player\n");
+    println!("✅ Created player: Sharop the Brave\n");
 
     // ═════════════════════════════════════════════════════════
     // QUERY 1: Available Quests
@@ -121,31 +122,18 @@ async fn main() -> Result<()> {
     println!("📋 AVAILABLE QUESTS (Level 1)");
     println!("═══════════════════════════════════════\n");
 
-    let available = graph
-        .execute_nql(
-            r#"
+    let available = graph.execute_nql(r#"
         find q.name, q.description, q.xp_reward, q.level_required
         from (q:Quest)
         where q.status = "available"
           and q.level_required <= 1
-        "#,
-        )
-        .await?;
+        "#).await?;
 
     for row in available.rows() {
         println!("🎯 {}", row.get_string("q.name").unwrap_or("?".into()));
-        println!(
-            "   📖 {}",
-            row.get_string("q.description").unwrap_or("?".into())
-        );
-        println!(
-            "   ⭐ Reward: {} XP",
-            row.get_int("q.xp_reward").unwrap_or(0)
-        );
-        println!(
-            "   📊 Required Level: {}",
-            row.get_int("q.level_required").unwrap_or(0)
-        );
+        println!("   📖 {}", row.get_string("q.description").unwrap_or("?".into()));
+        println!("   ⭐ Reward: {} XP", row.get_int("q.xp_reward").unwrap_or(0));
+        println!("   📊 Required Level: {}", row.get_int("q.level_required").unwrap_or(0));
         println!();
     }
 
@@ -157,14 +145,10 @@ async fn main() -> Result<()> {
     println!("🔗 QUEST CHAIN (Prerequisites)");
     println!("═══════════════════════════════════════\n");
 
-    let chain = graph
-        .execute_nql(
-            r#"
+    let chain = graph.execute_nql(r#"
         find q1.name, q2.name
         from (q1:Quest) -> [:REQUIRES] -> (q2:Quest)
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     for row in chain.rows() {
         let q1 = row.get_string("q1.name").unwrap_or("?".into());
@@ -182,14 +166,10 @@ async fn main() -> Result<()> {
     println!("🌳 PROGRESSION TREE");
     println!("═══════════════════════════════════════\n");
 
-    let progression = graph
-        .execute_nql(
-            r#"
+    let progression = graph.execute_nql(r#"
         find q1.name, q2.name, q1.level_required
         from (q1:Quest) -> [:UNLOCKS] -> (q2:Quest)
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     for row in progression.rows() {
         let q1 = row.get_string("q1.name").unwrap_or("?".into());
@@ -228,15 +208,11 @@ async fn main() -> Result<()> {
     println!("🏆 PLAYER ACHIEVEMENTS");
     println!("═══════════════════════════════════════\n");
 
-    let completed = graph
-        .execute_nql(
-            r#"
+    let completed = graph.execute_nql(r#"
         find q.name, q.xp_reward
         from (p:Player) -> [:COMPLETED] -> (q:Quest)
-        where p.name = "Demo Player"
-    "#,
-        )
-        .await?;
+        where p.name = "Sharop the Brave"
+    "#).await?;
 
     let mut total_xp = 0;
     for row in completed.rows() {

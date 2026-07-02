@@ -4,9 +4,9 @@
 // Dataset: Citation Network
 // Task: Learn node embeddings, compute similarity
 
-use nopaldb::{Direction, Edge, Graph, Node, PropertyValue};
-use rand::Rng;
+use nopaldb::{Graph, Node, Edge, PropertyValue, Direction};
 use std::collections::HashMap;
+use rand::Rng;
 
 #[tokio::main]
 async fn main() -> nopaldb::Result<()> {
@@ -30,10 +30,7 @@ async fn main() -> nopaldb::Result<()> {
     // 3. Learn embeddings (simplified - using co-occurrence)
     println!("\n🧠 Learning embeddings from walks...");
     let embeddings = learn_embeddings(&walks, &papers);
-    println!(
-        "   ✓ Learned {}-dimensional embeddings",
-        embeddings.values().next().unwrap().len()
-    );
+    println!("   ✓ Learned {}-dimensional embeddings", embeddings.values().next().unwrap().len());
 
     // 4. Compute similarities
     println!("\n📐 Computing paper similarities:");
@@ -74,96 +71,45 @@ async fn main() -> nopaldb::Result<()> {
 /// Create citation network
 async fn create_citation_network(graph: &Graph) -> nopaldb::Result<Vec<uuid::Uuid>> {
     // Papers about different topics
-    let ml_basics = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property(
-                    "title",
-                    PropertyValue::String("Machine Learning Basics".into()),
-                )
-                .with_property("topic", PropertyValue::String("ML".into())),
-        )
-        .await?;
+    let ml_basics = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("Machine Learning Basics".into()))
+        .with_property("topic", PropertyValue::String("ML".into()))).await?;
 
-    let deep_learning = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property("title", PropertyValue::String("Deep Learning".into()))
-                .with_property("topic", PropertyValue::String("ML".into())),
-        )
-        .await?;
+    let deep_learning = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("Deep Learning".into()))
+        .with_property("topic", PropertyValue::String("ML".into()))).await?;
 
-    let neural_nets = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property("title", PropertyValue::String("Neural Networks".into()))
-                .with_property("topic", PropertyValue::String("ML".into())),
-        )
-        .await?;
+    let neural_nets = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("Neural Networks".into()))
+        .with_property("topic", PropertyValue::String("ML".into()))).await?;
 
-    let graph_theory = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property("title", PropertyValue::String("Graph Theory".into()))
-                .with_property("topic", PropertyValue::String("Math".into())),
-        )
-        .await?;
+    let graph_theory = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("Graph Theory".into()))
+        .with_property("topic", PropertyValue::String("Math".into()))).await?;
 
-    let graph_algorithms = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property("title", PropertyValue::String("Graph Algorithms".into()))
-                .with_property("topic", PropertyValue::String("CS".into())),
-        )
-        .await?;
+    let graph_algorithms = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("Graph Algorithms".into()))
+        .with_property("topic", PropertyValue::String("CS".into()))).await?;
 
-    let gnn = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property(
-                    "title",
-                    PropertyValue::String("Graph Neural Networks".into()),
-                )
-                .with_property("topic", PropertyValue::String("ML+Graph".into())),
-        )
-        .await?;
+    let gnn = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("Graph Neural Networks".into()))
+        .with_property("topic", PropertyValue::String("ML+Graph".into()))).await?;
 
     // Citations - ML cluster
-    graph
-        .add_edge(Edge::new(deep_learning, ml_basics, "CITES"))
-        .await?;
-    graph
-        .add_edge(Edge::new(neural_nets, ml_basics, "CITES"))
-        .await?;
-    graph
-        .add_edge(Edge::new(neural_nets, deep_learning, "CITES"))
-        .await?;
+    graph.add_edge(Edge::new(deep_learning, ml_basics, "CITES")).await?;
+    graph.add_edge(Edge::new(neural_nets, ml_basics, "CITES")).await?;
+    graph.add_edge(Edge::new(neural_nets, deep_learning, "CITES")).await?;
 
     // Citations - Graph cluster
-    graph
-        .add_edge(Edge::new(graph_algorithms, graph_theory, "CITES"))
-        .await?;
+    graph.add_edge(Edge::new(graph_algorithms, graph_theory, "CITES")).await?;
 
     // Citations - Bridge (GNN connects both)
     graph.add_edge(Edge::new(gnn, neural_nets, "CITES")).await?;
-    graph
-        .add_edge(Edge::new(gnn, deep_learning, "CITES"))
-        .await?;
-    graph
-        .add_edge(Edge::new(gnn, graph_algorithms, "CITES"))
-        .await?;
-    graph
-        .add_edge(Edge::new(gnn, graph_theory, "CITES"))
-        .await?;
+    graph.add_edge(Edge::new(gnn, deep_learning, "CITES")).await?;
+    graph.add_edge(Edge::new(gnn, graph_algorithms, "CITES")).await?;
+    graph.add_edge(Edge::new(gnn, graph_theory, "CITES")).await?;
 
-    Ok(vec![
-        ml_basics,
-        deep_learning,
-        neural_nets,
-        graph_theory,
-        graph_algorithms,
-        gnn,
-    ])
+    Ok(vec![ml_basics, deep_learning, neural_nets, graph_theory, graph_algorithms, gnn])
 }
 
 /// Generate random walks from each node
@@ -240,9 +186,9 @@ fn learn_embeddings(
             let start = i.saturating_sub(window_size);
             let end = (i + window_size + 1).min(walk.len());
 
-            for (j, &node) in walk.iter().enumerate().take(end).skip(start) {
+            for j in start..end {
                 if i != j {
-                    positive_pairs.push((center, node));
+                    positive_pairs.push((center, walk[j]));
                 }
             }
         }
@@ -264,8 +210,7 @@ fn learn_embeddings(
             let center_emb = embeddings.get(&center).unwrap().clone();
             let context_emb = embeddings.get(&context).unwrap().clone();
 
-            let dot: f64 = center_emb
-                .iter()
+            let dot: f64 = center_emb.iter()
                 .zip(context_emb.iter())
                 .map(|(a, b)| a * b)
                 .sum();
@@ -294,8 +239,7 @@ fn learn_embeddings(
 
                 let neg_emb = embeddings.get(&neg_node).unwrap().clone();
 
-                let neg_dot: f64 = new_center
-                    .iter()
+                let neg_dot: f64 = new_center.iter()
                     .zip(neg_emb.iter())
                     .map(|(a, b)| a * b)
                     .sum();

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use nopaldb::mvcc::GCConfig;
 use nopaldb::{AutoGcConfig, Graph, Node, PropertyValue};
+use nopaldb::mvcc::GCConfig;
 
 async fn seed_versioned_person(graph: &Graph) -> nopaldb::Result<nopaldb::NodeId> {
     let mut tx1 = graph.begin_transaction().await?;

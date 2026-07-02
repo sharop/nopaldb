@@ -4,19 +4,20 @@
 // P0 fix: All writes go through Transaction for atomicity.
 // P0 fix: DELETE/UPDATE support relationship patterns.
 
-use crate::Transaction;
+use std::collections::{HashMap, HashSet};
 use crate::error::{NopalError, Result};
 use crate::graph::Graph;
 use crate::query::nql::parser::ast::{
-    AddStmt, Assignment, DeleteStmt, Expression, NodePattern, Pattern, PatternElement,
-    RelationshipPattern, UpdateStmt,
+    AddStmt, DeleteStmt, UpdateStmt, Pattern, PatternElement,
+    NodePattern, RelationshipPattern, Expression, Assignment,
 };
-use crate::types::{Edge, Node, NodeId, PropertyValue};
-use std::collections::{HashMap, HashSet};
+use crate::types::{Node, Edge, NodeId, PropertyValue};
+use crate::Transaction;
 
 // Import result types from result.rs
-use super::operators;
 use super::result::{AddResult, DeleteResult, UpdateResult};
+use super::operators;
+
 
 // ═══════════════════════════════════════════════════════════
 // MATCHED ELEMENT TYPE
@@ -50,7 +51,11 @@ impl<'a> WriteExecutor<'a> {
     ///
     /// All writes go through the Transaction for atomicity.
     /// If any step fails, the tx is not committed and changes are rolled back.
-    pub async fn execute_add(&self, add: &AddStmt, tx: &mut Transaction) -> Result<AddResult> {
+    pub async fn execute_add(
+        &self,
+        add: &AddStmt,
+        tx: &mut Transaction,
+    ) -> Result<AddResult> {
         log::info!("Executing ADD statement (transactional)");
 
         let mut nodes_created = 0;
@@ -63,9 +68,11 @@ impl<'a> WriteExecutor<'a> {
         for element in &add.pattern.elements {
             match element {
                 PatternElement::Node(node_pattern) => {
-                    let (node_id, is_new) = self
-                        .process_node_for_add_tx(node_pattern, &variable_to_node, tx)
-                        .await?;
+                    let (node_id, is_new) = self.process_node_for_add_tx(
+                        node_pattern,
+                        &variable_to_node,
+                        tx,
+                    ).await?;
 
                     if is_new {
                         nodes_created += 1;
@@ -77,8 +84,7 @@ impl<'a> WriteExecutor<'a> {
                     }
 
                     // If there's a pending relationship, buffer the edge in tx
-                    if let (Some(source_id), Some(rel_pattern)) = (last_node_id, pending_rel.take())
-                    {
+                    if let (Some(source_id), Some(rel_pattern)) = (last_node_id, pending_rel.take()) {
                         let edge = self.build_edge_for_add(source_id, node_id, &rel_pattern)?;
                         tx.add_edge(edge)?;
                         edges_created += 1;
@@ -89,7 +95,7 @@ impl<'a> WriteExecutor<'a> {
                 PatternElement::Relationship(rel_pattern) => {
                     if last_node_id.is_none() {
                         return Err(NopalError::query_error(
-                            "Relationship in ADD pattern has no source node",
+                            "Relationship in ADD pattern has no source node"
                         ));
                     }
                     pending_rel = Some(rel_pattern.clone());
@@ -97,11 +103,7 @@ impl<'a> WriteExecutor<'a> {
             }
         }
 
-        log::info!(
-            "ADD buffered: {} nodes, {} edges (will apply on commit)",
-            nodes_created,
-            edges_created
-        );
+        log::info!("ADD buffered: {} nodes, {} edges (will apply on commit)", nodes_created, edges_created);
 
         Ok(AddResult {
             nodes_created,
@@ -138,12 +140,12 @@ impl<'a> WriteExecutor<'a> {
     ) -> Result<(NodeId, bool)> {
         // Check if already created in this statement
         if let Some(var) = &pattern.variable
-            && let Some(existing_id) = variable_map.get(var)
-        {
-            return Ok((*existing_id, false));
+            && let Some(existing_id) = variable_map.get(var) {
+                return Ok((*existing_id, false));
         }
 
-        let label = pattern.label.clone().unwrap_or_else(|| "Node".to_string());
+        let label = pattern.label.clone()
+            .unwrap_or_else(|| "Node".to_string());
         let properties = pattern.properties.clone();
 
         let node = Node {
@@ -175,10 +177,7 @@ impl<'a> WriteExecutor<'a> {
     ) -> Result<DeleteResult> {
         log::info!("Executing DELETE statement (transactional)");
 
-        let has_relationships = delete
-            .pattern
-            .elements
-            .iter()
+        let has_relationships = delete.pattern.elements.iter()
             .any(|e| matches!(e, PatternElement::Relationship(_)));
 
         if has_relationships {
@@ -197,8 +196,7 @@ impl<'a> WriteExecutor<'a> {
         let nodes = self.match_nodes_by_pattern(&delete.pattern).await?;
 
         let filtered = if let Some(filter) = &delete.filter {
-            nodes
-                .into_iter()
+            nodes.into_iter()
                 .filter(|n| self.evaluate_simple_condition(n, &filter.condition))
                 .collect::<Vec<_>>()
         } else {
@@ -207,11 +205,7 @@ impl<'a> WriteExecutor<'a> {
 
         let to_delete: Vec<_> = if let Some(limit) = &delete.limit {
             let offset = limit.offset.unwrap_or(0);
-            filtered
-                .into_iter()
-                .skip(offset)
-                .take(limit.limit)
-                .collect()
+            filtered.into_iter().skip(offset).take(limit.limit).collect()
         } else {
             filtered
         };
@@ -220,16 +214,8 @@ impl<'a> WriteExecutor<'a> {
         let mut edges_deleted = 0;
 
         for node in &to_delete {
-            let out_edges = self
-                .graph
-                .get_outgoing_edges(node.id)
-                .await
-                .unwrap_or_default();
-            let in_edges = self
-                .graph
-                .get_incoming_edges(node.id)
-                .await
-                .unwrap_or_default();
+            let out_edges = self.graph.get_outgoing_edges(node.id).await.unwrap_or_default();
+            let in_edges = self.graph.get_incoming_edges(node.id).await.unwrap_or_default();
             edges_deleted += out_edges.len() + in_edges.len();
 
             // Buffer deletion in transaction
@@ -237,10 +223,7 @@ impl<'a> WriteExecutor<'a> {
             nodes_deleted += 1;
         }
 
-        Ok(DeleteResult {
-            nodes_deleted,
-            edges_deleted,
-        })
+        Ok(DeleteResult { nodes_deleted, edges_deleted })
     }
 
     /// DELETE with relationship pattern (P0-B)
@@ -259,16 +242,14 @@ impl<'a> WriteExecutor<'a> {
             source_label.as_deref(),
             rel_type.as_deref(),
             target_label.as_deref(),
-        )
-        .await?;
+        ).await?;
 
         // Apply WHERE filter
         let filtered: Vec<_> = if let Some(filter) = &delete.filter {
-            matches
-                .into_iter()
-                .filter(|m| {
-                    self.evaluate_pattern_condition(m, &filter.condition, &source_var, &target_var)
-                })
+            matches.into_iter()
+                .filter(|m| self.evaluate_pattern_condition(
+                    m, &filter.condition, &source_var, &target_var
+                ))
                 .collect()
         } else {
             matches
@@ -277,11 +258,7 @@ impl<'a> WriteExecutor<'a> {
         // Apply LIMIT
         let to_process: Vec<_> = if let Some(limit) = &delete.limit {
             let offset = limit.offset.unwrap_or(0);
-            filtered
-                .into_iter()
-                .skip(offset)
-                .take(limit.limit)
-                .collect()
+            filtered.into_iter().skip(offset).take(limit.limit).collect()
         } else {
             filtered
         };
@@ -298,10 +275,7 @@ impl<'a> WriteExecutor<'a> {
             }
         }
 
-        Ok(DeleteResult {
-            nodes_deleted: 0,
-            edges_deleted,
-        })
+        Ok(DeleteResult { nodes_deleted: 0, edges_deleted })
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -316,10 +290,7 @@ impl<'a> WriteExecutor<'a> {
     ) -> Result<UpdateResult> {
         log::info!("Executing UPDATE statement");
 
-        let has_relationships = update
-            .pattern
-            .elements
-            .iter()
+        let has_relationships = update.pattern.elements.iter()
             .any(|e| matches!(e, PatternElement::Relationship(_)));
 
         if has_relationships {
@@ -334,8 +305,7 @@ impl<'a> WriteExecutor<'a> {
         let nodes = self.match_nodes_by_pattern(&update.pattern).await?;
 
         let filtered = if let Some(filter) = &update.filter {
-            nodes
-                .into_iter()
+            nodes.into_iter()
                 .filter(|n| self.evaluate_simple_condition(n, &filter.condition))
                 .collect::<Vec<_>>()
         } else {
@@ -344,33 +314,17 @@ impl<'a> WriteExecutor<'a> {
 
         let to_update: Vec<_> = if let Some(limit) = &update.limit {
             let offset = limit.offset.unwrap_or(0);
-            filtered
-                .into_iter()
-                .skip(offset)
-                .take(limit.limit)
-                .collect()
+            filtered.into_iter().skip(offset).take(limit.limit).collect()
         } else {
             filtered
         };
 
-        let root_var = update
-            .pattern
-            .elements
-            .iter()
-            .find_map(|element| match element {
-                PatternElement::Node(node) => node.variable.clone(),
-                _ => None,
-            })
-            .unwrap_or_else(|| "n".to_string());
+        let root_var = update.pattern.elements.iter().find_map(|element| match element {
+            PatternElement::Node(node) => node.variable.clone(),
+            _ => None,
+        }).unwrap_or_else(|| "n".to_string());
 
-        self.apply_updates(
-            to_update,
-            Vec::new(),
-            &update.assignments,
-            &[root_var.as_str()],
-            None,
-        )
-        .await
+        self.apply_updates(to_update, Vec::new(), &update.assignments, &[root_var.as_str()], None).await
     }
 
     /// UPDATE with relationship pattern (P0-B)
@@ -383,15 +337,13 @@ impl<'a> WriteExecutor<'a> {
             source_label.as_deref(),
             rel_type.as_deref(),
             target_label.as_deref(),
-        )
-        .await?;
+        ).await?;
 
         let filtered: Vec<_> = if let Some(filter) = &update.filter {
-            matches
-                .into_iter()
-                .filter(|m| {
-                    self.evaluate_pattern_condition(m, &filter.condition, &source_var, &target_var)
-                })
+            matches.into_iter()
+                .filter(|m| self.evaluate_pattern_condition(
+                    m, &filter.condition, &source_var, &target_var
+                ))
                 .collect()
         } else {
             matches
@@ -399,23 +351,15 @@ impl<'a> WriteExecutor<'a> {
 
         let to_process: Vec<_> = if let Some(limit) = &update.limit {
             let offset = limit.offset.unwrap_or(0);
-            filtered
-                .into_iter()
-                .skip(offset)
-                .take(limit.limit)
-                .collect()
+            filtered.into_iter().skip(offset).take(limit.limit).collect()
         } else {
             filtered
         };
 
-        let edge_var = update
-            .pattern
-            .elements
-            .iter()
-            .find_map(|element| match element {
-                PatternElement::Relationship(r) => r.variable.clone(),
-                _ => None,
-            });
+        let edge_var = update.pattern.elements.iter().find_map(|element| match element {
+            PatternElement::Relationship(r) => r.variable.clone(),
+            _ => None,
+        });
 
         let mut nodes_to_update = Vec::new();
         let mut edges_to_update = Vec::new();
@@ -445,8 +389,7 @@ impl<'a> WriteExecutor<'a> {
             &update.assignments,
             &[source_var.as_str(), target_var.as_str()],
             edge_var.as_deref(),
-        )
-        .await
+        ).await
     }
 
     /// Apply property updates to matched nodes and edges.
@@ -472,20 +415,17 @@ impl<'a> WriteExecutor<'a> {
                 if let Some(val) = new_value {
                     // Remove old value from property index
                     if let Some(old_val) = node.properties.get(&assignment.property) {
-                        let _ = self
-                            .graph
-                            .storage_remove_property_index(&assignment.property, old_val, node.id)
-                            .await;
+                        let _ = self.graph.storage_remove_property_index(
+                            &assignment.property, old_val, node.id
+                        ).await;
                     }
 
-                    node.properties
-                        .insert(assignment.property.clone(), val.clone());
+                    node.properties.insert(assignment.property.clone(), val.clone());
 
                     // Add new value to property index
-                    let _ = self
-                        .graph
-                        .storage_add_property_index(&assignment.property, &val, node.id)
-                        .await;
+                    let _ = self.graph.storage_add_property_index(
+                        &assignment.property, &val, node.id
+                    ).await;
 
                     properties_changed += 1;
                     changed = true;
@@ -531,19 +471,16 @@ impl<'a> WriteExecutor<'a> {
 
     /// Extract source label, rel type, target label, and variable names from a pattern
     #[allow(clippy::type_complexity)]
-    fn extract_pattern_parts(
-        &self,
-        pattern: &Pattern,
-    ) -> Result<(
-        Option<String>, // source label
-        Option<String>, // rel type
-        Option<String>, // target label
-        String,         // source var
-        String,         // target var
+    fn extract_pattern_parts(&self, pattern: &Pattern) -> Result<(
+        Option<String>,  // source label
+        Option<String>,  // rel type
+        Option<String>,  // target label
+        String,          // source var
+        String,          // target var
     )> {
         if pattern.elements.len() < 3 {
             return Err(NopalError::query_error(
-                "Relationship pattern requires at least: node -> rel -> node",
+                "Relationship pattern requires at least: node -> rel -> node"
             ));
         }
 
@@ -597,15 +534,17 @@ impl<'a> WriteExecutor<'a> {
                         let l = self.eval_pattern_expr(m, left, source_var, target_var);
                         let r = self.eval_pattern_expr(m, right, source_var, target_var);
                         match (l, r) {
-                            (Some(lv), Some(rv)) => match op {
-                                BinaryOperator::Eq => lv == rv,
-                                BinaryOperator::NotEq => lv != rv,
-                                BinaryOperator::Gt => lv > rv,
-                                BinaryOperator::Lt => lv < rv,
-                                BinaryOperator::GtEq => lv >= rv,
-                                BinaryOperator::LtEq => lv <= rv,
-                                _ => false,
-                            },
+                            (Some(lv), Some(rv)) => {
+                                match op {
+                                    BinaryOperator::Eq => lv == rv,
+                                    BinaryOperator::NotEq => lv != rv,
+                                    BinaryOperator::Gt => lv > rv,
+                                    BinaryOperator::Lt => lv < rv,
+                                    BinaryOperator::GtEq => lv >= rv,
+                                    BinaryOperator::LtEq => lv <= rv,
+                                    _ => false,
+                                }
+                            }
                             _ => false,
                         }
                     }
@@ -690,24 +629,24 @@ impl<'a> WriteExecutor<'a> {
                         let l = self.eval_expr(node, left);
                         let r = self.eval_expr(node, right);
                         match (l, r) {
-                            (Some(lv), Some(rv)) => match op {
-                                BinaryOperator::Eq => lv == rv,
-                                BinaryOperator::NotEq => lv != rv,
-                                BinaryOperator::Gt => lv > rv,
-                                BinaryOperator::Lt => lv < rv,
-                                BinaryOperator::GtEq => lv >= rv,
-                                BinaryOperator::LtEq => lv <= rv,
-                                _ => false,
-                            },
+                            (Some(lv), Some(rv)) => {
+                                match op {
+                                    BinaryOperator::Eq => lv == rv,
+                                    BinaryOperator::NotEq => lv != rv,
+                                    BinaryOperator::Gt => lv > rv,
+                                    BinaryOperator::Lt => lv < rv,
+                                    BinaryOperator::GtEq => lv >= rv,
+                                    BinaryOperator::LtEq => lv <= rv,
+                                    _ => false,
+                                }
+                            }
                             _ => false,
                         }
                     }
                 }
             }
             _ => {
-                log::warn!(
-                    "Unsupported expression type in WHERE clause for write operation, defaulting to false for safety"
-                );
+                log::warn!("Unsupported expression type in WHERE clause for write operation, defaulting to false for safety");
                 false
             }
         }
@@ -716,10 +655,7 @@ impl<'a> WriteExecutor<'a> {
     fn eval_expr(&self, node: &Node, expr: &Expression) -> Option<PropertyValue> {
         match expr {
             Expression::Literal(v) => Some(v.clone()),
-            Expression::Property {
-                variable: _,
-                property,
-            } => {
+            Expression::Property { variable: _, property } => {
                 if property == "label" {
                     Some(PropertyValue::String(node.label.clone()))
                 } else if property == "id" {
@@ -736,10 +672,7 @@ impl<'a> WriteExecutor<'a> {
         match expr {
             Expression::Literal(v) => Some(v.clone()),
             _ => {
-                log::warn!(
-                    "UPDATE SET only supports literal values for now. Expression {:?} ignored.",
-                    expr
-                );
+                log::warn!("UPDATE SET only supports literal values for now. Expression {:?} ignored.", expr);
                 None
             }
         }
@@ -761,12 +694,10 @@ impl<'a> WriteExecutor<'a> {
 
     /// Count nodes and edges in matched elements
     pub fn count_elements(&self, elements: &[MatchedElement]) -> (usize, usize) {
-        let nodes = elements
-            .iter()
+        let nodes = elements.iter()
             .filter(|e| matches!(e, MatchedElement::Node(_)))
             .count();
-        let edges = elements
-            .iter()
+        let edges = elements.iter()
             .filter(|e| matches!(e, MatchedElement::Edge(_)))
             .count();
         (nodes, edges)
@@ -774,8 +705,7 @@ impl<'a> WriteExecutor<'a> {
 
     /// Sample node IDs from matched elements
     pub fn sample_node_ids(&self, elements: &[MatchedElement], limit: usize) -> Vec<String> {
-        elements
-            .iter()
+        elements.iter()
             .filter_map(|e| match e {
                 MatchedElement::Node(node) => Some(node.id.to_string()),
                 _ => None,

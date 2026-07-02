@@ -3,16 +3,16 @@
 // Zero-copy conversion from Apache Arrow to ML tensors
 // Uses DLPack protocol for interoperability
 
-use crate::error::{NopalError, Result};
 use arrow::array::*;
 use arrow::record_batch::RecordBatch;
+use crate::error::{NopalError, Result};
 
 /// Represents a tensor compatible with PyTorch/NumPy
 #[derive(Debug, Clone)]
 pub struct MLTensor {
     pub shape: Vec<usize>,
     pub dtype: TensorDType,
-    pub data: Vec<u8>, // Raw bytes (little-endian)
+    pub data: Vec<u8>,  // Raw bytes (little-endian)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,11 +73,7 @@ impl MLTensor {
             // Fallback: nulls se reemplazan por 0.0
             let mut buf = Vec::with_capacity(array.len() * 4);
             for i in 0..array.len() {
-                let v = if array.is_null(i) {
-                    0.0f32
-                } else {
-                    array.value(i)
-                };
+                let v = if array.is_null(i) { 0.0f32 } else { array.value(i) };
                 buf.extend_from_slice(&v.to_le_bytes());
             }
             buf
@@ -97,11 +93,7 @@ impl MLTensor {
         } else {
             let mut buf = Vec::with_capacity(array.len() * 8);
             for i in 0..array.len() {
-                let v = if array.is_null(i) {
-                    0.0f64
-                } else {
-                    array.value(i)
-                };
+                let v = if array.is_null(i) { 0.0f64 } else { array.value(i) };
                 buf.extend_from_slice(&v.to_le_bytes());
             }
             buf
@@ -121,11 +113,7 @@ impl MLTensor {
         } else {
             let mut buf = Vec::with_capacity(array.len() * 4);
             for i in 0..array.len() {
-                let v = if array.is_null(i) {
-                    0i32
-                } else {
-                    array.value(i)
-                };
+                let v = if array.is_null(i) { 0i32 } else { array.value(i) };
                 buf.extend_from_slice(&v.to_le_bytes());
             }
             buf
@@ -145,11 +133,7 @@ impl MLTensor {
         } else {
             let mut buf = Vec::with_capacity(array.len() * 8);
             for i in 0..array.len() {
-                let v = if array.is_null(i) {
-                    0i64
-                } else {
-                    array.value(i)
-                };
+                let v = if array.is_null(i) { 0i64 } else { array.value(i) };
                 buf.extend_from_slice(&v.to_le_bytes());
             }
             buf
@@ -201,16 +185,12 @@ mod tests {
 
     #[test]
     fn test_from_float32_no_nulls_single_copy() {
-        let values = vec![1.0f32, 2.5, 3.2, -1.0];
+        let values = vec![1.0f32, 2.5, 3.14, -1.0];
         let array = Float32Array::from(values.clone());
         let tensor = MLTensor::from_arrow_array(&array).unwrap();
 
         assert_eq!(tensor.shape, vec![4]);
-        assert_eq!(
-            tensor.data.len(),
-            4 * 4,
-            "Should be 4 floats * 4 bytes each"
-        );
+        assert_eq!(tensor.data.len(), 4 * 4, "Should be 4 floats * 4 bytes each");
 
         // Verificar contenido byte a byte
         for (i, &v) in values.iter().enumerate() {

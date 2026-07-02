@@ -33,18 +33,9 @@ async fn test_roundtrip_single_class() {
     let exported = graph.export_turtle().await.unwrap();
 
     // El output debe contener el bloque de prefijos y la clase.
-    assert!(
-        exported.contains("@prefix owl:"),
-        "debe incluir prefijo owl"
-    );
-    assert!(
-        exported.contains("@prefix rdf:"),
-        "debe incluir prefijo rdf"
-    );
-    assert!(
-        exported.contains(":Person rdf:type owl:Class ."),
-        "debe exportar la clase Person"
-    );
+    assert!(exported.contains("@prefix owl:"), "debe incluir prefijo owl");
+    assert!(exported.contains("@prefix rdf:"), "debe incluir prefijo rdf");
+    assert!(exported.contains(":Person rdf:type owl:Class ."), "debe exportar la clase Person");
 
     // Reimport en grafo limpio → debe dar 1 clase.
     let (graph2, _dir2) = open_temp_graph().await;
@@ -115,14 +106,8 @@ async fn test_roundtrip_individuals_with_properties() {
     let exported = graph.export_turtle().await.unwrap();
 
     // El export debe contener el tipo xsd para el entero.
-    assert!(
-        exported.contains("xsd:integer"),
-        "age debe exportarse como xsd:integer"
-    );
-    assert!(
-        exported.contains(":Alice"),
-        "individuo Alice debe estar en el export"
-    );
+    assert!(exported.contains("xsd:integer"), "age debe exportarse como xsd:integer");
+    assert!(exported.contains(":Alice"), "individuo Alice debe estar en el export");
 
     // Reimport en grafo limpio.
     let (graph2, _dir2) = open_temp_graph().await;
@@ -153,9 +138,10 @@ async fn test_export_excludes_ordinary_nodes() {
 
     // Nodo ordinario de NopalDB — sin IRI, sin owl:Class.
     let mut tx_node = Node::new("Transaction");
-    tx_node
-        .properties
-        .insert("amount".to_string(), PropertyValue::Int(5000));
+    tx_node.properties.insert(
+        "amount".to_string(),
+        PropertyValue::Int(5000),
+    );
     graph.add_node(tx_node).await.unwrap();
 
     // Importar también una clase OWL.

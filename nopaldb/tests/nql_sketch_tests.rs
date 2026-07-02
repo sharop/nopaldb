@@ -2,8 +2,8 @@
 //
 // Tests for SKETCH/COMMIT statement parsing
 
-use nopaldb::query::nql::parser::ast::Statement;
 use nopaldb::query::nql::parser::parse;
+use nopaldb::query::nql::parser::ast::Statement;
 
 #[test]
 fn test_sketch_delete() {
@@ -14,11 +14,7 @@ fn test_sketch_delete() {
     "#;
 
     let result = parse(query);
-    assert!(
-        result.is_ok(),
-        "Failed to parse SKETCH with DELETE: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "Failed to parse SKETCH with DELETE: {:?}", result.err());
 
     match result.unwrap() {
         Statement::Sketch(sketch) => {
@@ -39,11 +35,7 @@ fn test_sketch_update() {
     "#;
 
     let result = parse(query);
-    assert!(
-        result.is_ok(),
-        "Failed to parse SKETCH with UPDATE: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "Failed to parse SKETCH with UPDATE: {:?}", result.err());
 
     match result.unwrap() {
         Statement::Sketch(sketch) => {
@@ -67,11 +59,7 @@ fn test_sketch_query() {
     "#;
 
     let result = parse(query);
-    assert!(
-        result.is_ok(),
-        "Failed to parse SKETCH with Query: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "Failed to parse SKETCH with Query: {:?}", result.err());
 
     match result.unwrap() {
         Statement::Sketch(sketch) => {
@@ -107,11 +95,7 @@ fn test_direct_query_still_works() {
     "#;
 
     let result = parse(query);
-    assert!(
-        result.is_ok(),
-        "Direct queries should still work: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "Direct queries should still work: {:?}", result.err());
 
     match result.unwrap() {
         Statement::Query(_) => {

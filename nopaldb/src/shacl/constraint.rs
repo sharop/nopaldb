@@ -1,9 +1,9 @@
 // src/shacl/constraint.rs
 //! Evaluacion de constraints SHACL Core sobre valores y nodos.
 
-use super::report::{ConstraintViolation, Severity};
-use super::shape::ConstraintType;
 use crate::types::{Node, NodeId, PropertyValue};
+use super::shape::ConstraintType;
+use super::report::{ConstraintViolation, Severity};
 
 /// Evalua una lista de constraints sobre un conjunto de valores resueltos.
 ///
@@ -75,7 +75,10 @@ fn evaluate_constraint(
 
         // --- Tipo de dato ---
         ConstraintType::Datatype(dtype) => {
-            let bad: Vec<_> = values.iter().filter(|v| !dtype.matches(v)).collect();
+            let bad: Vec<_> = values
+                .iter()
+                .filter(|v| !dtype.matches(v))
+                .collect();
             if !bad.is_empty() {
                 Some(ConstraintViolation::violation(
                     focus_node,
@@ -94,7 +97,10 @@ fn evaluate_constraint(
 
         // --- Rangos numericos ---
         ConstraintType::MinInclusive(min) => {
-            let bad: Vec<_> = values.iter().filter(|v| !numeric_ge(v, *min)).collect();
+            let bad: Vec<_> = values
+                .iter()
+                .filter(|v| !numeric_ge(v, *min))
+                .collect();
             if !bad.is_empty() {
                 Some(ConstraintViolation::violation(
                     focus_node,
@@ -108,7 +114,10 @@ fn evaluate_constraint(
         }
 
         ConstraintType::MaxInclusive(max) => {
-            let bad: Vec<_> = values.iter().filter(|v| !numeric_le(v, *max)).collect();
+            let bad: Vec<_> = values
+                .iter()
+                .filter(|v| !numeric_le(v, *max))
+                .collect();
             if !bad.is_empty() {
                 Some(ConstraintViolation::violation(
                     focus_node,
@@ -122,7 +131,10 @@ fn evaluate_constraint(
         }
 
         ConstraintType::MinExclusive(min) => {
-            let bad: Vec<_> = values.iter().filter(|v| !numeric_gt(v, *min)).collect();
+            let bad: Vec<_> = values
+                .iter()
+                .filter(|v| !numeric_gt(v, *min))
+                .collect();
             if !bad.is_empty() {
                 Some(ConstraintViolation::violation(
                     focus_node,
@@ -136,7 +148,10 @@ fn evaluate_constraint(
         }
 
         ConstraintType::MaxExclusive(max) => {
-            let bad: Vec<_> = values.iter().filter(|v| !numeric_lt(v, *max)).collect();
+            let bad: Vec<_> = values
+                .iter()
+                .filter(|v| !numeric_lt(v, *max))
+                .collect();
             if !bad.is_empty() {
                 Some(ConstraintViolation::violation(
                     focus_node,
@@ -237,7 +252,10 @@ fn evaluate_constraint(
 
         // --- Enumeracion ---
         ConstraintType::In(allowed) => {
-            let bad: Vec<_> = values.iter().filter(|v| !allowed.contains(v)).collect();
+            let bad: Vec<_> = values
+                .iter()
+                .filter(|v| !allowed.contains(v))
+                .collect();
             if !bad.is_empty() {
                 Some(ConstraintViolation::violation(
                     focus_node,
@@ -344,26 +362,18 @@ fn numeric_lt(v: &PropertyValue, limit: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shacl::DatatypeKind;
     use crate::types::PropertyValue;
+    use crate::shacl::DatatypeKind;
     use uuid::Uuid;
 
-    fn node_id() -> NodeId {
-        Uuid::new_v4()
-    }
-    fn shape_id() -> NodeId {
-        Uuid::new_v4()
-    }
+    fn node_id() -> NodeId { Uuid::new_v4() }
+    fn shape_id() -> NodeId { Uuid::new_v4() }
 
     #[test]
     fn test_min_count_pass() {
         let vs = vec![PropertyValue::Int(1)];
         let result = evaluate_constraints(
-            &[ConstraintType::MinCount(1)],
-            &vs,
-            node_id(),
-            shape_id(),
-            Some("age"),
+            &[ConstraintType::MinCount(1)], &vs, node_id(), shape_id(), Some("age")
         );
         assert!(result.is_empty());
     }
@@ -372,11 +382,7 @@ mod tests {
     fn test_min_count_fail() {
         let vs: Vec<PropertyValue> = vec![];
         let result = evaluate_constraints(
-            &[ConstraintType::MinCount(1)],
-            &vs,
-            node_id(),
-            shape_id(),
-            Some("age"),
+            &[ConstraintType::MinCount(1)], &vs, node_id(), shape_id(), Some("age")
         );
         assert_eq!(result.len(), 1);
     }
@@ -385,11 +391,7 @@ mod tests {
     fn test_max_count_fail() {
         let vs = vec![PropertyValue::Int(1), PropertyValue::Int(2)];
         let result = evaluate_constraints(
-            &[ConstraintType::MaxCount(1)],
-            &vs,
-            node_id(),
-            shape_id(),
-            Some("age"),
+            &[ConstraintType::MaxCount(1)], &vs, node_id(), shape_id(), Some("age")
         );
         assert_eq!(result.len(), 1);
     }
@@ -398,11 +400,7 @@ mod tests {
     fn test_datatype_int_pass() {
         let vs = vec![PropertyValue::Int(42)];
         let result = evaluate_constraints(
-            &[ConstraintType::Datatype(DatatypeKind::Int)],
-            &vs,
-            node_id(),
-            shape_id(),
-            Some("age"),
+            &[ConstraintType::Datatype(DatatypeKind::Int)], &vs, node_id(), shape_id(), Some("age")
         );
         assert!(result.is_empty());
     }
@@ -411,11 +409,7 @@ mod tests {
     fn test_datatype_int_fail() {
         let vs = vec![PropertyValue::String("hello".into())];
         let result = evaluate_constraints(
-            &[ConstraintType::Datatype(DatatypeKind::Int)],
-            &vs,
-            node_id(),
-            shape_id(),
-            Some("age"),
+            &[ConstraintType::Datatype(DatatypeKind::Int)], &vs, node_id(), shape_id(), Some("age")
         );
         assert_eq!(result.len(), 1);
     }
@@ -424,11 +418,7 @@ mod tests {
     fn test_min_inclusive_pass() {
         let vs = vec![PropertyValue::Int(10)];
         let result = evaluate_constraints(
-            &[ConstraintType::MinInclusive(5.0)],
-            &vs,
-            node_id(),
-            shape_id(),
-            Some("score"),
+            &[ConstraintType::MinInclusive(5.0)], &vs, node_id(), shape_id(), Some("score")
         );
         assert!(result.is_empty());
     }
@@ -437,11 +427,7 @@ mod tests {
     fn test_min_inclusive_fail() {
         let vs = vec![PropertyValue::Int(3)];
         let result = evaluate_constraints(
-            &[ConstraintType::MinInclusive(5.0)],
-            &vs,
-            node_id(),
-            shape_id(),
-            Some("score"),
+            &[ConstraintType::MinInclusive(5.0)], &vs, node_id(), shape_id(), Some("score")
         );
         assert_eq!(result.len(), 1);
     }
@@ -454,11 +440,7 @@ mod tests {
         ];
         let vs = vec![PropertyValue::String("admin".into())];
         let result = evaluate_constraints(
-            &[ConstraintType::In(allowed)],
-            &vs,
-            node_id(),
-            shape_id(),
-            Some("role"),
+            &[ConstraintType::In(allowed)], &vs, node_id(), shape_id(), Some("role")
         );
         assert!(result.is_empty());
     }
@@ -471,11 +453,7 @@ mod tests {
         ];
         let vs = vec![PropertyValue::String("superuser".into())];
         let result = evaluate_constraints(
-            &[ConstraintType::In(allowed)],
-            &vs,
-            node_id(),
-            shape_id(),
-            Some("role"),
+            &[ConstraintType::In(allowed)], &vs, node_id(), shape_id(), Some("role")
         );
         assert_eq!(result.len(), 1);
     }
@@ -485,10 +463,7 @@ mod tests {
         let vs = vec![PropertyValue::Bool(true)];
         let result = evaluate_constraints(
             &[ConstraintType::HasValue(PropertyValue::Bool(true))],
-            &vs,
-            node_id(),
-            shape_id(),
-            Some("active"),
+            &vs, node_id(), shape_id(), Some("active")
         );
         assert!(result.is_empty());
     }
@@ -498,10 +473,7 @@ mod tests {
         let vs = vec![PropertyValue::Bool(false)];
         let result = evaluate_constraints(
             &[ConstraintType::HasValue(PropertyValue::Bool(true))],
-            &vs,
-            node_id(),
-            shape_id(),
-            Some("active"),
+            &vs, node_id(), shape_id(), Some("active")
         );
         assert_eq!(result.len(), 1);
     }
@@ -511,10 +483,7 @@ mod tests {
         let vs = vec![PropertyValue::String("user@example.com".into())];
         let result = evaluate_constraints(
             &[ConstraintType::Pattern(r"^[^@]+@[^@]+\.[^@]+$".into())],
-            &vs,
-            node_id(),
-            shape_id(),
-            Some("email"),
+            &vs, node_id(), shape_id(), Some("email")
         );
         assert!(result.is_empty());
     }
@@ -524,10 +493,7 @@ mod tests {
         let vs = vec![PropertyValue::String("not-an-email".into())];
         let result = evaluate_constraints(
             &[ConstraintType::Pattern(r"^[^@]+@[^@]+\.[^@]+$".into())],
-            &vs,
-            node_id(),
-            shape_id(),
-            Some("email"),
+            &vs, node_id(), shape_id(), Some("email")
         );
         assert_eq!(result.len(), 1);
     }
@@ -537,10 +503,7 @@ mod tests {
         let vs = vec![PropertyValue::String("ab".into())];
         let result = evaluate_constraints(
             &[ConstraintType::MinLength(5)],
-            &vs,
-            node_id(),
-            shape_id(),
-            Some("name"),
+            &vs, node_id(), shape_id(), Some("name")
         );
         assert_eq!(result.len(), 1);
     }
@@ -550,10 +513,7 @@ mod tests {
         let vs = vec![PropertyValue::String("toolongstring".into())];
         let result = evaluate_constraints(
             &[ConstraintType::MaxLength(5)],
-            &vs,
-            node_id(),
-            shape_id(),
-            Some("code"),
+            &vs, node_id(), shape_id(), Some("code")
         );
         assert_eq!(result.len(), 1);
     }

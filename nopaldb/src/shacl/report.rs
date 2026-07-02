@@ -61,18 +61,14 @@ pub struct ValidationReport {
 impl ValidationReport {
     /// Construye el reporte a partir de las violaciones acumuladas.
     pub fn from_violations(violations: Vec<ConstraintViolation>) -> Self {
-        let conforms = violations.iter().all(|v| v.severity != Severity::Violation);
-        Self {
-            conforms,
-            violations,
-        }
+        let conforms = violations
+            .iter()
+            .all(|v| v.severity != Severity::Violation);
+        Self { conforms, violations }
     }
 
     /// Reporte de conformidad total (sin violaciones).
     pub fn conforms() -> Self {
-        Self {
-            conforms: true,
-            violations: vec![],
-        }
+        Self { conforms: true, violations: vec![] }
     }
 }

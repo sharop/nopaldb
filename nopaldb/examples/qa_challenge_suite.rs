@@ -80,18 +80,12 @@ async fn main() -> Result<()> {
     for svc in 0..10 {
         let service = Node::new("Service")
             .with_property("name", s(format!("svc-{:02}", svc)))
-            .with_property(
-                "tier",
-                s(if svc % 2 == 0 { "critical" } else { "standard" }),
-            )
-            .with_property(
-                "region",
-                s(match svc % 3 {
-                    0 => "us-east",
-                    1 => "us-west",
-                    _ => "eu-central",
-                }),
-            );
+            .with_property("tier", s(if svc % 2 == 0 { "critical" } else { "standard" }))
+            .with_property("region", s(match svc % 3 {
+                0 => "us-east",
+                1 => "us-west",
+                _ => "eu-central",
+            }));
         services.push(service.id);
         loader.add_node(service).await?;
     }
@@ -102,13 +96,10 @@ async fn main() -> Result<()> {
             .with_property("team", s(format!("team_{}", u % 6)))
             .with_property("score", i((40 + (u % 61)) as i64))
             .with_property("active", b(u % 11 != 0))
-            .with_property(
-                "bio",
-                s(format!(
-                    "Engineer {} builds resilient graph pipelines and incident tooling",
-                    u
-                )),
-            );
+            .with_property("bio", s(format!(
+                "Engineer {} builds resilient graph pipelines and incident tooling",
+                u
+            )));
         users.push(user.id);
         loader.add_node(user).await?;
     }
@@ -116,15 +107,12 @@ async fn main() -> Result<()> {
     for a in 0..48 {
         let alert = Node::new("Alert")
             .with_property("name", s(format!("alert-{:03}", a)))
-            .with_property(
-                "severity",
-                s(match a % 4 {
-                    0 => "critical",
-                    1 => "high",
-                    2 => "medium",
-                    _ => "low",
-                }),
-            )
+            .with_property("severity", s(match a % 4 {
+                0 => "critical",
+                1 => "high",
+                2 => "medium",
+                _ => "low",
+            }))
             .with_property("open", b(a % 5 != 0));
         alerts.push(alert.id);
         loader.add_node(alert).await?;
@@ -185,7 +173,8 @@ async fn main() -> Result<()> {
 
     {
         let mut tx = graph.begin_transaction().await?;
-        let transient = Node::new("Transient").with_property("name", s("should_rollback"));
+        let transient = Node::new("Transient")
+            .with_property("name", s("should_rollback"));
         tx.add_node(transient).await?;
         tx.rollback()?;
     }
@@ -243,16 +232,12 @@ async fn main() -> Result<()> {
 
     // 6) Query patterns, aggregations, algorithms
     let q1 = graph
-        .execute_nql(
-            "find u.team, count(u) as total from (u:User) group by u.team order by u.team asc",
-        )
+        .execute_nql("find u.team, count(u) as total from (u:User) group by u.team order by u.team asc")
         .await?;
     println!("Team aggregation rows: {}", q1.len());
 
     let q2 = graph
-        .execute_nql(
-            "find u.username, p.name from (u:User) -> [:MEMBER_OF] -> (p:Project) limit 12",
-        )
+        .execute_nql("find u.username, p.name from (u:User) -> [:MEMBER_OF] -> (p:Project) limit 12")
         .await?;
     println!("Pattern match rows: {}", q2.len());
 
@@ -274,11 +259,7 @@ async fn main() -> Result<()> {
     // 8) Basic graph API checks
     let out_degree = graph.degree(users[0], Direction::Outgoing).await?;
     let neighbors = graph.neighbors(users[0], Direction::Outgoing).await?;
-    println!(
-        "User[0] outgoing degree: {} (neighbors: {})",
-        out_degree,
-        neighbors.len()
-    );
+    println!("User[0] outgoing degree: {} (neighbors: {})", out_degree, neighbors.len());
 
     let rolled_back = graph
         .execute_nql(r#"find t.name from (t:Transient) where t.name = "should_rollback""#)
@@ -294,10 +275,7 @@ async fn main() -> Result<()> {
     graph.close().await?;
 
     println!("\\n✅ QA challenge DB ready at {}", db_path.display());
-    println!(
-        "Run next: python nopaldb/examples/qa_challenge_python_checks.py --db {}",
-        db_path.display()
-    );
+    println!("Run next: python nopaldb/examples/qa_challenge_python_checks.py --db {}", db_path.display());
     println!("Open in ndbstudio: ndbstudio {}", db_path.display());
 
     Ok(())

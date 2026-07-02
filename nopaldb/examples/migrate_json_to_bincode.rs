@@ -7,7 +7,7 @@
 //   2. Ejecutar: cargo run --example migrate_json_to_bincode
 //   3. Renombrar nueva: mv new_data.db data.db
 
-use nopaldb::{Edge, Node};
+use nopaldb::{Node, Edge};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -66,24 +66,26 @@ async fn main() -> anyhow::Result<()> {
     println!("\n🔄 Migrando nodos...");
     for item in old_db.scan_prefix(b"node:") {
         match item {
-            Ok((_key, old_value)) => match serde_json::from_slice::<Node>(&old_value) {
-                Ok(node) => {
-                    if let Err(e) = loader.add_node(node).await {
-                        eprintln!("⚠️  Error agregando nodo: {}", e);
-                        error_count += 1;
-                    } else {
-                        node_count += 1;
+            Ok((_key, old_value)) => {
+                match serde_json::from_slice::<Node>(&old_value) {
+                    Ok(node) => {
+                        if let Err(e) = loader.add_node(node).await {
+                            eprintln!("⚠️  Error agregando nodo: {}", e);
+                            error_count += 1;
+                        } else {
+                            node_count += 1;
 
-                        if node_count % 10000 == 0 {
-                            println!("   Migrados {} nodos...", node_count);
+                            if node_count % 10000 == 0 {
+                                println!("   Migrados {} nodos...", node_count);
+                            }
                         }
                     }
+                    Err(e) => {
+                        eprintln!("⚠️  Error deserializando nodo: {}", e);
+                        error_count += 1;
+                    }
                 }
-                Err(e) => {
-                    eprintln!("⚠️  Error deserializando nodo: {}", e);
-                    error_count += 1;
-                }
-            },
+            }
             Err(e) => {
                 eprintln!("⚠️  Error leyendo key: {}", e);
                 error_count += 1;
@@ -97,24 +99,26 @@ async fn main() -> anyhow::Result<()> {
     println!("\n🔄 Migrando edges...");
     for item in old_db.scan_prefix(b"edge:") {
         match item {
-            Ok((_key, old_value)) => match serde_json::from_slice::<Edge>(&old_value) {
-                Ok(edge) => {
-                    if let Err(e) = loader.add_edge(edge).await {
-                        eprintln!("⚠️  Error agregando edge: {}", e);
-                        error_count += 1;
-                    } else {
-                        edge_count += 1;
+            Ok((_key, old_value)) => {
+                match serde_json::from_slice::<Edge>(&old_value) {
+                    Ok(edge) => {
+                        if let Err(e) = loader.add_edge(edge).await {
+                            eprintln!("⚠️  Error agregando edge: {}", e);
+                            error_count += 1;
+                        } else {
+                            edge_count += 1;
 
-                        if edge_count % 10000 == 0 {
-                            println!("   Migrados {} edges...", edge_count);
+                            if edge_count % 10000 == 0 {
+                                println!("   Migrados {} edges...", edge_count);
+                            }
                         }
                     }
+                    Err(e) => {
+                        eprintln!("⚠️  Error deserializando edge: {}", e);
+                        error_count += 1;
+                    }
                 }
-                Err(e) => {
-                    eprintln!("⚠️  Error deserializando edge: {}", e);
-                    error_count += 1;
-                }
-            },
+            }
             Err(e) => {
                 eprintln!("⚠️  Error leyendo key: {}", e);
                 error_count += 1;
@@ -190,22 +194,13 @@ async fn main() -> anyhow::Result<()> {
     println!("   Nodos/seg:          {:>10.0}", stats.nodes_per_second);
     println!();
     println!("💾 Tamaño de archivo:");
-    println!(
-        "   DB antigua (JSON):  {:>10.2} MB",
-        old_size as f64 / 1_048_576.0
-    );
-    println!(
-        "   DB nueva (Bincode): {:>10.2} MB",
-        new_size as f64 / 1_048_576.0
-    );
+    println!("   DB antigua (JSON):  {:>10.2} MB", old_size as f64 / 1_048_576.0);
+    println!("   DB nueva (Bincode): {:>10.2} MB", new_size as f64 / 1_048_576.0);
     println!("   Reducción:          {:>10.1}%", size_reduction);
     println!();
 
     if error_count > 0 {
-        println!(
-            "⚠️  Atención: Se encontraron {} errores durante la migración",
-            error_count
-        );
+        println!("⚠️  Atención: Se encontraron {} errores durante la migración", error_count);
         println!("   Revisa los mensajes arriba para detalles.");
         println!();
     }
@@ -221,10 +216,7 @@ async fn main() -> anyhow::Result<()> {
     println!("      mv {} data.db", new_db_path);
     println!();
     println!("   4. Hacer backup de DB antigua:");
-    println!(
-        "      mv {} backup/data.db.json.$(date +%Y%m%d)",
-        old_db_path
-    );
+    println!("      mv {} backup/data.db.json.$(date +%Y%m%d)", old_db_path);
     println!();
 
     Ok(())

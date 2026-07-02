@@ -4,6 +4,7 @@ Test NQL Edge Patterns - With Improvements
 Tests both improvements:
 1. Auto-generated variables for patterns without variables
 2. Edge properties in add_edge()
+SHAROP:PROBADO 26ENE26:Funcionando correctamente
 
 """
 

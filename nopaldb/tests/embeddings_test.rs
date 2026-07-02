@@ -1,34 +1,29 @@
 #[cfg(feature = "embeddings")]
 mod tests {
-    use nopaldb::embeddings::{EdgeEmbedding, Embedding};
-    use nopaldb::types::{Edge, Node, PropertyValue};
+    use nopaldb::types::{Node, Edge, PropertyValue};
     use nopaldb::{Graph, NopalError};
+    use nopaldb::embeddings::{Embedding, EdgeEmbedding};
 
     #[tokio::test]
     async fn test_node_embedding_crud() -> nopaldb::Result<()> {
         let graph = Graph::in_memory().await?;
 
-        let node =
-            Node::new("Document").with_property("id", PropertyValue::String("doc1".to_string()));
+        let node = Node::new("Document").with_property("id", PropertyValue::String("doc1".to_string()));
         graph.add_node(node.clone()).await?;
 
         // Add embeddings for two different models on the same node
         let vector1 = vec![0.1, 0.2, 0.3];
         let vector2 = vec![0.9, 0.8, 0.7];
-
-        graph
-            .add_node_embedding(node.id, vector1.clone(), "minilm")
-            .await?;
-        graph
-            .add_node_embedding(node.id, vector2.clone(), "bert")
-            .await?;
+        
+        graph.add_node_embedding(node.id, vector1.clone(), "minilm").await?;
+        graph.add_node_embedding(node.id, vector2.clone(), "bert").await?;
 
         // Retrieve and verify
         let emb1 = graph.get_node_embedding(node.id, "minilm").await?;
         assert_eq!(emb1.node_id, node.id);
         assert_eq!(emb1.model, "minilm");
         assert_eq!(emb1.vector, vector1);
-
+        
         let emb2 = graph.get_node_embedding(node.id, "bert").await?;
         assert_eq!(emb2.model, "bert");
         assert_eq!(emb2.vector, vector2);
@@ -44,10 +39,8 @@ mod tests {
     async fn test_embedding_on_non_existent_node() -> nopaldb::Result<()> {
         let graph = Graph::in_memory().await?;
         let random_id = uuid::Uuid::new_v4();
-
-        let result = graph
-            .add_node_embedding(random_id, vec![1.0, 2.0], "minilm")
-            .await;
+        
+        let result = graph.add_node_embedding(random_id, vec![1.0, 2.0], "minilm").await;
         assert!(matches!(result, Err(NopalError::NodeNotFound(_))));
 
         Ok(())
@@ -83,12 +76,8 @@ mod tests {
         // Agregar embeddings de dos modelos distintos sobre la misma arista
         let v1 = vec![0.1_f32, 0.2, 0.3];
         let v2 = vec![0.9_f32, 0.8, 0.7];
-        graph
-            .add_edge_embedding(edge_id, v1.clone(), "concat-minilm")
-            .await?;
-        graph
-            .add_edge_embedding(edge_id, v2.clone(), "transe")
-            .await?;
+        graph.add_edge_embedding(edge_id, v1.clone(), "concat-minilm").await?;
+        graph.add_edge_embedding(edge_id, v2.clone(), "transe").await?;
 
         // Recuperar y verificar model 1
         let emb1 = graph.get_edge_embedding(edge_id, "concat-minilm").await?;
@@ -112,9 +101,7 @@ mod tests {
         let graph = Graph::in_memory().await?;
         let random_id = uuid::Uuid::new_v4();
 
-        let result = graph
-            .add_edge_embedding(random_id, vec![1.0, 2.0], "minilm")
-            .await;
+        let result = graph.add_edge_embedding(random_id, vec![1.0, 2.0], "minilm").await;
         assert!(matches!(result, Err(NopalError::EdgeNotFound(_))));
 
         Ok(())
@@ -146,12 +133,8 @@ mod tests {
         let edge = Edge::new(src.id, dst.id, "REL");
         let edge_id = graph.add_edge(edge).await?;
 
-        graph
-            .add_node_embedding(node.id, vec![1.0, 0.0], "test")
-            .await?;
-        graph
-            .add_edge_embedding(edge_id, vec![0.0, 1.0], "test")
-            .await?;
+        graph.add_node_embedding(node.id, vec![1.0, 0.0], "test").await?;
+        graph.add_edge_embedding(edge_id, vec![0.0, 1.0], "test").await?;
 
         let n_emb = graph.get_node_embedding(node.id, "test").await?;
         let e_emb = graph.get_edge_embedding(edge_id, "test").await?;
@@ -168,9 +151,9 @@ mod tests {
 
 #[cfg(feature = "embeddings-index")]
 mod index_tests {
+    use nopaldb::types::{Node, PropertyValue};
     use nopaldb::Graph;
     use nopaldb::embeddings::EmbeddingIndex;
-    use nopaldb::types::{Node, PropertyValue};
 
     #[tokio::test]
     async fn test_build_embedding_index_basic_knn() -> nopaldb::Result<()> {
@@ -178,20 +161,18 @@ mod index_tests {
 
         // Insertar 4 nodos con embeddings en el espacio R²
         let nodes_and_vecs: Vec<(&str, Vec<f32>)> = vec![
-            ("alpha", vec![1.0, 0.0]),
-            ("beta", vec![0.0, 1.0]),
-            ("gamma", vec![1.0, 1.0]),
-            ("delta", vec![0.5, 0.5]),
+            ("alpha",  vec![1.0, 0.0]),
+            ("beta",   vec![0.0, 1.0]),
+            ("gamma",  vec![1.0, 1.0]),
+            ("delta",  vec![0.5, 0.5]),
         ];
 
         let mut node_ids = vec![];
         for (name, vec) in &nodes_and_vecs {
-            let node =
-                Node::new("Item").with_property("name", PropertyValue::String(name.to_string()));
+            let node = Node::new("Item")
+                .with_property("name", PropertyValue::String(name.to_string()));
             graph.add_node(node.clone()).await?;
-            graph
-                .add_node_embedding(node.id, vec.clone(), "minilm")
-                .await?;
+            graph.add_node_embedding(node.id, vec.clone(), "minilm").await?;
             node_ids.push(node.id);
         }
 
@@ -203,10 +184,7 @@ mod index_tests {
         // Query cerca de "alpha" [1.0, 0.0]
         let results = index.search_knn(&[0.95, 0.05], 1)?;
         assert_eq!(results.len(), 1);
-        assert_eq!(
-            results[0].0, node_ids[0],
-            "nearest to [0.95,0.05] should be alpha"
-        );
+        assert_eq!(results[0].0, node_ids[0], "nearest to [0.95,0.05] should be alpha");
 
         Ok(())
     }
@@ -215,10 +193,7 @@ mod index_tests {
     async fn test_build_embedding_index_no_embeddings_returns_error() -> nopaldb::Result<()> {
         let graph = Graph::in_memory().await?;
         let result = graph.build_embedding_index("nonexistent-model").await;
-        assert!(
-            result.is_err(),
-            "should fail when no embeddings exist for model"
-        );
+        assert!(result.is_err(), "should fail when no embeddings exist for model");
         Ok(())
     }
 
@@ -231,11 +206,10 @@ mod index_tests {
         let mut ids = vec![];
         for i in 0..10_u32 {
             let angle = (i as f32) * 0.1745; // ~10 grados en radianes
-            let node = Node::new("Point").with_property("i", PropertyValue::Int(i as i64));
+            let node = Node::new("Point")
+                .with_property("i", PropertyValue::Int(i as i64));
             graph.add_node(node.clone()).await?;
-            graph
-                .add_node_embedding(node.id, vec![angle.cos(), angle.sin()], "line")
-                .await?;
+            graph.add_node_embedding(node.id, vec![angle.cos(), angle.sin()], "line").await?;
             ids.push(node.id);
         }
 

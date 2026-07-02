@@ -6,7 +6,7 @@ use nopaldb::{Graph, Node, PropertyValue};
 async fn test_crash_recovery() {
     // Setup: directorio temporal
     let temp_dir = tempfile::tempdir().unwrap();
-    let db_path = temp_dir.path(); // ← Sin .to_path_buf()
+    let db_path = temp_dir.path();  // ← Sin .to_path_buf()
 
     // ═══════════════════════════════════════════════════════
     // FASE 1: Operación normal + CRASH simulado
@@ -30,7 +30,8 @@ async fn test_crash_recovery() {
         // Transaction 2: NO commiteada (simula crash)
         let mut tx2 = graph.begin_transaction().await.unwrap();
 
-        let node2 = Node::new("Person").with_property("name", PropertyValue::String("Bob".into()));
+        let node2 = Node::new("Person")
+            .with_property("name", PropertyValue::String("Bob".into()));
 
         tx2.add_node(node2).await.unwrap();
         // NO COMMIT! Simula crash
@@ -58,10 +59,10 @@ async fn test_crash_recovery() {
     println!("✅ Alice recovered successfully");
 
     // Verificar: Bob NO debe estar (no commiteada)
-    let all_nodes = graph
-        .find_nodes_by_property("name", &PropertyValue::String("Bob".into()))
-        .await
-        .unwrap();
+    let all_nodes = graph.find_nodes_by_property(
+        "name",
+        &PropertyValue::String("Bob".into())
+    ).await.unwrap();
 
     assert!(all_nodes.is_empty(), "Bob should not exist (not committed)");
     println!("✅ Bob not recovered (correct - was not committed)");

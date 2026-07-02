@@ -5,8 +5,7 @@
 
 /// Konami Code easter egg
 pub fn konami_code() {
-    println!(
-        r#"
+    println!(r#"
 ╔════════════════════════════════════════════════════════════╗
 ║          🌵 ¡MODO POWER DE NOPALDB DESBLOQUEADO! 🌵        ║
 ╠════════════════════════════════════════════════════════════╣
@@ -30,13 +29,12 @@ pub fn konami_code() {
 ║  Creada con Rust 🦀, Amor ❤️  y Café ☕                   ║
 ║  en las hermosas tierras de 🇲🇽                           ║
 ║                                                            ║
-║  "¡Dale que es mole de olla!"                            ║
+║  "¡Dale que es mole de olla!" - Sharop                   ║
 ║                                                            ║
 ╚════════════════════════════════════════════════════════════╝
-    "#,
-        env!("CARGO_PKG_VERSION")
-    );
+    "#, env!("CARGO_PKG_VERSION"));
 }
+
 
 /// Random motivational message
 pub fn motivational_message() -> &'static str {
@@ -53,17 +51,18 @@ pub fn motivational_message() -> &'static str {
         "🌮 ¡Dale que es mole de olla!",
         "🏆 ¡Desarrollador campeón detectado!",
         "🦀 Rust + Grafos = ❤️",
-        "📊 ¡Tu estructura de datos está más organizada que nunca!",
+        "📊 ¡Tu estructura de datos está más organizada que Marie Kondo!",
         "🎯 ¡Tiro al blanco! Tus queries son precisos!",
         "🌟 ¡Desarrollador estrella en formación!",
         "💚 NopalDB sabe que eres especial!",
-        "🧠 Datos conectados = grafos en acción!",
+        "🧠 Mentes en movimiento = Grafos en acción!",
         "🎨 Tu código es una obra de arte!",
         "⚡ Velocidad de rayo en cada transacción!",
     ];
 
     messages.choose(&mut rng).unwrap_or(&messages[0])
 }
+
 
 /// Fun facts about NopalDB
 pub fn fun_facts() {
@@ -79,11 +78,11 @@ pub fn fun_facts() {
         "🔒 La detección de deadlocks mantiene tus transacciones fluyendo!",
         "📝 WAL asegura que nunca pierdas datos, ¡ni en crashes!",
         "🎮 Perfecta para desarrollo de videojuegos (quests RPG, skill trees, etc)!",
-        "🚀 Diseñada para cargas analíticas de alto rendimiento!",
+        "🚀 Benchmarked a más de 140K operaciones por segundo!",
         "🎨 Calidad de código: Production-ready desde el día uno!",
         "☕ Powered by sesiones nocturnas de código y café!",
-        "📚 Inspirada en ideas de bases de datos de grafos, MVCC y sistemas ACID!",
-        "🧠 Creada por la comunidad NopalDB!",
+        "📚 Inspirada en Datomic, Neo4j y PostgreSQL!",
+        "🧠 Creada por Sharop de Lugus - Mentes en Movimiento!",
         "🎯 Zero deadlocks desde que implementamos detección automática!",
         "💾 Cada commit es durable gracias a WAL + fsync!",
         "🔄 MVCC = Multi-Version Concurrency Control (magia de inmutabilidad)!",
@@ -97,13 +96,12 @@ pub fn fun_facts() {
 
 /// Credits easter egg (bilingüe)
 pub fn show_credits() {
-    println!(
-        r#"
+    println!(r#"
 🌵 ═══════════════════════════════════════════════════════ 🌵
 
                     CRÉDITOS DE NOPALDB
 
-    Creado por: NopalDB Contributors
+    Creado por: Sharop & Claude (AI Pair Programming)
 
     Tecnologías:
       • Rust 🦀 (Porque somos valientes)
@@ -113,7 +111,7 @@ pub fn show_credits() {
 
     Inspirado en:
       • Datomic (Sueños de viaje en el tiempo)
-      • Bases de datos de grafos (modelado relacional flexible)
+      • Neo4j (Excelencia en grafos)
       • PostgreSQL (Confiabilidad ACID)
       • Tu imaginación (Posibilidades infinitas)
 
@@ -123,21 +121,29 @@ pub fn show_credits() {
       • La comunidad de Rust 🦀
       • ¡A ti, por usar NopalDB! 💚
 
+    Negocio: Lugus - Mentes en Movimiento 🧠
+    Instagram: @lugus.mx
+    Creador: Sharop (polímata y apasionado por los grafos)
+
+    Intereses del creador:
+      • Grafos, ML/DL/RL, NLP 🤖
+      • Videojuegos y diseño de juguetes 🎮
+      • Caligrafía y plumas fuente ✍️
+      • Bajo eléctrico 🎸
+      • Investment Banking & Private Equity 📊
+
     Versión: {}
-    Licencia: AGPL-3.0
+    Licencia: MIT (¡Úsala, ámala, compártela!)
 
     "El nopal sirve para todo, incluso para bases de datos" 🌵
 
 🌵 ═══════════════════════════════════════════════════════ 🌵
-    "#,
-        env!("CARGO_PKG_VERSION")
-    );
+    "#, env!("CARGO_PKG_VERSION"));
 }
 
 /// ASCII Art welcome (español)
 pub fn welcome_art() {
-    println!(
-        r#"
+    println!(r#"
 
     ¡Bienvenido a NopalDB! 🌵
 
@@ -161,8 +167,7 @@ pub fn welcome_art() {
 
     ¡Escribe graph.konami() para una sorpresa! 🎮
 
-    "#
-    );
+    "#);
 }
 
 /// Secret achievement message (español)
@@ -172,6 +177,8 @@ pub fn achievement_unlocked(name: &str) {
     println!("     {}", name);
     println!("🏆 ═══════════════════════════════════════ 🏆\n");
 }
+
+
 
 #[cfg(test)]
 mod tests {

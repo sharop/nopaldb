@@ -32,7 +32,10 @@ struct HnswIndexMetadata {
 ///
 /// El archivo se crea en `{data_dir}/hnsw_{model}.meta`.
 /// El grafo HNSW no se persiste — se reconstruye desde embeddings en Sled.
-pub fn save_index_metadata(index: &super::HnswIndex, data_dir: &Path) -> Result<(), NopalError> {
+pub fn save_index_metadata(
+    index: &super::HnswIndex,
+    data_dir: &Path,
+) -> Result<(), NopalError> {
     let meta = HnswIndexMetadata {
         model: index.model().to_string(),
         dimension: index.dimension(),
@@ -46,7 +49,9 @@ pub fn save_index_metadata(index: &super::HnswIndex, data_dir: &Path) -> Result<
         NopalError::custom(format!("HnswPersistence::save: serialization error: {e}"))
     })?;
 
-    std::fs::write(&filename, bytes).map_err(NopalError::IoError)?;
+    std::fs::write(&filename, bytes).map_err(|e| {
+        NopalError::IoError(e)
+    })?;
 
     Ok(())
 }
@@ -63,7 +68,9 @@ pub fn load_index_metadata(
         return Ok(None);
     }
 
-    let bytes = std::fs::read(&filename).map_err(NopalError::IoError)?;
+    let bytes = std::fs::read(&filename).map_err(|e| {
+        NopalError::IoError(e)
+    })?;
 
     let meta: HnswIndexMetadata = bincode::deserialize(&bytes).map_err(|e| {
         NopalError::custom(format!("HnswPersistence::load: deserialization error: {e}"))
@@ -85,7 +92,9 @@ pub fn index_metadata_exists(model: &str, data_dir: &Path) -> bool {
 pub fn remove_index_metadata(model: &str, data_dir: &Path) -> Result<(), NopalError> {
     let filename = data_dir.join(format!("hnsw_{}.meta", model));
     if filename.exists() {
-        std::fs::remove_file(&filename).map_err(NopalError::IoError)?;
+        std::fs::remove_file(&filename).map_err(|e| {
+            NopalError::IoError(e)
+        })?;
     }
     Ok(())
 }

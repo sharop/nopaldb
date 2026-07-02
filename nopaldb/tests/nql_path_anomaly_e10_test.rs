@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(result.len(), 1);
         let score = get_float(&result, 0, "anomaly");
         assert!(
-            (0.0..= 1.0 + 1e-5).contains(&score),
+            score >= 0.0 && score <= 1.0 + 1e-5,
             "score out of [0,1]: {}",
             score
         );
@@ -222,19 +222,11 @@ mod tests {
 
         // Root=[1,0], Normal=[1,0], Anomaly=[0,1]
         graph.add_node_embedding(root, vec![1.0, 0.0], "nm").await?;
-        graph
-            .add_node_embedding(normal, vec![1.0, 0.0], "nm")
-            .await?;
-        graph
-            .add_node_embedding(anomaly, vec![0.0, 1.0], "nm")
-            .await?;
+        graph.add_node_embedding(normal, vec![1.0, 0.0], "nm").await?;
+        graph.add_node_embedding(anomaly, vec![0.0, 1.0], "nm").await?;
         // edge normal = [1,0], edge anomaly = [0,1]
-        graph
-            .add_edge_embedding(rel_n, vec![1.0, 0.0], "em")
-            .await?;
-        graph
-            .add_edge_embedding(rel_a, vec![0.0, 1.0], "em")
-            .await?;
+        graph.add_edge_embedding(rel_n, vec![1.0, 0.0], "em").await?;
+        graph.add_edge_embedding(rel_a, vec![0.0, 1.0], "em").await?;
 
         // Referencia = path Root→Normal: node_mean=[1,0], edge_mean=[1,0] → [1,0,1,0]
         // path Root→Normal: centroide=[1,0,1,0], similarity=1 → anomaly≈0
@@ -295,12 +287,8 @@ mod tests {
         graph.add_node_embedding(root, vec![1.0, 0.0], "nm").await?;
         graph.add_node_embedding(b, vec![1.0, 0.0], "nm").await?;
         graph.add_node_embedding(c, vec![0.0, 1.0], "nm").await?;
-        graph
-            .add_edge_embedding(rel_rb, vec![1.0, 0.0], "em")
-            .await?;
-        graph
-            .add_edge_embedding(rel_rc, vec![0.0, 1.0], "em")
-            .await?;
+        graph.add_edge_embedding(rel_rb, vec![1.0, 0.0], "em").await?;
+        graph.add_edge_embedding(rel_rc, vec![0.0, 1.0], "em").await?;
 
         // Ref = path Root→B
         graph

@@ -99,9 +99,9 @@ pub struct Query {
     pub filter: Option<WhereClause>,
     pub init: Vec<String>,
     pub gather: Vec<String>,
-    pub return_expr: Option<String>, // F4-C: return "..." evaluated once per path
+    pub return_expr: Option<String>,    // F4-C: return "..." evaluated once per path
     pub group_by: Option<GroupByClause>,
-    pub having: Option<HavingClause>, // NEW in v0.2
+    pub having: Option<HavingClause>,        // NEW in v0.2
     pub order_by: Option<OrderByClause>,
     pub limit: Option<LimitClause>,
     pub time_travel: Option<TimeTravelClause>,
@@ -391,7 +391,7 @@ pub struct OrderByItem {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum SortOrder {
     #[default]
-    Asc, // Ascending (default)
+    Asc,  // Ascending (default)
     Desc, // Descending
 }
 
@@ -479,13 +479,7 @@ pub enum UnaryOperator {
 impl Statement {
     /// Returns true if statement is read-only
     pub fn is_read_only(&self) -> bool {
-        matches!(
-            self,
-            Statement::Query(_)
-                | Statement::Sketch(_)
-                | Statement::Explain(_)
-                | Statement::Profile(_)
-        )
+        matches!(self, Statement::Query(_) | Statement::Sketch(_) | Statement::Explain(_) | Statement::Profile(_))
     }
 
     /// Returns true if statement modifies the graph
@@ -611,16 +605,12 @@ impl Pattern {
 
     /// Returns true if pattern has any nodes
     pub fn has_nodes(&self) -> bool {
-        self.elements
-            .iter()
-            .any(|e| matches!(e, PatternElement::Node(_)))
+        self.elements.iter().any(|e| matches!(e, PatternElement::Node(_)))
     }
 
     /// Returns true if pattern has any relationships
     pub fn has_relationships(&self) -> bool {
-        self.elements
-            .iter()
-            .any(|e| matches!(e, PatternElement::Relationship(_)))
+        self.elements.iter().any(|e| matches!(e, PatternElement::Relationship(_)))
     }
 }
 
@@ -723,6 +713,8 @@ impl Expression {
         )
     }
 }
+
+
 
 // ═══════════════════════════════════════════════════════════════
 // DISPLAY IMPLEMENTATIONS (for debugging and error messages)

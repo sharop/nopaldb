@@ -1,4 +1,4 @@
-use tokio::time::{Duration, sleep};
+use tokio::time::{sleep, Duration};
 
 #[tokio::main]
 async fn main() {
@@ -10,7 +10,7 @@ async fn main() {
         println!("Tarea 1 terminada 2s");
         "resultado de la tarea 1"
     };
-
+    
     let task2 = async {
         // Al igual que task1 await espera a que termine la tarea en n segundos.
         sleep(Duration::from_secs(1)).await;
@@ -30,4 +30,5 @@ async fn main() {
     let (r1, r2, r3) = tokio::join!(task1, task2, task3);
     println!("Resultados: {}, {}, {}", r1, r2, r3);
     println!("Fin (total ~3s, no 6s)");
+    
 }

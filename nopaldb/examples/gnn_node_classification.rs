@@ -1,6 +1,6 @@
 // examples/gnn_node_classification.rs
 
-use nopaldb::{Direction, Edge, Graph, Node, PropertyValue};
+use nopaldb::{Graph, Node, Edge, PropertyValue, Direction};
 use std::collections::HashMap;
 
 #[tokio::main]
@@ -45,10 +45,8 @@ async fn main() -> nopaldb::Result<()> {
         }
         total += 1;
 
-        println!(
-            "  Member {}: {} → {} (embedding: {:.3}) {}",
-            i, actual, predicted, embedding, correct_mark
-        );
+        println!("  Member {}: {} → {} (embedding: {:.3}) {}",
+                 i, actual, predicted, embedding, correct_mark);
     }
 
     let accuracy = (correct as f64 / total as f64) * 100.0;
@@ -67,72 +65,35 @@ async fn create_karate_club(graph: &Graph) -> nopaldb::Result<Vec<uuid::Uuid>> {
 
     for i in 0..10 {
         let community = if i < 5 { 0 } else { 1 };
-        let node = graph
-            .add_node(
-                Node::new("Member")
-                    .with_property("id", PropertyValue::Int(i))
-                    .with_property("community", PropertyValue::Int(community)),
-            )
-            .await?;
+        let node = graph.add_node(Node::new("Member")
+            .with_property("id", PropertyValue::Int(i))
+            .with_property("community", PropertyValue::Int(community))
+        ).await?;
         members.push(node);
     }
 
     // Community A (dense internal connections)
-    graph
-        .add_edge(Edge::new(members[0], members[1], "FRIEND"))
-        .await?;
-    graph
-        .add_edge(Edge::new(members[0], members[2], "FRIEND"))
-        .await?;
-    graph
-        .add_edge(Edge::new(members[0], members[3], "FRIEND"))
-        .await?;
-    graph
-        .add_edge(Edge::new(members[1], members[2], "FRIEND"))
-        .await?;
-    graph
-        .add_edge(Edge::new(members[1], members[3], "FRIEND"))
-        .await?;
-    graph
-        .add_edge(Edge::new(members[2], members[3], "FRIEND"))
-        .await?;
-    graph
-        .add_edge(Edge::new(members[2], members[4], "FRIEND"))
-        .await?;
-    graph
-        .add_edge(Edge::new(members[3], members[4], "FRIEND"))
-        .await?;
+    graph.add_edge(Edge::new(members[0], members[1], "FRIEND")).await?;
+    graph.add_edge(Edge::new(members[0], members[2], "FRIEND")).await?;
+    graph.add_edge(Edge::new(members[0], members[3], "FRIEND")).await?;
+    graph.add_edge(Edge::new(members[1], members[2], "FRIEND")).await?;
+    graph.add_edge(Edge::new(members[1], members[3], "FRIEND")).await?;
+    graph.add_edge(Edge::new(members[2], members[3], "FRIEND")).await?;
+    graph.add_edge(Edge::new(members[2], members[4], "FRIEND")).await?;
+    graph.add_edge(Edge::new(members[3], members[4], "FRIEND")).await?;
 
     // Community B (dense internal connections)
-    graph
-        .add_edge(Edge::new(members[5], members[6], "FRIEND"))
-        .await?;
-    graph
-        .add_edge(Edge::new(members[5], members[7], "FRIEND"))
-        .await?;
-    graph
-        .add_edge(Edge::new(members[5], members[8], "FRIEND"))
-        .await?;
-    graph
-        .add_edge(Edge::new(members[6], members[7], "FRIEND"))
-        .await?;
-    graph
-        .add_edge(Edge::new(members[6], members[8], "FRIEND"))
-        .await?;
-    graph
-        .add_edge(Edge::new(members[7], members[8], "FRIEND"))
-        .await?;
-    graph
-        .add_edge(Edge::new(members[7], members[9], "FRIEND"))
-        .await?;
-    graph
-        .add_edge(Edge::new(members[8], members[9], "FRIEND"))
-        .await?;
+    graph.add_edge(Edge::new(members[5], members[6], "FRIEND")).await?;
+    graph.add_edge(Edge::new(members[5], members[7], "FRIEND")).await?;
+    graph.add_edge(Edge::new(members[5], members[8], "FRIEND")).await?;
+    graph.add_edge(Edge::new(members[6], members[7], "FRIEND")).await?;
+    graph.add_edge(Edge::new(members[6], members[8], "FRIEND")).await?;
+    graph.add_edge(Edge::new(members[7], members[8], "FRIEND")).await?;
+    graph.add_edge(Edge::new(members[7], members[9], "FRIEND")).await?;
+    graph.add_edge(Edge::new(members[8], members[9], "FRIEND")).await?;
 
     // Bridge edge
-    graph
-        .add_edge(Edge::new(members[4], members[5], "FRIEND"))
-        .await?;
+    graph.add_edge(Edge::new(members[4], members[5], "FRIEND")).await?;
 
     Ok(members)
 }

@@ -37,13 +37,13 @@
 //! # }
 //! ```
 
+pub mod shape;
 pub mod constraint;
 pub mod report;
-pub mod shape;
 
+pub use shape::{Shape, Target, PropertyShape, PathSpec, ConstraintType, DatatypeKind};
 pub use constraint::{evaluate_constraints, evaluate_node_kind_constraint};
-pub use report::{ConstraintViolation, Severity, ValidationReport};
-pub use shape::{ConstraintType, DatatypeKind, PathSpec, PropertyShape, Shape, Target};
+pub use report::{ValidationReport, ConstraintViolation, Severity};
 
 use crate::error::Result;
 use crate::graph::Graph;
@@ -102,12 +102,16 @@ impl ShaclValidator {
                 };
 
                 // sh:targetClass
-                if let Some(PropertyValue::String(label)) = node.properties.get("sh:targetClass") {
+                if let Some(PropertyValue::String(label)) =
+                    node.properties.get("sh:targetClass")
+                {
                     shape.targets.push(Target::Class(label.clone()));
                 }
 
                 // sh:nodeKind
-                if let Some(PropertyValue::String(kind_str)) = node.properties.get("sh:nodeKind") {
+                if let Some(PropertyValue::String(kind_str)) =
+                    node.properties.get("sh:nodeKind")
+                {
                     use crate::types::NodeKind;
                     let kind = match kind_str.as_str() {
                         "Individual" => Some(NodeKind::Individual),
@@ -119,9 +123,7 @@ impl ShaclValidator {
                         _ => None,
                     };
                     if let Some(k) = kind {
-                        shape
-                            .constraints
-                            .push(ConstraintType::NodeKindConstraint(k));
+                        shape.constraints.push(ConstraintType::NodeKindConstraint(k));
                     }
                 }
 
@@ -167,7 +169,11 @@ impl ShaclValidator {
     }
 
     /// Determina los focus nodes de un shape segun sus targets.
-    async fn resolve_focus_nodes(&self, graph: &Graph, shape: &Shape) -> Result<Vec<NodeId>> {
+    async fn resolve_focus_nodes(
+        &self,
+        graph: &Graph,
+        shape: &Shape,
+    ) -> Result<Vec<NodeId>> {
         let mut focus = Vec::new();
 
         if shape.targets.is_empty() {
@@ -211,7 +217,9 @@ impl ShaclValidator {
 
         // Constraints directas sobre el nodo (NodeKind, Class)
         for constraint in &shape.constraints {
-            if let Some(v) = evaluate_node_kind_constraint(&node, constraint, shape.id) {
+            if let Some(v) =
+                evaluate_node_kind_constraint(&node, constraint, shape.id)
+            {
                 violations.push(v);
             }
         }
@@ -220,8 +228,13 @@ impl ShaclValidator {
         for ps in &shape.property_shapes {
             let values = self.resolve_path_values(graph, &node, &ps.path).await?;
             let path_str = ps.path.as_str();
-            let vs =
-                evaluate_constraints(&ps.constraints, &values, node_id, shape.id, Some(path_str));
+            let vs = evaluate_constraints(
+                &ps.constraints,
+                &values,
+                node_id,
+                shape.id,
+                Some(path_str),
+            );
             violations.extend(vs);
         }
 
@@ -263,8 +276,8 @@ impl ShaclValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{Node, PropertyValue, NodeKind};
     use crate::graph::Graph;
-    use crate::types::{Node, NodeKind, PropertyValue};
 
     async fn temp_graph() -> Graph {
         Graph::in_memory().await.unwrap()
@@ -283,9 +296,12 @@ mod tests {
     async fn test_no_violations_when_conforms() {
         let graph = temp_graph().await;
         let mut tx = graph.begin_transaction().await.unwrap();
-        tx.add_node(Node::new("Person").with_property("age", PropertyValue::Int(30)))
-            .await
-            .unwrap();
+        tx.add_node(
+            Node::new("Person")
+                .with_property("age", PropertyValue::Int(30))
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
 
         let shape = Shape::new("PersonShape")

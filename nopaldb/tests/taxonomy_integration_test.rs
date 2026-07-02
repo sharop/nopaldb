@@ -5,8 +5,8 @@
 //   2. CREATE INDEX ... TYPE taxonomy via NQL
 //   3. Index survives a database restart (load_indices rebuild)
 
-use nopaldb::Graph;
 use nopaldb::types::{Edge, Node, NodeKind};
+use nopaldb::Graph;
 
 /// Helper: open a Graph, add Animal/Mammal/Dog hierarchy, create taxonomy index,
 /// then close and reopen to verify rebuild.
@@ -89,10 +89,7 @@ async fn test_taxonomy_index_create_and_persist() -> anyhow::Result<()> {
             "index type should be Taxonomy"
         );
         // Size reflects registered class nodes.
-        assert_eq!(
-            meta.size, 3,
-            "rebuilt taxonomy index should have 3 class nodes"
-        );
+        assert_eq!(meta.size, 3, "rebuilt taxonomy index should have 3 class nodes");
 
         // Confirm the node IDs are still valid.
         graph.get_node(animal_id).await?;

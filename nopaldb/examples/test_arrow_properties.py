@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Test Arrow Export with Individual Properties
+SHAROP:PROBADO 26ENE26:Funcionando correctamente
 """
 
 import nopaldb

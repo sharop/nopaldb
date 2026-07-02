@@ -9,7 +9,7 @@
 // - Trade networks
 // - Reputation system
 
-use nopaldb::{Edge, Graph, Node, PropertyValue, Result};
+use nopaldb::{Graph, Node, Edge, PropertyValue, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -27,20 +27,51 @@ async fn main() -> Result<()> {
     // ═════════════════════════════════════════════════════════
 
     // Heroes
-    let arthur =
-        create_character(&graph, "Arthur", "Knight", "Kingdom", "lawful_good", 100).await?;
+    let arthur = create_character(
+        &graph,
+        "Arthur",
+        "Knight",
+        "Kingdom",
+        "lawful_good",
+        100
+    ).await?;
 
-    let merlin =
-        create_character(&graph, "Merlin", "Wizard", "Kingdom", "neutral_good", 95).await?;
+    let merlin = create_character(
+        &graph,
+        "Merlin",
+        "Wizard",
+        "Kingdom",
+        "neutral_good",
+        95
+    ).await?;
 
-    let lancelot =
-        create_character(&graph, "Lancelot", "Knight", "Kingdom", "lawful_good", 90).await?;
+    let lancelot = create_character(
+        &graph,
+        "Lancelot",
+        "Knight",
+        "Kingdom",
+        "lawful_good",
+        90
+    ).await?;
 
     // Merchants
-    let marcus =
-        create_character(&graph, "Marcus", "Merchant", "Guild", "true_neutral", 50).await?;
+    let marcus = create_character(
+        &graph,
+        "Marcus",
+        "Merchant",
+        "Guild",
+        "true_neutral",
+        50
+    ).await?;
 
-    let elena = create_character(&graph, "Elena", "Trader", "Guild", "neutral_good", 60).await?;
+    let elena = create_character(
+        &graph,
+        "Elena",
+        "Trader",
+        "Guild",
+        "neutral_good",
+        60
+    ).await?;
 
     // Villains
     let mordred = create_character(
@@ -49,9 +80,8 @@ async fn main() -> Result<()> {
         "Dark Knight",
         "Empire",
         "lawful_evil",
-        -80,
-    )
-    .await?;
+        -80
+    ).await?;
 
     let morgana = create_character(
         &graph,
@@ -59,12 +89,18 @@ async fn main() -> Result<()> {
         "Sorceress",
         "Empire",
         "chaotic_evil",
-        -90,
-    )
-    .await?;
+        -90
+    ).await?;
 
     // Neutral
-    let robin = create_character(&graph, "Robin", "Ranger", "Forest", "chaotic_good", 70).await?;
+    let robin = create_character(
+        &graph,
+        "Robin",
+        "Ranger",
+        "Forest",
+        "chaotic_good",
+        70
+    ).await?;
 
     println!("✅ Created 8 characters\n");
 
@@ -112,15 +148,11 @@ async fn main() -> Result<()> {
     println!("🤝 ARTHUR'S ALLIES");
     println!("═══════════════════════════════════════\n");
 
-    let allies = graph
-        .execute_nql(
-            r#"
+    let allies = graph.execute_nql(r#"
         find ally.name, ally.class, ally.faction
         from (c:Character) -> [:ALLIES_WITH] -> (ally:Character)
         where c.name = "Arthur"
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     for row in allies.rows() {
         let name = row.get_string("ally.name").unwrap_or("?".into());
@@ -140,15 +172,11 @@ async fn main() -> Result<()> {
     println!("⚔️  ARTHUR'S ENEMIES");
     println!("═══════════════════════════════════════\n");
 
-    let enemies = graph
-        .execute_nql(
-            r#"
+    let enemies = graph.execute_nql(r#"
         find enemy.name, enemy.class, enemy.alignment
         from (c:Character) -> [:ENEMIES_WITH] -> (enemy:Character)
         where c.name = "Arthur"
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     for row in enemies.rows() {
         let name = row.get_string("enemy.name").unwrap_or("?".into());
@@ -168,14 +196,10 @@ async fn main() -> Result<()> {
     println!("💰 TRADE NETWORK");
     println!("═══════════════════════════════════════\n");
 
-    let trades = graph
-        .execute_nql(
-            r#"
+    let trades = graph.execute_nql(r#"
         find c1.name, c2.name
         from (c1:Character) -> [:TRADES_WITH] -> (c2:Character)
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     for row in trades.rows() {
         let c1 = row.get_string("c1.name").unwrap_or("?".into());
@@ -194,15 +218,11 @@ async fn main() -> Result<()> {
     println!("🏰 FACTION MEMBERS");
     println!("═══════════════════════════════════════\n");
 
-    let kingdom = graph
-        .execute_nql(
-            r#"
+    let kingdom = graph.execute_nql(r#"
         find c.name, c.class, c.reputation
         from (c:Character)
         where c.faction = "Kingdom"
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     println!("  Kingdom:");
     for row in kingdom.rows() {
@@ -215,15 +235,11 @@ async fn main() -> Result<()> {
 
     println!();
 
-    let empire = graph
-        .execute_nql(
-            r#"
+    let empire = graph.execute_nql(r#"
         find c.name, c.class, c.reputation
         from (c:Character)
         where c.faction = "Empire"
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     println!("  Empire:");
     for row in empire.rows() {
@@ -244,16 +260,12 @@ async fn main() -> Result<()> {
     println!("🔗 FRIENDS OF FRIENDS");
     println!("═══════════════════════════════════════\n");
 
-    let fof = graph
-        .execute_nql(
-            r#"
+    let fof = graph.execute_nql(r#"
         find friend.name, fof.name
         from (c:Character) -> [:ALLIES_WITH] -> (friend:Character)
              -> [:ALLIES_WITH] -> (fof:Character)
         where c.name = "Arthur"
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     println!("  Arthur's extended network:\n");
     for row in fof.rows() {
@@ -274,14 +286,10 @@ async fn main() -> Result<()> {
     println!("═══════════════════════════════════════\n");
 
     // Find characters with most relationships
-    let all_relationships = graph
-        .execute_nql(
-            r#"
+    let all_relationships = graph.execute_nql(r#"
         find c.name
         from (c:Character) -> [:ALLIES_WITH] -> (other:Character)
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     let mut connection_count: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
@@ -310,27 +318,19 @@ async fn main() -> Result<()> {
     println!("⚖️  MORAL ALIGNMENT");
     println!("═══════════════════════════════════════\n");
 
-    let good = graph
-        .execute_nql(
-            r#"
+    let good = graph.execute_nql(r#"
         find c.name, c.alignment
         from (c:Character)
         where c.reputation > 0
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     println!("  Good Characters (Rep > 0): {}", good.len());
 
-    let evil = graph
-        .execute_nql(
-            r#"
+    let evil = graph.execute_nql(r#"
         find c.name, c.alignment
         from (c:Character)
         where c.reputation < 0
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     println!("  Evil Characters (Rep < 0): {}", evil.len());
 
@@ -375,7 +375,9 @@ fn create_relationship(
     strength: i64,
 ) -> Edge {
     let mut edge = Edge::new(source, target, rel_type);
-    edge.properties
-        .insert("strength".to_string(), PropertyValue::Int(strength));
+    edge.properties.insert(
+        "strength".to_string(),
+        PropertyValue::Int(strength)
+    );
     edge
 }

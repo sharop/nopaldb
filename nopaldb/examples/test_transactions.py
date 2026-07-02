@@ -2,6 +2,7 @@
 """
 Test Transaction API from Python
 Updated to use new NQL syntax with edge patterns
+SHAROP:PROBADO 26ENE26:Funcionando correctamente
 
 """
 

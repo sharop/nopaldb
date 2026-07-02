@@ -70,7 +70,7 @@ def main():
     print("\n🎯 Killer feature timeline:")
     print("   Week 1-2: Arrow → Tensor (zero-copy)")
     print("   Week 3-4: DGL integration")
-    print("   Week 5-6: performance evaluation")
+    print("   Week 5-6: Benchmarks vs Neo4j")
     print("   Week 7-8: Documentation + Launch")
 
 if __name__ == "__main__":

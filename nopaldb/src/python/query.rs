@@ -3,10 +3,8 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::query::nql::executor::result::{
-    ProfileResult as RustProfileResult, WriteResult as RustWriteResult,
-};
 use crate::query::nql::{NqlResult as RustNqlResult, QueryResult as RustQueryResult};
+use crate::query::nql::executor::result::{ProfileResult as RustProfileResult, WriteResult as RustWriteResult};
 
 use super::property_to_py;
 
@@ -38,7 +36,7 @@ impl PyQueryResult {
     fn __getitem__<'py>(&self, py: Python<'py>, index: usize) -> PyResult<Bound<'py, PyDict>> {
         if index >= self.inner.len() {
             return Err(PyErr::new::<pyo3::exceptions::PyIndexError, _>(
-                "Index out of range",
+                "Index out of range"
             ));
         }
 
@@ -166,9 +164,7 @@ impl PyNqlResult {
     #[getter]
     fn write<'py>(&self, py: Python<'py>) -> PyResult<Option<Py<PyAny>>> {
         match &self.inner {
-            RustNqlResult::Write(result) => {
-                Ok(Some(write_result_to_py(py, result)?.into_any().unbind()))
-            }
+            RustNqlResult::Write(result) => Ok(Some(write_result_to_py(py, result)?.into_any().unbind())),
             _ => Ok(None),
         }
     }
@@ -194,11 +190,9 @@ impl PyNqlResult {
         match &self.inner {
             RustNqlResult::Message(msg) => Some(msg.clone()),
             RustNqlResult::Index(msg) => Some(msg.clone()),
-            RustNqlResult::Export {
-                format,
-                rows_exported,
-                ..
-            } => Some(format!("Exported {} rows as {}", rows_exported, format)),
+            RustNqlResult::Export { format, rows_exported, .. } => {
+                Some(format!("Exported {} rows as {}", rows_exported, format))
+            }
             _ => None,
         }
     }
@@ -218,7 +212,7 @@ impl PyResultIterator {
 
     fn __next__<'py>(
         mut slf: PyRefMut<'py, Self>,
-        py: Python<'py>,
+        py: Python<'py>
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
         if slf.index >= slf.inner.len() {
             return Ok(None);
@@ -257,10 +251,7 @@ fn row_to_pydict<'py>(
     Ok(dict)
 }
 
-fn write_result_to_py<'py>(
-    py: Python<'py>,
-    result: &RustWriteResult,
-) -> PyResult<Bound<'py, PyDict>> {
+fn write_result_to_py<'py>(py: Python<'py>, result: &RustWriteResult) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
     dict.set_item("nodes_created", result.nodes_created)?;
     dict.set_item("edges_created", result.edges_created)?;

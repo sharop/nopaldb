@@ -56,13 +56,7 @@ pub async fn export_turtle(graph: &Graph) -> Result<String> {
     individuals.sort_by_key(|n| {
         n.properties
             .get("iri")
-            .and_then(|v| {
-                if let PropertyValue::String(s) = v {
-                    Some(s.as_str())
-                } else {
-                    None
-                }
-            })
+            .and_then(|v| if let PropertyValue::String(s) = v { Some(s.as_str()) } else { None })
             .unwrap_or("")
     });
 
@@ -93,7 +87,10 @@ pub async fn export_turtle(graph: &Graph) -> Result<String> {
     subclass_triples.sort();
 
     // 5. Construir el string Turtle.
-    let cap = 300 + classes.len() * 50 + subclass_triples.len() * 60 + individuals.len() * 120;
+    let cap = 300
+        + classes.len() * 50
+        + subclass_triples.len() * 60
+        + individuals.len() * 120;
     let mut out = String::with_capacity(cap);
 
     // Prefijos estándar.
@@ -230,14 +227,8 @@ mod tests {
             property_value_to_literal(&PropertyValue::Float(3.14)),
             Some("\"3.14\"^^xsd:double".to_string())
         );
-        assert_eq!(
-            property_value_to_literal(&PropertyValue::Float(f64::NAN)),
-            None
-        );
-        assert_eq!(
-            property_value_to_literal(&PropertyValue::Float(f64::INFINITY)),
-            None
-        );
+        assert_eq!(property_value_to_literal(&PropertyValue::Float(f64::NAN)), None);
+        assert_eq!(property_value_to_literal(&PropertyValue::Float(f64::INFINITY)), None);
     }
 
     #[test]
@@ -263,10 +254,7 @@ mod tests {
     #[test]
     fn test_property_value_to_literal_null_bytes() {
         assert_eq!(property_value_to_literal(&PropertyValue::Null), None);
-        assert_eq!(
-            property_value_to_literal(&PropertyValue::Bytes(vec![1, 2])),
-            None
-        );
+        assert_eq!(property_value_to_literal(&PropertyValue::Bytes(vec![1, 2])), None);
     }
 
     #[test]

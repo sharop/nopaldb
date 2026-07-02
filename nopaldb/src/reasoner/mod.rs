@@ -136,6 +136,7 @@ impl ELReasoner {
         self.taxonomy.register_class(id, label);
     }
 
+
     /// Build a reasoner from an existing [`TaxonomyIndex`].
     ///
     /// Clones the taxonomy so the reasoner owns its own working copy.
@@ -208,7 +209,11 @@ impl ELReasoner {
     ///
     /// # Errors
     /// Returns [`NopalError::custom`] if `sub == super_class` (self-loop).
-    pub fn assert_subclass(&mut self, sub: NodeId, super_class: NodeId) -> Result<Vec<Inference>> {
+    pub fn assert_subclass(
+        &mut self,
+        sub: NodeId,
+        super_class: NodeId,
+    ) -> Result<Vec<Inference>> {
         if sub == super_class {
             return Err(NopalError::custom(
                 "assert_subclass: self-loops are not allowed (sub == super_class)",
@@ -228,10 +233,7 @@ impl ELReasoner {
             if !self.derived.contains(&pair) {
                 self.derived.insert(pair);
                 new_inferences.push(Inference {
-                    axiom: Axiom::SubClassOf {
-                        sub,
-                        super_class: *ancestor,
-                    },
+                    axiom: Axiom::SubClassOf { sub, super_class: *ancestor },
                     rule: CompletionRule::CR1,
                 });
             }
@@ -244,10 +246,7 @@ impl ELReasoner {
             if !self.derived.contains(&pair_desc_super) {
                 self.derived.insert(pair_desc_super);
                 new_inferences.push(Inference {
-                    axiom: Axiom::SubClassOf {
-                        sub: *desc,
-                        super_class,
-                    },
+                    axiom: Axiom::SubClassOf { sub: *desc, super_class },
                     rule: CompletionRule::CR1,
                 });
             }
@@ -256,10 +255,7 @@ impl ELReasoner {
                 if !self.derived.contains(&pair) {
                     self.derived.insert(pair);
                     new_inferences.push(Inference {
-                        axiom: Axiom::SubClassOf {
-                            sub: *desc,
-                            super_class: *ancestor,
-                        },
+                        axiom: Axiom::SubClassOf { sub: *desc, super_class: *ancestor },
                         rule: CompletionRule::CR1,
                     });
                 }
@@ -323,8 +319,7 @@ impl ELReasoner {
         filler: NodeId,
         result: NodeId,
     ) -> Result<Vec<Inference>> {
-        self.existential_domains
-            .push((role.to_string(), filler, result));
+        self.existential_domains.push((role.to_string(), filler, result));
         Ok(self.apply_cr3_for_domain(role, filler, result))
     }
 
@@ -351,13 +346,12 @@ impl ELReasoner {
 
             if filler_sub_c {
                 let pair = (sub, *d);
-                if !self.derived.contains(&pair) && !self.taxonomy.direct_parents(sub).contains(d) {
+                if !self.derived.contains(&pair)
+                    && !self.taxonomy.direct_parents(sub).contains(d)
+                {
                     self.derived.insert(pair);
                     new_inferences.push(Inference {
-                        axiom: Axiom::SubClassOf {
-                            sub,
-                            super_class: *d,
-                        },
+                        axiom: Axiom::SubClassOf { sub, super_class: *d },
                         rule: CompletionRule::CR3,
                     });
                 }
@@ -395,10 +389,7 @@ impl ELReasoner {
                 {
                     self.derived.insert(pair);
                     new_inferences.push(Inference {
-                        axiom: Axiom::SubClassOf {
-                            sub: *a,
-                            super_class: result,
-                        },
+                        axiom: Axiom::SubClassOf { sub: *a, super_class: result },
                         rule: CompletionRule::CR3,
                     });
                 }
@@ -426,20 +417,15 @@ impl ELReasoner {
                 continue;
             }
             // X ⊑ left (direct or transitive) AND X ⊑ right (direct or transitive)
-            let x_sub_left = x == left || self.taxonomy.is_subclass_of(x, left);
+            let x_sub_left  = x == left  || self.taxonomy.is_subclass_of(x, left);
             let x_sub_right = x == right || self.taxonomy.is_subclass_of(x, right);
 
             if x_sub_left && x_sub_right {
                 let pair = (x, result);
-                if !self.derived.contains(&pair)
-                    && !self.taxonomy.direct_parents(x).contains(&result)
-                {
+                if !self.derived.contains(&pair) && !self.taxonomy.direct_parents(x).contains(&result) {
                     self.derived.insert(pair);
                     new_inferences.push(Inference {
-                        axiom: Axiom::SubClassOf {
-                            sub: x,
-                            super_class: result,
-                        },
+                        axiom: Axiom::SubClassOf { sub: x, super_class: result },
                         rule: CompletionRule::CR2,
                     });
                 }
@@ -598,10 +584,7 @@ mod tests {
         let inferred = r.classify_all();
 
         // A ⊑ C must be derived (two hops)
-        assert!(
-            r.is_subclass_of(a, c),
-            "A must be subclass of C (transitively)"
-        );
+        assert!(r.is_subclass_of(a, c), "A must be subclass of C (transitively)");
         assert!(r.is_subclass_of(a, b), "A must be subclass of B (directly)");
         assert!(!r.is_subclass_of(c, a), "C must NOT be subclass of A");
 
@@ -609,10 +592,7 @@ mod tests {
         assert_eq!(inferred.len(), 1);
         assert_eq!(
             inferred[0].axiom,
-            Axiom::SubClassOf {
-                sub: a,
-                super_class: c
-            }
+            Axiom::SubClassOf { sub: a, super_class: c }
         );
         assert_eq!(inferred[0].rule, CompletionRule::CR1);
     }
@@ -642,16 +622,9 @@ mod tests {
 
         // Direct edges (Dog⊑Mammal, Mammal⊑Animal, Animal⊑LivingThing) must NOT be in derived
         let has_dog_mammal = derived.iter().any(|i| {
-            i.axiom
-                == Axiom::SubClassOf {
-                    sub: dog,
-                    super_class: mammal,
-                }
+            i.axiom == Axiom::SubClassOf { sub: dog, super_class: mammal }
         });
-        assert!(
-            !has_dog_mammal,
-            "Dog⊑Mammal is direct, not a CR1 derivation"
-        );
+        assert!(!has_dog_mammal, "Dog⊑Mammal is direct, not a CR1 derivation");
     }
 
     // -----------------------------------------------------------------------
@@ -670,10 +643,7 @@ mod tests {
         let mut r = ELReasoner::from_taxonomy(&tax);
         let inferred = r.classify_all();
 
-        assert!(
-            inferred.is_empty(),
-            "no transitive inference possible with a single edge"
-        );
+        assert!(inferred.is_empty(), "no transitive inference possible with a single edge");
         assert!(r.is_subclass_of(b, a), "direct edge B⊑A still detected");
         assert!(r.derived_inferences().is_empty());
     }
@@ -702,17 +672,10 @@ mod tests {
 
         // c ⊑ a must be derived immediately (no need to call classify_all)
         assert!(
-            inferred.iter().any(|i| i.axiom
-                == Axiom::SubClassOf {
-                    sub: c,
-                    super_class: a
-                }),
+            inferred.iter().any(|i| i.axiom == Axiom::SubClassOf { sub: c, super_class: a }),
             "CR1 must derive c ⊑ a immediately"
         );
-        assert!(
-            r.is_subclass_of(c, a),
-            "is_subclass_of(c, a) must be true after assert"
-        );
+        assert!(r.is_subclass_of(c, a), "is_subclass_of(c, a) must be true after assert");
         assert_eq!(inferred[0].rule, CompletionRule::CR1);
     }
 
@@ -746,18 +709,9 @@ mod tests {
         let derived = r.derived_inferences();
         let count_d_a = derived
             .iter()
-            .filter(|i| {
-                i.axiom
-                    == Axiom::SubClassOf {
-                        sub: d,
-                        super_class: a,
-                    }
-            })
+            .filter(|i| i.axiom == Axiom::SubClassOf { sub: d, super_class: a })
             .count();
-        assert_eq!(
-            count_d_a, 1,
-            "D ⊑ A must appear exactly once (no duplicates)"
-        );
+        assert_eq!(count_d_a, 1, "D ⊑ A must appear exactly once (no duplicates)");
     }
 
     // -----------------------------------------------------------------------
@@ -784,7 +738,7 @@ mod tests {
         tax.register_class(mammal, "Mammal");
         tax.register_class(dog, "Dog");
         tax.add_subclass(animal, mammal).unwrap(); // mammal ⊑ animal
-        tax.add_subclass(mammal, dog).unwrap(); // dog ⊑ mammal
+        tax.add_subclass(mammal, dog).unwrap();    // dog ⊑ mammal
 
         let mut r = ELReasoner::from_taxonomy(&tax);
         r.classify_all();
@@ -814,22 +768,13 @@ mod tests {
         let c = ids[0];
 
         r.classify_all();
-        assert!(
-            !r.derived_inferences().is_empty(),
-            "derived set must be non-empty after classify"
-        );
+        assert!(!r.derived_inferences().is_empty(), "derived set must be non-empty after classify");
 
         r.clear_derived();
-        assert!(
-            r.derived_inferences().is_empty(),
-            "derived set must be empty after clear"
-        );
+        assert!(r.derived_inferences().is_empty(), "derived set must be empty after clear");
 
         // Direct taxonomy still works (is_subclass_of falls through to BFS)
-        assert!(
-            r.is_subclass_of(a, c),
-            "BFS fallback must still detect A ⊑ C after clear_derived"
-        );
+        assert!(r.is_subclass_of(a, c), "BFS fallback must still detect A ⊑ C after clear_derived");
 
         // But derived_inferences remains empty (BFS result is NOT re-added to derived)
         assert!(r.derived_inferences().is_empty());
@@ -842,24 +787,16 @@ mod tests {
     #[tokio::test]
     async fn test_snapshot_at_before_class_added() {
         let dir = tempfile::TempDir::new().unwrap();
-        let graph = crate::graph::Graph::open(dir.path().to_str().unwrap())
-            .await
-            .unwrap();
+        let graph = crate::graph::Graph::open(dir.path().to_str().unwrap()).await.unwrap();
 
         // Snapshot BEFORE adding any classes.
         let timestamp_before = 0u64;
 
-        let mut reasoner = ELReasoner::from_graph_at(&graph, timestamp_before)
-            .await
-            .unwrap();
+        let mut reasoner = ELReasoner::from_graph_at(&graph, timestamp_before).await.unwrap();
         reasoner.classify_all();
 
         // No classes should be in the taxonomy.
-        assert_eq!(
-            reasoner.axiom_count(),
-            0,
-            "no edges before any class is added"
-        );
+        assert_eq!(reasoner.axiom_count(), 0, "no edges before any class is added");
     }
 
     #[tokio::test]
@@ -867,9 +804,7 @@ mod tests {
         use crate::types::{Node, NodeKind};
 
         let dir = tempfile::TempDir::new().unwrap();
-        let graph = crate::graph::Graph::open(dir.path().to_str().unwrap())
-            .await
-            .unwrap();
+        let graph = crate::graph::Graph::open(dir.path().to_str().unwrap()).await.unwrap();
 
         // Add a Class node.
         let mut node = Node::new("Animal");
@@ -879,9 +814,7 @@ mod tests {
         // Snapshot after adding — use a large timestamp (all nodes are valid).
         let timestamp_after = u64::MAX;
 
-        let mut reasoner = ELReasoner::from_graph_at(&graph, timestamp_after)
-            .await
-            .unwrap();
+        let mut reasoner = ELReasoner::from_graph_at(&graph, timestamp_after).await.unwrap();
         reasoner.classify_all();
 
         // "Animal" class should appear.
@@ -893,12 +826,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_snapshot_derives_cr1_at_point() {
-        use crate::types::{Edge, Node, NodeKind};
+        use crate::types::{Node, NodeKind, Edge};
 
         let dir = tempfile::TempDir::new().unwrap();
-        let graph = crate::graph::Graph::open(dir.path().to_str().unwrap())
-            .await
-            .unwrap();
+        let graph = crate::graph::Graph::open(dir.path().to_str().unwrap()).await.unwrap();
 
         // Add class nodes.
         let mut animal = Node::new("Animal");
@@ -914,26 +845,20 @@ mod tests {
         let dog_id = graph.add_node(dog).await.unwrap();
 
         // Add subClassOf edges: Mammal ⊑ Animal, Dog ⊑ Mammal
-        graph
-            .add_edge(Edge {
-                id: Uuid::new_v4(),
-                source: mammal_id,
-                target: animal_id,
-                edge_type: "subClassOf".to_string(),
-                properties: Default::default(),
-            })
-            .await
-            .unwrap();
-        graph
-            .add_edge(Edge {
-                id: Uuid::new_v4(),
-                source: dog_id,
-                target: mammal_id,
-                edge_type: "subClassOf".to_string(),
-                properties: Default::default(),
-            })
-            .await
-            .unwrap();
+        graph.add_edge(Edge {
+            id: Uuid::new_v4(),
+            source: mammal_id,
+            target: animal_id,
+            edge_type: "subClassOf".to_string(),
+            properties: Default::default(),
+        }).await.unwrap();
+        graph.add_edge(Edge {
+            id: Uuid::new_v4(),
+            source: dog_id,
+            target: mammal_id,
+            edge_type: "subClassOf".to_string(),
+            properties: Default::default(),
+        }).await.unwrap();
 
         // Build reasoner at current timestamp.
         let mut reasoner = ELReasoner::from_graph_at(&graph, u64::MAX).await.unwrap();
@@ -956,10 +881,7 @@ mod tests {
     #[test]
     fn test_cr2_basic_conjunction() {
         let mut tax = TaxonomyIndex::new();
-        let a = nid();
-        let b = nid();
-        let c = nid();
-        let d = nid();
+        let a = nid(); let b = nid(); let c = nid(); let d = nid();
         tax.register_class(a, "A");
         tax.register_class(b, "B");
         tax.register_class(c, "C");
@@ -972,11 +894,7 @@ mod tests {
 
         // A ⊑ D must be derived immediately by CR2
         assert!(
-            inferred.iter().any(|i| i.axiom
-                == Axiom::SubClassOf {
-                    sub: a,
-                    super_class: d
-                }),
+            inferred.iter().any(|i| i.axiom == Axiom::SubClassOf { sub: a, super_class: d }),
             "CR2 must derive A ⊑ D"
         );
         assert!(inferred.iter().all(|i| i.rule == CompletionRule::CR2));
@@ -986,10 +904,7 @@ mod tests {
     #[test]
     fn test_cr2_no_fire_without_both_conjuncts() {
         let mut tax = TaxonomyIndex::new();
-        let a = nid();
-        let b = nid();
-        let c = nid();
-        let d = nid();
+        let a = nid(); let b = nid(); let c = nid(); let d = nid();
         tax.register_class(a, "A");
         tax.register_class(b, "B");
         tax.register_class(c, "C");
@@ -1001,28 +916,15 @@ mod tests {
         let inferred = r.assert_conjunction(b, c, d).unwrap();
 
         // A ⊑ D must NOT be derived
-        let has_a_d = inferred.iter().any(|i| {
-            i.axiom
-                == Axiom::SubClassOf {
-                    sub: a,
-                    super_class: d,
-                }
-        });
-        assert!(
-            !has_a_d,
-            "CR2 must not fire when only one conjunct is satisfied"
-        );
+        let has_a_d = inferred.iter().any(|i| i.axiom == Axiom::SubClassOf { sub: a, super_class: d });
+        assert!(!has_a_d, "CR2 must not fire when only one conjunct is satisfied");
     }
 
     // Test 3 — CR2 interacts with CR1: A ⊑ B ⊑ E, A ⊑ C, E ⊓ C ⊑ D → derive A ⊑ D
     #[test]
     fn test_cr2_chain_with_cr1() {
         let mut tax = TaxonomyIndex::new();
-        let a = nid();
-        let b = nid();
-        let c = nid();
-        let d = nid();
-        let e = nid();
+        let a = nid(); let b = nid(); let c = nid(); let d = nid(); let e = nid();
         tax.register_class(a, "A");
         tax.register_class(b, "B");
         tax.register_class(c, "C");
@@ -1039,11 +941,7 @@ mod tests {
         let inferred = r.assert_conjunction(e, c, d).unwrap();
 
         assert!(
-            inferred.iter().any(|i| i.axiom
-                == Axiom::SubClassOf {
-                    sub: a,
-                    super_class: d
-                }),
+            inferred.iter().any(|i| i.axiom == Axiom::SubClassOf { sub: a, super_class: d }),
             "CR2 must fire after CR1 derives A ⊑ E"
         );
     }
@@ -1052,9 +950,7 @@ mod tests {
     #[test]
     fn test_cr2_self_loop_skipped() {
         let mut tax = TaxonomyIndex::new();
-        let a = nid();
-        let b = nid();
-        let c = nid();
+        let a = nid(); let b = nid(); let c = nid();
         tax.register_class(a, "A");
         tax.register_class(b, "B");
         tax.register_class(c, "C");
@@ -1069,9 +965,7 @@ mod tests {
         let has_self = inferred.iter().any(|i| {
             if let Axiom::SubClassOf { sub, super_class } = i.axiom {
                 sub == super_class
-            } else {
-                false
-            }
+            } else { false }
         });
         assert!(!has_self, "CR2 must not generate X ⊑ X self-loops");
     }
@@ -1084,10 +978,7 @@ mod tests {
     #[test]
     fn test_cr3_basic_existential() {
         let mut tax = TaxonomyIndex::new();
-        let a = nid();
-        let b = nid();
-        let c = nid();
-        let d = nid();
+        let a = nid(); let b = nid(); let c = nid(); let d = nid();
         tax.register_class(a, "A");
         tax.register_class(b, "B");
         tax.register_class(c, "C");
@@ -1102,11 +993,7 @@ mod tests {
         let inferred = r.assert_existential_domain("role", c, d).unwrap();
 
         assert!(
-            inferred.iter().any(|i| i.axiom
-                == Axiom::SubClassOf {
-                    sub: a,
-                    super_class: d
-                }),
+            inferred.iter().any(|i| i.axiom == Axiom::SubClassOf { sub: a, super_class: d }),
             "CR3 must derive A ⊑ D"
         );
         assert!(inferred.iter().all(|i| i.rule == CompletionRule::CR3));
@@ -1116,9 +1003,7 @@ mod tests {
     #[test]
     fn test_cr3_filler_equals_domain_filler() {
         let mut tax = TaxonomyIndex::new();
-        let a = nid();
-        let b = nid();
-        let d = nid();
+        let a = nid(); let b = nid(); let d = nid();
         tax.register_class(a, "A");
         tax.register_class(b, "B");
         tax.register_class(d, "D");
@@ -1130,11 +1015,7 @@ mod tests {
         let inferred = r.assert_existential_domain("R", b, d).unwrap();
 
         assert!(
-            inferred.iter().any(|i| i.axiom
-                == Axiom::SubClassOf {
-                    sub: a,
-                    super_class: d
-                }),
+            inferred.iter().any(|i| i.axiom == Axiom::SubClassOf { sub: a, super_class: d }),
             "CR3 must fire when filler == domain filler"
         );
     }
@@ -1143,14 +1024,9 @@ mod tests {
     #[test]
     fn test_cr3_no_fire_different_roles() {
         let mut tax = TaxonomyIndex::new();
-        let a = nid();
-        let b = nid();
-        let c = nid();
-        let d = nid();
-        tax.register_class(a, "A");
-        tax.register_class(b, "B");
-        tax.register_class(c, "C");
-        tax.register_class(d, "D");
+        let a = nid(); let b = nid(); let c = nid(); let d = nid();
+        tax.register_class(a, "A"); tax.register_class(b, "B");
+        tax.register_class(c, "C"); tax.register_class(d, "D");
         tax.add_subclass(c, b).unwrap(); // B ⊑ C
 
         let mut r = ELReasoner::from_taxonomy(&tax);
@@ -1158,11 +1034,7 @@ mod tests {
         let inferred = r.assert_existential_domain("roleY", c, d).unwrap();
 
         assert!(
-            !inferred.iter().any(|i| i.axiom
-                == Axiom::SubClassOf {
-                    sub: a,
-                    super_class: d
-                }),
+            !inferred.iter().any(|i| i.axiom == Axiom::SubClassOf { sub: a, super_class: d }),
             "CR3 must NOT fire when roles differ"
         );
     }
@@ -1171,14 +1043,9 @@ mod tests {
     #[test]
     fn test_cr3_no_fire_filler_not_subclass() {
         let mut tax = TaxonomyIndex::new();
-        let a = nid();
-        let b = nid();
-        let c = nid();
-        let d = nid();
-        tax.register_class(a, "A");
-        tax.register_class(b, "B");
-        tax.register_class(c, "C");
-        tax.register_class(d, "D");
+        let a = nid(); let b = nid(); let c = nid(); let d = nid();
+        tax.register_class(a, "A"); tax.register_class(b, "B");
+        tax.register_class(c, "C"); tax.register_class(d, "D");
         // B and C are unrelated
 
         let mut r = ELReasoner::from_taxonomy(&tax);
@@ -1186,11 +1053,7 @@ mod tests {
         let inferred = r.assert_existential_domain("R", c, d).unwrap();
 
         assert!(
-            !inferred.iter().any(|i| i.axiom
-                == Axiom::SubClassOf {
-                    sub: a,
-                    super_class: d
-                }),
+            !inferred.iter().any(|i| i.axiom == Axiom::SubClassOf { sub: a, super_class: d }),
             "CR3 must NOT fire when B is not subclass of C"
         );
     }
@@ -1199,16 +1062,9 @@ mod tests {
     #[test]
     fn test_cr3_with_cr1_chain() {
         let mut tax = TaxonomyIndex::new();
-        let a = nid();
-        let b = nid();
-        let m = nid();
-        let c = nid();
-        let d = nid();
-        tax.register_class(a, "A");
-        tax.register_class(b, "B");
-        tax.register_class(m, "M");
-        tax.register_class(c, "C");
-        tax.register_class(d, "D");
+        let a = nid(); let b = nid(); let m = nid(); let c = nid(); let d = nid();
+        tax.register_class(a, "A"); tax.register_class(b, "B");
+        tax.register_class(m, "M"); tax.register_class(c, "C"); tax.register_class(d, "D");
         // B ⊑ M ⊑ C (chain, so B ⊑ C transitively via CR1)
         tax.add_subclass(m, b).unwrap(); // B ⊑ M
         tax.add_subclass(c, m).unwrap(); // M ⊑ C
@@ -1220,11 +1076,7 @@ mod tests {
         let inferred = r.assert_existential_domain("R", c, d).unwrap();
 
         assert!(
-            inferred.iter().any(|i| i.axiom
-                == Axiom::SubClassOf {
-                    sub: a,
-                    super_class: d
-                }),
+            inferred.iter().any(|i| i.axiom == Axiom::SubClassOf { sub: a, super_class: d }),
             "CR3 must derive A ⊑ D when B ⊑ C is inferred by CR1"
         );
     }
@@ -1233,16 +1085,12 @@ mod tests {
     #[test]
     fn test_cr3_idempotent() {
         let mut tax = TaxonomyIndex::new();
-        let a = nid();
-        let b = nid();
-        let d = nid();
-        tax.register_class(a, "A");
-        tax.register_class(b, "B");
-        tax.register_class(d, "D");
+        let a = nid(); let b = nid(); let d = nid();
+        tax.register_class(a, "A"); tax.register_class(b, "B"); tax.register_class(d, "D");
 
         let mut r = ELReasoner::from_taxonomy(&tax);
         r.assert_existential(a, "R", b).unwrap();
-        let first = r.assert_existential_domain("R", b, d).unwrap();
+        let first  = r.assert_existential_domain("R", b, d).unwrap();
         let second = r.assert_existential_domain("R", b, d).unwrap();
 
         assert!(!first.is_empty(), "first call must derive A ⊑ D");
@@ -1253,14 +1101,9 @@ mod tests {
     #[test]
     fn test_cr3_via_classify_all() {
         let mut tax = TaxonomyIndex::new();
-        let a = nid();
-        let b = nid();
-        let c = nid();
-        let d = nid();
-        tax.register_class(a, "A");
-        tax.register_class(b, "B");
-        tax.register_class(c, "C");
-        tax.register_class(d, "D");
+        let a = nid(); let b = nid(); let c = nid(); let d = nid();
+        tax.register_class(a, "A"); tax.register_class(b, "B");
+        tax.register_class(c, "C"); tax.register_class(d, "D");
         tax.add_subclass(c, b).unwrap(); // B ⊑ C
 
         let mut r = ELReasoner::from_taxonomy(&tax);
@@ -1272,11 +1115,7 @@ mod tests {
         let inferred = r.classify_all();
 
         assert!(
-            inferred.iter().any(|i| i.axiom
-                == Axiom::SubClassOf {
-                    sub: a,
-                    super_class: d
-                }),
+            inferred.iter().any(|i| i.axiom == Axiom::SubClassOf { sub: a, super_class: d }),
             "classify_all must saturate CR3: A ⊑ D"
         );
     }
@@ -1285,10 +1124,7 @@ mod tests {
     #[test]
     fn test_cr2_idempotent() {
         let mut tax = TaxonomyIndex::new();
-        let a = nid();
-        let b = nid();
-        let c = nid();
-        let d = nid();
+        let a = nid(); let b = nid(); let c = nid(); let d = nid();
         tax.register_class(a, "A");
         tax.register_class(b, "B");
         tax.register_class(c, "C");
@@ -1297,14 +1133,11 @@ mod tests {
         tax.add_subclass(c, a).unwrap(); // A ⊑ C
 
         let mut r = ELReasoner::from_taxonomy(&tax);
-        let first = r.assert_conjunction(b, c, d).unwrap();
+        let first  = r.assert_conjunction(b, c, d).unwrap();
         let second = r.assert_conjunction(b, c, d).unwrap();
 
         // Second call must not produce A ⊑ D again (already in derived set)
         assert!(!first.is_empty(), "first call should derive A ⊑ D");
-        assert!(
-            second.is_empty(),
-            "second call must produce no new inferences (idempotent)"
-        );
+        assert!(second.is_empty(), "second call must produce no new inferences (idempotent)");
     }
 }

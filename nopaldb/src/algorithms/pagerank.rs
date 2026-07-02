@@ -76,8 +76,10 @@ impl PageRank {
         let n = nodes.len();
         let initial_rank = 1.0 / n as f64;
 
-        let mut ranks: HashMap<NodeId, f64> =
-            nodes.iter().map(|node| (node.id, initial_rank)).collect();
+        let mut ranks: HashMap<NodeId, f64> = nodes
+            .iter()
+            .map(|node| (node.id, initial_rank))
+            .collect();
 
         let mut out_degree: HashMap<NodeId, usize> = HashMap::new();
         for edge in &edges {
@@ -105,7 +107,8 @@ impl PageRank {
                     }
                 }
 
-                let new_rank = (1.0 - config.damping) / n as f64 + config.damping * rank_sum;
+                let new_rank =
+                    (1.0 - config.damping) / n as f64 + config.damping * rank_sum;
 
                 let old_rank = ranks[&node_id];
                 delta += (new_rank - old_rank).abs();
@@ -153,13 +156,9 @@ impl PageRank {
         let edges = graph.get_all_edges().await?;
         let config = self.config.clone();
         let source_nodes: Vec<NodeId> = source_nodes.to_vec();
-        tokio::task::spawn_blocking(move || {
-            Self::personalized_cpu(nodes, edges, source_nodes, config)
-        })
-        .await
-        .map_err(|e| {
-            crate::error::NopalError::custom(format!("personalized pagerank join error: {e}"))
-        })?
+        tokio::task::spawn_blocking(move || Self::personalized_cpu(nodes, edges, source_nodes, config))
+            .await
+            .map_err(|e| crate::error::NopalError::custom(format!("personalized pagerank join error: {e}")))?
     }
 
     fn personalized_cpu(
@@ -238,7 +237,7 @@ impl PageRank {
 mod tests {
     use super::*;
     use crate::Graph;
-    use crate::types::{Edge, Node};
+    use crate::types::{Node, Edge};
     use std::collections::HashMap;
 
     #[tokio::test]
@@ -247,35 +246,26 @@ mod tests {
         let mut tx = graph.begin_transaction().await.unwrap();
 
         // Create simple graph: A -> B -> C
-        let a = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let a = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
-        let b = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let b = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
-        let c = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let c = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
         let edge_ab = Edge {
             id: uuid::Uuid::new_v4(),
@@ -319,88 +309,31 @@ mod tests {
         let mut tx = graph.begin_transaction().await.unwrap();
 
         // Create a graph: A -> B -> C -> D
-        let a = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "L".into(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
-        let b = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "L".into(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
-        let c = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "L".into(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
-        let d = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "L".into(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let a = tx.add_node(Node { id: uuid::Uuid::new_v4(), label: "L".into(), properties: HashMap::new(), kind: Default::default() }).await.unwrap();
+        let b = tx.add_node(Node { id: uuid::Uuid::new_v4(), label: "L".into(), properties: HashMap::new(), kind: Default::default() }).await.unwrap();
+        let c = tx.add_node(Node { id: uuid::Uuid::new_v4(), label: "L".into(), properties: HashMap::new(), kind: Default::default() }).await.unwrap();
+        let d = tx.add_node(Node { id: uuid::Uuid::new_v4(), label: "L".into(), properties: HashMap::new(), kind: Default::default() }).await.unwrap();
 
-        tx.add_edge(Edge {
-            id: uuid::Uuid::new_v4(),
-            source: a,
-            target: b,
-            edge_type: "L".into(),
-            properties: HashMap::new(),
-        })
-        .unwrap();
-        tx.add_edge(Edge {
-            id: uuid::Uuid::new_v4(),
-            source: b,
-            target: c,
-            edge_type: "L".into(),
-            properties: HashMap::new(),
-        })
-        .unwrap();
-        tx.add_edge(Edge {
-            id: uuid::Uuid::new_v4(),
-            source: c,
-            target: d,
-            edge_type: "L".into(),
-            properties: HashMap::new(),
-        })
-        .unwrap();
+        tx.add_edge(Edge { id: uuid::Uuid::new_v4(), source: a, target: b, edge_type: "L".into(), properties: HashMap::new() }).unwrap();
+        tx.add_edge(Edge { id: uuid::Uuid::new_v4(), source: b, target: c, edge_type: "L".into(), properties: HashMap::new() }).unwrap();
+        tx.add_edge(Edge { id: uuid::Uuid::new_v4(), source: c, target: d, edge_type: "L".into(), properties: HashMap::new() }).unwrap();
         tx.commit().await.unwrap();
 
         // Global PageRank
         let pr = PageRank::with_defaults();
         let global_ranks = pr.compute(&graph).await.unwrap();
-
+        
         // Scope the graph to just nodes B and C
         let mut allowed = HashSet::new();
         allowed.insert(b);
         allowed.insert(c);
         let subgraph = Subgraph::new(&graph, allowed);
-
+        
         // Subgraph PageRank
         let scoped_ranks = pr.compute(&subgraph).await.unwrap();
 
-        assert_eq!(
-            scoped_ranks.len(),
-            2,
-            "Scoped rank should only contain B and C"
-        );
-
+        assert_eq!(scoped_ranks.len(), 2, "Scoped rank should only contain B and C");
+        
         // Inside the subgraph B -> C, C should have higher rank than B,
         // and both should have drastically different normalized scores than in the global graph.
         assert!(scoped_ranks[&c] > scoped_ranks[&b]);

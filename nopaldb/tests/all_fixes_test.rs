@@ -4,7 +4,7 @@
 // I4 (ADD edges), I1 (ORDER BY), I2 (GROUP BY multi),
 // I3 (variable scoping), I5 (DELETE/UPDATE)
 
-use nopaldb::{Edge, Graph, Node, NqlResult, PropertyValue, Result};
+use nopaldb::{Graph, Node, Edge, PropertyValue, NqlResult, Result};
 
 // ═══════════════════════════════════════════════════════════
 // I6: Row Index returns Null instead of panicking
@@ -34,34 +34,26 @@ async fn test_i1_order_by_asc() -> Result<()> {
         tx.add_node(
             Node::new("Person")
                 .with_property("name", PropertyValue::String(format!("P{}", i)))
-                .with_property("age", PropertyValue::Int(*i)),
-        )
-        .await?;
+                .with_property("age", PropertyValue::Int(*i))
+        ).await?;
     }
     tx.commit().await?;
 
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find p.name, p.age
         from (p:Person)
         order by p.age asc
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     assert_eq!(result.len(), 5);
     // Verify ordering
-    let ages: Vec<Option<i64>> = result.rows().iter().map(|r| r.get_int("p.age")).collect();
+    let ages: Vec<Option<i64>> = result.rows().iter()
+        .map(|r| r.get_int("p.age"))
+        .collect();
 
     for i in 1..ages.len() {
-        if let (Some(prev), Some(curr)) = (ages[i - 1], ages[i]) {
-            assert!(
-                prev <= curr,
-                "Expected ascending order: {} <= {}",
-                prev,
-                curr
-            );
+        if let (Some(prev), Some(curr)) = (ages[i-1], ages[i]) {
+            assert!(prev <= curr, "Expected ascending order: {} <= {}", prev, curr);
         }
     }
 
@@ -74,31 +66,26 @@ async fn test_i1_order_by_desc() -> Result<()> {
 
     let mut tx = graph.begin_transaction().await?;
     for i in &[30, 10, 50, 20, 40] {
-        tx.add_node(Node::new("Item").with_property("score", PropertyValue::Int(*i)))
-            .await?;
+        tx.add_node(
+            Node::new("Item")
+                .with_property("score", PropertyValue::Int(*i))
+        ).await?;
     }
     tx.commit().await?;
 
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find i.score
         from (i:Item)
         order by i.score desc
-    "#,
-        )
-        .await?;
+    "#).await?;
 
-    let scores: Vec<Option<i64>> = result.rows().iter().map(|r| r.get_int("i.score")).collect();
+    let scores: Vec<Option<i64>> = result.rows().iter()
+        .map(|r| r.get_int("i.score"))
+        .collect();
 
     for i in 1..scores.len() {
-        if let (Some(prev), Some(curr)) = (scores[i - 1], scores[i]) {
-            assert!(
-                prev >= curr,
-                "Expected descending order: {} >= {}",
-                prev,
-                curr
-            );
+        if let (Some(prev), Some(curr)) = (scores[i-1], scores[i]) {
+            assert!(prev >= curr, "Expected descending order: {} >= {}", prev, curr);
         }
     }
 
@@ -115,37 +102,23 @@ async fn test_c3_pattern_with_limit() -> Result<()> {
 
     // Create 5 relationships
     let mut tx = graph.begin_transaction().await?;
-    let alice = tx
-        .add_node(Node::new("Person").with_property("name", PropertyValue::String("Alice".into())))
-        .await?;
+    let alice = tx.add_node(Node::new("Person").with_property("name", PropertyValue::String("Alice".into()))).await?;
     tx.commit().await?;
 
     for i in 0..5 {
-        let friend = graph
-            .add_node(
-                Node::new("Person")
-                    .with_property("name", PropertyValue::String(format!("Friend{}", i))),
-            )
-            .await?;
+        let friend = graph.add_node(
+            Node::new("Person").with_property("name", PropertyValue::String(format!("Friend{}", i)))
+        ).await?;
         graph.add_edge(Edge::new(alice, friend, "KNOWS")).await?;
     }
 
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find a.name, b.name
         from (a:Person)-[r:KNOWS]->(b:Person)
         limit 3
-    "#,
-        )
-        .await?;
+    "#).await?;
 
-    assert_eq!(
-        result.len(),
-        3,
-        "LIMIT 3 should return exactly 3 rows, got {}",
-        result.len()
-    );
+    assert_eq!(result.len(), 3, "LIMIT 3 should return exactly 3 rows, got {}", result.len());
 
     Ok(())
 }
@@ -158,9 +131,9 @@ async fn test_c3_pattern_with_limit() -> Result<()> {
 async fn test_i4_add_with_relationship() -> Result<()> {
     let graph = Graph::in_memory().await?;
 
-    let result = graph
-        .execute_statement(r#"add (a:Person {name: "Alice"})-[:KNOWS]->(b:Person {name: "Bob"})"#)
-        .await?;
+    let result = graph.execute_statement(
+        r#"add (a:Person {name: "Alice"})-[:KNOWS]->(b:Person {name: "Bob"})"#
+    ).await?;
 
     match result {
         NqlResult::Write(w) => {
@@ -190,18 +163,17 @@ async fn test_i5_delete_with_where() -> Result<()> {
     let mut tx = graph.begin_transaction().await?;
     for name in &["Alice", "Bob", "Charlie"] {
         tx.add_node(
-            Node::new("Person").with_property("name", PropertyValue::String(name.to_string())),
-        )
-        .await?;
+            Node::new("Person").with_property("name", PropertyValue::String(name.to_string()))
+        ).await?;
     }
     tx.commit().await?;
 
     assert_eq!(graph.get_nodes_by_label("Person").await?.len(), 3);
 
     // Delete Bob
-    let result = graph
-        .execute_statement(r#"delete (p:Person) where p.name = "Bob""#)
-        .await?;
+    let result = graph.execute_statement(
+        r#"delete (p:Person) where p.name = "Bob""#
+    ).await?;
 
     match result {
         NqlResult::Write(w) => {
@@ -214,16 +186,9 @@ async fn test_i5_delete_with_where() -> Result<()> {
     assert_eq!(remaining.len(), 2, "Should have 2 remaining nodes");
 
     // Verify Bob is gone
-    let names: Vec<String> = remaining
-        .iter()
+    let names: Vec<String> = remaining.iter()
         .filter_map(|n| n.properties.get("name"))
-        .filter_map(|v| {
-            if let PropertyValue::String(s) = v {
-                Some(s.clone())
-            } else {
-                None
-            }
-        })
+        .filter_map(|v| if let PropertyValue::String(s) = v { Some(s.clone()) } else { None })
         .collect();
     assert!(!names.contains(&"Bob".to_string()), "Bob should be deleted");
 
@@ -243,21 +208,19 @@ async fn test_i5_update_with_where() -> Result<()> {
     tx.add_node(
         Node::new("Person")
             .with_property("name", PropertyValue::String("Alice".into()))
-            .with_property("status", PropertyValue::String("active".into())),
-    )
-    .await?;
+            .with_property("status", PropertyValue::String("active".into()))
+    ).await?;
     tx.add_node(
         Node::new("Person")
             .with_property("name", PropertyValue::String("Bob".into()))
-            .with_property("status", PropertyValue::String("active".into())),
-    )
-    .await?;
+            .with_property("status", PropertyValue::String("active".into()))
+    ).await?;
     tx.commit().await?;
 
     // Update Alice's status
-    let result = graph
-        .execute_statement(r#"update (p:Person) set p.status = "inactive" where p.name = "Alice""#)
-        .await?;
+    let result = graph.execute_statement(
+        r#"update (p:Person) set p.status = "inactive" where p.name = "Alice""#
+    ).await?;
 
     match result {
         NqlResult::Write(w) => {
@@ -273,19 +236,13 @@ async fn test_i5_update_with_where() -> Result<()> {
         if let Some(PropertyValue::String(name)) = node.properties.get("name") {
             if name == "Alice" {
                 let status = node.properties.get("status");
-                assert_eq!(
-                    status,
-                    Some(&PropertyValue::String("inactive".into())),
-                    "Alice's status should be 'inactive'"
-                );
+                assert_eq!(status, Some(&PropertyValue::String("inactive".into())),
+                           "Alice's status should be 'inactive'");
             }
             if name == "Bob" {
                 let status = node.properties.get("status");
-                assert_eq!(
-                    status,
-                    Some(&PropertyValue::String("active".into())),
-                    "Bob's status should still be 'active'"
-                );
+                assert_eq!(status, Some(&PropertyValue::String("active".into())),
+                           "Bob's status should still be 'active'");
             }
         }
     }
@@ -306,30 +263,20 @@ async fn test_i3_and_or_conditions() -> Result<()> {
         tx.add_node(
             Node::new("Person")
                 .with_property("name", PropertyValue::String(name.to_string()))
-                .with_property("age", PropertyValue::Int(*age)),
-        )
-        .await?;
+                .with_property("age", PropertyValue::Int(*age))
+        ).await?;
     }
     tx.commit().await?;
 
     // Test AND: age > 25 AND age < 40
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find p.name, p.age
         from (p:Person)
         where p.age > 25 and p.age < 40
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     // Should match Bob (35) and Diana (30)
-    assert_eq!(
-        result.len(),
-        2,
-        "AND filter should match 2 people, got {}",
-        result.len()
-    );
+    assert_eq!(result.len(), 2, "AND filter should match 2 people, got {}", result.len());
 
     Ok(())
 }

@@ -1,23 +1,23 @@
 // src/python/mod.rs
 
-use crate::error::Result as NopalResult;
-use crate::types::PropertyValue;
 use pyo3::prelude::*;
 use pyo3::{BoundObject, IntoPyObject};
+use crate::error::Result as NopalResult;
+use crate::types::PropertyValue;
 
-mod arrow;
-mod bulk_loader;
 mod graph;
 mod query;
 mod transaction;
+mod arrow;
+mod bulk_loader;
 
 #[cfg(feature = "python-reasoner")]
 pub mod reasoner;
 
-pub use bulk_loader::PyBulkLoader;
 pub use graph::PyGraph;
 pub use query::{PyNqlResult, PyProfileResult, PyQueryResult};
 pub use transaction::PyTransaction;
+pub use bulk_loader::PyBulkLoader;
 
 #[cfg(feature = "python-reasoner")]
 pub use reasoner::{PyELReasoner, PyInference};
@@ -39,7 +39,7 @@ fn nopaldb(m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
 
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-    m.add("__author__", "NopalDB Contributors")?;
+    m.add("__author__", "Sharop")?;
 
     Ok(())
 }
@@ -47,13 +47,21 @@ fn nopaldb(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// Helper: Convert PropertyValue to Python object
 pub(crate) fn property_to_py<'py>(
     py: Python<'py>,
-    value: &PropertyValue,
+    value: &PropertyValue
 ) -> PyResult<Bound<'py, PyAny>> {
     match value {
-        PropertyValue::String(s) => Ok(s.as_str().into_pyobject(py)?.into_any().into_bound()),
-        PropertyValue::Int(i) => Ok(i.into_pyobject(py)?.into_any().into_bound()),
-        PropertyValue::Float(f) => Ok(f.into_pyobject(py)?.into_any().into_bound()),
-        PropertyValue::Bool(b) => Ok(b.into_pyobject(py)?.into_any().into_bound()),
+        PropertyValue::String(s) => {
+            Ok(s.as_str().into_pyobject(py)?.into_any().into_bound())
+        }
+        PropertyValue::Int(i) => {
+            Ok(i.into_pyobject(py)?.into_any().into_bound())
+        }
+        PropertyValue::Float(f) => {
+            Ok(f.into_pyobject(py)?.into_any().into_bound())
+        }
+        PropertyValue::Bool(b) => {
+            Ok(b.into_pyobject(py)?.into_any().into_bound())
+        }
         PropertyValue::Null => {
             // Python None
             Ok(py.None().into_bound(py))
@@ -82,5 +90,7 @@ pub(crate) fn property_to_py<'py>(
 
 /// Helper: Convert Result<T> to PyResult<T>
 pub(crate) fn to_py_result<T>(result: NopalResult<T>) -> PyResult<T> {
-    result.map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))
+    result.map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e))
+    })
 }

@@ -24,9 +24,8 @@ async fn main() -> nopaldb::Result<()> {
         "Ultimate Combo",
         10,
         200,
-        vec![power_strike, shield_bash],
-    )
-    .await?;
+        vec![power_strike, shield_bash]
+    ).await?;
 
     // Check if player can learn skill
     let player_level = 6;
@@ -47,14 +46,11 @@ async fn create_skill(
     skill_points: i64,
     prerequisites: Vec<uuid::Uuid>,
 ) -> nopaldb::Result<uuid::Uuid> {
-    let skill = graph
-        .add_node(
-            Node::new("Skill")
-                .with_property("name", PropertyValue::String(name.into()))
-                .with_property("level_required", PropertyValue::Int(level_required))
-                .with_property("skill_points", PropertyValue::Int(skill_points)),
-        )
-        .await?;
+    let skill = graph.add_node(Node::new("Skill")
+        .with_property("name", PropertyValue::String(name.into()))
+        .with_property("level_required", PropertyValue::Int(level_required))
+        .with_property("skill_points", PropertyValue::Int(skill_points))
+    ).await?;
 
     for prereq in prerequisites {
         graph.add_edge(Edge::new(prereq, skill, "REQUIRES")).await?;
@@ -78,10 +74,11 @@ async fn can_learn_skill(
     println!("\n🎯 Checking if can learn: {:?}", name);
 
     // Check level
-    if let PropertyValue::Int(req) = required_level
-        && player_level < *req {
-        println!("  ❌ Level too low (need {})", req);
-        return Ok(false);
+    if let PropertyValue::Int(req) = required_level {
+        if player_level < *req {
+            println!("  ❌ Level too low (need {})", req);
+            return Ok(false);
+        }
     }
 
     // Check prerequisites
@@ -90,10 +87,8 @@ async fn can_learn_skill(
     for edge in prereqs {
         if !learned.contains(&edge.source) {
             let prereq = graph.get_node(edge.source).await?;
-            println!(
-                "  ❌ Missing prerequisite: {:?}",
-                prereq.properties.get("name").unwrap()
-            );
+            println!("  ❌ Missing prerequisite: {:?}",
+                     prereq.properties.get("name").unwrap());
             return Ok(false);
         }
     }

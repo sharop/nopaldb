@@ -74,7 +74,10 @@ impl DegreeCentrality {
         config: DegreeConfig,
     ) -> Result<HashMap<NodeId, f64>> {
         let n = nodes.len();
-        let mut degrees: HashMap<NodeId, f64> = nodes.iter().map(|node| (node.id, 0.0)).collect();
+        let mut degrees: HashMap<NodeId, f64> = nodes
+            .iter()
+            .map(|node| (node.id, 0.0))
+            .collect();
 
         match config.degree_type {
             DegreeType::Total => {
@@ -114,10 +117,7 @@ impl DegreeCentrality {
     }
 
     /// Compute out-degree centrality within the view
-    pub async fn compute_out_degree<G: GraphView>(
-        &self,
-        graph: &G,
-    ) -> Result<HashMap<NodeId, f64>> {
+    pub async fn compute_out_degree<G: GraphView>(&self, graph: &G) -> Result<HashMap<NodeId, f64>> {
         let mut config = self.config.clone();
         config.degree_type = DegreeType::Out;
         let dc = DegreeCentrality::new(config);
@@ -197,7 +197,7 @@ pub struct DegreeStats {
 mod tests {
     use super::*;
     use crate::Graph;
-    use crate::types::{Edge, Node};
+    use crate::types::{Node, Edge};
     use std::collections::HashMap;
 
     #[tokio::test]
@@ -206,27 +206,21 @@ mod tests {
         let mut tx = graph.begin_transaction().await.unwrap();
 
         // Create star: center with degree 3, periphery with degree 1 each
-        let center = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Center".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let center = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Center".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
         let mut periphery = Vec::new();
         for i in 0..3 {
-            let p = tx
-                .add_node(Node {
-                    id: uuid::Uuid::new_v4(),
-                    label: format!("P{}", i),
-                    properties: HashMap::new(),
-                    kind: Default::default(),
-                })
-                .await
-                .unwrap();
+            let p = tx.add_node(Node {
+                id: uuid::Uuid::new_v4(),
+                label: format!("P{}", i),
+                properties: HashMap::new(),
+                kind: Default::default(),
+            }).await.unwrap();
 
             tx.add_edge(Edge {
                 id: uuid::Uuid::new_v4(),
@@ -234,8 +228,7 @@ mod tests {
                 target: p,
                 edge_type: "CONNECTS".to_string(),
                 properties: HashMap::new(),
-            })
-            .unwrap();
+            }).unwrap();
 
             periphery.push(p);
         }
@@ -277,15 +270,12 @@ mod tests {
         // Create complete graph with 4 nodes
         let mut nodes = Vec::new();
         for i in 0..4 {
-            let node = tx
-                .add_node(Node {
-                    id: uuid::Uuid::new_v4(),
-                    label: format!("Node{}", i),
-                    properties: HashMap::new(),
-                    kind: Default::default(),
-                })
-                .await
-                .unwrap();
+            let node = tx.add_node(Node {
+                id: uuid::Uuid::new_v4(),
+                label: format!("Node{}", i),
+                properties: HashMap::new(),
+                kind: Default::default(),
+            }).await.unwrap();
             nodes.push(node);
         }
 
@@ -298,8 +288,7 @@ mod tests {
                     target: nodes[j],
                     edge_type: "CONNECTS".to_string(),
                     properties: HashMap::new(),
-                })
-                .unwrap();
+                }).unwrap();
             }
         }
 
@@ -326,35 +315,26 @@ mod tests {
         let mut tx = graph.begin_transaction().await.unwrap();
 
         // Create varied network
-        let a = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "A".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let a = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "A".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
-        let b = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "B".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let b = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "B".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
-        let _c = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "C".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let _c = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "C".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
         // A -- B (both have degree 1), C isolated (degree 0)
         tx.add_edge(Edge {
@@ -363,8 +343,7 @@ mod tests {
             target: b,
             edge_type: "CONNECTS".to_string(),
             properties: HashMap::new(),
-        })
-        .unwrap();
+        }).unwrap();
 
         tx.commit().await.unwrap();
 
@@ -372,7 +351,7 @@ mod tests {
         let stats = dc.compute_stats(&graph).await.unwrap();
 
         assert_eq!(stats.min, 0.0);
-        assert_eq!(stats.max, 1.0); // Changed from 2.0
+        assert_eq!(stats.max, 1.0);  // Changed from 2.0
         assert_eq!(stats.total_edges, 1);
     }
 }

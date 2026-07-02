@@ -91,7 +91,8 @@ async fn test_checkpoint_wal_size() {
     // Crear 100 nodos
     for i in 0..100 {
         let mut tx = graph.begin_transaction().await.unwrap();
-        let node = Node::new("Test").with_property("id", PropertyValue::Int(i));
+        let node = Node::new("Test")
+            .with_property("id", PropertyValue::Int(i));
         tx.add_node(node).await.unwrap();
         tx.commit().await.unwrap();
     }
@@ -111,8 +112,6 @@ async fn test_checkpoint_wal_size() {
         "WAL should be significantly smaller after checkpoint"
     );
 
-    println!(
-        "✅ WAL size reduced by {}%",
-        ((size_before - size_after) * 100) / size_before
-    );
+    println!("✅ WAL size reduced by {}%",
+             ((size_before - size_after) * 100) / size_before);
 }

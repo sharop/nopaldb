@@ -5,8 +5,8 @@
 use crate::error::Result;
 use crate::graph::Graph;
 use crate::types::NodeId;
-use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::cmp::Ordering;
 
 /// Path result
 #[derive(Debug, Clone)]
@@ -64,9 +64,7 @@ impl ShortestPath {
         let config = self.config.clone();
         tokio::task::spawn_blocking(move || Self::find_path_cpu(edges, source, target, config))
             .await
-            .map_err(|e| {
-                crate::error::NopalError::custom(format!("shortest path join error: {e}"))
-            })?
+            .map_err(|e| crate::error::NopalError::custom(format!("shortest path join error: {e}")))?
     }
 
     fn find_path_cpu(
@@ -126,16 +124,14 @@ impl ShortestPath {
         target: NodeId,
         config: &ShortestPathConfig,
     ) -> Result<Option<PathResult>> {
-        let weight_prop = config.weight_property.as_ref().ok_or_else(|| {
-            crate::error::NopalError::Custom(
-                "weight_property is required for weighted shortest path".into(),
-            )
-        })?;
+        let weight_prop = config.weight_property.as_ref()
+            .ok_or_else(|| crate::error::NopalError::Custom(
+                "weight_property is required for weighted shortest path".into()
+            ))?;
 
         let mut adjacency: HashMap<NodeId, Vec<(NodeId, f64)>> = HashMap::new();
         for edge in &edges {
-            let weight = edge
-                .properties
+            let weight = edge.properties
                 .get(weight_prop)
                 .and_then(|v| match v {
                     crate::types::PropertyValue::Int(i) => Some(*i as f64),
@@ -144,10 +140,7 @@ impl ShortestPath {
                 })
                 .unwrap_or(1.0);
 
-            adjacency
-                .entry(edge.source)
-                .or_default()
-                .push((edge.target, weight));
+            adjacency.entry(edge.source).or_default().push((edge.target, weight));
         }
 
         let mut distances: HashMap<NodeId, f64> = HashMap::new();
@@ -155,18 +148,12 @@ impl ShortestPath {
         let mut heap = BinaryHeap::new();
 
         distances.insert(source, 0.0);
-        heap.push(State {
-            cost: 0.0,
-            node: source,
-        });
+        heap.push(State { cost: 0.0, node: source });
 
         while let Some(State { cost, node }) = heap.pop() {
             if node == target {
                 let path = reconstruct_path(&parent, source, target);
-                return Ok(Some(PathResult {
-                    path,
-                    distance: cost,
-                }));
+                return Ok(Some(PathResult { path, distance: cost }));
             }
 
             if cost > *distances.get(&node).unwrap_or(&f64::INFINITY) {
@@ -181,10 +168,7 @@ impl ShortestPath {
                     if next_cost < current_dist {
                         distances.insert(neighbor, next_cost);
                         parent.insert(neighbor, node);
-                        heap.push(State {
-                            cost: next_cost,
-                            node: neighbor,
-                        });
+                        heap.push(State { cost: next_cost, node: neighbor });
                     }
                 }
             }
@@ -204,9 +188,8 @@ impl ShortestPath {
 
         for node in &nodes {
             if node.id != source
-                && let Some(result) = self.find_path(graph, source, node.id).await?
-            {
-                results.insert(node.id, result);
+                && let Some(result) = self.find_path(graph, source, node.id).await? {
+                    results.insert(node.id, result);
             }
         }
 
@@ -283,10 +266,7 @@ impl PartialEq for State {
 impl Ord for State {
     fn cmp(&self, other: &Self) -> Ordering {
         // Reverse ordering for min-heap
-        other
-            .cost
-            .partial_cmp(&self.cost)
-            .unwrap_or(Ordering::Equal)
+        other.cost.partial_cmp(&self.cost).unwrap_or(Ordering::Equal)
     }
 }
 
@@ -300,7 +280,7 @@ impl PartialOrd for State {
 mod tests {
     use super::*;
     use crate::Graph;
-    use crate::types::{Edge, Node, PropertyValue};
+    use crate::types::{Node, Edge, PropertyValue};
     use std::collections::HashMap;
 
     #[tokio::test]
@@ -309,45 +289,33 @@ mod tests {
         let mut tx = graph.begin_transaction().await.unwrap();
 
         // Create linear path: A -> B -> C -> D
-        let a = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let a = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
-        let b = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let b = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
-        let c = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let c = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
-        let d = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let d = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
         tx.add_edge(Edge {
             id: uuid::Uuid::new_v4(),
@@ -355,8 +323,7 @@ mod tests {
             target: b,
             edge_type: "CONNECTS".to_string(),
             properties: HashMap::new(),
-        })
-        .unwrap();
+        }).unwrap();
 
         tx.add_edge(Edge {
             id: uuid::Uuid::new_v4(),
@@ -364,8 +331,7 @@ mod tests {
             target: c,
             edge_type: "CONNECTS".to_string(),
             properties: HashMap::new(),
-        })
-        .unwrap();
+        }).unwrap();
 
         tx.add_edge(Edge {
             id: uuid::Uuid::new_v4(),
@@ -373,8 +339,7 @@ mod tests {
             target: d,
             edge_type: "CONNECTS".to_string(),
             properties: HashMap::new(),
-        })
-        .unwrap();
+        }).unwrap();
 
         tx.commit().await.unwrap();
 
@@ -394,35 +359,26 @@ mod tests {
         let mut tx = graph.begin_transaction().await.unwrap();
 
         // Create graph with weights
-        let a = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let a = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
-        let b = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let b = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
-        let c = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let c = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
         // A -> B (weight 1)
         let mut props1 = HashMap::new();
@@ -433,8 +389,7 @@ mod tests {
             target: b,
             edge_type: "CONNECTS".to_string(),
             properties: props1,
-        })
-        .unwrap();
+        }).unwrap();
 
         // B -> C (weight 1)
         let mut props2 = HashMap::new();
@@ -445,8 +400,7 @@ mod tests {
             target: c,
             edge_type: "CONNECTS".to_string(),
             properties: props2,
-        })
-        .unwrap();
+        }).unwrap();
 
         // A -> C (weight 10) - longer direct path
         let mut props3 = HashMap::new();
@@ -457,8 +411,7 @@ mod tests {
             target: c,
             edge_type: "CONNECTS".to_string(),
             properties: props3,
-        })
-        .unwrap();
+        }).unwrap();
 
         tx.commit().await.unwrap();
 
@@ -484,25 +437,19 @@ mod tests {
         let mut tx = graph.begin_transaction().await.unwrap();
 
         // Create two disconnected nodes
-        let a = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let a = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
-        let b = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let b = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
         tx.commit().await.unwrap();
 

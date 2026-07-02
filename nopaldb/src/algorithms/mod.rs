@@ -2,19 +2,21 @@
 //
 // Graph algorithms for NopalDB
 
+pub mod pagerank;
 pub mod betweenness;
 pub mod clustering;
-pub mod community;
 pub mod degree;
-pub mod pagerank;
 pub mod shortest_path;
+pub mod community;
 
+pub use pagerank::PageRank;
 pub use betweenness::BetweennessCentrality;
 pub use clustering::ClusteringCoefficient;
-pub use community::{LeidenCommunity, LeidenConfig, LouvainCommunity};
 pub use degree::DegreeCentrality;
-pub use pagerank::PageRank;
 pub use shortest_path::ShortestPath;
+pub use community::{LouvainCommunity, LeidenCommunity, LeidenConfig};
+
+
 
 use crate::types::NodeId;
 use std::collections::HashMap;

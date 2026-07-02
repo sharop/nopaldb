@@ -1,6 +1,6 @@
 use nopaldb::query::nql::parse;
 use nopaldb::query::nql::parser::ast::{Expression, Statement};
-use nopaldb::{Edge, Graph, Node, NqlResult, PropertyValue, Result};
+use nopaldb::{Edge, Graph, Node, PropertyValue, Result, NqlResult};
 
 async fn setup_graph() -> Result<Graph> {
     let graph = Graph::in_memory().await?;
@@ -40,10 +40,7 @@ async fn test_group_by_aggregations_are_materialized() -> Result<()> {
     for row in result.rows() {
         assert!(matches!(row.get("u.team"), Some(PropertyValue::String(_))));
         assert!(matches!(row.get("total"), Some(PropertyValue::Int(_))));
-        assert!(matches!(
-            row.get("avg_score"),
-            Some(PropertyValue::Float(_))
-        ));
+        assert!(matches!(row.get("avg_score"), Some(PropertyValue::Float(_))));
     }
 
     Ok(())
@@ -56,11 +53,7 @@ async fn test_algorithms_are_materialized_not_null() -> Result<()> {
         "find degree(u) as deg, pagerank(u) as pr, betweenness(u) as bc, clustering(u) as cc from (u:User)"
     ).await?;
 
-    assert_eq!(
-        result.len(),
-        1,
-        "non-grouped algorithm query should return one aggregated row"
-    );
+    assert_eq!(result.len(), 1, "non-grouped algorithm query should return one aggregated row");
     let row = &result.rows()[0];
 
     assert!(matches!(row.get("deg"), Some(PropertyValue::Float(_))));
@@ -74,9 +67,9 @@ async fn test_algorithms_are_materialized_not_null() -> Result<()> {
 #[tokio::test]
 async fn test_community_returns_float_aggregation() -> Result<()> {
     let graph = setup_graph().await?;
-    let result = graph
-        .execute_nql("find community(u) as comm from (u:User)")
-        .await?;
+    let result = graph.execute_nql(
+        "find community(u) as comm from (u:User)"
+    ).await?;
 
     assert_eq!(result.len(), 1, "community() debe devolver un row agregado");
     let row = &result.rows()[0];
@@ -91,15 +84,11 @@ async fn test_community_returns_float_aggregation() -> Result<()> {
 #[tokio::test]
 async fn test_community_fast_returns_float_aggregation() -> Result<()> {
     let graph = setup_graph().await?;
-    let result = graph
-        .execute_nql("find community_fast(u) as comm_fast from (u:User)")
-        .await?;
+    let result = graph.execute_nql(
+        "find community_fast(u) as comm_fast from (u:User)"
+    ).await?;
 
-    assert_eq!(
-        result.len(),
-        1,
-        "community_fast() debe devolver un row agregado"
-    );
+    assert_eq!(result.len(), 1, "community_fast() debe devolver un row agregado");
     let row = &result.rows()[0];
     assert!(
         matches!(row.get("comm_fast"), Some(PropertyValue::Float(_))),
@@ -141,8 +130,7 @@ async fn test_shortest_path_returns_distance() -> Result<()> {
     let row = &result.rows()[0];
     assert!(
         matches!(row.get("dist"), Some(PropertyValue::Float(d)) if *d == 2.0),
-        "shortestPath(A, C) debe ser 2.0, got: {:?}",
-        row.get("dist")
+        "shortestPath(A, C) debe ser 2.0, got: {:?}", row.get("dist")
     );
 
     Ok(())
@@ -173,8 +161,7 @@ async fn test_shortest_path_returns_minus_one_when_no_path() -> Result<()> {
     let row = &result.rows()[0];
     assert!(
         matches!(row.get("dist"), Some(PropertyValue::Float(d)) if *d == -1.0),
-        "shortestPath con nodos desconectados debe devolver -1.0, got: {:?}",
-        row.get("dist")
+        "shortestPath con nodos desconectados debe devolver -1.0, got: {:?}", row.get("dist")
     );
 
     Ok(())
@@ -184,16 +171,13 @@ async fn test_shortest_path_returns_minus_one_when_no_path() -> Result<()> {
 async fn test_boolean_update_and_where_roundtrip() -> Result<()> {
     let graph = setup_graph().await?;
 
-    let update_result = graph
-        .execute_statement("update (u:User) set u.ndbstudio_checked = true")
-        .await?;
+    let update_result = graph.execute_statement(
+        "update (u:User) set u.ndbstudio_checked = true"
+    ).await?;
     match update_result {
         NqlResult::Write(w) => {
             assert!(w.nodes_updated > 0, "expected UPDATE to modify rows");
-            assert!(
-                w.properties_changed > 0,
-                "expected UPDATE to modify at least one property"
-            );
+            assert!(w.properties_changed > 0, "expected UPDATE to modify at least one property");
         }
         other => panic!("expected write result, got: {:?}", other),
     }
@@ -202,10 +186,7 @@ async fn test_boolean_update_and_where_roundtrip() -> Result<()> {
         "find u.username, u.ndbstudio_checked from (u:User) where u.ndbstudio_checked = true limit 10"
     ).await?;
 
-    assert!(
-        !result.is_empty(),
-        "expected boolean equality filter to match updated rows"
-    );
+    assert!(!result.is_empty(), "expected boolean equality filter to match updated rows");
     for row in result.rows() {
         assert!(matches!(
             row.get("u.ndbstudio_checked"),
@@ -266,17 +247,11 @@ async fn test_bare_variable_projection_returns_ids_not_null() {
     // generando la columna "n." — y ProjectNodesStream no manejaba prop vacío.
     // El valor ya se corrigió y el header público debe exponerse como "n".
     let graph = setup_graph().await.expect("graph setup");
-    let result = graph
-        .execute_nql("find n from (n) limit 25")
-        .await
+    let result = graph.execute_nql("find n from (n) limit 25").await
         .expect("query must not fail");
 
     assert!(!result.rows().is_empty(), "debe haber filas");
-    assert_eq!(
-        result.columns,
-        vec!["n".to_string()],
-        "header público debe ser 'n'"
-    );
+    assert_eq!(result.columns, vec!["n".to_string()], "header público debe ser 'n'");
     for row in result.rows() {
         let val = row.values.get("n");
         assert!(val.is_some(), "la columna 'n' no debe ser null: {:?}", row);

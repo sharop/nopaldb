@@ -2,14 +2,14 @@
 
 pub mod ast;
 
+use pest::Parser;
+use pest_derive::Parser;
 use crate::error::{NopalError, Result};
 use crate::types::PropertyValue;
 use ast::*;
-use pest::Parser;
-use pest_derive::Parser;
 
 #[derive(Parser)]
-#[grammar = "query/nql/parser/nql.pest"] // ← ACTUALIZAR PATH
+#[grammar = "query/nql/parser/nql.pest"]  // ← ACTUALIZAR PATH
 struct NQLParser;
 
 /// Parse NQL string into Statement AST
@@ -25,18 +25,14 @@ pub fn parse(input: &str) -> Result<Statement> {
         }
     }
 
-    Err(NopalError::QueryParseError(
-        "Invalid statement structure".into(),
-    ))
+    Err(NopalError::QueryParseError("Invalid statement structure".into()))
 }
 
 /// Parse NQL query (legacy, for backward compatibility)
 pub fn parse_query(query: &str) -> Result<Query> {
     match parse(query)? {
         Statement::Query(q) => Ok(q),
-        _ => Err(NopalError::QueryParseError(
-            "Expected Query statement".into(),
-        )),
+        _ => Err(NopalError::QueryParseError("Expected Query statement".into())),
     }
 }
 
@@ -140,8 +136,7 @@ impl AstBuilder {
 
         Ok(SketchStmt {
             name: name.ok_or_else(|| NopalError::QueryParseError("Missing sketch name".into()))?,
-            operation: operation
-                .ok_or_else(|| NopalError::QueryParseError("Missing sketch operation".into()))?,
+            operation: operation.ok_or_else(|| NopalError::QueryParseError("Missing sketch operation".into()))?,
             description: None,
         })
     }
@@ -155,9 +150,7 @@ impl AstBuilder {
             }
         }
 
-        Err(NopalError::QueryParseError(
-            "Missing sketch name in COMMIT".into(),
-        ))
+        Err(NopalError::QueryParseError("Missing sketch name in COMMIT".into()))
     }
 
     fn build_delete_stmt(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<DeleteStmt> {
@@ -181,8 +174,7 @@ impl AstBuilder {
         }
 
         Ok(DeleteStmt {
-            pattern: pattern
-                .ok_or_else(|| NopalError::QueryParseError("Missing pattern in DELETE".into()))?,
+            pattern: pattern.ok_or_else(|| NopalError::QueryParseError("Missing pattern in DELETE".into()))?,
             filter,
             limit,
         })
@@ -217,8 +209,7 @@ impl AstBuilder {
         }
 
         Ok(UpdateStmt {
-            pattern: pattern
-                .ok_or_else(|| NopalError::QueryParseError("Missing pattern in UPDATE".into()))?,
+            pattern: pattern.ok_or_else(|| NopalError::QueryParseError("Missing pattern in UPDATE".into()))?,
             assignments,
             filter,
             limit,
@@ -242,16 +233,13 @@ impl AstBuilder {
         }
 
         if identifiers.len() < 2 {
-            return Err(NopalError::QueryParseError(
-                "Invalid assignment format".into(),
-            ));
+            return Err(NopalError::QueryParseError("Invalid assignment format".into()));
         }
 
         Ok(Assignment {
             variable: identifiers[0].clone(),
             property: identifiers[1].clone(),
-            value: value
-                .ok_or_else(|| NopalError::QueryParseError("Missing value in assignment".into()))?,
+            value: value.ok_or_else(|| NopalError::QueryParseError("Missing value in assignment".into()))?,
         })
     }
 
@@ -296,25 +284,13 @@ impl AstBuilder {
                                 filter = Some(self.build_where_clause(clause)?);
                             }
                             Rule::init_clause => {
-                                init.push(self.build_string_clause(
-                                    clause,
-                                    Rule::init_clause,
-                                    "INIT",
-                                )?);
+                                init.push(self.build_string_clause(clause, Rule::init_clause, "INIT")?);
                             }
                             Rule::gather_clause => {
-                                gather.push(self.build_string_clause(
-                                    clause,
-                                    Rule::gather_clause,
-                                    "GATHER",
-                                )?);
+                                gather.push(self.build_string_clause(clause, Rule::gather_clause, "GATHER")?);
                             }
                             Rule::return_clause => {
-                                return_expr = Some(self.build_string_clause(
-                                    clause,
-                                    Rule::return_clause,
-                                    "RETURN",
-                                )?);
+                                return_expr = Some(self.build_string_clause(clause, Rule::return_clause, "RETURN")?);
                             }
                             Rule::group_clause => {
                                 group_by = Some(self.build_group_by_clause(clause)?);
@@ -424,9 +400,9 @@ impl AstBuilder {
                 let mut inner = pair
                     .into_inner()
                     .filter(|p| p.as_rule() == Rule::vm_and_expression);
-                let first = inner.next().ok_or_else(|| {
-                    NopalError::QueryParseError("Invalid VM OR expression".into())
-                })?;
+                let first = inner
+                    .next()
+                    .ok_or_else(|| NopalError::QueryParseError("Invalid VM OR expression".into()))?;
                 let mut result = self.build_vm_expression(first)?;
                 for next in inner {
                     let right = self.build_vm_expression(next)?;
@@ -442,9 +418,9 @@ impl AstBuilder {
                 let mut inner = pair
                     .into_inner()
                     .filter(|p| p.as_rule() == Rule::vm_comparison_expression);
-                let first = inner.next().ok_or_else(|| {
-                    NopalError::QueryParseError("Invalid VM AND expression".into())
-                })?;
+                let first = inner
+                    .next()
+                    .ok_or_else(|| NopalError::QueryParseError("Invalid VM AND expression".into()))?;
                 let mut result = self.build_vm_expression(first)?;
                 for next in inner {
                     let right = self.build_vm_expression(next)?;
@@ -484,16 +460,14 @@ impl AstBuilder {
                         right: Box::new(r),
                     }),
                     (Some(l), None, None) => Ok(l),
-                    _ => Err(NopalError::QueryParseError(
-                        "Invalid VM comparison expression".into(),
-                    )),
+                    _ => Err(NopalError::QueryParseError("Invalid VM comparison expression".into())),
                 }
             }
             Rule::vm_additive_expression => {
                 let mut inner = pair.into_inner();
-                let first = inner.next().ok_or_else(|| {
-                    NopalError::QueryParseError("Invalid VM additive expression".into())
-                })?;
+                let first = inner
+                    .next()
+                    .ok_or_else(|| NopalError::QueryParseError("Invalid VM additive expression".into()))?;
                 let mut result = self.build_vm_expression(first)?;
 
                 while let Some(op_pair) = inner.next() {
@@ -506,7 +480,7 @@ impl AstBuilder {
                         _ => {
                             return Err(NopalError::QueryParseError(
                                 "Invalid additive operator in VM expression".into(),
-                            ));
+                            ))
                         }
                     };
                     let right = self.build_vm_expression(right_pair)?;
@@ -536,11 +510,9 @@ impl AstBuilder {
                         Rule::mul_op => BinaryOperator::Mul,
                         Rule::div_op => BinaryOperator::Div,
                         Rule::mod_op => BinaryOperator::Mod,
-                        _ => {
-                            return Err(NopalError::QueryParseError(
-                                "Invalid multiplicative operator in VM expression".into(),
-                            ));
-                        }
+                        _ => return Err(NopalError::QueryParseError(
+                            "Invalid multiplicative operator in VM expression".into(),
+                        )),
                     };
                     let right = self.build_vm_expression(right_pair)?;
                     result = Expression::BinaryOp {
@@ -554,9 +526,10 @@ impl AstBuilder {
             }
             Rule::vm_unary_expression => {
                 let raw = pair.as_str().trim_start();
-                let inner = pair.into_inner().last().ok_or_else(|| {
-                    NopalError::QueryParseError("Invalid VM unary expression".into())
-                })?;
+                let inner = pair
+                    .into_inner()
+                    .last()
+                    .ok_or_else(|| NopalError::QueryParseError("Invalid VM unary expression".into()))?;
                 let expr = self.build_vm_expression(inner)?;
 
                 if raw.starts_with('!') || raw.to_ascii_lowercase().starts_with("not") {
@@ -574,16 +547,15 @@ impl AstBuilder {
                 }
             }
             Rule::vm_primary_expression => {
-                let inner = pair.into_inner().next().ok_or_else(|| {
-                    NopalError::QueryParseError("Invalid VM primary expression".into())
-                })?;
+                let inner = pair
+                    .into_inner()
+                    .next()
+                    .ok_or_else(|| NopalError::QueryParseError("Invalid VM primary expression".into()))?;
                 match inner.as_rule() {
                     Rule::value => self.build_value_expression(inner),
                     Rule::property_access => self.build_property_access(inner),
                     Rule::vm_expression => self.build_vm_expression(inner),
-                    _ => Err(NopalError::QueryParseError(
-                        "Invalid VM primary expression".into(),
-                    )),
+                    _ => Err(NopalError::QueryParseError("Invalid VM primary expression".into())),
                 }
             }
             _ => Err(NopalError::QueryParseError("Invalid VM expression".into())),
@@ -611,8 +583,7 @@ impl AstBuilder {
                             Rule::export_parquet => {
                                 for p in fmt_inner.into_inner() {
                                     if p.as_rule() == Rule::string {
-                                        format =
-                                            ExportFormat::Parquet(Self::unquote_string(p.as_str()));
+                                        format = ExportFormat::Parquet(Self::unquote_string(p.as_str()));
                                         break;
                                     }
                                 }
@@ -686,10 +657,7 @@ impl AstBuilder {
             projections.push(Projection::Wildcard);
         }
 
-        Ok(FindClause {
-            distinct,
-            projections,
-        })
+        Ok(FindClause { distinct, projections })
     }
 
     fn build_projection(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Projection> {
@@ -709,8 +677,7 @@ impl AstBuilder {
         }
 
         Ok(Projection::Expression {
-            expr: expression
-                .ok_or_else(|| NopalError::QueryParseError("Invalid projection".into()))?,
+            expr: expression.ok_or_else(|| NopalError::QueryParseError("Invalid projection".into()))?,
             alias,
         })
     }
@@ -740,9 +707,7 @@ impl AstBuilder {
                     elements.push(PatternElement::Node(self.build_node_pattern(inner)?));
                 }
                 Rule::relationship => {
-                    elements.push(PatternElement::Relationship(
-                        self.build_relationship_pattern(inner)?,
-                    ));
+                    elements.push(PatternElement::Relationship(self.build_relationship_pattern(inner)?));
                 }
                 _ => {}
             }
@@ -805,10 +770,7 @@ impl AstBuilder {
         })
     }
 
-    fn build_relationship_pattern(
-        &mut self,
-        pair: pest::iterators::Pair<Rule>,
-    ) -> Result<RelationshipPattern> {
+    fn build_relationship_pattern(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<RelationshipPattern> {
         let mut arrows: Vec<String> = Vec::new();
         let mut variable = None;
         let mut rel_type = None;
@@ -859,19 +821,11 @@ impl AstBuilder {
                                                         match prop_inner.as_rule() {
                                                             Rule::identifier => {
                                                                 if key.is_none() {
-                                                                    key = Some(
-                                                                        prop_inner
-                                                                            .as_str()
-                                                                            .to_string(),
-                                                                    );
+                                                                    key = Some(prop_inner.as_str().to_string());
                                                                 }
                                                             }
                                                             Rule::value => {
-                                                                value = Some(
-                                                                    self.parse_property_value(
-                                                                        prop_inner,
-                                                                    )?,
-                                                                );
+                                                                value = Some(self.parse_property_value(prop_inner)?);
                                                             }
                                                             _ => {}
                                                         }
@@ -940,6 +894,7 @@ impl AstBuilder {
         })
     }
 
+
     fn build_where_clause(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<WhereClause> {
         for inner in pair.into_inner() {
             if inner.as_rule() == Rule::expression {
@@ -952,10 +907,7 @@ impl AstBuilder {
         Err(NopalError::QueryParseError("Invalid WHERE clause".into()))
     }
 
-    fn build_group_by_clause(
-        &mut self,
-        pair: pest::iterators::Pair<Rule>,
-    ) -> Result<GroupByClause> {
+    fn build_group_by_clause(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<GroupByClause> {
         let mut expressions = Vec::new();
 
         for inner in pair.into_inner() {
@@ -983,10 +935,7 @@ impl AstBuilder {
         Err(NopalError::QueryParseError("Invalid HAVING clause".into()))
     }
 
-    fn build_order_by_clause(
-        &mut self,
-        pair: pest::iterators::Pair<Rule>,
-    ) -> Result<OrderByClause> {
+    fn build_order_by_clause(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<OrderByClause> {
         let mut items = Vec::new();
 
         for inner in pair.into_inner() {
@@ -1020,9 +969,7 @@ impl AstBuilder {
         }
 
         Ok(OrderByItem {
-            expression: expression.ok_or_else(|| {
-                NopalError::QueryParseError("Missing expression in ORDER BY".into())
-            })?,
+            expression: expression.ok_or_else(|| NopalError::QueryParseError("Missing expression in ORDER BY".into()))?,
             order,
         })
     }
@@ -1033,9 +980,7 @@ impl AstBuilder {
 
         for inner in pair.into_inner() {
             if inner.as_rule() == Rule::number {
-                let num: usize = inner
-                    .as_str()
-                    .parse()
+                let num: usize = inner.as_str().parse()
                     .map_err(|_| NopalError::QueryParseError("Invalid number in LIMIT".into()))?;
 
                 if limit == 0 {
@@ -1052,9 +997,7 @@ impl AstBuilder {
     fn build_time_clause(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<TimeTravelClause> {
         for inner in pair.into_inner() {
             if inner.as_rule() == Rule::number {
-                let timestamp: u64 = inner
-                    .as_str()
-                    .parse()
+                let timestamp: u64 = inner.as_str().parse()
                     .map_err(|_| NopalError::QueryParseError("Invalid timestamp".into()))?;
 
                 return Ok(TimeTravelClause { timestamp });
@@ -1129,10 +1072,7 @@ impl AstBuilder {
         Ok(result)
     }
 
-    fn build_comparison_expression(
-        &mut self,
-        pair: pest::iterators::Pair<Rule>,
-    ) -> Result<Expression> {
+    fn build_comparison_expression(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
         let mut left = None;
         let mut op = None;
         let mut right = None;
@@ -1155,22 +1095,23 @@ impl AstBuilder {
 
         // ✅ FIX: Clone left antes de moverlo
         match (left.clone(), op, right) {
-            (Some(l), Some(o), Some(r)) => Ok(Expression::BinaryOp {
-                left: Box::new(l),
-                op: o,
-                right: Box::new(r),
-            }),
-            (Some(l), None, None) => Ok(l),
-            _ => Err(NopalError::QueryParseError(
-                "Invalid comparison expression".into(),
-            )),
+            (Some(l), Some(o), Some(r)) => {
+                Ok(Expression::BinaryOp {
+                    left: Box::new(l),
+                    op: o,
+                    right: Box::new(r),
+                })
+            }
+            (Some(l), None, None) => {
+                Ok(l)
+            }
+            _ => {
+                Err(NopalError::QueryParseError("Invalid comparison expression".into()))
+            }
         }
     }
 
-    fn build_primary_from_additive(
-        &mut self,
-        pair: pest::iterators::Pair<Rule>,
-    ) -> Result<Expression> {
+    fn build_primary_from_additive(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
         for inner in pair.into_inner() {
             if inner.as_rule() == Rule::multiplicative_expression {
                 return self.build_primary_from_multiplicative(inner);
@@ -1179,10 +1120,7 @@ impl AstBuilder {
         Err(NopalError::QueryParseError("Invalid expression".into()))
     }
 
-    fn build_primary_from_multiplicative(
-        &mut self,
-        pair: pest::iterators::Pair<Rule>,
-    ) -> Result<Expression> {
+    fn build_primary_from_multiplicative(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
         for inner in pair.into_inner() {
             if inner.as_rule() == Rule::unary_expression {
                 return self.build_primary_from_unary(inner);
@@ -1191,10 +1129,7 @@ impl AstBuilder {
         Err(NopalError::QueryParseError("Invalid expression".into()))
     }
 
-    fn build_primary_from_unary(
-        &mut self,
-        pair: pest::iterators::Pair<Rule>,
-    ) -> Result<Expression> {
+    fn build_primary_from_unary(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
         for inner in pair.into_inner() {
             if inner.as_rule() == Rule::primary_expression {
                 return self.build_primary_expression(inner);
@@ -1203,10 +1138,7 @@ impl AstBuilder {
         Err(NopalError::QueryParseError("Invalid expression".into()))
     }
 
-    fn build_primary_expression(
-        &mut self,
-        pair: pest::iterators::Pair<Rule>,
-    ) -> Result<Expression> {
+    fn build_primary_expression(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
         for inner in pair.into_inner() {
             match inner.as_rule() {
                 Rule::property_access => {
@@ -1222,14 +1154,11 @@ impl AstBuilder {
             }
         }
 
-        Err(NopalError::QueryParseError(
-            "Invalid primary expression".into(),
-        ))
+        Err(NopalError::QueryParseError("Invalid primary expression".into()))
     }
 
     fn build_property_access(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
-        let parts: Vec<String> = pair
-            .into_inner()
+        let parts: Vec<String> = pair.into_inner()
             .filter(|p| p.as_rule() == Rule::identifier)
             .map(|p| p.as_str().to_string())
             .collect();
@@ -1246,9 +1175,7 @@ impl AstBuilder {
                 property: String::new(),
             })
         } else {
-            Err(NopalError::QueryParseError(
-                "Invalid property access".into(),
-            ))
+            Err(NopalError::QueryParseError("Invalid property access".into()))
         }
     }
 
@@ -1263,13 +1190,11 @@ impl AstBuilder {
                 Rule::number => {
                     let num_str = inner.as_str();
                     if num_str.contains('.') {
-                        let f: f64 = num_str
-                            .parse()
+                        let f: f64 = num_str.parse()
                             .map_err(|_| NopalError::QueryParseError("Invalid float".into()))?;
                         return Ok(Expression::Literal(PropertyValue::Float(f)));
                     } else {
-                        let i: i64 = num_str
-                            .parse()
+                        let i: i64 = num_str.parse()
                             .map_err(|_| NopalError::QueryParseError("Invalid integer".into()))?;
                         return Ok(Expression::Literal(PropertyValue::Int(i)));
                     }
@@ -1307,9 +1232,8 @@ impl AstBuilder {
                     } else {
                         // Extract expression from inside function_arg
                         if let Some(expr_pair) = inner.into_inner().next()
-                            && expr_pair.as_rule() == Rule::expression
-                        {
-                            args.push(self.build_expression(expr_pair)?);
+                            && expr_pair.as_rule() == Rule::expression {
+                                args.push(self.build_expression(expr_pair)?);
                         }
                     }
                 }
@@ -1322,8 +1246,7 @@ impl AstBuilder {
         }
 
         Ok(Expression::FunctionCall {
-            name: name
-                .ok_or_else(|| NopalError::QueryParseError("Missing function name".into()))?,
+            name: name.ok_or_else(|| NopalError::QueryParseError("Missing function name".into()))?,
             args,
         })
     }
@@ -1336,10 +1259,7 @@ impl AstBuilder {
             ">" => Ok(BinaryOperator::Gt),
             "<=" => Ok(BinaryOperator::LtEq),
             ">=" => Ok(BinaryOperator::GtEq),
-            _ => Err(NopalError::QueryParseError(format!(
-                "Unknown operator: {}",
-                op
-            ))),
+            _ => Err(NopalError::QueryParseError(format!("Unknown operator: {}", op))),
         }
     }
 
@@ -1355,13 +1275,11 @@ impl AstBuilder {
                 Rule::number => {
                     let num_str = inner.as_str();
                     if num_str.contains('.') {
-                        let f: f64 = num_str
-                            .parse()
+                        let f: f64 = num_str.parse()
                             .map_err(|_| NopalError::QueryParseError("Invalid float".into()))?;
                         return Ok(PropertyValue::Float(f));
                     } else {
-                        let i: i64 = num_str
-                            .parse()
+                        let i: i64 = num_str.parse()
                             .map_err(|_| NopalError::QueryParseError("Invalid integer".into()))?;
                         return Ok(PropertyValue::Int(i));
                     }
@@ -1379,10 +1297,7 @@ impl AstBuilder {
         Err(NopalError::QueryParseError("Invalid property value".into()))
     }
 
-    fn build_create_index_stmt(
-        &mut self,
-        pair: pest::iterators::Pair<Rule>,
-    ) -> Result<CreateIndexStmt> {
+    fn build_create_index_stmt(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<CreateIndexStmt> {
         let mut label = None;
         let mut property = None;
         let mut index_type = IndexType::Hash; // default
@@ -1416,12 +1331,8 @@ impl AstBuilder {
         }
 
         Ok(CreateIndexStmt {
-            label: label.ok_or_else(|| {
-                NopalError::QueryParseError("Missing label in CREATE INDEX".into())
-            })?,
-            property: property.ok_or_else(|| {
-                NopalError::QueryParseError("Missing property in CREATE INDEX".into())
-            })?,
+            label: label.ok_or_else(|| NopalError::QueryParseError("Missing label in CREATE INDEX".into()))?,
+            property: property.ok_or_else(|| NopalError::QueryParseError("Missing property in CREATE INDEX".into()))?,
             index_type,
         })
     }
@@ -1438,10 +1349,7 @@ impl AstBuilder {
         input.to_string()
     }
 
-    fn build_drop_index_stmt(
-        &mut self,
-        pair: pest::iterators::Pair<Rule>,
-    ) -> Result<DropIndexStmt> {
+    fn build_drop_index_stmt(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<DropIndexStmt> {
         let mut index_name = None;
 
         for inner in pair.into_inner() {
@@ -1452,9 +1360,7 @@ impl AstBuilder {
         }
 
         Ok(DropIndexStmt {
-            index_name: index_name.ok_or_else(|| {
-                NopalError::QueryParseError("Missing index name in DROP INDEX".into())
-            })?,
+            index_name: index_name.ok_or_else(|| NopalError::QueryParseError("Missing index name in DROP INDEX".into()))?,
         })
     }
 
@@ -1481,9 +1387,7 @@ impl AstBuilder {
             }
         }
 
-        Err(NopalError::QueryParseError(
-            "EXPLAIN requires a statement".into(),
-        ))
+        Err(NopalError::QueryParseError("EXPLAIN requires a statement".into()))
     }
 
     fn build_profile_stmt(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
@@ -1494,9 +1398,7 @@ impl AstBuilder {
             }
         }
 
-        Err(NopalError::QueryParseError(
-            "PROFILE requires a query".into(),
-        ))
+        Err(NopalError::QueryParseError("PROFILE requires a query".into()))
     }
 }
 
@@ -1516,19 +1418,10 @@ fn build_quantifier(pair: pest::iterators::Pair<Rule>) -> Quantifier {
         .collect();
 
     match (has_comma, numbers.as_slice()) {
-        (false, [n]) => Quantifier {
-            min: *n,
-            max: Some(*n),
-        },
-        (true, [n, m]) => Quantifier {
-            min: *n,
-            max: Some(*m),
-        },
+        (false, [n]) => Quantifier { min: *n, max: Some(*n) },
+        (true, [n, m]) => Quantifier { min: *n, max: Some(*m) },
         (true, [n]) => Quantifier { min: *n, max: None },
-        _ => Quantifier {
-            min: 1,
-            max: Some(1),
-        },
+        _ => Quantifier { min: 1, max: Some(1) },
     }
 }
 
@@ -1640,10 +1533,7 @@ mod tests {
             // elements: [node, rel, node]
             assert_eq!(pattern.elements.len(), 3, "Expected 3 pattern elements");
             if let PatternElement::Relationship(rel) = &pattern.elements[1] {
-                let q = rel
-                    .quantifier
-                    .as_ref()
-                    .expect("Quantifier must be Some({2})");
+                let q = rel.quantifier.as_ref().expect("Quantifier must be Some({2})");
                 assert_eq!(q.min, 2, "min should be 2");
                 assert_eq!(q.max, Some(2), "max should be Some(2)");
             } else {
@@ -1666,10 +1556,7 @@ mod tests {
         if let Statement::Query(ast) = stmt {
             let pattern = &ast.from.patterns[0];
             if let PatternElement::Relationship(rel) = &pattern.elements[1] {
-                let q = rel
-                    .quantifier
-                    .as_ref()
-                    .expect("Quantifier must be Some({1,3})");
+                let q = rel.quantifier.as_ref().expect("Quantifier must be Some({1,3})");
                 assert_eq!(q.min, 1);
                 assert_eq!(q.max, Some(3));
             } else {
@@ -1692,10 +1579,7 @@ mod tests {
         if let Statement::Query(ast) = stmt {
             let pattern = &ast.from.patterns[0];
             if let PatternElement::Relationship(rel) = &pattern.elements[1] {
-                let q = rel
-                    .quantifier
-                    .as_ref()
-                    .expect("Quantifier must be Some({1,})");
+                let q = rel.quantifier.as_ref().expect("Quantifier must be Some({1,})");
                 assert_eq!(q.min, 1);
                 assert_eq!(q.max, None, "Unbounded max should be None");
             } else {
@@ -1746,72 +1630,57 @@ mod tests {
 
     #[test]
     fn test_parse_vm_assignment_arithmetic() {
-        let assignment =
-            parse_vm_assignment("sum = sum + edge.amount").expect("VM assignment should parse");
+        let assignment = parse_vm_assignment("sum = sum + edge.amount")
+            .expect("VM assignment should parse");
 
         assert_eq!(assignment.variable, "sum");
         match assignment.expr {
-            Expression::BinaryOp {
-                op: BinaryOperator::Add,
-                ..
-            } => {}
+            Expression::BinaryOp { op: BinaryOperator::Add, .. } => {}
             other => panic!("Expected additive VM expression, got {:?}", other),
         }
     }
 
     #[test]
     fn test_parse_vm_expression_boolean_and_path_depth() {
-        let expr = parse_vm_expression("path.depth > 2").expect("VM expression should parse");
+        let expr = parse_vm_expression("path.depth > 2")
+            .expect("VM expression should parse");
 
         match expr {
-            Expression::BinaryOp {
-                op: BinaryOperator::Gt,
-                ..
-            } => {}
+            Expression::BinaryOp { op: BinaryOperator::Gt, .. } => {}
             other => panic!("Expected comparison VM expression, got {:?}", other),
         }
     }
 
     #[test]
     fn test_parse_vm_expression_boolean_composition() {
-        let expr =
-            parse_vm_expression("risky or path.depth > 2").expect("VM OR expression should parse");
+        let expr = parse_vm_expression("risky or path.depth > 2")
+            .expect("VM OR expression should parse");
         match expr {
-            Expression::BinaryOp {
-                op: BinaryOperator::Or,
-                ..
-            } => {}
+            Expression::BinaryOp { op: BinaryOperator::Or, .. } => {}
             other => panic!("Expected OR VM expression, got {:?}", other),
         }
 
         let expr = parse_vm_expression("risky and edge.amount > 10")
             .expect("VM AND expression should parse");
         match expr {
-            Expression::BinaryOp {
-                op: BinaryOperator::And,
-                ..
-            } => {}
+            Expression::BinaryOp { op: BinaryOperator::And, .. } => {}
             other => panic!("Expected AND VM expression, got {:?}", other),
         }
     }
 
     #[test]
     fn test_parse_vm_expression_unary_not_forms() {
-        let expr = parse_vm_expression("!risky").expect("Unary bang NOT should parse");
+        let expr = parse_vm_expression("!risky")
+            .expect("Unary bang NOT should parse");
         match expr {
-            Expression::UnaryOp {
-                op: UnaryOperator::Not,
-                ..
-            } => {}
+            Expression::UnaryOp { op: UnaryOperator::Not, .. } => {}
             other => panic!("Expected unary NOT expression, got {:?}", other),
         }
 
-        let expr = parse_vm_expression("not risky").expect("Unary keyword NOT should parse");
+        let expr = parse_vm_expression("not risky")
+            .expect("Unary keyword NOT should parse");
         match expr {
-            Expression::UnaryOp {
-                op: UnaryOperator::Not,
-                ..
-            } => {}
+            Expression::UnaryOp { op: UnaryOperator::Not, .. } => {}
             other => panic!("Expected unary NOT expression, got {:?}", other),
         }
     }
@@ -1833,8 +1702,9 @@ mod tests {
 
     #[test]
     fn test_no_return_clause_is_none() {
-        let stmt = parse(r#"find b.name from (a:Account)-[:TRANSFER]->(b:Account)"#)
-            .expect("Query without RETURN should parse");
+        let stmt = parse(
+            r#"find b.name from (a:Account)-[:TRANSFER]->(b:Account)"#
+        ).expect("Query without RETURN should parse");
 
         if let Statement::Query(q) = stmt {
             assert_eq!(q.return_expr, None);

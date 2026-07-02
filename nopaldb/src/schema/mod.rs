@@ -1,17 +1,18 @@
 // src/schema/mod.rs
 //! Schema inspection and management for NopalDB
 
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
+use serde::{Serialize, Deserialize};
 
 use crate::error::Result;
 use crate::graph::Graph;
 
 /// Complete schema information for a graph
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct SchemaInfo {
     /// All unique node labels in the graph
     pub node_labels: Vec<String>,
@@ -37,6 +38,7 @@ pub struct SchemaInfo {
     /// Total edges
     pub total_edges: usize,
 }
+
 
 impl SchemaInfo {
     pub fn new() -> Self {
@@ -64,8 +66,7 @@ impl SchemaInfo {
     pub fn add_edge_type(&mut self, edge_type: String) {
         if !self.edge_types.contains(&edge_type) {
             self.edge_types.push(edge_type.clone());
-            self.edge_properties
-                .insert(edge_type.clone(), HashSet::new());
+            self.edge_properties.insert(edge_type.clone(), HashSet::new());
             self.edge_counts.insert(edge_type, 0);
         }
     }

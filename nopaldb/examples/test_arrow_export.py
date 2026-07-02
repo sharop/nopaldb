@@ -3,6 +3,7 @@
 Test NopalDB Arrow Export - Complete Example
 Creates test data and exports to Arrow
 Updated to use Transaction API
+SHAROP: probado el 23EN26 : Resultado exitoso
 """
 
 import nopaldb

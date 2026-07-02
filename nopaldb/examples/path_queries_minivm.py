@@ -31,6 +31,7 @@ Variables de PathObject disponibles en FIND/WHERE:
     path.nodes   -- lista de {id, label} en orden de recorrido
     path.edges   -- lista de {id, type, source, target}
 
+SHAROP:PROBADO 09ABR26:Funcionando correctamente
 """
 
 import nopaldb
@@ -199,7 +200,7 @@ def main():
         """)
 
     print("\n" + "=" * 70)
-    print("  Listo. Ver la guia de NQL en docs/python/NQL_GUIDE.md")
+    print("  Listo. Ver docs/NQL_PATH_QUERIES_F4B.md, F4B_1.md, F4C.md")
     print("=" * 70)
 
 

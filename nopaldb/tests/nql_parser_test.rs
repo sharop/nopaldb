@@ -1,6 +1,6 @@
 // tests/nql_parser_test.rs
 
-use nopaldb::{Result, parse_query};
+use nopaldb::{parse_query, Result};
 
 #[test]
 fn test_simple_query() -> Result<()> {
@@ -41,10 +41,7 @@ fn test_pattern_matching() -> Result<()> {
     let ast = parse_query(query)?;
 
     println!("✅ Pattern matching query parsed:");
-    println!(
-        "   Pattern elements: {}",
-        ast.from.patterns[0].elements.len()
-    );
+    println!("   Pattern elements: {}", ast.from.patterns[0].elements.len());
 
     assert_eq!(ast.from.patterns.len(), 1);
     let pattern = &ast.from.patterns[0];

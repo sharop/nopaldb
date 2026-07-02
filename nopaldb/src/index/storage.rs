@@ -8,13 +8,15 @@ use std::path::Path;
 
 /// Save index metadata to disk
 pub fn save_metadata(path: &Path, metadata: &[IndexMetadata]) -> Result<()> {
-    let data = bincode::serialize(metadata).map_err(|e| {
-        crate::error::NopalError::serialization(format!("Failed to serialize metadata: {}", e))
-    })?;
+    let data = bincode::serialize(metadata)
+        .map_err(|e| crate::error::NopalError::serialization(
+            format!("Failed to serialize metadata: {}", e)
+        ))?;
 
-    std::fs::write(path, data).map_err(|e| {
-        crate::error::NopalError::custom(format!("Failed to write metadata: {}", e))
-    })?;
+    std::fs::write(path, data)
+        .map_err(|e| crate::error::NopalError::custom(
+            format!("Failed to write metadata: {}", e)
+        ))?;
 
     Ok(())
 }
@@ -22,11 +24,14 @@ pub fn save_metadata(path: &Path, metadata: &[IndexMetadata]) -> Result<()> {
 /// Load index metadata from disk
 pub fn load_metadata(path: &Path) -> Result<Vec<IndexMetadata>> {
     let data = std::fs::read(path)
-        .map_err(|e| crate::error::NopalError::custom(format!("Failed to read metadata: {}", e)))?;
+        .map_err(|e| crate::error::NopalError::custom(
+            format!("Failed to read metadata: {}", e)
+        ))?;
 
-    let metadata = bincode::deserialize(&data).map_err(|e| {
-        crate::error::NopalError::serialization(format!("Failed to deserialize metadata: {}", e))
-    })?;
+    let metadata = bincode::deserialize(&data)
+        .map_err(|e| crate::error::NopalError::serialization(
+            format!("Failed to deserialize metadata: {}", e)
+        ))?;
 
     Ok(metadata)
 }

@@ -2,7 +2,7 @@
 //
 // Link Prediction: Predice enlaces futuros en red de citaciones
 
-use nopaldb::{Direction, Edge, Graph, Node, PropertyValue};
+use nopaldb::{Graph, Node, Edge, PropertyValue, Direction};
 use std::collections::HashSet;
 
 #[tokio::main]
@@ -37,48 +37,25 @@ async fn main() -> nopaldb::Result<()> {
 
 async fn create_citation_network(graph: &Graph) -> nopaldb::Result<Vec<uuid::Uuid>> {
     // Papers
-    let paper_a = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property("title", PropertyValue::String("Graph Databases".into()))
-                .with_property("topic", PropertyValue::String("Databases".into())),
-        )
-        .await?;
+    let paper_a = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("Graph Databases".into()))
+        .with_property("topic", PropertyValue::String("Databases".into()))).await?;
 
-    let paper_b = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property("title", PropertyValue::String("NoSQL Systems".into()))
-                .with_property("topic", PropertyValue::String("Databases".into())),
-        )
-        .await?;
+    let paper_b = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("NoSQL Systems".into()))
+        .with_property("topic", PropertyValue::String("Databases".into()))).await?;
 
-    let paper_c = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property("title", PropertyValue::String("Graph Algorithms".into()))
-                .with_property("topic", PropertyValue::String("Algorithms".into())),
-        )
-        .await?;
+    let paper_c = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("Graph Algorithms".into()))
+        .with_property("topic", PropertyValue::String("Algorithms".into()))).await?;
 
-    let paper_d = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property("title", PropertyValue::String("Network Analysis".into()))
-                .with_property("topic", PropertyValue::String("Networks".into())),
-        )
-        .await?;
+    let paper_d = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("Network Analysis".into()))
+        .with_property("topic", PropertyValue::String("Networks".into()))).await?;
 
-    let paper_e = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property(
-                    "title",
-                    PropertyValue::String("Machine Learning on Graphs".into()),
-                )
-                .with_property("topic", PropertyValue::String("ML".into())),
-        )
-        .await?;
+    let paper_e = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("Machine Learning on Graphs".into()))
+        .with_property("topic", PropertyValue::String("ML".into()))).await?;
 
     // Citations: A cita B y C
     graph.add_edge(Edge::new(paper_a, paper_b, "CITES")).await?;
@@ -139,8 +116,7 @@ async fn get_cited_papers(
 ) -> nopaldb::Result<HashSet<uuid::Uuid>> {
     let edges = graph.edges_of(paper_id, Direction::Outgoing).await?;
 
-    let cited: HashSet<_> = edges
-        .iter()
+    let cited: HashSet<_> = edges.iter()
         .filter(|e| e.edge_type == "CITES")
         .map(|e| e.target)
         .collect();
@@ -148,7 +124,7 @@ async fn get_cited_papers(
     Ok(cited)
 }
 
-// Adamic-Adar Index: Suma de 1/log(degree) de vecinos comunes
+/// Adamic-Adar Index: Suma de 1/log(degree) de vecinos comunes
 // Reemplazar función adamic_adar_score:
 
 /// Adamic-Adar Index mejorado
@@ -176,7 +152,7 @@ async fn adamic_adar_score(
         if degree > 1.0 {
             score += 1.0 / degree.log2();
         } else {
-            score += 1.0; // Evitar división por cero
+            score += 1.0;  // Evitar división por cero
         }
     }
 

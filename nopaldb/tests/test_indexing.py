@@ -7,7 +7,7 @@ import time
 # Crear base de datos
 graph = nopaldb.Graph.in_memory()
 
-print("📊 Measurement: Con y sin índices\n")
+print("📊 Benchmark: Con y sin índices\n")
 
 # Insertar 10K nodos
 print("1️⃣ Insertando 10,000 personas...")

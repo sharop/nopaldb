@@ -1,25 +1,29 @@
 // src/lib.rs
 
 pub mod error;
-pub mod graph;
-pub mod planner;
-pub mod query;
+pub mod types;
 pub mod storage;
+pub mod graph;
+pub mod query;
 pub mod transaction;
 pub mod traversal;
-pub mod types;
+pub mod planner;
 
+pub mod wal;
+pub mod schema;
+pub mod index;
 #[cfg(feature = "algorithms")]
 pub mod algorithms;
-pub mod index;
-pub mod schema;
-pub mod wal;
 
 #[cfg(feature = "embeddings")]
 pub mod embeddings;
 
 #[doc(hidden)]
 pub mod easter_eggs;
+
+
+#[cfg(feature = "full-isolation")]
+pub mod lock_manager;
 
 #[cfg(feature = "analytics")]
 pub mod arrow_export;
@@ -40,7 +44,7 @@ pub use reasoner::{Axiom, CompletionRule, ELReasoner, Inference};
 pub mod shacl;
 
 #[cfg(feature = "shacl")]
-pub use shacl::{ConstraintViolation, ShaclValidator, Shape, ValidationReport};
+pub use shacl::{ShaclValidator, Shape, ValidationReport, ConstraintViolation};
 
 // ML integrations (feature-gated)
 #[cfg(feature = "ml")]
@@ -51,24 +55,28 @@ pub use ml::PyGData;
 
 // Re-exports
 pub use error::{NopalError, Result};
-pub use graph::{
-    AutoGcConfig, AutoGcStatus, BulkLoadStats, BulkLoader, Direction, Graph, GraphView, Subgraph,
-};
-pub use query::TraverseBuilder;
+pub use types::{Node, Edge, NodeId, EdgeId, PropertyValue, Properties};
 pub use storage::Storage;
 pub use storage::{StorageBackend, StorageEngine, StorageOptions, StorageProfile, StorageTuning};
+pub use graph::{Graph, Direction, BulkLoader, BulkLoadStats, AutoGcConfig, AutoGcStatus, GraphView, Subgraph};
+pub use traversal::{TraversalResult, TraversalConfig, NodeFilter};
+pub use query::TraverseBuilder;
 pub use transaction::Transaction;
-pub use traversal::{NodeFilter, TraversalConfig, TraversalResult};
-pub use types::{Edge, EdgeId, Node, NodeId, Properties, PropertyValue};
+
+#[cfg(feature = "full-isolation")]
+pub use transaction::IsolationLevel;
+
+#[cfg(feature = "full-isolation")]
+pub use lock_manager::{LockManager, LockType};
 
 #[cfg(feature = "analytics")]
 pub use arrow::record_batch::RecordBatch;
 
-pub use query::nql::Executor;
 pub use query::nql::parse;
 pub use query::nql::parse_query;
 pub use query::nql::parser::ast::Query as NQLQuery;
 pub use query::nql::parser::ast::Statement as NQLStatement;
+pub use query::nql::Executor;
 pub use query::nql::{NqlResult, ProfileResult, WriteResult};
 
 // Python bindings (feature-gated)

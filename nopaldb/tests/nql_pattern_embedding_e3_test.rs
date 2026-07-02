@@ -12,10 +12,7 @@ mod tests {
                 .iter()
                 .map(|value| match value {
                     PropertyValue::Float(f) => *f,
-                    other => panic!(
-                        "expected Float inside pattern embedding list, got {:?}",
-                        other
-                    ),
+                    other => panic!("expected Float inside pattern embedding list, got {:?}", other),
                 })
                 .collect(),
             other => panic!("expected List for '{}', got {:?}", key, other),
@@ -36,15 +33,9 @@ mod tests {
         let rel = tx.add_edge(Edge::new(a, b, "TX"))?;
         tx.commit().await?;
 
-        graph
-            .add_node_embedding(a, vec![1.0, 2.0], "node-minilm")
-            .await?;
-        graph
-            .add_node_embedding(b, vec![3.0, 4.0], "node-minilm")
-            .await?;
-        graph
-            .add_edge_embedding(rel, vec![9.0], "edge-relbert")
-            .await?;
+        graph.add_node_embedding(a, vec![1.0, 2.0], "node-minilm").await?;
+        graph.add_node_embedding(b, vec![3.0, 4.0], "node-minilm").await?;
+        graph.add_edge_embedding(rel, vec![9.0], "edge-relbert").await?;
 
         let result = graph
             .execute_nql(
@@ -56,10 +47,7 @@ mod tests {
             .await?;
 
         assert_eq!(result.len(), 1);
-        assert_eq!(
-            float_list(&result.rows()[0], "pat"),
-            vec![1.0, 2.0, 9.0, 3.0, 4.0]
-        );
+        assert_eq!(float_list(&result.rows()[0], "pat"), vec![1.0, 2.0, 9.0, 3.0, 4.0]);
         Ok(())
     }
 
@@ -81,21 +69,11 @@ mod tests {
         let rel_bc = tx.add_edge(Edge::new(b, c, "TX"))?;
         tx.commit().await?;
 
-        graph
-            .add_node_embedding(a, vec![1.0], "node-minilm")
-            .await?;
-        graph
-            .add_node_embedding(b, vec![2.0], "node-minilm")
-            .await?;
-        graph
-            .add_node_embedding(c, vec![3.0], "node-minilm")
-            .await?;
-        graph
-            .add_edge_embedding(rel_ab, vec![10.0, 11.0], "edge-relbert")
-            .await?;
-        graph
-            .add_edge_embedding(rel_bc, vec![20.0, 21.0], "edge-relbert")
-            .await?;
+        graph.add_node_embedding(a, vec![1.0], "node-minilm").await?;
+        graph.add_node_embedding(b, vec![2.0], "node-minilm").await?;
+        graph.add_node_embedding(c, vec![3.0], "node-minilm").await?;
+        graph.add_edge_embedding(rel_ab, vec![10.0, 11.0], "edge-relbert").await?;
+        graph.add_edge_embedding(rel_bc, vec![20.0, 21.0], "edge-relbert").await?;
 
         let result = graph
             .execute_nql(
@@ -132,21 +110,11 @@ mod tests {
         let rel_bc = tx.add_edge(Edge::new(b, c, "TX"))?;
         tx.commit().await?;
 
-        graph
-            .add_node_embedding(a, vec![1.0], "node-minilm")
-            .await?;
-        graph
-            .add_node_embedding(b, vec![2.0], "node-minilm")
-            .await?;
-        graph
-            .add_node_embedding(c, vec![3.0], "node-minilm")
-            .await?;
-        graph
-            .add_edge_embedding(rel_ab, vec![10.0], "edge-relbert")
-            .await?;
-        graph
-            .add_edge_embedding(rel_bc, vec![20.0], "edge-relbert")
-            .await?;
+        graph.add_node_embedding(a, vec![1.0], "node-minilm").await?;
+        graph.add_node_embedding(b, vec![2.0], "node-minilm").await?;
+        graph.add_node_embedding(c, vec![3.0], "node-minilm").await?;
+        graph.add_edge_embedding(rel_ab, vec![10.0], "edge-relbert").await?;
+        graph.add_edge_embedding(rel_bc, vec![20.0], "edge-relbert").await?;
 
         let result = graph
             .execute_nql(
@@ -171,8 +139,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_pattern_has_embeddings_returns_false_when_any_edge_embedding_is_missing()
-    -> Result<()> {
+    async fn test_pattern_has_embeddings_returns_false_when_any_edge_embedding_is_missing() -> Result<()> {
         let graph = Graph::in_memory().await?;
 
         let mut tx = graph.begin_transaction().await?;
@@ -189,18 +156,10 @@ mod tests {
         let _rel_bc = tx.add_edge(Edge::new(b, c, "TX"))?;
         tx.commit().await?;
 
-        graph
-            .add_node_embedding(a, vec![1.0], "node-minilm")
-            .await?;
-        graph
-            .add_node_embedding(b, vec![2.0], "node-minilm")
-            .await?;
-        graph
-            .add_node_embedding(c, vec![3.0], "node-minilm")
-            .await?;
-        graph
-            .add_edge_embedding(rel_ab, vec![10.0], "edge-relbert")
-            .await?;
+        graph.add_node_embedding(a, vec![1.0], "node-minilm").await?;
+        graph.add_node_embedding(b, vec![2.0], "node-minilm").await?;
+        graph.add_node_embedding(c, vec![3.0], "node-minilm").await?;
+        graph.add_edge_embedding(rel_ab, vec![10.0], "edge-relbert").await?;
 
         let result = graph
             .execute_nql(
@@ -234,12 +193,8 @@ mod tests {
         let rel = tx.add_edge(Edge::new(a, b, "TX"))?;
         tx.commit().await?;
 
-        graph
-            .add_node_embedding(a, vec![1.0, 2.0], "node-minilm")
-            .await?;
-        graph
-            .add_edge_embedding(rel, vec![9.0], "edge-relbert")
-            .await?;
+        graph.add_node_embedding(a, vec![1.0, 2.0], "node-minilm").await?;
+        graph.add_edge_embedding(rel, vec![9.0], "edge-relbert").await?;
 
         let err = graph
             .execute_nql(
@@ -269,12 +224,8 @@ mod tests {
         tx.add_edge(Edge::new(a, b, "TX"))?;
         tx.commit().await?;
 
-        graph
-            .add_node_embedding(a, vec![1.0, 2.0], "node-minilm")
-            .await?;
-        graph
-            .add_node_embedding(b, vec![3.0, 4.0], "node-minilm")
-            .await?;
+        graph.add_node_embedding(a, vec![1.0, 2.0], "node-minilm").await?;
+        graph.add_node_embedding(b, vec![3.0, 4.0], "node-minilm").await?;
 
         let err = graph
             .execute_nql(
@@ -308,21 +259,11 @@ mod tests {
         let rel_bc = tx.add_edge(Edge::new(b, c, "TX"))?;
         tx.commit().await?;
 
-        graph
-            .add_node_embedding(a, vec![1.0, 2.0], "node-minilm")
-            .await?;
-        graph
-            .add_node_embedding(b, vec![3.0, 4.0, 5.0], "node-minilm")
-            .await?;
-        graph
-            .add_node_embedding(c, vec![6.0, 7.0], "node-minilm")
-            .await?;
-        graph
-            .add_edge_embedding(rel_ab, vec![10.0], "edge-relbert")
-            .await?;
-        graph
-            .add_edge_embedding(rel_bc, vec![20.0], "edge-relbert")
-            .await?;
+        graph.add_node_embedding(a, vec![1.0, 2.0], "node-minilm").await?;
+        graph.add_node_embedding(b, vec![3.0, 4.0, 5.0], "node-minilm").await?;
+        graph.add_node_embedding(c, vec![6.0, 7.0], "node-minilm").await?;
+        graph.add_edge_embedding(rel_ab, vec![10.0], "edge-relbert").await?;
+        graph.add_edge_embedding(rel_bc, vec![20.0], "edge-relbert").await?;
 
         let err = graph
             .execute_nql(
@@ -334,10 +275,9 @@ mod tests {
             .await
             .expect_err("inconsistent node dimensions should fail");
 
-        assert!(
-            err.to_string()
-                .contains("inconsistent node embedding dimensions")
-        );
+        assert!(err
+            .to_string()
+            .contains("inconsistent node embedding dimensions"));
         Ok(())
     }
 
@@ -359,21 +299,11 @@ mod tests {
         let rel_bc = tx.add_edge(Edge::new(b, c, "TX"))?;
         tx.commit().await?;
 
-        graph
-            .add_node_embedding(a, vec![1.0], "node-minilm")
-            .await?;
-        graph
-            .add_node_embedding(b, vec![2.0], "node-minilm")
-            .await?;
-        graph
-            .add_node_embedding(c, vec![3.0], "node-minilm")
-            .await?;
-        graph
-            .add_edge_embedding(rel_ab, vec![10.0], "edge-relbert")
-            .await?;
-        graph
-            .add_edge_embedding(rel_bc, vec![20.0, 21.0], "edge-relbert")
-            .await?;
+        graph.add_node_embedding(a, vec![1.0], "node-minilm").await?;
+        graph.add_node_embedding(b, vec![2.0], "node-minilm").await?;
+        graph.add_node_embedding(c, vec![3.0], "node-minilm").await?;
+        graph.add_edge_embedding(rel_ab, vec![10.0], "edge-relbert").await?;
+        graph.add_edge_embedding(rel_bc, vec![20.0, 21.0], "edge-relbert").await?;
 
         let err = graph
             .execute_nql(
@@ -385,10 +315,9 @@ mod tests {
             .await
             .expect_err("inconsistent edge dimensions should fail");
 
-        assert!(
-            err.to_string()
-                .contains("inconsistent edge embedding dimensions")
-        );
+        assert!(err
+            .to_string()
+            .contains("inconsistent edge embedding dimensions"));
         Ok(())
     }
 }

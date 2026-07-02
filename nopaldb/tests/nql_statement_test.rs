@@ -4,7 +4,7 @@
 // Bug: Graph.execute_nql only accepted FIND queries, rejecting
 // ADD/DELETE/UPDATE/CREATE INDEX/DROP INDEX/EXPLAIN.
 
-use nopaldb::{Graph, Node, NqlResult, PropertyValue, Result};
+use nopaldb::{Graph, Node, PropertyValue, NqlResult, Result};
 
 // ═══════════════════════════════════════════════════════════
 // execute_statement: FIND queries
@@ -23,9 +23,7 @@ async fn test_execute_statement_find() -> Result<()> {
     tx.commit().await?;
 
     // Execute via execute_statement
-    let result = graph
-        .execute_statement("find p.name from (p:Person)")
-        .await?;
+    let result = graph.execute_statement("find p.name from (p:Person)").await?;
 
     match result {
         NqlResult::Query(qr) => {
@@ -42,22 +40,16 @@ async fn test_execute_statement_find_bare_variable_header_is_clean() -> Result<(
     let graph = Graph::in_memory().await?;
 
     let mut tx = graph.begin_transaction().await?;
-    tx.add_node(Node::new("Person").with_property("name", PropertyValue::String("Alice".into())))
-        .await?;
+    tx.add_node(Node::new("Person").with_property("name", PropertyValue::String("Alice".into()))).await?;
     tx.commit().await?;
 
-    let result = graph
-        .execute_statement("find p from (p:Person) limit 1")
-        .await?;
+    let result = graph.execute_statement("find p from (p:Person) limit 1").await?;
 
     match result {
         NqlResult::Query(qr) => {
             assert_eq!(qr.columns, vec!["p".to_string()]);
             assert_eq!(qr.rows.len(), 1);
-            assert!(
-                qr.rows[0].get("p").is_some(),
-                "bare variable header should be 'p'"
-            );
+            assert!(qr.rows[0].get("p").is_some(), "bare variable header should be 'p'");
         }
         other => panic!("Expected Query result, got: {:?}", other),
     }
@@ -73,9 +65,9 @@ async fn test_execute_statement_find_bare_variable_header_is_clean() -> Result<(
 async fn test_execute_statement_add() -> Result<()> {
     let graph = Graph::in_memory().await?;
 
-    let result = graph
-        .execute_statement(r#"add (alice:Person {name: "Alice", age: 30})"#)
-        .await?;
+    let result = graph.execute_statement(
+        r#"add (alice:Person {name: "Alice", age: 30})"#
+    ).await?;
 
     match result {
         NqlResult::Write(w) => {
@@ -101,21 +93,18 @@ async fn test_execute_statement_create_index() -> Result<()> {
 
     // Add a node first so index has something to work with
     let mut tx = graph.begin_transaction().await?;
-    let node = Node::new("Person").with_property("name", PropertyValue::String("Alice".into()));
+    let node = Node::new("Person")
+        .with_property("name", PropertyValue::String("Alice".into()));
     tx.add_node(node).await?;
     tx.commit().await?;
 
-    let result = graph
-        .execute_statement("create index on Person(name) type hash")
-        .await?;
+    let result = graph.execute_statement(
+        "create index on Person(name) type hash"
+    ).await?;
 
     match result {
         NqlResult::Index(msg) => {
-            assert!(
-                msg.contains("Index created"),
-                "Should confirm index creation: {}",
-                msg
-            );
+            assert!(msg.contains("Index created"), "Should confirm index creation: {}", msg);
         }
         other => panic!("Expected Index result, got: {:?}", other),
     }
@@ -128,18 +117,12 @@ async fn test_execute_statement_drop_index() -> Result<()> {
     let graph = Graph::in_memory().await?;
 
     // Create then drop
-    let _ = graph
-        .execute_statement("create index on Person(name) type hash")
-        .await;
+    let _ = graph.execute_statement("create index on Person(name) type hash").await;
     let result = graph.execute_statement("drop index Person_name").await?;
 
     match result {
         NqlResult::Index(msg) => {
-            assert!(
-                msg.contains("Index dropped"),
-                "Should confirm index drop: {}",
-                msg
-            );
+            assert!(msg.contains("Index dropped"), "Should confirm index drop: {}", msg);
         }
         other => panic!("Expected Index result, got: {:?}", other),
     }
@@ -155,9 +138,9 @@ async fn test_execute_statement_drop_index() -> Result<()> {
 async fn test_execute_statement_explain() -> Result<()> {
     let graph = Graph::in_memory().await?;
 
-    let result = graph
-        .execute_statement("explain find p.name from (p:Person)")
-        .await?;
+    let result = graph.execute_statement(
+        "explain find p.name from (p:Person)"
+    ).await?;
 
     match result {
         NqlResult::Explain(plan) => {
@@ -173,9 +156,9 @@ async fn test_execute_statement_explain() -> Result<()> {
 async fn test_execute_statement_explain_reports_community_cost_notes() -> Result<()> {
     let graph = Graph::in_memory().await?;
 
-    let result = graph
-        .execute_statement("explain find community(p) as c from (p:Person) limit 1")
-        .await?;
+    let result = graph.execute_statement(
+        "explain find community(p) as c from (p:Person) limit 1"
+    ).await?;
 
     match result {
         NqlResult::Explain(plan) => {
@@ -221,9 +204,9 @@ async fn test_execute_nql_backward_compat_with_add() -> Result<()> {
     let graph = Graph::in_memory().await?;
 
     // Before C1 fix, this would fail with "Expected Query statement"
-    let result = graph
-        .execute_nql(r#"add (bob:Person {name: "Bob"})"#)
-        .await?;
+    let result = graph.execute_nql(
+        r#"add (bob:Person {name: "Bob"})"#
+    ).await?;
 
     // Should return a QueryResult with summary
     assert_eq!(result.len(), 1, "Should return 1 row with summary");
@@ -238,9 +221,9 @@ async fn test_execute_nql_backward_compat_with_create_index() -> Result<()> {
     let graph = Graph::in_memory().await?;
 
     // Before C1 fix, this would fail with "Expected Query statement"
-    let result = graph
-        .execute_nql("create index on Person(name) type hash")
-        .await?;
+    let result = graph.execute_nql(
+        "create index on Person(name) type hash"
+    ).await?;
 
     assert_eq!(result.len(), 1);
 
@@ -257,14 +240,11 @@ async fn test_nql_result_into_query() -> Result<()> {
 
     // Setup
     let mut tx = graph.begin_transaction().await?;
-    tx.add_node(Node::new("Fruit").with_property("name", PropertyValue::String("Nopal".into())))
-        .await?;
+    tx.add_node(Node::new("Fruit").with_property("name", PropertyValue::String("Nopal".into()))).await?;
     tx.commit().await?;
 
     // into_query on a Query result should succeed
-    let result = graph
-        .execute_statement("find f.name from (f:Fruit)")
-        .await?;
+    let result = graph.execute_statement("find f.name from (f:Fruit)").await?;
     let qr = result.into_query()?;
     assert!(!qr.is_empty());
 

@@ -2,13 +2,13 @@
 //
 // Python wrapper for Transaction
 
-use super::to_py_result;
-use crate::Transaction as RustTransaction;
-use crate::types::{Edge, Node, PropertyValue};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::HashMap;
+use crate::Transaction as RustTransaction;
+use crate::types::{Node, Edge, PropertyValue};
 use uuid::Uuid;
+use super::to_py_result;
 
 /// Python wrapper for Transaction
 #[pyclass(name = "Transaction")]
@@ -24,7 +24,7 @@ impl PyTransaction {
     fn take_inner(&mut self) -> PyResult<RustTransaction> {
         self.inner.take().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "Transaction already committed or rolled back",
+                "Transaction already committed or rolled back"
             )
         })
     }
@@ -32,7 +32,7 @@ impl PyTransaction {
     fn get_inner_mut(&mut self) -> PyResult<&mut RustTransaction> {
         self.inner.as_mut().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "Transaction already committed or rolled back",
+                "Transaction already committed or rolled back"
             )
         })
     }
@@ -52,7 +52,11 @@ impl PyTransaction {
     /// Example:
     ///     >>> tx = graph.begin_transaction()
     ///     >>> node_id = tx.add_node("Person", {"name": "Alice", "age": 30})
-    fn add_node(&mut self, label: &str, properties: &Bound<'_, PyDict>) -> PyResult<String> {
+    fn add_node(
+        &mut self,
+        label: &str,
+        properties: &Bound<'_, PyDict>
+    ) -> PyResult<String> {
         let tx = self.get_inner_mut()?;
 
         // Convert Python dict to HashMap<String, PropertyValue>
@@ -75,10 +79,9 @@ impl PyTransaction {
             } else if let Ok(bytes) = value.extract::<Vec<u8>>() {
                 PropertyValue::Bytes(bytes)
             } else {
-                return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
-                    "Unsupported property type for key '{}'",
-                    key_str
-                )));
+                return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    format!("Unsupported property type for key '{}'", key_str)
+                ));
             };
 
             props.insert(key_str, prop_value);
@@ -86,20 +89,20 @@ impl PyTransaction {
 
         // Create node
         let mut node = Node::new(label);
-        for (key, value) in props {
+        for(key, value) in props{
             node = node.with_property(key, value);
         }
         let node_id = node.id;
 
         // Add to transaction (blocking on async)
-        let rt = tokio::runtime::Runtime::new().map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                "Failed to create runtime: {}",
-                e
-            ))
-        })?;
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                format!("Failed to create runtime: {}", e)
+            ))?;
 
-        let _ = rt.block_on(async { tx.add_node(node).await });
+        let _ = rt.block_on(async {
+            tx.add_node(node).await
+        });
 
         to_py_result(Ok(()))?;
 
@@ -126,18 +129,20 @@ impl PyTransaction {
         source: &str,
         target: &str,
         edge_type: &str,
-        properties: Option<&Bound<'_, PyDict>>,
+        properties: Option<&Bound<'_, PyDict>>
     ) -> PyResult<String> {
         let tx = self.get_inner_mut()?;
 
         // Parse UUIDs
-        let source_id = Uuid::parse_str(source).map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid source UUID: {}", e))
-        })?;
+        let source_id = Uuid::parse_str(source)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Invalid source UUID: {}", e)
+            ))?;
 
-        let target_id = Uuid::parse_str(target).map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid target UUID: {}", e))
-        })?;
+        let target_id = Uuid::parse_str(target)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Invalid target UUID: {}", e)
+            ))?;
 
         // Create edge
         let mut edge = Edge::new(source_id, target_id, edge_type);
@@ -161,10 +166,9 @@ impl PyTransaction {
                 } else if let Ok(bytes) = value.extract::<Vec<u8>>() {
                     PropertyValue::Bytes(bytes)
                 } else {
-                    return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
-                        "Unsupported property type for key '{}'",
-                        key_str
-                    )));
+                    return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                        format!("Unsupported property type for key '{}'", key_str)
+                    ));
                 };
 
                 edge.properties.insert(key_str, prop_value);
@@ -186,14 +190,14 @@ impl PyTransaction {
     fn commit(&mut self) -> PyResult<()> {
         let tx = self.take_inner()?;
 
-        let rt = tokio::runtime::Runtime::new().map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                "Failed to create runtime: {}",
-                e
-            ))
-        })?;
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                format!("Failed to create runtime: {}", e)
+            ))?;
 
-        let result = rt.block_on(async { tx.commit().await });
+        let result = rt.block_on(async {
+            tx.commit().await
+        });
 
         to_py_result(result)
     }
@@ -205,14 +209,14 @@ impl PyTransaction {
     fn rollback(&mut self) -> PyResult<()> {
         let tx = self.take_inner()?;
 
-        let rt = tokio::runtime::Runtime::new().map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                "Failed to create runtime: {}",
-                e
-            ))
-        })?;
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                format!("Failed to create runtime: {}", e)
+            ))?;
 
-        let result = rt.block_on(async { tx.rollback() });
+        let result = rt.block_on(async {
+            tx.rollback()
+        });
 
         to_py_result(result)
     }

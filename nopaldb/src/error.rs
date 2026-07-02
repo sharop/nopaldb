@@ -15,6 +15,7 @@ pub enum NopalError {
     // ═══════════════════════════════════════════════════════════════
     // ERRORES DE ENTIDADES (Nodos y Aristas)
     // ═══════════════════════════════════════════════════════════════
+
     /// Nodo no encontrado
     #[error("Node not found: {0}")]
     NodeNotFound(String),
@@ -26,6 +27,7 @@ pub enum NopalError {
     // ═══════════════════════════════════════════════════════════════
     // ERRORES DE STORAGE
     // ═══════════════════════════════════════════════════════════════
+
     /// Error del motor de storage (sled)
     #[error("Storage error: {0}")]
     StorageError(#[from] sled::Error),
@@ -45,6 +47,7 @@ pub enum NopalError {
     // ═══════════════════════════════════════════════════════════════
     // ERRORES DE TRANSACCIONES
     // ═══════════════════════════════════════════════════════════════
+
     /// Transacción no está activa
     #[error("Transaction is not active")]
     TransactionNotActive,
@@ -64,6 +67,7 @@ pub enum NopalError {
     // ═══════════════════════════════════════════════════════════════
     // ERRORES DE QUERIES (NQL)
     // ═══════════════════════════════════════════════════════════════
+
     /// Error al parsear query NQL
     #[error("Query parse error: {0}")]
     QueryParseError(String),
@@ -79,6 +83,7 @@ pub enum NopalError {
     // ═══════════════════════════════════════════════════════════════
     // ERRORES DE SKETCH/COMMIT (NQL v0.2)
     // ═══════════════════════════════════════════════════════════════
+
     /// Sketch no encontrado
     #[error("Sketch not found: {0}")]
     SketchNotFound(String),
@@ -101,6 +106,7 @@ pub enum NopalError {
     // ═══════════════════════════════════════════════════════════════
     // ERRORES GENÉRICOS
     // ═══════════════════════════════════════════════════════════════
+
     /// Error personalizado (catch-all)
     ///
     /// Usar cuando ninguna otra variante aplica.

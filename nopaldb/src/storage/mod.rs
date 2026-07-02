@@ -2,21 +2,22 @@
 
 pub mod backend;
 
-use crate::error::{NopalError, Result};
-use crate::mvcc::{VersionedEdge, VersionedNode};
-use crate::types::{Edge, EdgeId, Node, NodeId, PropertyValue};
-pub use backend::{StorageBackend, StorageEngine, StorageOptions, StorageProfile, StorageTuning};
-use sled::Db;
-use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
-#[cfg(feature = "embeddings")]
-use std::thread;
-use tokio::sync::RwLock;
+use std::path::Path;
+use std::collections::HashMap;
+use sled::Db;
+use crate::error::{NopalError, Result};
+use crate::types::{Node, Edge, NodeId, EdgeId, PropertyValue};
+use crate::mvcc::{VersionedNode, VersionedEdge};
+pub use backend::{StorageBackend, StorageEngine, StorageOptions, StorageProfile, StorageTuning};
 
 /// Storage engine basado en sled
+/// Storage engine basado en sled.
+///
+/// Sled es thread-safe internamente (Send + Sync) con MVCC propio.
+/// No requiere locking externo — todas las operaciones son concurrentes.
 pub struct Storage {
-    db: Arc<RwLock<Db>>,
+    db: Arc<Db>,
     profile: StorageProfile,
 }
 
@@ -26,27 +27,14 @@ fn serialize<T: serde::Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
 }
 
 fn deserialize<'a, T: serde::de::Deserialize<'a>>(bytes: &'a [u8]) -> Result<T> {
-    rmp_serde::from_slice(bytes).map_err(|e| {
-        NopalError::SerializationError(format!("MessagePack deserialize error: {}", e))
-    })
+    rmp_serde::from_slice(bytes)
+        .map_err(|e| NopalError::SerializationError(format!("MessagePack deserialize error: {}", e)))
 }
 
 impl Storage {
     #[cfg(feature = "embeddings")]
-    const SYNC_EMBEDDING_READ_RETRIES: usize = 64;
-
-    #[cfg(feature = "embeddings")]
     fn open_embeddings_tree_sync(&self) -> Result<sled::Tree> {
-        for _ in 0..Self::SYNC_EMBEDDING_READ_RETRIES {
-            if let Ok(db) = self.db.try_read() {
-                return Ok(db.open_tree("embeddings")?);
-            }
-            thread::yield_now();
-        }
-
-        Err(NopalError::custom(
-            "Embedding storage busy for sync path evaluation",
-        ))
+        Ok(self.db.open_tree("embeddings")?)
     }
 
     /// Crea una nueva instancia de storage
@@ -55,7 +43,10 @@ impl Storage {
     }
 
     /// Crea una nueva instancia de storage con opciones explícitas.
-    pub async fn new_with_options(path: impl AsRef<Path>, options: StorageOptions) -> Result<Self> {
+    pub async fn new_with_options(
+        path: impl AsRef<Path>,
+        options: StorageOptions,
+    ) -> Result<Self> {
         match options.engine {
             StorageEngine::Sled => Self::new_with_profile(path, options.profile).await,
         }
@@ -75,7 +66,7 @@ impl Storage {
         let db = config.open().map_err(NopalError::StorageError)?;
 
         Ok(Self {
-            db: Arc::new(RwLock::new(db)),
+            db: Arc::new(db),
             profile,
         })
     }
@@ -106,7 +97,7 @@ impl Storage {
         let db = config.open().map_err(NopalError::StorageError)?;
 
         Ok(Self {
-            db: Arc::new(RwLock::new(db)),
+            db: Arc::new(db),
             profile,
         })
     }
@@ -120,8 +111,7 @@ impl Storage {
         let key = format!("node:{}", node.id);
         let value = serialize(node)?;
 
-        let db = self.db.write().await; // Lock de escritura
-        db.insert(key.as_bytes(), value)?;
+        self.db.insert(key.as_bytes(), value)?;
 
         Ok(())
     }
@@ -130,9 +120,7 @@ impl Storage {
     pub async fn get_node(&self, id: NodeId) -> Result<Node> {
         let key = format!("node:{}", id);
 
-        let db = self.db.read().await; // Lock de lectura
-        let value = db
-            .get(key.as_bytes())?
+        let value = self.db.get(key.as_bytes())?
             .ok_or_else(|| NopalError::NodeNotFound(id.to_string()))?;
 
         let node: Node = deserialize(&value)?;
@@ -144,8 +132,7 @@ impl Storage {
     pub async fn delete_node(&self, id: NodeId) -> Result<()> {
         let key = format!("node:{}", id);
 
-        let db = self.db.write().await;
-        db.remove(key.as_bytes())?
+        self.db.remove(key.as_bytes())?
             .ok_or_else(|| NopalError::NodeNotFound(id.to_string()))?;
 
         Ok(())
@@ -156,21 +143,19 @@ impl Storage {
         let key = edge.id.to_string();
         let value = serialize(edge)?;
 
-        let db = self.db.write().await;
-        let edges_tree = db.open_tree("edges")?; // ← Tree "edges"
+        let edges_tree = self.db.open_tree("edges")?;  // ← Tree "edges"
         edges_tree.insert(key.as_bytes(), value)?;
 
         Ok(())
+
     }
 
     /// Obtiene una arista por ID
     pub async fn get_edge(&self, id: EdgeId) -> Result<Edge> {
         let key = id.to_string();
 
-        let db = self.db.read().await;
-        let edges_tree = db.open_tree("edges")?; // ← Tree "edges"
-        let value = edges_tree
-            .get(key.as_bytes())?
+        let edges_tree = self.db.open_tree("edges")?;  // ← Tree "edges"
+        let value = edges_tree.get(key.as_bytes())?
             .ok_or_else(|| NopalError::EdgeNotFound(id.to_string()))?;
 
         let edge: Edge = deserialize(&value)?;
@@ -180,16 +165,14 @@ impl Storage {
     pub async fn node_exists(&self, id: NodeId) -> Result<bool> {
         let key = format!("node:{}", id);
 
-        let db = self.db.read().await;
-        Ok(db.contains_key(key.as_bytes())?)
+        Ok(self.db.contains_key(key.as_bytes())?)
     }
 
     /// Verifica si una arista existe
     pub async fn edge_exists(&self, id: EdgeId) -> Result<bool> {
         let key = id.to_string();
 
-        let db = self.db.read().await;
-        let edges_tree = db.open_tree("edges")?; // ← Tree "edges"
+        let edges_tree = self.db.open_tree("edges")?;  // ← Tree "edges"
         Ok(edges_tree.contains_key(key.as_bytes())?)
     }
 
@@ -197,8 +180,7 @@ impl Storage {
     pub async fn delete_edge(&self, id: EdgeId) -> Result<()> {
         let key = id.to_string();
 
-        let db = self.db.write().await;
-        let edges_tree = db.open_tree("edges")?; // ← Tree "edges"
+        let edges_tree = self.db.open_tree("edges")?;  // ← Tree "edges"
         edges_tree.remove(key.as_bytes())?;
 
         Ok(())
@@ -218,11 +200,10 @@ impl Storage {
         let value = serialize(&versioned)?;
         let current_value = serialize(&versioned)?;
 
-        let db = self.db.write().await;
-        let tree = db.open_tree("versioned_edges")?;
+        let tree = self.db.open_tree("versioned_edges")?;
         tree.insert(key.as_bytes(), value)?;
 
-        let current_tree = db.open_tree("versioned_edges_current")?;
+        let current_tree = self.db.open_tree("versioned_edges_current")?;
         current_tree.insert(edge.id.to_string().as_bytes(), current_value)?;
 
         Ok(())
@@ -230,8 +211,8 @@ impl Storage {
 
     /// Obtiene la versión actual de una arista del historial MVCC.
     pub async fn get_current_versioned_edge(&self, id: EdgeId) -> Result<VersionedEdge> {
-        let db = self.db.read().await;
-        let current_tree = db.open_tree("versioned_edges_current")?;
+        
+        let current_tree = self.db.open_tree("versioned_edges_current")?;
         let value = current_tree
             .get(id.to_string().as_bytes())?
             .ok_or_else(|| NopalError::EdgeNotFound(id.to_string()))?;
@@ -248,12 +229,11 @@ impl Storage {
         let key = format!("{}:v{:020}", id, closed.version);
         let value = serialize(&closed)?;
 
-        let db = self.db.write().await;
-        let tree = db.open_tree("versioned_edges")?;
+        let tree = self.db.open_tree("versioned_edges")?;
         tree.insert(key.as_bytes(), value)?;
 
         // Eliminar la entrada current (la arista ya no está activa)
-        let current_tree = db.open_tree("versioned_edges_current")?;
+        let current_tree = self.db.open_tree("versioned_edges_current")?;
         current_tree.remove(id.to_string().as_bytes())?;
 
         Ok(())
@@ -262,8 +242,8 @@ impl Storage {
     /// Retorna todas las versiones de una arista, ordenadas de más antigua a más reciente.
     pub async fn get_edge_history(&self, id: EdgeId) -> Result<Vec<VersionedEdge>> {
         let prefix = format!("{}:v", id);
-        let db = self.db.read().await;
-        let tree = db.open_tree("versioned_edges")?;
+        
+        let tree = self.db.open_tree("versioned_edges")?;
 
         let mut versions: Vec<VersionedEdge> = tree
             .scan_prefix(prefix.as_bytes())
@@ -282,8 +262,8 @@ impl Storage {
         edge_type: &str,
         timestamp: u64,
     ) -> Result<Vec<Edge>> {
-        let db = self.db.read().await;
-        let tree = db.open_tree("versioned_edges")?;
+        
+        let tree = self.db.open_tree("versioned_edges")?;
 
         // Track seen edge_ids to only include the best (latest valid) version per edge
         let mut best: HashMap<EdgeId, VersionedEdge> = HashMap::new();
@@ -309,8 +289,7 @@ impl Storage {
         let key = format!("idx:out:{}", node_id);
         let value = serialize(edges)?;
 
-        let db = self.db.write().await;
-        db.insert(key.as_bytes(), value)?;
+        self.db.insert(key.as_bytes(), value)?;
 
         Ok(())
     }
@@ -319,8 +298,7 @@ impl Storage {
     pub async fn load_adjacency_out(&self, node_id: NodeId) -> Result<Vec<EdgeId>> {
         let key = format!("idx:out:{}", node_id);
 
-        let db = self.db.read().await;
-        let value = db.get(key.as_bytes())?;
+        let value = self.db.get(key.as_bytes())?;
 
         match value {
             Some(v) => {
@@ -336,8 +314,7 @@ impl Storage {
         let key = format!("idx:in:{}", node_id);
         let value = serialize(edges)?;
 
-        let db = self.db.write().await;
-        db.insert(key.as_bytes(), value)?;
+        self.db.insert(key.as_bytes(), value)?;
 
         Ok(())
     }
@@ -346,8 +323,7 @@ impl Storage {
     pub async fn load_adjacency_in(&self, node_id: NodeId) -> Result<Vec<EdgeId>> {
         let key = format!("idx:in:{}", node_id);
 
-        let db = self.db.read().await;
-        let value = db.get(key.as_bytes())?;
+        let value = self.db.get(key.as_bytes())?;
 
         match value {
             Some(v) => {
@@ -359,35 +335,30 @@ impl Storage {
     }
 
     /// Carga todos los índices de adyacencia (para reconstruir al abrir el grafo)
-    pub async fn load_all_adjacency_indices(
-        &self,
-    ) -> Result<(
-        HashMap<NodeId, Vec<EdgeId>>, // adjacency_out
-        HashMap<NodeId, Vec<EdgeId>>, // adjacency_in
+    pub async fn load_all_adjacency_indices(&self) -> Result<(
+        HashMap<NodeId, Vec<EdgeId>>,  // adjacency_out
+        HashMap<NodeId, Vec<EdgeId>>,  // adjacency_in
     )> {
         let mut adjacency_out = HashMap::new();
         let mut adjacency_in = HashMap::new();
 
-        let db = self.db.read().await;
 
         // Iterar sobre todas las keys que empiezan con "idx:"
-        for item in db.scan_prefix(b"idx:") {
+        for item in self.db.scan_prefix(b"idx:") {
             let (key, value) = item?;
             let key_str = String::from_utf8_lossy(&key);
 
             if key_str.starts_with("idx:out:") {
                 if let Some(node_id_str) = key_str.strip_prefix("idx:out:")
-                    && let Ok(node_id) = uuid::Uuid::parse_str(node_id_str)
-                {
-                    let edges: Vec<EdgeId> = deserialize(&value)?;
-                    adjacency_out.insert(node_id, edges);
+                    && let Ok(node_id) = uuid::Uuid::parse_str(node_id_str) {
+                        let edges: Vec<EdgeId> = deserialize(&value)?;
+                        adjacency_out.insert(node_id, edges);
                 }
             } else if key_str.starts_with("idx:in:")
                 && let Some(node_id_str) = key_str.strip_prefix("idx:in:")
-                && let Ok(node_id) = uuid::Uuid::parse_str(node_id_str)
-            {
-                let edges: Vec<EdgeId> = deserialize(&value)?;
-                adjacency_in.insert(node_id, edges);
+                && let Ok(node_id) = uuid::Uuid::parse_str(node_id_str) {
+                    let edges: Vec<EdgeId> = deserialize(&value)?;
+                    adjacency_in.insert(node_id, edges);
             }
         }
 
@@ -395,14 +366,14 @@ impl Storage {
     }
 
     /// Reconstruye índices desde cero escaneando todas las aristas
-    pub async fn rebuild_indices(
-        &self,
-    ) -> Result<(HashMap<NodeId, Vec<EdgeId>>, HashMap<NodeId, Vec<EdgeId>>)> {
+    pub async fn rebuild_indices(&self) -> Result<(
+        HashMap<NodeId, Vec<EdgeId>>,
+        HashMap<NodeId, Vec<EdgeId>>,
+    )> {
         let mut adjacency_out: HashMap<NodeId, Vec<EdgeId>> = HashMap::new();
         let mut adjacency_in: HashMap<NodeId, Vec<EdgeId>> = HashMap::new();
 
-        let db = self.db.read().await;
-        let edges_tree = db.open_tree("edges")?;
+        let edges_tree = self.db.open_tree("edges")?;
 
         // Escanear todas las aristas del tree "edges"
         for item in edges_tree.iter() {
@@ -410,22 +381,22 @@ impl Storage {
             let edge: Edge = deserialize(&value)?;
 
             // Actualizar índice out
-            adjacency_out.entry(edge.source).or_default().push(edge.id);
+            adjacency_out
+                .entry(edge.source)
+                .or_default()
+                .push(edge.id);
 
             // Actualizar índice in
-            adjacency_in.entry(edge.target).or_default().push(edge.id);
+            adjacency_in
+                .entry(edge.target)
+                .or_default()
+                .push(edge.id);
         }
 
         Ok((adjacency_out, adjacency_in))
     }
-
     /// Guarda un índice de propiedad: clave -> valor -> lista de nodos
-    pub async fn save_property_index(
-        &self,
-        property: &str,
-        value: &PropertyValue,
-        node_id: NodeId,
-    ) -> Result<()> {
+    pub async fn save_property_index(&self, property: &str, value: &PropertyValue, node_id: NodeId) -> Result<()> {
         let value_str = match value {
             PropertyValue::String(s) => s.clone(),
             PropertyValue::Int(i) => i.to_string(),
@@ -440,10 +411,8 @@ impl Storage {
         // Clave del índice: idx:prop:{prop_name}:{prop_value}
         let key = format!("idx:prop:{}:{}", property, value_str);
 
-        let db = self.db.write().await;
-
         // 1. Leer lista actual de nodos para este valor
-        let mut nodes: Vec<NodeId> = match db.get(key.as_bytes())? {
+        let mut nodes: Vec<NodeId> = match self.db.get(key.as_bytes())? {
             Some(v) => deserialize(&v)?,
             None => Vec::new(),
         };
@@ -454,7 +423,7 @@ impl Storage {
 
             // 3. Guardar lista actualizada
             let value_bytes = serialize(&nodes)?;
-            db.insert(key.as_bytes(), value_bytes)?;
+            self.db.insert(key.as_bytes(), value_bytes)?;
         }
 
         Ok(())
@@ -473,16 +442,12 @@ impl Storage {
             PropertyValue::Float(f) => f.to_string(),
             PropertyValue::Bool(b) => b.to_string(),
             PropertyValue::Null => "null".to_string(),
-            PropertyValue::Bytes(_) | PropertyValue::List(_) | PropertyValue::Object(_) => {
-                return Ok(());
-            }
+            PropertyValue::Bytes(_) | PropertyValue::List(_) | PropertyValue::Object(_) => return Ok(()),
         };
 
         let key = format!("idx:prop:{}:{}", property, value_str);
 
-        let db = self.db.write().await;
-
-        let mut nodes: Vec<NodeId> = match db.get(key.as_bytes())? {
+        let mut nodes: Vec<NodeId> = match self.db.get(key.as_bytes())? {
             Some(v) => deserialize(&v)?,
             None => return Ok(()),
         };
@@ -490,21 +455,17 @@ impl Storage {
         nodes.retain(|&id| id != node_id);
 
         if nodes.is_empty() {
-            db.remove(key.as_bytes())?;
+            self.db.remove(key.as_bytes())?;
         } else {
             let value_bytes = serialize(&nodes)?;
-            db.insert(key.as_bytes(), value_bytes)?;
+            self.db.insert(key.as_bytes(), value_bytes)?;
         }
 
         Ok(())
     }
 
     /// Obtiene lista de nodos que tienen una propiedad con cierto valor
-    pub async fn get_nodes_by_property(
-        &self,
-        property: &str,
-        value: &PropertyValue,
-    ) -> Result<Vec<NodeId>> {
+    pub async fn get_nodes_by_property(&self, property: &str, value: &PropertyValue) -> Result<Vec<NodeId>> {
         let value_str = match value {
             PropertyValue::String(s) => s.clone(),
             PropertyValue::Int(i) => i.to_string(),
@@ -516,8 +477,7 @@ impl Storage {
 
         let key = format!("idx:prop:{}:{}", property, value_str);
 
-        let db = self.db.read().await;
-        match db.get(key.as_bytes())? {
+        match self.db.get(key.as_bytes())? {
             Some(v) => {
                 let nodes: Vec<NodeId> = deserialize(&v)?;
                 Ok(nodes)
@@ -530,19 +490,13 @@ impl Storage {
     // ✅ MÉTODOS DE EMBEDDINGS
     // ═════════════════════════════════════════════════════════
 
-    /// Comprueba (de forma no bloqueante) si existe un embedding para `node_id` y `model`.
-    /// Usa `try_read()` en el lock del DB — si hay contención, devuelve `false`
-    /// de forma conservadora en lugar de bloquearse.
+    /// Comprueba (de forma síncrona) si existe un embedding para `node_id` y `model`.
     #[cfg(feature = "embeddings")]
     pub fn node_embedding_exists_sync(&self, node_id: crate::types::NodeId, model: &str) -> bool {
-        self.try_node_embedding_exists_sync(node_id, model)
-            .unwrap_or(false)
+        self.try_node_embedding_exists_sync(node_id, model).unwrap_or(false)
     }
 
     /// Comprueba (sync, con semántica estricta) si existe un embedding para `node_id` y `model`.
-    ///
-    /// Hace un número acotado de reintentos sobre el lock; si el storage sigue ocupado,
-    /// devuelve error en lugar de degradar silenciosamente a `false`.
     #[cfg(feature = "embeddings")]
     pub fn try_node_embedding_exists_sync(
         &self,
@@ -554,9 +508,7 @@ impl Storage {
         Ok(tree.contains_key(key.as_bytes())?)
     }
 
-    /// Carga (sync, no-bloqueante) el embedding de `node_id` y `model`.
-    ///
-    /// Usa `try_read()` para no bloquear el runtime en evaluacion path-aware.
+    /// Carga (sync) el embedding de `node_id` y `model`.
     #[cfg(feature = "embeddings")]
     pub fn load_node_embedding_sync(
         &self,
@@ -565,22 +517,20 @@ impl Storage {
     ) -> Result<crate::embeddings::Embedding> {
         let key = format!("{}:{}", node_id, model);
         let tree = self.open_embeddings_tree_sync()?;
-        let value = tree.get(key.as_bytes())?.ok_or_else(|| {
-            NopalError::custom(format!(
-                "Embedding not found for node {} model {}",
-                node_id, model
-            ))
-        })?;
+        let value = tree
+            .get(key.as_bytes())?
+            .ok_or_else(|| NopalError::custom(format!("Embedding not found for node {} model {}", node_id, model)))?;
         let embedding: crate::embeddings::Embedding = deserialize(&value)?;
         Ok(embedding)
     }
 
     /// Comprueba (sync, con semántica estricta) si existe un embedding para `edge_id` y `model`.
-    ///
-    /// Hace un número acotado de reintentos sobre el lock; si el storage sigue ocupado,
-    /// devuelve error en lugar de degradar silenciosamente a `false`.
     #[cfg(feature = "embeddings")]
-    pub fn try_edge_embedding_exists_sync(&self, edge_id: EdgeId, model: &str) -> Result<bool> {
+    pub fn try_edge_embedding_exists_sync(
+        &self,
+        edge_id: EdgeId,
+        model: &str,
+    ) -> Result<bool> {
         let key = format!("e:{}:{}", edge_id, model);
         let tree = self.open_embeddings_tree_sync()?;
         Ok(tree.contains_key(key.as_bytes())?)
@@ -595,77 +545,52 @@ impl Storage {
     ) -> Result<crate::embeddings::EdgeEmbedding> {
         let key = format!("e:{}:{}", edge_id, model);
         let tree = self.open_embeddings_tree_sync()?;
-        let value = tree.get(key.as_bytes())?.ok_or_else(|| {
-            NopalError::custom(format!(
-                "Embedding not found for edge {} model {}",
-                edge_id, model
-            ))
-        })?;
+        let value = tree
+            .get(key.as_bytes())?
+            .ok_or_else(|| NopalError::custom(format!("Embedding not found for edge {} model {}", edge_id, model)))?;
         let embedding: crate::embeddings::EdgeEmbedding = deserialize(&value)?;
         Ok(embedding)
     }
 
     #[cfg(feature = "embeddings")]
-    pub async fn save_node_embedding(
-        &self,
-        embedding: &crate::embeddings::Embedding,
-    ) -> Result<()> {
+    pub async fn save_node_embedding(&self, embedding: &crate::embeddings::Embedding) -> Result<()> {
         let key = format!("{}:{}", embedding.node_id, embedding.model);
         let value = serialize(embedding)?;
-        let db = self.db.write().await;
-        let tree = db.open_tree("embeddings")?;
+        
+        let tree = self.db.open_tree("embeddings")?;
         tree.insert(key.as_bytes(), value)?;
         Ok(())
     }
 
     #[cfg(feature = "embeddings")]
-    pub async fn load_node_embedding(
-        &self,
-        node_id: NodeId,
-        model: &str,
-    ) -> Result<crate::embeddings::Embedding> {
+    pub async fn load_node_embedding(&self, node_id: NodeId, model: &str) -> Result<crate::embeddings::Embedding> {
         let key = format!("{}:{}", node_id, model);
-        let db = self.db.read().await;
-        let tree = db.open_tree("embeddings")?;
-        let value = tree.get(key.as_bytes())?.ok_or_else(|| {
-            NopalError::custom(format!(
-                "Embedding not found for node {} model {}",
-                node_id, model
-            ))
-        })?;
+        
+        let tree = self.db.open_tree("embeddings")?;
+        let value = tree.get(key.as_bytes())?
+            .ok_or_else(|| NopalError::custom(format!("Embedding not found for node {} model {}", node_id, model)))?;
         let embedding: crate::embeddings::Embedding = deserialize(&value)?;
         Ok(embedding)
     }
 
     #[cfg(feature = "embeddings")]
-    pub async fn save_edge_embedding(
-        &self,
-        embedding: &crate::embeddings::EdgeEmbedding,
-    ) -> Result<()> {
+    pub async fn save_edge_embedding(&self, embedding: &crate::embeddings::EdgeEmbedding) -> Result<()> {
         // Prefijo "e:" distingue aristas de nodos en el mismo árbol Sled
         let key = format!("e:{}:{}", embedding.edge_id, embedding.model);
         let value = serialize(embedding)?;
-        let db = self.db.write().await;
-        let tree = db.open_tree("embeddings")?;
+        
+        let tree = self.db.open_tree("embeddings")?;
         tree.insert(key.as_bytes(), value)?;
         Ok(())
     }
 
     #[cfg(feature = "embeddings")]
-    pub async fn load_edge_embedding(
-        &self,
-        edge_id: EdgeId,
-        model: &str,
-    ) -> Result<crate::embeddings::EdgeEmbedding> {
+    pub async fn load_edge_embedding(&self, edge_id: EdgeId, model: &str) -> Result<crate::embeddings::EdgeEmbedding> {
         let key = format!("e:{}:{}", edge_id, model);
-        let db = self.db.read().await;
-        let tree = db.open_tree("embeddings")?;
-        let value = tree.get(key.as_bytes())?.ok_or_else(|| {
-            NopalError::custom(format!(
-                "Embedding not found for edge {} model {}",
-                edge_id, model
-            ))
-        })?;
+        
+        let tree = self.db.open_tree("embeddings")?;
+        let value = tree.get(key.as_bytes())?
+            .ok_or_else(|| NopalError::custom(format!("Embedding not found for edge {} model {}", edge_id, model)))?;
         let embedding: crate::embeddings::EdgeEmbedding = deserialize(&value)?;
         Ok(embedding)
     }
@@ -676,15 +601,7 @@ impl Storage {
 
     #[cfg(feature = "embeddings")]
     fn open_path_ref_tree_sync(&self) -> Result<sled::Tree> {
-        for _ in 0..Self::SYNC_EMBEDDING_READ_RETRIES {
-            if let Ok(db) = self.db.try_read() {
-                return Ok(db.open_tree("path_ref_embeddings")?);
-            }
-            thread::yield_now();
-        }
-        Err(NopalError::custom(
-            "PathReferenceEmbedding storage busy for sync evaluation",
-        ))
+        Ok(self.db.open_tree("path_ref_embeddings")?)
     }
 
     /// Persiste una referencia de path embedding (E-8).
@@ -695,13 +612,11 @@ impl Storage {
     ) -> Result<()> {
         emb.validate()?;
         let key = crate::embeddings::PathReferenceEmbedding::storage_key(
-            &emb.name,
-            &emb.node_model,
-            &emb.edge_model,
+            &emb.name, &emb.node_model, &emb.edge_model,
         );
         let value = serialize(emb)?;
-        let db = self.db.write().await;
-        let tree = db.open_tree("path_ref_embeddings")?;
+        
+        let tree = self.db.open_tree("path_ref_embeddings")?;
         tree.insert(key.as_bytes(), value)?;
         Ok(())
     }
@@ -714,8 +629,7 @@ impl Storage {
         node_model: &str,
         edge_model: &str,
     ) -> Result<crate::embeddings::PathReferenceEmbedding> {
-        let key =
-            crate::embeddings::PathReferenceEmbedding::storage_key(name, node_model, edge_model);
+        let key = crate::embeddings::PathReferenceEmbedding::storage_key(name, node_model, edge_model);
         let tree = self.open_path_ref_tree_sync()?;
         match tree.get(key.as_bytes())? {
             Some(bytes) => {
@@ -737,8 +651,7 @@ impl Storage {
         node_model: &str,
         edge_model: &str,
     ) -> Result<bool> {
-        let key =
-            crate::embeddings::PathReferenceEmbedding::storage_key(name, node_model, edge_model);
+        let key = crate::embeddings::PathReferenceEmbedding::storage_key(name, node_model, edge_model);
         let tree = self.open_path_ref_tree_sync()?;
         Ok(tree.contains_key(key.as_bytes())?)
     }
@@ -756,8 +669,8 @@ impl Storage {
         let mut results = Vec::new();
         for item in tree.iter() {
             let (key_bytes, val_bytes) = item?;
-            let key =
-                std::str::from_utf8(&key_bytes).map_err(|e| NopalError::custom(e.to_string()))?;
+            let key = std::str::from_utf8(&key_bytes)
+                .map_err(|e| NopalError::custom(e.to_string()))?;
             // Clave: "name\x00node_model\x00edge_model"
             let parts: Vec<&str> = key.splitn(3, '\x00').collect();
             if parts.len() == 3 && parts[1] == node_model && parts[2] == edge_model {
@@ -776,13 +689,13 @@ impl Storage {
         model: &str,
     ) -> Result<Vec<crate::embeddings::Embedding>> {
         let suffix = format!(":{}", model);
-        let db = self.db.read().await;
-        let tree = db.open_tree("embeddings")?;
+        
+        let tree = self.db.open_tree("embeddings")?;
         let mut result = Vec::new();
         for item in tree.iter() {
             let (key_bytes, val_bytes) = item?;
-            let key =
-                std::str::from_utf8(&key_bytes).map_err(|e| NopalError::custom(e.to_string()))?;
+            let key = std::str::from_utf8(&key_bytes)
+                .map_err(|e| NopalError::custom(e.to_string()))?;
             // Excluir aristas (prefijo "e:") y filtrar por modelo
             if !key.starts_with("e:") && key.ends_with(&suffix) {
                 let emb: crate::embeddings::Embedding = deserialize(&val_bytes)?;
@@ -798,24 +711,24 @@ impl Storage {
 
     /// Inserta una versión de nodo (MVCC)
     pub async fn insert_node_version(&self, versioned: &VersionedNode) -> Result<()> {
-        let db = self.db.write().await;
+        
 
         // 1. Guardar versión
         let version_key = format!("node:{}:v{}", versioned.id, versioned.version);
         let version_value = serialize(versioned)?;
 
-        db.insert(version_key.as_bytes(), version_value)?;
+        self.db.insert(version_key.as_bytes(), version_value)?;
 
         // 2. Actualizar puntero current (si es la versión más reciente)
         if versioned.valid_to.is_none() {
             let current_key = format!("node:{}:current", versioned.id);
             let version_bytes = versioned.version.to_le_bytes();
-            db.insert(current_key.as_bytes(), version_bytes.as_ref())?;
+            self.db.insert(current_key.as_bytes(), version_bytes.as_ref())?;
         }
 
         // 3. Agregar a lista de versiones
         let versions_key = format!("node:{}:versions", versioned.id);
-        let mut versions: Vec<u64> = match db.get(versions_key.as_bytes())? {
+        let mut versions: Vec<u64> = match self.db.get(versions_key.as_bytes())? {
             Some(v) => deserialize(&v)?,
             None => Vec::new(),
         };
@@ -826,12 +739,12 @@ impl Storage {
             versions.reverse(); // Más reciente primero
 
             let versions_value = serialize(&versions)?;
-            db.insert(versions_key.as_bytes(), versions_value)?;
+            self.db.insert(versions_key.as_bytes(), versions_value)?;
         }
 
         // 4. Indexar por timestamp
         let ts_key = format!("ts:{}", versioned.timestamp);
-        let mut node_ids: Vec<NodeId> = match db.get(ts_key.as_bytes())? {
+        let mut node_ids: Vec<NodeId> = match self.db.get(ts_key.as_bytes())? {
             Some(v) => deserialize(&v)?,
             None => Vec::new(),
         };
@@ -839,14 +752,10 @@ impl Storage {
         if !node_ids.contains(&versioned.id) {
             node_ids.push(versioned.id);
             let ts_value = serialize(&node_ids)?;
-            db.insert(ts_key.as_bytes(), ts_value)?;
+            self.db.insert(ts_key.as_bytes(), ts_value)?;
         }
 
-        log::debug!(
-            "Inserted node version: {} v{}",
-            versioned.id,
-            versioned.version
-        );
+        log::debug!("Inserted node version: {} v{}", versioned.id, versioned.version);
 
         Ok(())
     }
@@ -855,16 +764,12 @@ impl Storage {
     pub async fn get_current_version(&self, id: NodeId) -> Result<u64> {
         let current_key = format!("node:{}:current", id);
 
-        let db = self.db.read().await;
-        let value = db
-            .get(current_key.as_bytes())?
+        let value = self.db.get(current_key.as_bytes())?
             .ok_or_else(|| NopalError::NodeNotFound(id.to_string()))?;
 
         let version = u64::from_le_bytes(
-            value
-                .as_ref()
-                .try_into()
-                .map_err(|_| NopalError::Custom("Invalid version format".into()))?,
+            value.as_ref().try_into()
+                .map_err(|_| NopalError::Custom("Invalid version format".into()))?
         );
 
         Ok(version)
@@ -874,10 +779,10 @@ impl Storage {
     pub async fn get_node_version(&self, id: NodeId, version: u64) -> Result<VersionedNode> {
         let version_key = format!("node:{}:v{}", id, version);
 
-        let db = self.db.read().await;
-        let value = db
-            .get(version_key.as_bytes())?
-            .ok_or_else(|| NopalError::NodeNotFound(format!("{}:v{}", id, version)))?;
+        let value = self.db.get(version_key.as_bytes())?
+            .ok_or_else(|| NopalError::NodeNotFound(
+                format!("{}:v{}", id, version)
+            ))?;
 
         let versioned: VersionedNode = deserialize(&value)?;
 
@@ -889,8 +794,7 @@ impl Storage {
         // Obtener lista de versiones
         let versions_key = format!("node:{}:versions", id);
 
-        let db = self.db.read().await;
-        let versions: Vec<u64> = match db.get(versions_key.as_bytes())? {
+        let versions: Vec<u64> = match self.db.get(versions_key.as_bytes())? {
             Some(v) => deserialize(&v)?,
             None => {
                 log::debug!("No versions found for node {}", id);
@@ -898,13 +802,9 @@ impl Storage {
             }
         };
 
-        drop(db);
-
         log::debug!(
             "Searching version for node {} at t={}, available versions: {:?}",
-            id,
-            timestamp,
-            versions
+            id, timestamp, versions
         );
 
         // Buscar versión válida en timestamp (más reciente primero)
@@ -935,13 +835,10 @@ impl Storage {
     pub async fn get_node_history(&self, id: NodeId) -> Result<Vec<VersionedNode>> {
         let versions_key = format!("node:{}:versions", id);
 
-        let db = self.db.read().await;
-        let versions: Vec<u64> = match db.get(versions_key.as_bytes())? {
+        let versions: Vec<u64> = match self.db.get(versions_key.as_bytes())? {
             Some(v) => deserialize(&v)?,
             None => return Ok(Vec::new()),
         };
-
-        drop(db);
 
         let mut history = Vec::new();
 
@@ -964,8 +861,7 @@ impl Storage {
         let version_key = format!("node:{}:v{}", id, current_version);
         let version_value = serialize(&versioned)?;
 
-        let db = self.db.write().await;
-        db.insert(version_key.as_bytes(), version_value)?;
+        self.db.insert(version_key.as_bytes(), version_value)?;
 
         Ok(())
     }
@@ -989,20 +885,17 @@ impl Storage {
     /// let stats = storage.gc_old_versions(&config).await?;
     /// println!("Deleted {} versions", stats.versions_deleted);
     /// ```
-    pub async fn gc_old_versions(
-        &self,
-        config: &crate::mvcc::GCConfig,
-    ) -> Result<crate::mvcc::GCStats> {
+    pub async fn gc_old_versions(&self, config: &crate::mvcc::GCConfig) -> Result<crate::mvcc::GCStats> {
         use crate::mvcc::GCStats;
 
         let start = std::time::Instant::now();
         let mut stats = GCStats::default();
 
         // 1. Encontrar todos los nodos con versiones
-        let db = self.db.read().await;
+        
         let mut node_ids_with_versions: Vec<NodeId> = Vec::new();
 
-        for item in db.scan_prefix(b"node:") {
+        for item in self.db.scan_prefix(b"node:") {
             let (key, _) = item?;
             let key_str = String::from_utf8_lossy(&key);
 
@@ -1013,23 +906,18 @@ impl Storage {
                     .and_then(|s| s.strip_suffix(":versions"));
 
                 if let Some(id_str) = node_id_str
-                    && let Ok(node_id) = uuid::Uuid::parse_str(id_str)
-                {
-                    node_ids_with_versions.push(node_id);
+                    && let Ok(node_id) = uuid::Uuid::parse_str(id_str) {
+                        node_ids_with_versions.push(node_id);
                 }
             }
         }
-        drop(db);
+        
 
-        log::debug!(
-            "GC: Found {} nodes with versions",
-            node_ids_with_versions.len()
-        );
+        log::debug!("GC: Found {} nodes with versions", node_ids_with_versions.len());
 
         // 2. Aplicar límite de nodos por ciclo
         let nodes_to_process = if config.max_nodes_per_cycle > 0 {
-            node_ids_with_versions
-                .into_iter()
+            node_ids_with_versions.into_iter()
                 .take(config.max_nodes_per_cycle)
                 .collect::<Vec<_>>()
         } else {
@@ -1069,16 +957,13 @@ impl Storage {
 
             log::debug!(
                 "GC: Node {} - deleting {} versions: {:?}",
-                node_id,
-                versions_to_delete.len(),
-                versions_to_delete
+                node_id, versions_to_delete.len(), versions_to_delete
             );
 
             if !config.dry_run {
                 // Eliminar las versiones
-                let (deleted, bytes_freed) = self
-                    .delete_node_versions(node_id, &versions_to_delete)
-                    .await?;
+                let (deleted, bytes_freed) =
+                    self.delete_node_versions(node_id, &versions_to_delete).await?;
                 stats.versions_deleted += deleted;
                 stats.bytes_freed += bytes_freed;
             } else {
@@ -1100,19 +985,15 @@ impl Storage {
     }
 
     /// Elimina versiones específicas de un nodo
-    async fn delete_node_versions(
-        &self,
-        node_id: NodeId,
-        versions: &[u64],
-    ) -> Result<(usize, usize)> {
-        let db = self.db.write().await;
+    async fn delete_node_versions(&self, node_id: NodeId, versions: &[u64]) -> Result<(usize, usize)> {
+        
         let mut deleted = 0;
         let mut bytes_freed = 0;
 
         // 1. Eliminar cada versión
         for &version in versions {
             let version_key = format!("node:{}:v{}", node_id, version);
-            if let Some(value) = db.remove(version_key.as_bytes())? {
+            if let Some(value) = self.db.remove(version_key.as_bytes())? {
                 deleted += 1;
                 bytes_freed += value.len();
             }
@@ -1120,16 +1001,16 @@ impl Storage {
 
         // 2. Actualizar lista de versiones
         let versions_key = format!("node:{}:versions", node_id);
-        if let Some(value) = db.get(versions_key.as_bytes())? {
+        if let Some(value) = self.db.get(versions_key.as_bytes())? {
             let mut version_list: Vec<u64> = deserialize(&value)?;
 
             version_list.retain(|v| !versions.contains(v));
 
             if version_list.is_empty() {
-                db.remove(versions_key.as_bytes())?;
+                self.db.remove(versions_key.as_bytes())?;
             } else {
                 let new_value = serialize(&version_list)?;
-                db.insert(versions_key.as_bytes(), new_value)?;
+                self.db.insert(versions_key.as_bytes(), new_value)?;
             }
         }
 
@@ -1138,8 +1019,8 @@ impl Storage {
 
     /// Get all edges (for query executor)
     pub async fn get_all_edges(&self) -> Result<Vec<Edge>> {
-        let db = self.db.read().await;
-        let edges_tree = db.open_tree("edges")?;
+        
+        let edges_tree = self.db.open_tree("edges")?;
         let mut edges = Vec::new();
 
         for result in edges_tree.iter() {
@@ -1151,21 +1032,18 @@ impl Storage {
 
         Ok(edges)
     }
-
     /// Obtiene todos los nodos del storage (para export)
     pub async fn get_all_nodes(&self) -> Result<Vec<Node>> {
         let mut nodes = Vec::new();
 
-        let db = self.db.read().await;
-        for item in db.scan_prefix(b"node:") {
+        for item in self.db.scan_prefix(b"node:") {
             let (key, value) = item?;
             let key_str = String::from_utf8_lossy(&key);
 
             // Skip version and metadata keys
             if key_str.contains(":v")
                 || key_str.contains(":current")
-                || key_str.contains(":versions")
-            {
+                || key_str.contains(":versions") {
                 continue;
             }
 
@@ -1193,7 +1071,6 @@ impl Storage {
             return Ok((Vec::new(), start_after.map(|s| s.to_string())));
         }
 
-        let db = self.db.read().await;
         let start = start_after
             .map(|s| s.as_bytes().to_vec())
             .unwrap_or_else(|| b"node:".to_vec());
@@ -1201,7 +1078,7 @@ impl Storage {
         let mut nodes = Vec::with_capacity(limit);
         let mut last_seen_key: Option<String> = None;
 
-        for item in db.range(start..) {
+        for item in self.db.range(start..) {
             let (key, value) = item?;
 
             if !key.starts_with(b"node:") {
@@ -1214,16 +1091,14 @@ impl Storage {
             let key_str = String::from_utf8_lossy(&key).to_string();
 
             if let Some(cursor) = start_after
-                && key_str.as_str() <= cursor
-            {
-                continue;
+                && key_str.as_str() <= cursor {
+                    continue;
             }
 
             // Skip version and metadata keys
             if key_str.contains(":v")
                 || key_str.contains(":current")
-                || key_str.contains(":versions")
-            {
+                || key_str.contains(":versions") {
                 continue;
             }
 
@@ -1231,9 +1106,8 @@ impl Storage {
             last_seen_key = Some(key_str);
 
             if let Some(expected_label) = label
-                && node.label != expected_label
-            {
-                continue;
+                && node.label != expected_label {
+                    continue;
             }
 
             nodes.push(node);
@@ -1255,8 +1129,7 @@ impl Storage {
     pub async fn get_all_versioned_nodes(&self) -> Result<Vec<crate::mvcc::VersionedNode>> {
         let mut versioned_nodes = Vec::new();
 
-        let db = self.db.read().await;
-        for item in db.scan_prefix(b"node:") {
+        for item in self.db.scan_prefix(b"node:") {
             let (key, value) = item?;
             let key_str = String::from_utf8_lossy(&key);
 
@@ -1268,10 +1141,7 @@ impl Storage {
             }
         }
 
-        log::debug!(
-            "Retrieved {} versioned nodes for export",
-            versioned_nodes.len()
-        );
+        log::debug!("Retrieved {} versioned nodes for export", versioned_nodes.len());
 
         Ok(versioned_nodes)
     }
@@ -1289,7 +1159,6 @@ impl Storage {
             return Ok(Vec::new());
         }
 
-        let db = self.db.write().await;
         let mut batch = sled::Batch::default();
         let mut ids = Vec::with_capacity(nodes.len());
 
@@ -1301,7 +1170,7 @@ impl Storage {
         }
 
         // Una sola operación de disco para todos los nodos
-        db.apply_batch(batch)?;
+        self.db.apply_batch(batch)?;
 
         log::debug!("Batch inserted {} nodes", ids.len());
         Ok(ids)
@@ -1313,8 +1182,7 @@ impl Storage {
             return Ok(Vec::new());
         }
 
-        let db = self.db.write().await;
-        let edges_tree = db.open_tree("edges")?;
+        let edges_tree = self.db.open_tree("edges")?;
 
         let mut batch = sled::Batch::default();
         let mut ids = Vec::with_capacity(edges.len());
@@ -1339,7 +1207,7 @@ impl Storage {
         out_indices: &[(NodeId, Vec<EdgeId>)],
         in_indices: &[(NodeId, Vec<EdgeId>)],
     ) -> Result<()> {
-        let db = self.db.write().await;
+        
         let mut batch = sled::Batch::default();
 
         for (node_id, edge_ids) in out_indices {
@@ -1354,7 +1222,7 @@ impl Storage {
             batch.insert(key.as_bytes(), value);
         }
 
-        db.apply_batch(batch)?;
+        self.db.apply_batch(batch)?;
 
         log::debug!(
             "Batch saved {} out indices and {} in indices",
@@ -1368,8 +1236,8 @@ impl Storage {
     ///
     /// Forces the underlying sled database to persist all buffered data.
     pub async fn flush(&self) -> Result<()> {
-        let db = self.db.read().await;
-        db.flush_async()
+        
+        self.db.flush_async()
             .await
             .map_err(|e| NopalError::custom(format!("Storage flush failed: {}", e)))?;
         Ok(())
@@ -1395,8 +1263,8 @@ mod tests {
     use super::*;
     #[cfg(feature = "embeddings")]
     use crate::embeddings::Embedding;
-    use crate::mvcc::VersionedNode;
     use crate::types::PropertyValue;
+    use crate::mvcc::VersionedNode;
 
     #[tokio::test]
     async fn test_insert_and_get_node() {
@@ -1412,10 +1280,7 @@ mod tests {
 
         assert_eq!(retrieved.id, node.id);
         assert_eq!(retrieved.label, "Person");
-        assert_eq!(
-            retrieved.properties.get("name"),
-            Some(&PropertyValue::String("Alice".to_string()))
-        );
+        assert_eq!(retrieved.properties.get("name"), Some(&PropertyValue::String("Alice".to_string())));
     }
 
     #[tokio::test]
@@ -1427,10 +1292,7 @@ mod tests {
         let storage = Storage::in_memory_with_options(options).await.unwrap();
         assert_eq!(storage.backend_name(), "sled");
         assert_eq!(storage.profile(), StorageProfile::Mobile);
-        assert_eq!(
-            storage.tuning().cache_capacity_bytes,
-            Some(16 * 1024 * 1024)
-        );
+        assert_eq!(storage.tuning().cache_capacity_bytes, Some(16 * 1024 * 1024));
     }
 
     #[tokio::test]
@@ -1470,10 +1332,7 @@ mod tests {
 
         assert_eq!(retrieved.id, edge.id);
         assert_eq!(retrieved.edge_type, "Enemy of".to_string());
-        assert_eq!(
-            retrieved.properties.get("damage"),
-            Some(&PropertyValue::Int(10))
-        );
+        assert_eq!(retrieved.properties.get("damage"), Some(&PropertyValue::Int(10)));
     }
 
     #[tokio::test]
@@ -1488,10 +1347,7 @@ mod tests {
         ];
 
         // Guardar índices
-        storage
-            .save_adjacency_out(node_id, &edge_ids)
-            .await
-            .unwrap();
+        storage.save_adjacency_out(node_id, &edge_ids).await.unwrap();
         storage.save_adjacency_in(node_id, &edge_ids).await.unwrap();
 
         // Cargar índices
@@ -1501,7 +1357,6 @@ mod tests {
         assert_eq!(loaded_out, edge_ids);
         assert_eq!(loaded_in, edge_ids);
     }
-
     #[tokio::test]
     async fn test_mvcc_insert_and_get() {
         let storage = Storage::in_memory().await.unwrap();
@@ -1529,18 +1384,17 @@ mod tests {
         let storage = Storage::in_memory().await.unwrap();
 
         // Version 1
-        let node1 = Node::new("Person").with_property("age", PropertyValue::Int(25));
+        let node1 = Node::new("Person")
+            .with_property("age", PropertyValue::Int(25));
         let v1 = VersionedNode::new(node1, 100);
         storage.insert_node_version(&v1).await.unwrap();
 
         // Invalidate v1
-        storage
-            .invalidate_current_version(v1.id, 200)
-            .await
-            .unwrap();
+        storage.invalidate_current_version(v1.id, 200).await.unwrap();
 
         // Version 2
-        let node2 = Node::new("Person").with_property("age", PropertyValue::Int(30));
+        let node2 = Node::new("Person")
+            .with_property("age", PropertyValue::Int(30));
         let v2 = VersionedNode::new_version(&v1, node2, 200);
         storage.insert_node_version(&v2).await.unwrap();
 
@@ -1563,25 +1417,22 @@ mod tests {
         let node_id = uuid::Uuid::new_v4();
 
         // t=100: Create (age=25)
-        let n1 = Node::with_id(node_id, "Person").with_property("age", PropertyValue::Int(25));
+        let n1 = Node::with_id(node_id, "Person")
+            .with_property("age", PropertyValue::Int(25));
         let v1 = VersionedNode::new(n1, 100);
         storage.insert_node_version(&v1).await.unwrap();
 
         // t=200: Update (age=30)
-        storage
-            .invalidate_current_version(node_id, 200)
-            .await
-            .unwrap();
-        let n2 = Node::with_id(node_id, "Person").with_property("age", PropertyValue::Int(30));
+        storage.invalidate_current_version(node_id, 200).await.unwrap();
+        let n2 = Node::with_id(node_id, "Person")
+            .with_property("age", PropertyValue::Int(30));
         let v2 = VersionedNode::new_version(&v1, n2, 200);
         storage.insert_node_version(&v2).await.unwrap();
 
         // t=300: Update (age=35)
-        storage
-            .invalidate_current_version(node_id, 300)
-            .await
-            .unwrap();
-        let n3 = Node::with_id(node_id, "Person").with_property("age", PropertyValue::Int(35));
+        storage.invalidate_current_version(node_id, 300).await.unwrap();
+        let n3 = Node::with_id(node_id, "Person")
+            .with_property("age", PropertyValue::Int(35));
         let v3 = VersionedNode::new_version(&v2, n3, 300);
         storage.insert_node_version(&v3).await.unwrap();
 
@@ -1605,95 +1456,8 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "embeddings")]
-    #[tokio::test]
-    async fn test_try_node_embedding_exists_sync_reports_busy_instead_of_false_negative() {
-        let storage = Storage::in_memory().await.unwrap();
-        let node_id = uuid::Uuid::new_v4();
-
-        storage
-            .save_node_embedding(&Embedding::new(
-                node_id,
-                vec![1.0, 0.0],
-                "minilm".to_string(),
-            ))
-            .await
-            .unwrap();
-
-        let _guard = storage.db.write().await;
-        let err = storage
-            .try_node_embedding_exists_sync(node_id, "minilm")
-            .expect_err("strict sync exists should report busy storage");
-
-        assert!(err.to_string().contains("Embedding storage busy"));
-    }
-
-    #[cfg(feature = "embeddings")]
-    #[tokio::test]
-    async fn test_load_node_embedding_sync_reports_busy_under_contention() {
-        let storage = Storage::in_memory().await.unwrap();
-        let node_id = uuid::Uuid::new_v4();
-
-        storage
-            .save_node_embedding(&Embedding::new(
-                node_id,
-                vec![1.0, 0.0],
-                "minilm".to_string(),
-            ))
-            .await
-            .unwrap();
-
-        let _guard = storage.db.write().await;
-        let err = storage
-            .load_node_embedding_sync(node_id, "minilm")
-            .expect_err("strict sync load should report busy storage");
-
-        assert!(err.to_string().contains("Embedding storage busy"));
-    }
-
-    #[cfg(feature = "embeddings")]
-    #[tokio::test]
-    async fn test_try_edge_embedding_exists_sync_reports_busy_instead_of_false_negative() {
-        let storage = Storage::in_memory().await.unwrap();
-        let edge_id = uuid::Uuid::new_v4();
-
-        storage
-            .save_edge_embedding(&crate::embeddings::EdgeEmbedding::new(
-                edge_id,
-                vec![1.0, 0.0],
-                "relbert".to_string(),
-            ))
-            .await
-            .unwrap();
-
-        let _guard = storage.db.write().await;
-        let err = storage
-            .try_edge_embedding_exists_sync(edge_id, "relbert")
-            .expect_err("strict sync exists should report busy storage");
-
-        assert!(err.to_string().contains("Embedding storage busy"));
-    }
-
-    #[cfg(feature = "embeddings")]
-    #[tokio::test]
-    async fn test_load_edge_embedding_sync_reports_busy_under_contention() {
-        let storage = Storage::in_memory().await.unwrap();
-        let edge_id = uuid::Uuid::new_v4();
-
-        storage
-            .save_edge_embedding(&crate::embeddings::EdgeEmbedding::new(
-                edge_id,
-                vec![1.0, 0.0],
-                "relbert".to_string(),
-            ))
-            .await
-            .unwrap();
-
-        let _guard = storage.db.write().await;
-        let err = storage
-            .load_edge_embedding_sync(edge_id, "relbert")
-            .expect_err("strict sync load should report busy storage");
-
-        assert!(err.to_string().contains("Embedding storage busy"));
-    }
+    // Note: The 4 contention tests (test_try_node_embedding_exists_sync_reports_busy_*,
+    // test_load_*_sync_reports_busy_under_contention) were removed as part of the
+    // P0 RwLock removal. Sled is thread-safe internally and no longer needs an
+    // external RwLock, so contention-based "busy" errors no longer occur.
 }

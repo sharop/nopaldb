@@ -6,15 +6,11 @@
 //   #55 — WHERE en edge properties no filtra (Int vs Float type mismatch)
 //   #56 — instanceOf/subClassOf pasan todos los nodos
 
-use nopaldb::types::{Edge, Node, PropertyValue};
 use nopaldb::{Graph, Result};
+use nopaldb::types::{Node, Edge, PropertyValue};
 
-fn int(n: i64) -> PropertyValue {
-    PropertyValue::Int(n)
-}
-fn float(f: f64) -> PropertyValue {
-    PropertyValue::Float(f)
-}
+fn int(n: i64) -> PropertyValue { PropertyValue::Int(n) }
+fn float(f: f64) -> PropertyValue { PropertyValue::Float(f) }
 
 // ---------------------------------------------------------------------------
 // #53 — GROUP BY AS alias debe aparecer en columnas y filas del resultado
@@ -24,29 +20,23 @@ async fn test_group_by_alias_in_columns() -> Result<()> {
     let graph = Graph::in_memory().await?;
     let mut tx = graph.begin_transaction().await?;
 
-    tx.add_node(Node::new("Person").with_property("age", int(30)))
-        .await?;
-    tx.add_node(Node::new("Person").with_property("age", int(25)))
-        .await?;
-    tx.add_node(Node::new("Account").with_property("balance", int(1000)))
-        .await?;
+    tx.add_node(Node::new("Person").with_property("age", int(30))).await?;
+    tx.add_node(Node::new("Person").with_property("age", int(25))).await?;
+    tx.add_node(Node::new("Account").with_property("balance", int(1000))).await?;
 
     tx.commit().await?;
 
-    let result = graph
-        .execute_nql(
-            "find n.label as etiqueta, count(*) as total \
+    let result = graph.execute_nql(
+        "find n.label as etiqueta, count(*) as total \
          from (n) \
          group by n.label \
-         order by total desc",
-        )
-        .await?;
+         order by total desc"
+    ).await?;
 
     // La columna debe llamarse "etiqueta", no "n.label"
     assert!(
         result.columns.contains(&"etiqueta".to_string()),
-        "columna 'etiqueta' debe existir — columnas actuales: {:?}",
-        result.columns
+        "columna 'etiqueta' debe existir — columnas actuales: {:?}", result.columns
     );
     assert!(
         result.columns.contains(&"total".to_string()),
@@ -57,8 +47,7 @@ async fn test_group_by_alias_in_columns() -> Result<()> {
     for row in result.rows() {
         assert!(
             row.get("etiqueta").is_some(),
-            "fila sin clave 'etiqueta': todas las claves: {:?}",
-            result.columns
+            "fila sin clave 'etiqueta': todas las claves: {:?}", result.columns
         );
     }
 
@@ -92,15 +81,13 @@ async fn test_pattern_agg_order_by_limit() -> Result<()> {
 
     tx.commit().await?;
 
-    let result = graph
-        .execute_nql(
-            "find b.id, count(*) as inbound \
+    let result = graph.execute_nql(
+        "find b.id, count(*) as inbound \
          from (a:Account) -[:TRANSFERS]-> (b:Account) \
          group by b.id \
          order by inbound desc \
-         limit 2",
-        )
-        .await?;
+         limit 2"
+    ).await?;
 
     // Con LIMIT 2, solo deben retornarse 2 filas
     assert_eq!(result.len(), 2, "LIMIT 2 debe retornar exactamente 2 filas");
@@ -109,18 +96,10 @@ async fn test_pattern_agg_order_by_limit() -> Result<()> {
     let first_inbound = result.rows()[0].get("inbound");
     let second_inbound = result.rows()[1].get("inbound");
 
-    assert_eq!(
-        first_inbound,
-        Some(&PropertyValue::Int(3)),
-        "primera fila debe tener inbound=3 (cuenta b), got: {:?}",
-        first_inbound
-    );
-    assert_eq!(
-        second_inbound,
-        Some(&PropertyValue::Int(2)),
-        "segunda fila debe tener inbound=2 (cuenta c), got: {:?}",
-        second_inbound
-    );
+    assert_eq!(first_inbound, Some(&PropertyValue::Int(3)),
+        "primera fila debe tener inbound=3 (cuenta b), got: {:?}", first_inbound);
+    assert_eq!(second_inbound, Some(&PropertyValue::Int(2)),
+        "segunda fila debe tener inbound=2 (cuenta c), got: {:?}", second_inbound);
 
     Ok(())
 }
@@ -151,21 +130,17 @@ async fn test_edge_where_filter_float() -> Result<()> {
 
     // El literal NQL `900000` se parsea como Int; la comparación Float > Int
     // debe ser numérica, no por type_rank.
-    let result = graph
-        .execute_nql(
-            "find a.id, b.id, e.amount \
+    let result = graph.execute_nql(
+        "find a.id, b.id, e.amount \
          from (a:Account) -[e:TRANSFERS]-> (b:Account) \
-         where e.amount > 900000",
-        )
-        .await?;
+         where e.amount > 900000"
+    ).await?;
 
     // Solo deben aparecer los 2 transfers > 900_000: 2_000_000.0 y 1_500_000.0
     assert_eq!(
-        result.len(),
-        2,
+        result.len(), 2,
         "WHERE e.amount > 900000 debe retornar 2 filas, got {}: {:?}",
-        result.len(),
-        result.rows()
+        result.len(), result.rows()
     );
 
     for row in result.rows() {
@@ -177,8 +152,7 @@ async fn test_edge_where_filter_float() -> Result<()> {
         };
         assert!(
             amount_f > 900_000.0,
-            "todas las filas deben tener amount > 900_000, got {}",
-            amount_f
+            "todas las filas deben tener amount > 900_000, got {}", amount_f
         );
     }
 
@@ -195,12 +169,9 @@ async fn test_instanceof_no_longer_passes_all_nodes() -> Result<()> {
     let graph = Graph::in_memory().await?;
     let mut tx = graph.begin_transaction().await?;
 
-    tx.add_node(Node::new("Person").with_property("name", PropertyValue::String("Alice".into())))
-        .await?;
-    tx.add_node(Node::new("Person").with_property("name", PropertyValue::String("Bob".into())))
-        .await?;
-    tx.add_node(Node::new("Account").with_property("balance", int(500)))
-        .await?;
+    tx.add_node(Node::new("Person").with_property("name", PropertyValue::String("Alice".into()))).await?;
+    tx.add_node(Node::new("Person").with_property("name", PropertyValue::String("Bob".into()))).await?;
+    tx.add_node(Node::new("Account").with_property("balance", int(500))).await?;
 
     tx.commit().await?;
 
@@ -208,9 +179,9 @@ async fn test_instanceof_no_longer_passes_all_nodes() -> Result<()> {
     // Antes del fix retornaba los 3 nodos (eval_condition devolvía true para FunctionCall).
     // Después del fix retorna 0 (eval_condition devuelve false; eval_condition_with_graph
     // intenta taxonomy lookup → None → false).
-    let result = graph
-        .execute_nql(r#"find n.label from (n) where instanceOf(n, "Person")"#)
-        .await?;
+    let result = graph.execute_nql(
+        r#"find n.label from (n) where instanceOf(n, "Person")"#
+    ).await?;
 
     assert!(
         result.len() < 3,

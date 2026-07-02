@@ -115,9 +115,7 @@ impl QueryPlanner {
 
     /// Estimate cost of a label scan
     pub fn estimate_label_scan(&self, label: &str) -> (usize, f64) {
-        let estimated_rows = self
-            .stats
-            .nodes_per_label
+        let estimated_rows = self.stats.nodes_per_label
             .get(label)
             .copied()
             .unwrap_or(self.stats.total_nodes);
@@ -130,16 +128,12 @@ impl QueryPlanner {
     /// Estimate cost of an index seek
     pub fn estimate_index_seek(&self, label: &str, property: &str) -> (usize, f64) {
         let key = format!("{}_{}", label, property);
-        let cardinality = self
-            .stats
-            .property_cardinality
+        let cardinality = self.stats.property_cardinality
             .get(&key)
             .copied()
             .unwrap_or(1);
 
-        let total_nodes = self
-            .stats
-            .nodes_per_label
+        let total_nodes = self.stats.nodes_per_label
             .get(label)
             .copied()
             .unwrap_or(self.stats.total_nodes);
@@ -168,8 +162,7 @@ impl QueryPlanner {
                 if index_cost < scan_cost {
                     log::info!(
                         "🚀 Planner: Using INDEX SEEK (cost: {:.2} vs {:.2})",
-                        index_cost,
-                        scan_cost
+                        index_cost, scan_cost
                     );
 
                     return PlanNode::IndexSeek {
@@ -183,8 +176,7 @@ impl QueryPlanner {
 
                 log::info!(
                     "⚠️  Planner: INDEX exists but SCAN is faster (index: {:.2}, scan: {:.2})",
-                    index_cost,
-                    scan_cost
+                    index_cost, scan_cost
                 );
             } else {
                 log::warn!("⚠️  Planner: No index on {}.{}, using SCAN", label, prop);
@@ -203,7 +195,12 @@ impl QueryPlanner {
     }
 
     /// Add filter to existing plan
-    pub fn add_filter(&self, input: PlanNode, selectivity: f64, predicate: String) -> PlanNode {
+    pub fn add_filter(
+        &self,
+        input: PlanNode,
+        selectivity: f64,
+        predicate: String,
+    ) -> PlanNode {
         let input_rows = input.estimated_rows();
         let estimated_rows = (input_rows as f64 * selectivity).max(1.0) as usize;
         let filter_cost = input_rows as f64 * FILTER_COST_PER_ROW;
@@ -223,34 +220,19 @@ impl QueryPlanner {
         let prefix = "│ ".repeat(indent);
 
         match plan {
-            PlanNode::LabelScan {
-                label,
-                estimated_rows,
-                cost,
-            } => {
+            PlanNode::LabelScan { label, estimated_rows, cost } => {
                 format!(
                     "{}→ LABEL SCAN: {} | rows=~{} | cost={:.2}",
                     prefix, label, estimated_rows, cost
                 )
             }
-            PlanNode::IndexSeek {
-                index_name,
-                estimated_rows,
-                cost,
-                ..
-            } => {
+            PlanNode::IndexSeek { index_name, estimated_rows, cost, .. } => {
                 format!(
                     "{}→ INDEX SEEK: {} | rows=~{} | cost={:.2}",
                     prefix, index_name, estimated_rows, cost
                 )
             }
-            PlanNode::Filter {
-                predicate,
-                input,
-                estimated_rows,
-                cost,
-                selectivity,
-            } => {
+            PlanNode::Filter { predicate, input, estimated_rows, cost, selectivity } => {
                 let mut s = format!(
                     "{}→ FILTER: {} | selectivity={:.2} | rows=~{} | cost={:.2}\n",
                     prefix, predicate, selectivity, estimated_rows, cost
@@ -258,13 +240,7 @@ impl QueryPlanner {
                 s.push_str(&self.format_plan(input, indent + 1));
                 s
             }
-            PlanNode::Expand {
-                edge_type,
-                direction,
-                input,
-                estimated_rows,
-                cost,
-            } => {
+            PlanNode::Expand { edge_type, direction, input, estimated_rows, cost } => {
                 let mut s = format!(
                     "{}→ EXPAND: {} ({}) | rows=~{} | cost={:.2}\n",
                     prefix, edge_type, direction, estimated_rows, cost
@@ -291,10 +267,7 @@ impl QueryPlanner {
              │ Estimated Rows: ~{}                     │\n\
              │ Estimated Time: {:.2}ms                 │\n\
              └─────────────────────────────────────────┘",
-            plan_str,
-            total_cost,
-            total_rows,
-            total_cost / 1000.0
+            plan_str, total_cost, total_rows, total_cost / 1000.0
         )
     }
 }
@@ -307,12 +280,8 @@ mod tests {
     fn test_planner_chooses_index_when_better() {
         let mut stats = GraphStats::new();
         stats.total_nodes = 1_000_000;
-        stats
-            .nodes_per_label
-            .insert("Person".to_string(), 1_000_000);
-        stats
-            .property_cardinality
-            .insert("Person_email".to_string(), 500_000);
+        stats.nodes_per_label.insert("Person".to_string(), 1_000_000);
+        stats.property_cardinality.insert("Person_email".to_string(), 500_000);
 
         let planner = QueryPlanner::new(stats);
 

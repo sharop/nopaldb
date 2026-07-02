@@ -3,26 +3,31 @@
 pub mod view;
 pub use view::{GraphView, Subgraph};
 
-use crate::error::{NopalError, Result};
-use crate::index::{IndexManager, IndexQuery, IndexType};
-use crate::mvcc::VersionedNode;
-use crate::planner::{GraphStats, QueryPlanner};
-use crate::schema::{SchemaInfo, SchemaManager};
-use crate::storage::Storage;
-use crate::transaction::{Timestamp, Transaction, TransactionId};
-use crate::traversal::{TraversalConfig, TraversalResult};
-use crate::types::{Edge, EdgeId, Node, NodeId, PropertyValue};
+use std::collections::{HashMap, BinaryHeap, VecDeque, HashSet};
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::time::Instant;
 use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, MissedTickBehavior};
+use std::time::Instant;
+use crate::storage::Storage;
+use crate::transaction::{Transaction, TransactionId, Timestamp};
+use crate::error::{NopalError, Result};
+use crate::traversal::{TraversalConfig, TraversalResult};
+use crate::types::{Node, Edge, NodeId, EdgeId, PropertyValue};
+use crate::mvcc::VersionedNode;
+use crate::schema::{SchemaManager, SchemaInfo};
+use crate::index::{IndexManager, IndexType, IndexQuery};
+use crate::planner::{QueryPlanner, GraphStats};
+
+#[cfg(feature = "full-isolation")]
+use crate::lock_manager::LockManager;
+
 
 use crate::wal::{WalManager, WalRecord};
 // NQL parse is used inline via crate::query::nql::parse in execute_statement/execute_nql
+
 
 /// Dirección de traversal en el grafo
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +40,7 @@ pub enum Direction {
     Both,
 }
 
+
 /// Graph es la API principal de NopalDB
 #[derive(Clone)]
 pub struct Graph {
@@ -43,6 +49,12 @@ pub struct Graph {
     adjacency_in: Arc<RwLock<HashMap<NodeId, Vec<EdgeId>>>>,
     next_tx_id: Arc<AtomicU64>,
     next_timestamp: Arc<AtomicU64>,
+
+    #[cfg(feature = "full-isolation")]
+    last_modified: Arc<RwLock<HashMap<NodeId, u64>>>, // Mapa de última modificación por nodo
+
+    #[cfg(feature = "full-isolation")]
+    lock_manager: Arc<LockManager>,
 
     schema_manager: Arc<SchemaManager>,
 
@@ -54,11 +66,14 @@ pub struct Graph {
     auto_gc_stop_tx: Arc<Mutex<Option<watch::Sender<bool>>>>,
     auto_gc_config: Arc<RwLock<Option<AutoGcConfig>>>,
 
+    /// Mutex de serialización para la fase de commit de transacciones.
+    /// Previene condiciones de carrera en índices de adyacencia y lost updates MVCC.
+    commit_lock: Arc<tokio::sync::Mutex<()>>,
+
     /// Mapa de transacciones activas: tx_id → timestamp de inicio.
     /// Usado por el GC para calcular el horizonte seguro de purga.
     /// Usa std::sync::Mutex para ser usable desde contextos sync (rollback).
-    active_tx_timestamps:
-        Arc<std::sync::Mutex<std::collections::HashMap<TransactionId, Timestamp>>>,
+    active_tx_timestamps: Arc<std::sync::Mutex<std::collections::HashMap<TransactionId, Timestamp>>>,
 
     /// Version monotónica de topología (nodos/aristas) para invalidar cachés analíticas.
     topology_version: Arc<AtomicU64>,
@@ -153,6 +168,11 @@ impl GraphSnapshot {
 }
 
 impl Graph {
+    /// Expone el storage nativo para operaciones bulk
+    pub fn storage(&self) -> Arc<Storage> {
+        Arc::clone(&self.storage)
+    }
+
     /// Crea un nuevo grafo con storage persistente (carga índices automáticamente)
     pub async fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         Self::open_with_options(path, crate::storage::StorageOptions::default()).await
@@ -185,7 +205,7 @@ impl Graph {
         //Crear IndexManager
         let index_path = path_ref.join("indexes");
         let index_manager = IndexManager::new(Some(index_path.to_string_lossy().to_string()));
-
+        
         // Cargar y reconstruir índices desde disco
         log::info!("Loading and rebuilding indices...");
         index_manager.load_indices(&storage).await?;
@@ -200,6 +220,7 @@ impl Graph {
             );
         }
 
+
         // Intentar cargar índices existentes
         let (adjacency_out, adjacency_in) = storage.load_all_adjacency_indices().await?;
 
@@ -208,11 +229,8 @@ impl Graph {
             log::info!("No indices found, rebuilding from edges...");
             storage.rebuild_indices().await?
         } else {
-            log::info!(
-                "Loaded {} outgoing and {} incoming adjacency entries",
-                adjacency_out.len(),
-                adjacency_in.len()
-            );
+            log::info!("Loaded {} outgoing and {} incoming adjacency entries",
+                      adjacency_out.len(), adjacency_in.len());
             (adjacency_out, adjacency_in)
         };
 
@@ -223,6 +241,12 @@ impl Graph {
             next_tx_id: Arc::new(AtomicU64::new(1)),
             next_timestamp: Arc::new(AtomicU64::new(1)),
 
+            #[cfg(feature = "full-isolation")]
+            last_modified: Arc::new(RwLock::new(HashMap::new())),
+
+            #[cfg(feature = "full-isolation")]
+            lock_manager: Arc::new(LockManager::new()),
+
             schema_manager: Arc::new(Default::default()),
 
             wal: Arc::new(wal),
@@ -232,6 +256,7 @@ impl Graph {
             auto_gc_task: Arc::new(Mutex::new(None)),
             auto_gc_stop_tx: Arc::new(Mutex::new(None)),
             auto_gc_config: Arc::new(RwLock::new(None)),
+            commit_lock: Arc::new(tokio::sync::Mutex::new(())),
 
             active_tx_timestamps: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             topology_version: Arc::new(AtomicU64::new(1)),
@@ -243,7 +268,7 @@ impl Graph {
             embedding_indices: Arc::new(RwLock::new(HashMap::new())),
         };
 
-        if recovery_info.total_records > 0 {
+        if recovery_info.total_records>0 {
             log::info!("Replaying committed operations from WAL...");
             graph.replay_wal().await?;
         }
@@ -258,15 +283,11 @@ impl Graph {
         }
 
         if cfg!(debug_assertions) {
-            log::info!(
-                "🌵 NopalDB v{} - ¡Dale que es mole de olla!",
-                env!("CARGO_PKG_VERSION")
-            );
+            log::info!("🌵 NopalDB v{} - ¡Dale que es mole de olla!", env!("CARGO_PKG_VERSION"));
         }
 
         if std::env::var("NOPALDB_FIRST_RUN").is_ok() {
-            println!(
-                r#"
+            println!(r#"
 
     Welcome to NopalDB! 🌵
 
@@ -283,12 +304,12 @@ impl Graph {
     Made with 🦀 Rust & ❤️
     VIVA MÉXICO! 🇲🇽
 
-            "#
-            );
+            "#);
         }
 
         Ok(graph)
     }
+
 
     /// Persiste los índices en disco
     pub async fn flush_indices(&self) -> Result<()> {
@@ -341,9 +362,8 @@ impl Graph {
             self.index_node_properties(&node).await?;
 
             // actualizar índices secundarios
-            for (property_key, property_value) in &node.properties {
-                if let Some(index_name) = self
-                    .index_manager
+            for(property_key, property_value) in &node.properties {
+                if let Some(index_name) = self.index_manager
                     .find_index(&node.label, property_key)
                     .await
                 {
@@ -368,9 +388,7 @@ impl Graph {
     /// Indexa las propiedades de un nodo (uso interno)
     pub(crate) async fn index_node_properties(&self, node: &Node) -> Result<()> {
         for (key, value) in &node.properties {
-            self.storage
-                .save_property_index(key, value, node.id)
-                .await?;
+            self.storage.save_property_index(key, value, node.id).await?;
         }
         Ok(())
     }
@@ -412,6 +430,12 @@ impl Graph {
             next_tx_id: Arc::new(AtomicU64::new(1)),
             next_timestamp: Arc::new(AtomicU64::new(1)),
 
+            #[cfg(feature = "full-isolation")]
+            last_modified: Arc::new(RwLock::new(HashMap::new())),
+
+            #[cfg(feature = "full-isolation")]
+            lock_manager: Arc::new(LockManager::new()),
+
             schema_manager: Arc::new(Default::default()),
 
             index_manager: Arc::new(IndexManager::new(None)),
@@ -421,6 +445,7 @@ impl Graph {
             auto_gc_task: Arc::new(Mutex::new(None)),
             auto_gc_stop_tx: Arc::new(Mutex::new(None)),
             auto_gc_config: Arc::new(RwLock::new(None)),
+            commit_lock: Arc::new(tokio::sync::Mutex::new(())),
 
             active_tx_timestamps: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             topology_version: Arc::new(AtomicU64::new(1)),
@@ -438,6 +463,18 @@ impl Graph {
         Arc::clone(&self.wal)
     }
 
+    //Obtener el lock manager
+    #[cfg(feature = "full-isolation")]
+    pub(crate) fn lock_manager(&self) -> Arc<LockManager> {
+        Arc::clone(&self.lock_manager)
+    }
+
+    /// Mutex de serialización para la fase de commit.
+    pub(crate) fn commit_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(&self.commit_lock)
+    }
+
+
     pub async fn begin_transaction(&self) -> Result<Transaction> {
         let tx_id = self.next_tx_id.fetch_add(1, AtomicOrdering::SeqCst);
         let timestamp = self.next_logical_timestamp();
@@ -451,8 +488,7 @@ impl Graph {
 
     /// Registra el timestamp de inicio de una transacción activa.
     pub(crate) fn register_tx_timestamp_sync(&self, tx_id: TransactionId, ts: Timestamp) {
-        let mut map = self
-            .active_tx_timestamps
+        let mut map = self.active_tx_timestamps
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         map.insert(tx_id, ts);
@@ -460,8 +496,7 @@ impl Graph {
 
     /// Elimina una transacción del mapa de activas (al commit, rollback o drop).
     pub(crate) fn deregister_tx_timestamp_sync(&self, tx_id: TransactionId) {
-        let mut map = self
-            .active_tx_timestamps
+        let mut map = self.active_tx_timestamps
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         map.remove(&tx_id);
@@ -471,8 +506,7 @@ impl Graph {
     /// transacciones activas, o `next_timestamp` si no hay ninguna activa.
     /// El GC no debe purgar versiones con `valid_to > safe_gc_horizon()`.
     pub fn safe_gc_horizon(&self) -> u64 {
-        let map = self
-            .active_tx_timestamps
+        let map = self.active_tx_timestamps
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if map.is_empty() {
@@ -567,9 +601,13 @@ impl Graph {
     /// Se usa para tests y para flujos internos que necesitan exponer una
     /// taxonomía consistente al executor sin abrir una API pública nueva.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) async fn install_taxonomy_snapshot(&self, taxonomy: crate::index::TaxonomyIndex) {
+    pub(crate) async fn install_taxonomy_snapshot(
+        &self,
+        taxonomy: crate::index::TaxonomyIndex,
+    ) {
         self.index_manager.set_taxonomy(taxonomy).await;
     }
+
 
     /// Obtiene un nodo por ID
     pub async fn get_node(&self, id: NodeId) -> Result<Node> {
@@ -581,13 +619,11 @@ impl Graph {
         let val = PropertyValue::String(value.to_string());
         let node_ids = self.storage.get_nodes_by_property(property, &val).await?;
 
+
         if let Some(id) = node_ids.first() {
             self.get_node(*id).await
         } else {
-            Err(NopalError::NodeNotFound(format!(
-                "with property {}={}",
-                property, value
-            )))
+            Err(NopalError::NodeNotFound(format!("with property {}={}", property, value)))
         }
     }
 
@@ -599,6 +635,7 @@ impl Graph {
     ) -> Result<Vec<NodeId>> {
         self.storage.get_nodes_by_property(property, value).await
     }
+
 
     // ═════════════════════════════════════════════════════════
     // PUBLIC API FOR QUERY EXECUTOR
@@ -616,9 +653,7 @@ impl Graph {
         start_after: Option<&str>,
         limit: usize,
     ) -> Result<(Vec<Node>, Option<String>)> {
-        self.storage
-            .scan_nodes_batch(label, start_after, limit)
-            .await
+        self.storage.scan_nodes_batch(label, start_after, limit).await
     }
 
     /// Re-insert a node (upsert) — used by UPDATE executor
@@ -632,33 +667,21 @@ impl Graph {
     }
 
     /// Remove a property value from the property index — used by UPDATE executor (P1)
-    pub async fn storage_remove_property_index(
-        &self,
-        property: &str,
-        value: &PropertyValue,
-        node_id: NodeId,
-    ) -> Result<()> {
-        self.storage
-            .remove_from_property_index(property, value, node_id)
-            .await
+    pub async fn storage_remove_property_index(&self, property: &str, value: &PropertyValue, node_id: NodeId) -> Result<()> {
+        self.storage.remove_from_property_index(property, value, node_id).await
     }
 
     /// Add a property value to the property index — used by UPDATE executor (P1)
-    pub async fn storage_add_property_index(
-        &self,
-        property: &str,
-        value: &PropertyValue,
-        node_id: NodeId,
-    ) -> Result<()> {
-        self.storage
-            .save_property_index(property, value, node_id)
-            .await
+    pub async fn storage_add_property_index(&self, property: &str, value: &PropertyValue, node_id: NodeId) -> Result<()> {
+        self.storage.save_property_index(property, value, node_id).await
     }
 
     /// Get all nodes with label filter (for query executor)
     pub async fn get_nodes_by_label(&self, label: &str) -> Result<Vec<Node>> {
         let all_nodes = self.storage.get_all_nodes().await?;
-        Ok(all_nodes.into_iter().filter(|n| n.label == label).collect())
+        Ok(all_nodes.into_iter()
+            .filter(|n| n.label == label)
+            .collect())
     }
 
     // ═════════════════════════════════════════════════════════
@@ -673,8 +696,7 @@ impl Graph {
     /// Get edges by type/label
     pub async fn get_edges_by_label(&self, edge_type: &str) -> Result<Vec<Edge>> {
         let all_edges = self.storage.get_all_edges().await?;
-        Ok(all_edges
-            .into_iter()
+        Ok(all_edges.into_iter()
             .filter(|e| e.edge_type == edge_type)
             .collect())
     }
@@ -725,6 +747,8 @@ impl Graph {
         Ok(edges)
     }
 
+
+
     // ═════════════════════════════════════════════════════════
     // NQL QUERY EXECUTION
     // ═════════════════════════════════════════════════════════
@@ -752,9 +776,9 @@ impl Graph {
     /// # }
     /// ```
     pub async fn execute_statement(&self, nql: &str) -> Result<crate::query::nql::NqlResult> {
-        use crate::query::nql::executor::result::{ProfileResult, WriteResult};
+        use crate::query::nql::{parse, Executor, NqlResult};
         use crate::query::nql::parser::ast::Statement;
-        use crate::query::nql::{Executor, NqlResult, parse};
+        use crate::query::nql::executor::result::{WriteResult, ProfileResult};
 
         let stmt = parse(nql)?;
         let executor = Executor::new(self);
@@ -828,14 +852,12 @@ impl Graph {
                     other
                 ))),
             },
-            Statement::Sketch(_) => Ok(NqlResult::Message(
-                "SKETCH: not yet available via execute_statement. Use SketchManager directly."
-                    .into(),
-            )),
-            Statement::Commit(_) => Ok(NqlResult::Message(
-                "COMMIT: not yet available via execute_statement. Use SketchManager directly."
-                    .into(),
-            )),
+            Statement::Sketch(_) => {
+                Ok(NqlResult::Message("SKETCH: not yet available via execute_statement. Use SketchManager directly.".into()))
+            }
+            Statement::Commit(_) => {
+                Ok(NqlResult::Message("COMMIT: not yet available via execute_statement. Use SketchManager directly.".into()))
+            }
         }
     }
 
@@ -844,8 +866,8 @@ impl Graph {
     /// For full statement support (ADD, DELETE, UPDATE, CREATE INDEX, etc.),
     /// use `execute_statement()` instead.
     pub async fn execute_nql(&self, query_string: &str) -> Result<crate::query::nql::QueryResult> {
+        use crate::query::nql::{parse, Executor};
         use crate::query::nql::parser::ast::Statement;
-        use crate::query::nql::{Executor, parse};
         use crate::types::PropertyValue;
 
         let stmt = parse(query_string)?;
@@ -859,15 +881,9 @@ impl Graph {
                 // Backward-compatible behavior: execute_nql can return export summaries
                 // as a QueryResult when EXPORT is present.
                 if let Some(export) = export_clause {
-                    let exported =
-                        crate::query::nql::executor::export::execute_export(&result, &export)?;
+                    let exported = crate::query::nql::executor::export::execute_export(&result, &export)?;
 
-                    if let crate::query::nql::NqlResult::Export {
-                        format,
-                        data,
-                        rows_exported,
-                    } = exported
-                    {
+                    if let crate::query::nql::NqlResult::Export { format, data, rows_exported } = exported {
                         if let Some(PropertyValue::String(path)) = export.options.get("path") {
                             let mut qr = crate::query::nql::QueryResult::new(vec![
                                 "format".to_string(),
@@ -899,7 +915,7 @@ impl Graph {
                 }
             }
             Statement::Profile(_) => Err(NopalError::QueryExecutionError(
-                "PROFILE is only available via execute_statement() in Path Queries F2".into(),
+                "PROFILE is only available via execute_statement() in Path Queries F2".into()
             )),
             _ => {
                 // For non-query statements, route through execute_statement
@@ -907,15 +923,13 @@ impl Graph {
                 let result = self.execute_statement(query_string).await?;
                 let mut qr = crate::query::nql::QueryResult::new(vec!["result".to_string()]);
                 let mut row = crate::query::nql::Row::new();
-                row.set(
-                    "result",
-                    crate::types::PropertyValue::String(result.summary()),
-                );
+                row.set("result", crate::types::PropertyValue::String(result.summary()));
                 qr.add_row(row);
                 Ok(qr)
             }
         }
     }
+
 
     /// Elimina un nodo (y sus aristas)
     pub async fn delete_node(&self, id: NodeId) -> Result<()> {
@@ -924,9 +938,7 @@ impl Graph {
 
         // ✅ Limpiar índices de propiedades
         for (key, value) in &node.properties {
-            self.storage
-                .remove_from_property_index(key, value, id)
-                .await?;
+            self.storage.remove_from_property_index(key, value, id).await?;
         }
 
         // ✅ Delete actual edges from storage (P0 fix: prevent orphaned edges)
@@ -942,18 +954,9 @@ impl Graph {
                 edges.retain(|&e| e != edge.id);
             }
             drop(adj_in);
-            self.storage
-                .save_adjacency_in(
-                    edge.target,
-                    &self
-                        .adjacency_in
-                        .read()
-                        .await
-                        .get(&edge.target)
-                        .cloned()
-                        .unwrap_or_default(),
-                )
-                .await?;
+            self.storage.save_adjacency_in(edge.target,
+                                           &self.adjacency_in.read().await.get(&edge.target).cloned().unwrap_or_default()
+            ).await?;
         }
 
         for edge in &incoming {
@@ -964,18 +967,9 @@ impl Graph {
                 edges.retain(|&e| e != edge.id);
             }
             drop(adj_out);
-            self.storage
-                .save_adjacency_out(
-                    edge.source,
-                    &self
-                        .adjacency_out
-                        .read()
-                        .await
-                        .get(&edge.source)
-                        .cloned()
-                        .unwrap_or_default(),
-                )
-                .await?;
+            self.storage.save_adjacency_out(edge.source,
+                                            &self.adjacency_out.read().await.get(&edge.source).cloned().unwrap_or_default()
+            ).await?;
         }
 
         // Borrar nodo del storage
@@ -1032,12 +1026,8 @@ impl Graph {
         drop(adj_out);
         drop(adj_in);
 
-        self.storage
-            .save_adjacency_out(source, &source_edges)
-            .await?;
-        self.storage
-            .save_adjacency_in(target, &target_edges)
-            .await?;
+        self.storage.save_adjacency_out(source, &source_edges).await?;
+        self.storage.save_adjacency_in(target, &target_edges).await?;
 
         self.bump_topology_version();
 
@@ -1109,12 +1099,8 @@ impl Graph {
         drop(adj_out);
         drop(adj_in);
 
-        self.storage
-            .save_adjacency_out(source, &source_edges)
-            .await?;
-        self.storage
-            .save_adjacency_in(target, &target_edges)
-            .await?;
+        self.storage.save_adjacency_out(source, &source_edges).await?;
+        self.storage.save_adjacency_in(target, &target_edges).await?;
 
         self.bump_topology_version();
 
@@ -1143,13 +1129,21 @@ impl Graph {
     }
 
     /// Delete node (within transaction)
-    pub async fn delete_node_with_tx(&self, id: NodeId, _tx: &mut Transaction) -> Result<()> {
+    pub async fn delete_node_with_tx(
+        &self,
+        id: NodeId,
+        _tx: &mut Transaction,
+    ) -> Result<()> {
         // Use existing delete_node method
         self.delete_node(id).await
     }
 
     /// Update node (within transaction)
-    pub async fn update_node_with_tx(&self, _node: Node, _tx: &mut Transaction) -> Result<()> {
+    pub async fn update_node_with_tx(
+        &self,
+        _node: Node,
+        _tx: &mut Transaction,
+    ) -> Result<()> {
         // TODO: Implement proper node update with transaction
         // For now, just return Ok
         log::warn!("update_node_with_tx not fully implemented");
@@ -1213,12 +1207,7 @@ impl Graph {
 
     /// Asigna un embedding a un nodo específico
     #[cfg(feature = "embeddings")]
-    pub async fn add_node_embedding(
-        &self,
-        node_id: NodeId,
-        vector: Vec<f32>,
-        model: &str,
-    ) -> std::result::Result<(), NopalError> {
+    pub async fn add_node_embedding(&self, node_id: NodeId, vector: Vec<f32>, model: &str) -> std::result::Result<(), NopalError> {
         if !self.storage.node_exists(node_id).await? {
             return Err(NopalError::NodeNotFound(node_id.to_string()));
         }
@@ -1232,27 +1221,16 @@ impl Graph {
 
     /// Obtiene el embedding de un nodo
     #[cfg(feature = "embeddings")]
-    pub async fn get_node_embedding(
-        &self,
-        node_id: NodeId,
-        model: &str,
-    ) -> std::result::Result<crate::embeddings::Embedding, NopalError> {
+    pub async fn get_node_embedding(&self, node_id: NodeId, model: &str) -> std::result::Result<crate::embeddings::Embedding, NopalError> {
         self.storage.load_node_embedding(node_id, model).await
     }
 
     /// Asigna un embedding a una arista específica.
     /// Retorna `EdgeNotFound` si la arista no existe.
     #[cfg(feature = "embeddings")]
-    pub async fn add_edge_embedding(
-        &self,
-        edge_id: EdgeId,
-        vector: Vec<f32>,
-        model: &str,
-    ) -> std::result::Result<(), NopalError> {
+    pub async fn add_edge_embedding(&self, edge_id: EdgeId, vector: Vec<f32>, model: &str) -> std::result::Result<(), NopalError> {
         // Verificar existencia consultando storage directamente
-        self.storage
-            .get_edge(edge_id)
-            .await
+        self.storage.get_edge(edge_id).await
             .map_err(|_| NopalError::EdgeNotFound(edge_id.to_string()))?;
         let embedding = crate::embeddings::EdgeEmbedding::new(edge_id, vector, model);
         self.storage.save_edge_embedding(&embedding).await?;
@@ -1262,11 +1240,7 @@ impl Graph {
     /// Obtiene el embedding de una arista.
     /// Retorna `Custom` si no se encontró el embedding para ese modelo.
     #[cfg(feature = "embeddings")]
-    pub async fn get_edge_embedding(
-        &self,
-        edge_id: EdgeId,
-        model: &str,
-    ) -> std::result::Result<crate::embeddings::EdgeEmbedding, NopalError> {
+    pub async fn get_edge_embedding(&self, edge_id: EdgeId, model: &str) -> std::result::Result<crate::embeddings::EdgeEmbedding, NopalError> {
         self.storage.load_edge_embedding(edge_id, model).await
     }
 
@@ -1283,8 +1257,7 @@ impl Graph {
         edge_model: String,
         vector: Vec<f32>,
     ) -> Result<()> {
-        let emb =
-            crate::embeddings::PathReferenceEmbedding::new(name, node_model, edge_model, vector);
+        let emb = crate::embeddings::PathReferenceEmbedding::new(name, node_model, edge_model, vector);
         emb.validate()?;
         self.storage.save_path_reference_embedding(&emb).await
     }
@@ -1297,8 +1270,7 @@ impl Graph {
         node_model: &str,
         edge_model: &str,
     ) -> Result<crate::embeddings::PathReferenceEmbedding> {
-        self.storage
-            .load_path_reference_embedding_sync(name, node_model, edge_model)
+        self.storage.load_path_reference_embedding_sync(name, node_model, edge_model)
     }
 
     /// Carga (sync) todas las PathReferenceEmbedding para el par (node_model, edge_model).
@@ -1308,8 +1280,7 @@ impl Graph {
         node_model: &str,
         edge_model: &str,
     ) -> Result<Vec<crate::embeddings::PathReferenceEmbedding>> {
-        self.storage
-            .load_all_path_references_for_models_sync(node_model, edge_model)
+        self.storage.load_all_path_references_for_models_sync(node_model, edge_model)
     }
 
     /// Construye un `HnswIndex` HNSW en RAM para todos los nodos que tienen
@@ -1326,10 +1297,7 @@ impl Graph {
         &self,
         model: &str,
     ) -> std::result::Result<crate::embeddings::HnswIndex, NopalError> {
-        let embeddings = self
-            .storage
-            .load_all_node_embeddings_for_model(model)
-            .await?;
+        let embeddings = self.storage.load_all_node_embeddings_for_model(model).await?;
         if embeddings.is_empty() {
             return Err(NopalError::custom(format!(
                 "build_embedding_index: no embeddings found for model '{}'",
@@ -1477,7 +1445,11 @@ impl Graph {
     }
 
     /// Breadth-First Search desde un nodo inicial
-    pub async fn bfs(&self, start: NodeId, config: TraversalConfig) -> Result<TraversalResult> {
+    pub async fn bfs(
+        &self,
+        start: NodeId,
+        config: TraversalConfig
+    ) -> Result<TraversalResult> {
         let mut visited = HashSet::new();
         let mut queue = VecDeque::new();
         let mut result_nodes = Vec::new();
@@ -1488,22 +1460,19 @@ impl Graph {
 
         while let Some((current_id, depth)) = queue.pop_front() {
             if let Some(max_depth) = config.max_depth
-                && depth > max_depth
-            {
+                && depth > max_depth {
                 continue;
             }
 
             if let Some(max_nodes) = config.max_nodes
-                && result_nodes.len() >= max_nodes
-            {
+                && result_nodes.len() >= max_nodes {
                 break;
             }
 
             let current_node = self.get_node(current_id).await?;
 
             if let Some(ref filter) = config.filter
-                && !filter(&current_node)
-            {
+                && !filter(&current_node) {
                 continue;
             }
 
@@ -1528,12 +1497,21 @@ impl Graph {
     }
 
     /// Depth-First Search desde un nodo inicial
-    pub async fn dfs(&self, start: NodeId, config: TraversalConfig) -> Result<TraversalResult> {
+    pub async fn dfs(
+        &self,
+        start: NodeId,
+        config: TraversalConfig,
+    ) -> Result<TraversalResult> {
         let mut visited = HashSet::new();
         let mut result_nodes = Vec::new();
 
-        self.dfs_recursive(start, 0, &config, &mut visited, &mut result_nodes)
-            .await?;
+        self.dfs_recursive(
+            start,
+            0,
+            &config,
+            &mut visited,
+            &mut result_nodes,
+        ).await?;
 
         Ok(TraversalResult {
             nodes: result_nodes,
@@ -1553,14 +1531,12 @@ impl Graph {
         result: &mut Vec<NodeId>,
     ) -> Result<()> {
         if let Some(max_depth) = config.max_depth
-            && depth > max_depth
-        {
+            && depth > max_depth {
             return Ok(());
         }
 
         if let Some(max_nodes) = config.max_nodes
-            && result.len() >= max_nodes
-        {
+            && result.len() >= max_nodes {
             return Ok(());
         }
 
@@ -1571,8 +1547,7 @@ impl Graph {
         let current_node = self.get_node(current_id).await?;
 
         if let Some(ref filter) = config.filter
-            && !filter(&current_node)
-        {
+            && !filter(&current_node) {
             return Ok(());
         }
 
@@ -1582,8 +1557,13 @@ impl Graph {
 
         for neighbor_id in neighbors {
             if !visited.contains(&neighbor_id) {
-                self.dfs_recursive(neighbor_id, depth + 1, config, visited, result)
-                    .await?;
+                self.dfs_recursive(
+                    neighbor_id,
+                    depth + 1,
+                    config,
+                    visited,
+                    result,
+                ).await?;
             }
         }
 
@@ -1602,10 +1582,7 @@ impl Graph {
         let mut heap = BinaryHeap::new();
 
         distances.insert(start, 0);
-        heap.push(PathState {
-            node_id: start,
-            cost: 0,
-        });
+        heap.push(PathState { node_id: start, cost: 0 });
 
         while let Some(PathState { node_id, cost }) = heap.pop() {
             if node_id == target {
@@ -1630,8 +1607,7 @@ impl Graph {
             }
 
             if let Some(&dist) = distances.get(&node_id)
-                && cost > dist
-            {
+                && cost > dist {
                 continue;
             }
 
@@ -1663,6 +1639,22 @@ impl Graph {
     pub fn traverse(&self, start: NodeId) -> crate::query::TraverseBuilder {
         crate::query::TraverseBuilder::new(Arc::new(self.clone()), start)
     }
+
+    // Método para registrar modificación
+    #[cfg(feature = "full-isolation")]
+    pub(crate) async fn mark_modified(&self, node_id: NodeId, timestamp: u64) -> Result<()> {
+        let mut last_mod = self.last_modified.write().await;
+        last_mod.insert(node_id, timestamp);
+        Ok(())
+    }
+
+    // Método para obtener timestamp de última modificación
+    #[cfg(feature = "full-isolation")]
+    pub(crate) async fn get_last_modified(&self, node_id: NodeId) -> Option<u64> {
+        let last_mod = self.last_modified.read().await;
+        last_mod.get(&node_id).copied()
+    }
+
 
     /// Replay operaciones desde WAL (recovery)
     async fn replay_wal(&self) -> Result<()> {
@@ -1704,11 +1696,7 @@ impl Graph {
                     }
                 }
 
-                WalRecord::UpdateNode {
-                    node_id: _,
-                    new_node,
-                    ..
-                } => {
+                WalRecord::UpdateNode { node_id: _, new_node, .. } => {
                     // Update es insert (replace)
                     self.add_node_internal(new_node, false).await?;
                     replayed += 1;
@@ -1740,8 +1728,7 @@ impl Graph {
 
         // 2. Obtener transacciones activas para el WAL checkpoint
         let active_txs: Vec<TransactionId> = {
-            let map = self
-                .active_tx_timestamps
+            let map = self.active_tx_timestamps
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             map.keys().cloned().collect()
@@ -1963,11 +1950,7 @@ impl Graph {
                 continue;
             }
             // Try to get the MVCC version valid at `timestamp`.
-            match self
-                .storage
-                .get_node_at_timestamp(current_node.id, timestamp)
-                .await
-            {
+            match self.storage.get_node_at_timestamp(current_node.id, timestamp).await {
                 Ok(versioned) => {
                     if versioned.is_valid_at(timestamp) {
                         class_nodes.push(versioned.node_data);
@@ -2021,8 +2004,7 @@ impl Graph {
         turtle_source: &str,
     ) -> Result<crate::rdf_owl::importer::ImportReport> {
         let mut taxonomy = self.index_manager.get_or_create_taxonomy();
-        let report =
-            crate::rdf_owl::importer::import_turtle(self, &mut taxonomy, turtle_source).await?;
+        let report = crate::rdf_owl::importer::import_turtle(self, &mut taxonomy, turtle_source).await?;
         self.index_manager.set_taxonomy(taxonomy).await;
         Ok(report)
     }
@@ -2039,10 +2021,7 @@ impl Graph {
         use crate::types::NodeKind;
 
         let nodes = self.storage.get_all_nodes().await?;
-        let class_nodes: Vec<_> = nodes
-            .into_iter()
-            .filter(|n| n.kind == NodeKind::Class)
-            .collect();
+        let class_nodes: Vec<_> = nodes.into_iter().filter(|n| n.kind == NodeKind::Class).collect();
         if class_nodes.is_empty() {
             return Ok(());
         }
@@ -2097,7 +2076,10 @@ impl Graph {
     ///
     /// Delegates to [`Self::export_turtle`] and writes the result to `path`.
     #[cfg(feature = "owl-import")]
-    pub async fn export_owl_file(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+    pub async fn export_owl_file(
+        &self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<()> {
         let content = self.export_turtle().await?;
         tokio::fs::write(path, content)
             .await
@@ -2111,9 +2093,7 @@ impl Graph {
             Ok(versioned) => {
                 log::debug!(
                     "Found node {} at t={} (version {})",
-                    node_id,
-                    timestamp,
-                    versioned.version
+                    node_id, timestamp, versioned.version
                 );
                 Ok(versioned.node_data)
             }
@@ -2121,8 +2101,7 @@ impl Graph {
                 // Fallback: intentar obtener nodo actual (sin MVCC)
                 log::debug!(
                     "No MVCC version found for {} at t={}, trying current",
-                    node_id,
-                    timestamp
+                    node_id, timestamp
                 );
                 self.get_node(node_id).await
             }
@@ -2132,10 +2111,7 @@ impl Graph {
     /// Obtiene un nodo estrictamente desde MVCC en un timestamp específico.
     /// No hace fallback al estado actual, para preservar semántica de snapshot isolation.
     pub async fn get_node_at_strict(&self, node_id: NodeId, timestamp: u64) -> Result<Node> {
-        let versioned = self
-            .storage
-            .get_node_at_timestamp(node_id, timestamp)
-            .await?;
+        let versioned = self.storage.get_node_at_timestamp(node_id, timestamp).await?;
         Ok(versioned.node_data)
     }
 
@@ -2331,6 +2307,7 @@ impl Graph {
         self.schema_manager.mark_dirty();
     }
 
+
     #[doc(hidden)]
     pub fn konami(&self) {
         crate::easter_eggs::konami_code();
@@ -2353,6 +2330,7 @@ impl Graph {
     pub fn motivate(&self) -> &'static str {
         crate::easter_eggs::motivational_message()
     }
+
 
     #[cfg(feature = "analytics")]
     /// Export all nodes to Apache Arrow RecordBatch (columnar format)
@@ -2401,7 +2379,7 @@ impl Graph {
 
         if nodes.is_empty() {
             return Err(NopalError::Custom(
-                "No versioned nodes found in database".into(),
+                "No versioned nodes found in database".into()
             ));
         }
 
@@ -2427,7 +2405,10 @@ impl Graph {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn export_parquet(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+    pub async fn export_parquet(
+        &self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<()> {
         let batch = self.to_arrow().await?;
         crate::arrow_export::write_parquet(&batch, path)?;
 
@@ -2436,32 +2417,28 @@ impl Graph {
 
     #[cfg(feature = "analytics")]
     /// Import graph from Parquet file
-    pub async fn import_parquet(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+    pub async fn import_parquet(
+        &self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<()> {
         let batch = crate::arrow_export::read_parquet(&path)?;
 
         // Reconstruct nodes from Arrow columns: id, label, property_count
-        let id_col = batch
-            .column_by_name("id")
+        let id_col = batch.column_by_name("id")
             .ok_or_else(|| NopalError::Custom("Parquet missing 'id' column".into()))?;
-        let label_col = batch
-            .column_by_name("label")
+        let label_col = batch.column_by_name("label")
             .ok_or_else(|| NopalError::Custom("Parquet missing 'label' column".into()))?;
 
-        let ids = id_col
-            .as_any()
-            .downcast_ref::<arrow::array::StringArray>()
+        let ids = id_col.as_any().downcast_ref::<arrow::array::StringArray>()
             .ok_or_else(|| NopalError::Custom("'id' column is not String type".into()))?;
-        let labels = label_col
-            .as_any()
-            .downcast_ref::<arrow::array::StringArray>()
+        let labels = label_col.as_any().downcast_ref::<arrow::array::StringArray>()
             .ok_or_else(|| NopalError::Custom("'label' column is not String type".into()))?;
 
         let mut imported = 0usize;
         for i in 0..batch.num_rows() {
             if let (Some(id_str), Some(label)) = (ids.value(i).into(), labels.value(i).into()) {
-                let id: NodeId = id_str.parse().map_err(|_| {
-                    NopalError::Custom(format!("Invalid UUID in parquet row {}: {}", i, id_str))
-                })?;
+                let id: NodeId = id_str.parse()
+                    .map_err(|_| NopalError::Custom(format!("Invalid UUID in parquet row {}: {}", i, id_str)))?;
                 let node = Node {
                     id,
                     label: label.to_string(),
@@ -2473,22 +2450,17 @@ impl Graph {
             }
         }
 
-        log::info!(
-            "Imported {} nodes from parquet (properties not included in basic format — use export_parquet with label for full roundtrip)",
-            imported
-        );
+        log::info!("Imported {} nodes from parquet (properties not included in basic format — use export_parquet with label for full roundtrip)", imported);
         Ok(())
     }
+
 
     #[cfg(feature = "analytics")]
     /// Export nodes to Arrow with properties
     ///
     /// When label is provided, exports only nodes of that label with their properties.
     /// Otherwise, exports metadata only.
-    pub async fn to_arrow_with_label(
-        &self,
-        label: Option<&str>,
-    ) -> Result<arrow::record_batch::RecordBatch> {
+    pub async fn to_arrow_with_label(&self, label: Option<&str>) -> Result<arrow::record_batch::RecordBatch> {
         let nodes = self.storage.get_all_nodes().await?;
 
         if let Some(label_filter) = label {
@@ -2532,9 +2504,7 @@ impl Graph {
 
         // 3. Batch save de índices vacíos
         let empty_indices: Vec<_> = ids.iter().map(|id| (*id, Vec::new())).collect();
-        self.storage
-            .save_adjacency_batch(&empty_indices, &empty_indices)
-            .await?;
+        self.storage.save_adjacency_batch(&empty_indices, &empty_indices).await?;
 
         self.bump_topology_version();
 
@@ -2576,31 +2546,19 @@ impl Graph {
         log::info!("Creating index on {}.{}", label, property);
 
         // Step 1: Create index metadata
-        let index_name = self
-            .index_manager
-            .create_index(label, property, index_type.clone())
-            .await?;
+        let index_name = self.index_manager.create_index(label, property, index_type.clone()).await?;
         log::debug!("Index metadata created: {}", index_name);
 
         // Taxonomy indexes require a two-phase population (nodes then edges).
         if index_type == IndexType::Taxonomy {
-            log::info!(
-                "Populating taxonomy index {} (label={}, edge_type={})",
-                index_name,
-                label,
-                property
-            );
+            log::info!("Populating taxonomy index {} (label={}, edge_type={})", index_name, label, property);
 
             // Phase A: register Class nodes.
             let nodes = self.get_nodes_by_label(label).await?;
             let mut node_count = 0;
             for node in &nodes {
                 self.index_manager
-                    .insert(
-                        &index_name,
-                        crate::types::PropertyValue::String(node.label.clone()),
-                        node.id,
-                    )
+                    .insert(&index_name, crate::types::PropertyValue::String(node.label.clone()), node.id)
                     .await?;
                 node_count += 1;
             }
@@ -2617,12 +2575,7 @@ impl Graph {
                 }
             }
 
-            log::info!(
-                "✅ Taxonomy index {}: {} nodes, {} edges",
-                index_name,
-                node_count,
-                edge_count
-            );
+            log::info!("✅ Taxonomy index {}: {} nodes, {} edges", index_name, node_count, edge_count);
             return Ok(index_name);
         }
 
@@ -2664,15 +2617,14 @@ impl Graph {
         // Intentar usar índice
         if let Some(index_name) = self.index_manager.find_index(label, property).await {
             log::debug!("🚀 Using index: {}", index_name);
-            let node_ids = self
-                .index_manager
+            let node_ids = self.index_manager
                 .query(&index_name, &IndexQuery::Equals(value))
                 .await?;
 
             // Cargar nodos desde storage
             let mut nodes = Vec::new();
             for node_id in node_ids {
-                if let Ok(node) = self.get_node(node_id).await {
+                if let Ok(node)= self.get_node(node_id).await {
                     nodes.push(node);
                 }
             }
@@ -2681,8 +2633,7 @@ impl Graph {
             // Fallback: full scan — filter by label and property value
             log::warn!("⚠️  No index for {}.{}, using full scan", label, property);
             let all_nodes = self.get_nodes_by_label(label).await?;
-            let nodes = all_nodes
-                .into_iter()
+            let nodes = all_nodes.into_iter()
                 .filter(|n| n.properties.get(property) == Some(&value))
                 .collect();
             Ok(nodes)
@@ -2777,6 +2728,7 @@ impl Graph {
         let stats = self.get_stats().await?;
         Ok(QueryPlanner::new(stats))
     }
+
 }
 
 /// BulkLoader - Cargador de alto rendimiento para importación masiva
@@ -2876,6 +2828,7 @@ impl BulkLoader {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2885,8 +2838,8 @@ mod tests {
     async fn test_add_node() {
         let graph = Graph::in_memory().await.unwrap();
 
-        let node =
-            Node::new("Person").with_property("name", PropertyValue::String("Alice".to_string()));
+        let node = Node::new("Person")
+            .with_property("name", PropertyValue::String("Alice".to_string()));
 
         let node_id = graph.add_node(node.clone()).await.unwrap();
 
@@ -2898,10 +2851,10 @@ mod tests {
     async fn test_add_edge_and_neighbors() {
         let graph = Graph::in_memory().await.unwrap();
 
-        let alice =
-            Node::new("Person").with_property("name", PropertyValue::String("Alice".to_string()));
-        let bob =
-            Node::new("Person").with_property("name", PropertyValue::String("Bob".to_string()));
+        let alice = Node::new("Person")
+            .with_property("name", PropertyValue::String("Alice".to_string()));
+        let bob = Node::new("Person")
+            .with_property("name", PropertyValue::String("Bob".to_string()));
 
         let alice_id = graph.add_node(alice).await.unwrap();
         let bob_id = graph.add_node(bob).await.unwrap();
@@ -2909,10 +2862,7 @@ mod tests {
         let edge = Edge::new(alice_id, bob_id, "KNOWS");
         graph.add_edge(edge).await.unwrap();
 
-        let neighbors = graph
-            .neighbors(alice_id, Direction::Outgoing)
-            .await
-            .unwrap();
+        let neighbors = graph.neighbors(alice_id, Direction::Outgoing).await.unwrap();
         assert_eq!(neighbors.len(), 1);
         assert_eq!(neighbors[0], bob_id);
 
@@ -2963,10 +2913,10 @@ mod tests {
         let graph = Graph::in_memory().await.unwrap();
 
         // Crear nodos
-        let alice =
-            Node::new("Person").with_property("name", PropertyValue::String("Alice".to_string()));
-        let bob =
-            Node::new("Person").with_property("name", PropertyValue::String("Bob".to_string()));
+        let alice = Node::new("Person")
+            .with_property("name", PropertyValue::String("Alice".to_string()));
+        let bob = Node::new("Person")
+            .with_property("name", PropertyValue::String("Bob".to_string()));
 
         let alice_id = graph.add_node(alice).await.unwrap();
         let bob_id = graph.add_node(bob).await.unwrap();
@@ -2978,10 +2928,7 @@ mod tests {
 
         // Verificar que la arista existe
         assert!(graph.get_edge(edge_id).await.is_ok());
-        assert_eq!(
-            graph.degree(alice_id, Direction::Outgoing).await.unwrap(),
-            1
-        );
+        assert_eq!(graph.degree(alice_id, Direction::Outgoing).await.unwrap(), 1);
         assert_eq!(graph.degree(bob_id, Direction::Incoming).await.unwrap(), 1);
 
         // Eliminar arista
@@ -2989,10 +2936,7 @@ mod tests {
 
         // Verificar que la arista ya no existe
         assert!(graph.get_edge(edge_id).await.is_err());
-        assert_eq!(
-            graph.degree(alice_id, Direction::Outgoing).await.unwrap(),
-            0
-        );
+        assert_eq!(graph.degree(alice_id, Direction::Outgoing).await.unwrap(), 0);
         assert_eq!(graph.degree(bob_id, Direction::Incoming).await.unwrap(), 0);
 
         // Los nodos deben seguir existiendo

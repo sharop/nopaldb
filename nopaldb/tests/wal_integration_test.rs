@@ -11,7 +11,8 @@ async fn test_transaction_writes_to_wal() {
     let mut tx = graph.begin_transaction().await.unwrap();
 
     // Add node
-    let node = Node::new("Person").with_property("name", PropertyValue::String("Alice".into()));
+    let node = Node::new("Person")
+        .with_property("name", PropertyValue::String("Alice".into()));
 
     let node_id = tx.add_node(node).await.unwrap();
 
