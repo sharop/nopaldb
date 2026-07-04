@@ -92,7 +92,7 @@ This release introduces **6 graph algorithms**, **schema inspection**, and **agg
 
 #### Examples
 - `examples/schema_inspection.py` - Schema API demonstration
-- `examples/synthetic_offshore_schema.py` - Synthetic Offshore Network analysis
+- `examples/synthetic_offshore_schema.py` - Synthetic offshore network analysis
 - `examples/test_pagerank.py` - PageRank examples
 - `examples/test_betweenness.py` - Betweenness examples
 - `examples/test_clustering.py` - Clustering examples
@@ -152,7 +152,7 @@ This release introduces **6 graph algorithms**, **schema inspection**, and **agg
 - Apache Arrow integration
 - NQL v0.2 parser and executor
 - BulkLoader API for efficient imports
-- Synthetic Offshore Network demo and analysis
+- Synthetic offshore network demo and analysis
 
 ### Changed
 - Migrated from single-threaded to async/await
@@ -174,6 +174,25 @@ This release introduces **6 graph algorithms**, **schema inspection**, and **agg
 - Simple query interface
 - File-based storage with sled
 - Python bindings (basic)
+
+---
+
+## Upcoming in v0.3.0 (Q2 2026)
+
+### Planned Features
+- Docker + Jupyter environment
+- Performance benchmarks vs Neo4j
+- Query optimization
+- Sharding support
+- PyPI publication
+- crates.io publication
+
+### Under Consideration
+- GraphQL API
+- REST API
+- WebAssembly build
+- Real-time subscriptions
+- Visual query builder
 
 ---
 
