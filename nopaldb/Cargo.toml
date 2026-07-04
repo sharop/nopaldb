@@ -63,6 +63,7 @@ tempfile = "3.19"
 tokio-test = "0.4"
 num_cpus = "1.16"
 env_logger = "0.11"              # For test logging
+criterion = { version = "0.5", features = ["async_tokio"] }
 
 
 [features]
@@ -94,6 +95,10 @@ core       = ["storage-sled", "analytics", "algorithms", "ml", "hypergraph", "em
 semantic   = ["core", "reasoner", "owl-import", "shacl"]
 full       = ["semantic", "full-isolation"]
 
+
+[[bench]]
+name = "graph_ops"
+harness = false
 
 [[test]]
 name = "owl_import_integration_test"
