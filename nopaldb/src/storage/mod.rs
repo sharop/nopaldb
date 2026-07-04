@@ -845,6 +845,80 @@ impl Storage {
         Ok(())
     }
 
+    /// Aplica ATÓMICAMENTE (un solo `sled::Batch` sobre el tree default) el
+    /// write-set de versión de un nodo commiteado:
+    ///   - la versión anterior invalidada (si es update)
+    ///   - la versión nueva + puntero current + lista de versiones + índice ts
+    ///   - el registro current legacy `node:{id}`
+    ///
+    /// Antes esto eran 5+ escrituras independientes: un crash a la mitad dejaba
+    /// al nodo sin versión current o con la cadena rota. Con el batch, o se
+    /// aplica todo o no se aplica nada (el WAL redo cubre el caso "nada").
+    ///
+    /// PRECONDICIÓN: el caller serializa los commits (commit lock); las listas
+    /// se leen-modifican-escriben aquí sin coordinación adicional.
+    pub async fn commit_node_version_atomic(
+        &self,
+        node: &Node,
+        invalidated_prev: Option<&VersionedNode>,
+        new_version: &VersionedNode,
+    ) -> Result<()> {
+        let id = new_version.id;
+        let mut batch = sled::Batch::default();
+
+        // 1. Versión anterior invalidada (update)
+        if let Some(prev) = invalidated_prev {
+            let key = format!("node:{}:v{}", id, prev.version);
+            batch.insert(key.as_bytes(), serialize(prev)?);
+        }
+
+        // 2. Versión nueva
+        let version_key = format!("node:{}:v{}", id, new_version.version);
+        batch.insert(version_key.as_bytes(), serialize(new_version)?);
+
+        // 3. Puntero current
+        let current_key = format!("node:{}:current", id);
+        batch.insert(current_key.as_bytes(), new_version.version.to_le_bytes().as_ref());
+
+        // 4. Lista de versiones (RMW bajo commit lock)
+        let versions_key = format!("node:{}:versions", id);
+        let mut versions: Vec<u64> = match self.db.get(versions_key.as_bytes())? {
+            Some(v) => deserialize(&v)?,
+            None => Vec::new(),
+        };
+        if !versions.contains(&new_version.version) {
+            versions.push(new_version.version);
+            versions.sort_unstable();
+            versions.reverse();
+        }
+        batch.insert(versions_key.as_bytes(), serialize(&versions)?);
+
+        // 5. Índice por timestamp (RMW bajo commit lock)
+        let ts_key = format!("ts:{}", new_version.timestamp);
+        let mut node_ids: Vec<NodeId> = match self.db.get(ts_key.as_bytes())? {
+            Some(v) => deserialize(&v)?,
+            None => Vec::new(),
+        };
+        if !node_ids.contains(&id) {
+            node_ids.push(id);
+        }
+        batch.insert(ts_key.as_bytes(), serialize(&node_ids)?);
+
+        // 6. Registro current legacy (mismo tree → misma atomicidad)
+        let node_key = format!("node:{}", node.id);
+        batch.insert(node_key.as_bytes(), serialize(node)?);
+
+        self.db.apply_batch(batch)?;
+
+        // Cota del reloj: fuera del batch, con CAS-max (los escritores directos
+        // concurrentes también la avanzan; un put plano podría retrocederla).
+        // Si crasheamos antes de esto, el open la deriva del máximo del WAL.
+        self.bump_clock(META_NEXT_TIMESTAMP, new_version.timestamp.saturating_add(1))?;
+
+        log::debug!("Committed node {} v{} atomically", id, new_version.version);
+        Ok(())
+    }
+
     /// Obtiene la versión actual de un nodo
     pub async fn get_current_version(&self, id: NodeId) -> Result<u64> {
         let current_key = format!("node:{}:current", id);

@@ -304,6 +304,15 @@ impl Graph {
         if recovery_info.total_records>0 {
             log::info!("Replaying committed operations from WAL...");
             graph.replay_wal().await?;
+
+            // Tras un replay con transacciones commiteadas, la adyacencia
+            // persistida puede haber quedado stale por un crash a mitad de
+            // commit. Reconstruirla desde las aristas (fuente de verdad) en
+            // lugar de confiar en los snapshots guardados.
+            if !recovery_info.committed_txs.is_empty() {
+                log::info!("Crash recovery detected: rebuilding adjacency from edges...");
+                graph.rebuild_adjacency_from_edges().await?;
+            }
         }
 
         // Rebuild TaxonomyIndex from Class nodes + subClassOf edges (if any).
@@ -1170,8 +1179,16 @@ impl Graph {
         let mut adj_out = self.adjacency_out.write().await;
         let mut adj_in = self.adjacency_in.write().await;
 
-        adj_out.entry(source).or_insert_with(Vec::new).push(edge_id);
-        adj_in.entry(target).or_insert_with(Vec::new).push(edge_id);
+        // Idempotente: el WAL replay puede re-aplicar una arista ya aplicada
+        // antes de un crash; no debe duplicar la entrada de adyacencia.
+        let out = adj_out.entry(source).or_insert_with(Vec::new);
+        if !out.contains(&edge_id) {
+            out.push(edge_id);
+        }
+        let inn = adj_in.entry(target).or_insert_with(Vec::new);
+        if !inn.contains(&edge_id) {
+            inn.push(edge_id);
+        }
 
         let source_edges = adj_out.get(&source).cloned().unwrap_or_default();
         let target_edges = adj_in.get(&target).cloned().unwrap_or_default();
@@ -1233,10 +1250,15 @@ impl Graph {
         let source = edge.source;
         let target = edge.target;
 
-        // 2. Cerrar la versión MVCC (valid_to = timestamp)
-        // Si no existe historial MVCC (aristas antiguas pre-versioning), ignorar silenciosamente
-        if let Err(e) = self.storage.mark_edge_deleted(id, timestamp).await {
-            log::debug!("mark_edge_deleted: no MVCC record for edge {} ({})", id, e);
+        // 2. Cerrar la versión MVCC (valid_to = timestamp).
+        // Solo se tolera EdgeNotFound (aristas antiguas pre-versioning);
+        // cualquier otro error debe abortar la operación.
+        match self.storage.mark_edge_deleted(id, timestamp).await {
+            Ok(()) => {}
+            Err(NopalError::EdgeNotFound(_)) => {
+                log::debug!("mark_edge_deleted: no MVCC record for edge {} (legacy)", id);
+            }
+            Err(e) => return Err(e),
         }
 
         // 3. Eliminar del storage principal (árbol "edges")
@@ -2306,6 +2328,43 @@ impl Graph {
     /// Inserta versión de nodo (público para Transaction)
     pub async fn insert_node_version(&self, versioned: &VersionedNode) -> Result<()> {
         self.storage.insert_node_version(versioned).await
+    }
+
+    /// Reconstruye la adyacencia (en memoria y persistida) desde las aristas,
+    /// que son la fuente de verdad. Usado tras un crash recovery: los
+    /// snapshots de adyacencia guardados pueden haber quedado stale.
+    pub(crate) async fn rebuild_adjacency_from_edges(&self) -> Result<()> {
+        let _gate = self.write_gate.lock().await;
+        let (out, inn) = self.storage.rebuild_indices().await?;
+        {
+            let mut adj_out = self.adjacency_out.write().await;
+            let mut adj_in = self.adjacency_in.write().await;
+            *adj_out = out.clone();
+            *adj_in = inn.clone();
+        }
+        for (node_id, edge_ids) in &out {
+            self.storage.save_adjacency_out(*node_id, edge_ids).await?;
+        }
+        for (node_id, edge_ids) in &inn {
+            self.storage.save_adjacency_in(*node_id, edge_ids).await?;
+        }
+        self.bump_topology_version();
+        Ok(())
+    }
+
+    /// Aplica atómicamente el write-set de versión de un nodo commiteado
+    /// (versión previa invalidada + versión nueva + current + listas + registro
+    /// legacy) en un solo batch de storage. Usado por `Transaction::commit`.
+    pub(crate) async fn commit_node_atomic(
+        &self,
+        node: &Node,
+        invalidated_prev: Option<&VersionedNode>,
+        new_version: &VersionedNode,
+    ) -> Result<()> {
+        let _gate = self.write_gate.lock().await;
+        self.storage
+            .commit_node_version_atomic(node, invalidated_prev, new_version)
+            .await
     }
 
     /// Get complete schema information

@@ -45,3 +45,6 @@ jobs:
 
       - name: Test clock persistence and concurrency regressions
         run: cargo test -p nopaldb --test clock_persistence_test --test concurrent_writers_test
+
+      - name: Test crash recovery (SIGKILL harness)
+        run: cargo test -p nopaldb --test crash_commit_test

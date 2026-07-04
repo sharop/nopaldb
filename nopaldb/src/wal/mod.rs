@@ -118,7 +118,23 @@ impl WalManager {
             .open(&wal_path)?;
 
         // Get current size
-        let position = file.metadata()?.len();
+        let file_len = file.metadata()?.len();
+
+        // Un SIGKILL a mitad de append deja una cola rasgada (length prefix o
+        // payload incompletos). Ese registro nunca fue confirmado (hay fsync
+        // por registro), así que se descarta truncando el archivo al último
+        // registro válido; de lo contrario el log queda ilegible y los
+        // appends posteriores caerían después de basura.
+        let mut file = file;
+        let (_, valid_len) = Self::scan_valid_records(&mut file)?;
+        if valid_len < file_len {
+            log::warn!(
+                "WAL has a torn tail ({} bytes past the last valid record) — truncating (crash during append)",
+                file_len - valid_len
+            );
+            file.set_len(valid_len)?;
+        }
+        let position = valid_len;
 
         log::info!("WAL opened at {:?}, size: {} bytes", wal_path, position);
 
@@ -156,33 +172,61 @@ impl WalManager {
 
     pub async fn read_all(&self) -> Result<Vec<WalRecord>> {
         let mut file = self.file.lock().await;
+        let (records, _) = Self::scan_valid_records(&mut file)?;
+        log::info!("Read {} records from WAL", records.len());
+        Ok(records)
+    }
+
+    /// Escanea el log tolerando una cola rasgada por crash: devuelve los
+    /// registros válidos y la longitud en bytes hasta el final del último
+    /// registro completo. Un prefijo de longitud incompleto, un payload
+    /// truncado o JSON corrupto al final marcan el fin del log válido.
+    fn scan_valid_records(file: &mut std::fs::File) -> Result<(Vec<WalRecord>, u64)> {
+        let file_len = file.metadata()?.len();
         let mut records = Vec::new();
+        let mut valid_len: u64 = 0;
 
         file.seek(SeekFrom::Start(0))?;
 
         loop {
             let mut len_bytes = [0u8; 8];
             match file.read_exact(&mut len_bytes) {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
                 Err(e) => return Err(e.into()),
             }
 
             let len = u64::from_le_bytes(len_bytes);
 
+            // Longitud absurda = prefijo rasgado/corrupto: fin del log válido.
+            if valid_len + 8 + len > file_len {
+                log::warn!("WAL record length ({}) exceeds file — torn tail, stopping scan", len);
+                break;
+            }
+
             let mut data = vec![0u8; len as usize];
-            file.read_exact(&mut data)?;
+            match file.read_exact(&mut data) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    log::warn!("WAL payload truncated — torn tail, stopping scan");
+                    break;
+                }
+                Err(e) => return Err(e.into()),
+            }
 
-            // ✅ Usar JSON en lugar de Bincode
-            let record: WalRecord = serde_json::from_slice(&data)
-                .map_err(|e| NopalError::SerializationError(e.to_string()))?;
-
-            records.push(record);
+            match serde_json::from_slice::<WalRecord>(&data) {
+                Ok(record) => {
+                    records.push(record);
+                    valid_len += 8 + len;
+                }
+                Err(e) => {
+                    log::warn!("WAL tail record undecodable ({}) — torn tail, stopping scan", e);
+                    break;
+                }
+            }
         }
 
-        log::info!("Read {} records from WAL", records.len());
-
-        Ok(records)
+        Ok((records, valid_len))
     }
 
     /// Crea un checkpoint en el WAL

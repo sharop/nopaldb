@@ -819,9 +819,10 @@ impl Transaction {
         }
 
         for edge_id in &self.deleted_edges {
-            if let Err(e) = self.graph.delete_edge_at(*edge_id, commit_timestamp).await {
-                log::warn!("Failed to delete edge {} during commit: {}", edge_id, e);
-            }
+            // Cualquier fallo aborta el commit: un delete a medias dejaría el
+            // grafo inconsistente en silencio. El WAL ya tiene el registro,
+            // así que el redo del próximo open reintenta la operación.
+            self.graph.delete_edge_at(*edge_id, commit_timestamp).await?;
         }
 
         // 2. Aplicar inserts/updates de nodos SIN indexar
@@ -843,10 +844,9 @@ impl Transaction {
                     .get_node_version(*node_id, current_version_num)
                     .await?;
 
-                // 2. Invalidar versión actual
-                self.graph
-                    .invalidate_current_version(*node_id, commit_timestamp)
-                    .await?;
+                // 2. Preparar versión anterior invalidada (en memoria)
+                let mut invalidated_prev = current_version.clone();
+                invalidated_prev.invalidate(commit_timestamp);
 
                 // 3. Crear nueva versión
                 let new_version = VersionedNode::new_version(
@@ -855,9 +855,12 @@ impl Transaction {
                     commit_timestamp,
                 );
 
-                // 4. Guardar nueva versión
+                // 4. Aplicar TODO el write-set del nodo en un solo batch
+                //    atómico (invalidación + versión + current + listas +
+                //    registro legacy): un crash a la mitad ya no puede dejar
+                //    al nodo sin versión current ni la cadena rota.
                 self.graph
-                    .insert_node_version(&new_version)
+                    .commit_node_atomic(node, Some(&invalidated_prev), &new_version)
                     .await?;
 
                 log::debug!(
@@ -878,7 +881,7 @@ impl Transaction {
                 );
 
                 self.graph
-                    .insert_node_version(&first_version)
+                    .commit_node_atomic(node, None, &first_version)
                     .await?;
 
                 log::debug!("Inserted node {} (v1)", node_id);
