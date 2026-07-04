@@ -906,6 +906,10 @@ impl Transaction {
         // 5. Flush índices a disco
         self.graph.flush_indices().await?;
 
+        // 5b. Persistir relojes lógicos: garantiza que un reopen posterior
+        //     retome timestamps/tx ids por encima de lo commiteado.
+        self.graph.persist_clocks().await?;
+
         // 6. Liberar locks antes de marcar como committed
         #[cfg(feature = "full-isolation")]
         {
@@ -982,6 +986,12 @@ impl Transaction {
         self.deleted_edges.clear();
 
         self.state = TransactionState::Aborted;
+
+        // Persistir relojes: el tx id abortado quedó en el WAL, así que un
+        // reopen no debe reutilizarlo. Best-effort, como el Abort de arriba.
+        if let Err(e) = self.graph.persist_clocks().await {
+            log::warn!("Transaction {}: failed to persist logical clocks on rollback: {}", self.id, e);
+        }
 
         // Deregistrar del mapa de transacciones activas
         self.graph.deregister_tx_timestamp_sync(self.id);

@@ -81,6 +81,12 @@ pub struct RecoveryInfo {
     pub committed_txs: Vec<u64>,
     pub uncommitted_txs: Vec<u64>,
     pub operations_replayed: usize,
+    /// Máximo timestamp lógico observado en el WAL (0 si no hay registros).
+    /// Se usa al abrir para que los relojes nunca retrocedan por debajo
+    /// de lo que ya quedó registrado en el log.
+    pub max_timestamp: u64,
+    /// Máximo transaction id observado en el WAL (0 si no hay registros).
+    pub max_tx_id: u64,
 }
 
 /// WAL Manager - handles log writing and recovery
@@ -296,6 +302,8 @@ impl WalManager {
                 committed_txs: Vec::new(),
                 uncommitted_txs: Vec::new(),
                 operations_replayed: 0,
+                max_timestamp: 0,
+                max_tx_id: 0,
             });
         }
 
@@ -303,19 +311,26 @@ impl WalManager {
         let mut active_txs = std::collections::HashMap::new();
         let mut committed_txs = std::collections::HashSet::new();
         let mut uncommitted_txs = std::collections::HashSet::new();
+        let mut max_timestamp = 0u64;
+        let mut max_tx_id = 0u64;
 
         for record in &records {
             match record {
-                WalRecord::Begin { tx_id, .. } => {
+                WalRecord::Begin { tx_id, timestamp } => {
+                    max_tx_id = max_tx_id.max(*tx_id);
+                    max_timestamp = max_timestamp.max(*timestamp);
                     active_txs.insert(*tx_id, Vec::new());
                 }
 
-                WalRecord::Commit { tx_id, .. } => {
+                WalRecord::Commit { tx_id, timestamp } => {
+                    max_tx_id = max_tx_id.max(*tx_id);
+                    max_timestamp = max_timestamp.max(*timestamp);
                     committed_txs.insert(*tx_id);
                     active_txs.remove(tx_id);
                 }
 
                 WalRecord::Abort { tx_id } => {
+                    max_tx_id = max_tx_id.max(*tx_id);
                     active_txs.remove(tx_id);
                 }
 
@@ -325,13 +340,15 @@ impl WalManager {
                 | WalRecord::DeleteNode { tx_id, .. }
                 | WalRecord::InsertEdge { tx_id, .. }
                 | WalRecord::DeleteEdge { tx_id, .. } => {
+                    max_tx_id = max_tx_id.max(*tx_id);
                     if let Some(ops) = active_txs.get_mut(tx_id) {
                         ops.push(record.clone());
                     }
                 }
 
-                WalRecord::Checkpoint { .. } => {
+                WalRecord::Checkpoint { timestamp, .. } => {
                     // Checkpoint marca punto seguro
+                    max_timestamp = max_timestamp.max(*timestamp);
                     log::debug!("Found checkpoint in WAL");
                 }
             }
@@ -354,6 +371,8 @@ impl WalManager {
             committed_txs: committed_txs.into_iter().collect(),
             uncommitted_txs: uncommitted_txs.into_iter().collect(),
             operations_replayed: 0, // Se llenará durante replay
+            max_timestamp,
+            max_tx_id,
         })
     }
 

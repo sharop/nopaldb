@@ -11,7 +11,11 @@ use crate::types::{Node, Edge, NodeId, EdgeId, PropertyValue};
 use crate::mvcc::{VersionedNode, VersionedEdge};
 pub use backend::{StorageBackend, StorageEngine, StorageOptions, StorageProfile, StorageTuning};
 
-/// Storage engine basado en sled
+/// Key meta con la cota superior persistida del reloj lógico de timestamps.
+pub const META_NEXT_TIMESTAMP: &str = "meta:next_timestamp";
+/// Key meta con la cota superior persistida del contador de transaction ids.
+pub const META_NEXT_TX_ID: &str = "meta:next_tx_id";
+
 /// Storage engine basado en sled.
 ///
 /// Sled es thread-safe internamente (Send + Sync) con MVCC propio.
@@ -104,6 +108,81 @@ impl Storage {
 
     pub fn backend_name(&self) -> &'static str {
         "sled"
+    }
+
+    // ─── Relojes lógicos persistidos ─────────────────────────────────────────
+    //
+    // `next_timestamp` y `next_tx_id` viven como atomics en `Graph`, pero deben
+    // sobrevivir reinicios: si se reinician, los `valid_from`/`valid_to` nuevos
+    // colisionan con versiones ya guardadas y el time-travel deja de ser fiable.
+    // Se persisten como cotas superiores bajo keys `meta:` con semántica de
+    // máximo (nunca retroceden), codificadas como u64 big-endian.
+
+    fn decode_meta_u64(bytes: &[u8]) -> u64 {
+        let mut buf = [0u8; 8];
+        let n = bytes.len().min(8);
+        buf[8 - n..].copy_from_slice(&bytes[..n]);
+        u64::from_be_bytes(buf)
+    }
+
+    /// Registra `value` como cota del reloj `key` solo si supera la almacenada.
+    /// Atómico (CAS de sled), seguro ante escritores concurrentes.
+    fn bump_clock(&self, key: &str, value: u64) -> Result<()> {
+        self.db.fetch_and_update(key.as_bytes(), |old| {
+            let current = old.map(Self::decode_meta_u64).unwrap_or(0);
+            Some(current.max(value).to_be_bytes().to_vec())
+        })?;
+        Ok(())
+    }
+
+    /// Persiste `value` como cota del reloj lógico `key` (solo crece).
+    pub async fn put_meta_u64_max(&self, key: &str, value: u64) -> Result<()> {
+        self.bump_clock(key, value)
+    }
+
+    pub(crate) fn get_meta_u64_sync(&self, key: &str) -> Result<Option<u64>> {
+        Ok(self.db.get(key.as_bytes())?.map(|v| Self::decode_meta_u64(&v)))
+    }
+
+    /// Lee una cota de reloj lógico persistida.
+    pub async fn get_meta_u64(&self, key: &str) -> Result<Option<u64>> {
+        self.get_meta_u64_sync(key)
+    }
+
+    /// Elimina una key meta. Existe para pruebas de migración (simular una base
+    /// creada antes de que los relojes se persistieran).
+    pub async fn delete_meta(&self, key: &str) -> Result<()> {
+        self.db.remove(key.as_bytes())?;
+        Ok(())
+    }
+
+    /// Escaneo de migración: máximo timestamp presente en versiones ya
+    /// persistidas (nodos vía keys `ts:{n}`, aristas vía el tree MVCC).
+    /// Solo se usa al abrir una base que aún no tiene keys `meta:`.
+    pub async fn max_persisted_timestamp(&self) -> Result<u64> {
+        let mut max_ts = 0u64;
+
+        for item in self.db.scan_prefix(b"ts:") {
+            let (key, _) = item?;
+            if let Ok(s) = std::str::from_utf8(&key)
+                && let Ok(ts) = s.trim_start_matches("ts:").parse::<u64>()
+            {
+                max_ts = max_ts.max(ts);
+            }
+        }
+
+        let tree = self.db.open_tree("versioned_edges")?;
+        for item in tree.iter() {
+            let (_, value) = item?;
+            if let Ok(versioned) = deserialize::<VersionedEdge>(&value) {
+                max_ts = max_ts.max(versioned.timestamp);
+                if let Some(valid_to) = versioned.valid_to {
+                    max_ts = max_ts.max(valid_to);
+                }
+            }
+        }
+
+        Ok(max_ts)
     }
 
     /// Inserta un nodo
@@ -205,6 +284,9 @@ impl Storage {
 
         let current_tree = self.db.open_tree("versioned_edges_current")?;
         current_tree.insert(edge.id.to_string().as_bytes(), current_value)?;
+
+        // Avanzar la cota persistida del reloj lógico (nunca retrocede)
+        self.bump_clock(META_NEXT_TIMESTAMP, timestamp.saturating_add(1))?;
 
         Ok(())
     }
@@ -754,6 +836,9 @@ impl Storage {
             let ts_value = serialize(&node_ids)?;
             self.db.insert(ts_key.as_bytes(), ts_value)?;
         }
+
+        // 5. Avanzar la cota persistida del reloj lógico (nunca retrocede)
+        self.bump_clock(META_NEXT_TIMESTAMP, versioned.timestamp.saturating_add(1))?;
 
         log::debug!("Inserted node version: {} v{}", versioned.id, versioned.version);
 

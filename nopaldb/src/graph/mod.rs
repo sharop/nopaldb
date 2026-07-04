@@ -234,12 +234,39 @@ impl Graph {
             (adjacency_out, adjacency_in)
         };
 
+        // Restaurar relojes lógicos persistidos. Sin esto, los timestamps se
+        // reinician en 1 en cada open y los `valid_from/valid_to` nuevos
+        // colisionan con versiones ya guardadas (time-travel corrupto).
+        let next_timestamp_init = {
+            let persisted = storage
+                .get_meta_u64(crate::storage::META_NEXT_TIMESTAMP)
+                .await?;
+            let base = match persisted {
+                Some(v) => v,
+                // Migración: bases creadas antes de que los relojes se
+                // persistieran — derivar del máximo timestamp ya escrito.
+                None => storage.max_persisted_timestamp().await?.saturating_add(1),
+            };
+            base.max(recovery_info.max_timestamp.saturating_add(1)).max(1)
+        };
+        let next_tx_id_init = storage
+            .get_meta_u64(crate::storage::META_NEXT_TX_ID)
+            .await?
+            .unwrap_or(1)
+            .max(recovery_info.max_tx_id.saturating_add(1))
+            .max(1);
+        log::info!(
+            "Logical clocks restored: next_timestamp={}, next_tx_id={}",
+            next_timestamp_init,
+            next_tx_id_init
+        );
+
         let graph = Self {
             storage: Arc::new(storage),
             adjacency_out: Arc::new(RwLock::new(adjacency_out)),
             adjacency_in: Arc::new(RwLock::new(adjacency_in)),
-            next_tx_id: Arc::new(AtomicU64::new(1)),
-            next_timestamp: Arc::new(AtomicU64::new(1)),
+            next_tx_id: Arc::new(AtomicU64::new(next_tx_id_init)),
+            next_timestamp: Arc::new(AtomicU64::new(next_timestamp_init)),
 
             #[cfg(feature = "full-isolation")]
             last_modified: Arc::new(RwLock::new(HashMap::new())),
@@ -423,12 +450,26 @@ impl Graph {
 
     /// Crea un grafo desde un storage existente
     fn from_storage(storage: Storage, wal: WalManager) -> Self {
+        // Respetar relojes persistidos si el storage ya tiene datos
+        // (para in-memory recién creado ambos parten de 1).
+        let next_timestamp_init = storage
+            .get_meta_u64_sync(crate::storage::META_NEXT_TIMESTAMP)
+            .ok()
+            .flatten()
+            .unwrap_or(1)
+            .max(1);
+        let next_tx_id_init = storage
+            .get_meta_u64_sync(crate::storage::META_NEXT_TX_ID)
+            .ok()
+            .flatten()
+            .unwrap_or(1)
+            .max(1);
         Self {
             storage: Arc::new(storage),
             adjacency_out: Arc::new(RwLock::new(HashMap::new())),
             adjacency_in: Arc::new(RwLock::new(HashMap::new())),
-            next_tx_id: Arc::new(AtomicU64::new(1)),
-            next_timestamp: Arc::new(AtomicU64::new(1)),
+            next_tx_id: Arc::new(AtomicU64::new(next_tx_id_init)),
+            next_timestamp: Arc::new(AtomicU64::new(next_timestamp_init)),
 
             #[cfg(feature = "full-isolation")]
             last_modified: Arc::new(RwLock::new(HashMap::new())),
@@ -520,6 +561,24 @@ impl Graph {
     /// Allocates a monotonically increasing logical timestamp for MVCC/transactions.
     pub(crate) fn next_logical_timestamp(&self) -> u64 {
         self.next_timestamp.fetch_add(1, AtomicOrdering::SeqCst)
+    }
+
+    /// Persiste las cotas actuales de los relojes lógicos (`next_timestamp`,
+    /// `next_tx_id`) para que sobrevivan reinicios. Las keys meta solo crecen,
+    /// así que es seguro llamarlo desde varios puntos concurrentes.
+    pub(crate) async fn persist_clocks(&self) -> Result<()> {
+        self.storage
+            .put_meta_u64_max(
+                crate::storage::META_NEXT_TIMESTAMP,
+                self.next_timestamp.load(AtomicOrdering::SeqCst),
+            )
+            .await?;
+        self.storage
+            .put_meta_u64_max(
+                crate::storage::META_NEXT_TX_ID,
+                self.next_tx_id.load(AtomicOrdering::SeqCst),
+            )
+            .await
     }
 
     #[cfg(feature = "algorithms")]
@@ -1739,6 +1798,10 @@ impl Graph {
 
         // 4. Truncar WAL antiguo
         self.wal.truncate_after_checkpoint().await?;
+
+        // 5. Persistir relojes lógicos: tras truncar el WAL ya no se puede
+        //    derivar el máximo timestamp desde el log en el próximo open.
+        self.persist_clocks().await?;
 
         log::info!("Checkpoint completed");
 
