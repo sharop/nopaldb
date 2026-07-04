@@ -8,9 +8,9 @@ const defaultUiPrefs = {
   timelineFilter: "",
   timelineModeFilter: "",
   timelinePinnedOnly: false,
-  graphMode: "dataset",
+  graphDataMode: "dataset",
   graphTypeFilter: "",
-  graphHopLimit: 1,
+  graphDepth: 1,
   graphLimit: 50,
   graphVisualScale: 1,
   graphLayout: "radial",
@@ -53,10 +53,10 @@ const state = {
   graphPanOffset: { x: 0, y: 0 },
   dagVisualScale: 1,
   graphResultDirty: false,
-  // interactive graph redesign state
+  // Neo4j graph redesign state
   graphSim: null,
   graphNodePositions: new Map(),
-  graphMoveNode: null,
+  graphDragNode: null,
   graphContextMenu: null,
   graphHiddenNodes: new Set(),
   graphExpandedNodes: [],  // nodes added via double-click expand
@@ -65,7 +65,7 @@ const state = {
   graphAnimFrame: null,
   graphSvgRefs: null,  // { svg, rootG, edgeG, nodeG, svgWrap, edgeEls: Map, nodeEls: Map }
   graphCurrentSubgraph: null,
-  graphInspectorCollapsed: false,
+  graphDetailCollapsed: false,
   tabQueryPersistTimer: null,
   resultSortColumn: null,
   resultSortDirection: "asc",
@@ -156,12 +156,12 @@ const els = {
   graphSearchMeta: document.getElementById("graphSearchMeta"),
   graphReloadButton: document.getElementById("graphReloadButton"),
   graphExportSvgButton: document.getElementById("graphExportSvgButton"),
-  graphHopSelect: document.getElementById("graphHopSelect"),
+  graphDepthSelect: document.getElementById("graphDepthSelect"),
   graphLimitSelect: document.getElementById("graphLimitSelect"),
   graphLegend: document.getElementById("graphLegend"),
-  graphInspectorPanel: document.getElementById("graphInspectorPanel"),
-  graphInspectorToggle: document.getElementById("graphInspectorToggle"),
-  graphInspectorContent: document.getElementById("graphInspectorContent"),
+  graphDetailPanel: document.getElementById("graphDetailPanel"),
+  graphDetailToggle: document.getElementById("graphDetailToggle"),
+  graphDetailContent: document.getElementById("graphDetailContent"),
   graphFitButton: document.getElementById("graphFitButton"),
   graphResetButton: document.getElementById("graphResetButton"),
   graphContextMenu: document.getElementById("graphContextMenu"),
@@ -232,7 +232,7 @@ function saveUiPrefs() {
         workspace_tab: state.uiPrefs.workspaceTab || "results",
         run_mode: state.uiPrefs.runMode || "run",
         graph_layout: state.uiPrefs.graphLayout || "radial",
-        graph_depth: state.uiPrefs.graphHopLimit || 1,
+        graph_depth: state.uiPrefs.graphDepth || 1,
         graph_limit: state.uiPrefs.graphLimit || 50,
         graph_type_filter: state.uiPrefs.graphTypeFilter || "",
         sidebar_collapsed: Boolean(state.uiPrefs.sidebarCollapsed),
@@ -524,10 +524,10 @@ els.graphResetButton.addEventListener("click", () => {
   saveUiPrefs();
   renderGraphPane();
 });
-els.graphInspectorToggle.addEventListener("click", () => {
-  state.graphInspectorCollapsed = !state.graphInspectorCollapsed;
-  els.graphInspectorPanel.classList.toggle("is-collapsed", state.graphInspectorCollapsed);
-  els.graphInspectorToggle.textContent = state.graphInspectorCollapsed ? "Expand" : "Collapse";
+els.graphDetailToggle.addEventListener("click", () => {
+  state.graphDetailCollapsed = !state.graphDetailCollapsed;
+  els.graphDetailPanel.classList.toggle("is-collapsed", state.graphDetailCollapsed);
+  els.graphDetailToggle.textContent = state.graphDetailCollapsed ? "Expand" : "Collapse";
 });
 document.addEventListener("click", (e) => {
   if (state.graphContextMenu && !e.target.closest(".graph-context-menu")) {

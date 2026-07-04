@@ -142,7 +142,7 @@ async function loadTimelineEntryToEditor(index) {
   state.selectedResultRowIndex = null;
   renderQueryTabs();
   renderTimeline(state.workspace.timeline);
-  refreshGraphStaleState();
+  refreshGraphDirtyState();
   renderGraphPane();
   els.runSummary.textContent = `Loaded run #${index + 1} into the active tab.`;
 }
@@ -190,7 +190,7 @@ async function refreshGraphSubgraph() {
     return;
   }
   const params = new URLSearchParams({
-    depth: String(state.uiPrefs.graphHopLimit),
+    depth: String(state.uiPrefs.graphDepth),
     limit: String(state.uiPrefs.graphLimit),
   });
   if (state.selectedGraphNodeId) {
@@ -263,7 +263,7 @@ async function refreshWorkbench(requestedDbPath = null) {
 
   // Apply restored prefs to UI controls
   els.runMode.value = state.uiPrefs.runMode;
-  els.graphHopSelect.value = String(state.uiPrefs.graphHopLimit);
+  els.graphDepthSelect.value = String(state.uiPrefs.graphDepth);
   els.graphLimitSelect.value = String(state.uiPrefs.graphLimit);
   els.graphTypeFilter.value = state.uiPrefs.graphTypeFilter || "";
   els.graphSearchInput.value = state.graphSearch || "";
@@ -453,7 +453,7 @@ async function bootstrap() {
   els.timelineFilterInput.value = state.uiPrefs.timelineFilter;
   els.timelineModeFilter.value = state.uiPrefs.timelineModeFilter;
   els.timelinePinnedOnly.checked = state.uiPrefs.timelinePinnedOnly;
-  els.graphHopSelect.value = String(state.uiPrefs.graphHopLimit);
+  els.graphDepthSelect.value = String(state.uiPrefs.graphDepth);
   els.graphLimitSelect.value = String(state.uiPrefs.graphLimit);
   els.graphTypeFilter.value = state.uiPrefs.graphTypeFilter || "";
   els.dbPathInput.value = state.uiPrefs.dbDraftPath || "";
@@ -761,8 +761,8 @@ els.graphReloadButton.addEventListener("click", async () => {
     setStatus("error", "plain");
   }
 });
-els.graphHopSelect.addEventListener("change", async (event) => {
-  state.uiPrefs.graphHopLimit = Number(event.target.value || 1);
+els.graphDepthSelect.addEventListener("change", async (event) => {
+  state.uiPrefs.graphDepth = Number(event.target.value || 1);
   saveUiPrefs();
   await refreshGraphSubgraph();
 });

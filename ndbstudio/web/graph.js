@@ -1,4 +1,4 @@
-// ── interactive Graph Visualization ──────────────────────────────────
+// ── Neo4j-style Graph Visualization ──────────────────────────────────
 
 const NODE_PALETTE = [
   "#4C8BF5", "#E94F3B", "#F5A623", "#7B61FF", "#1ABC9C",
@@ -566,7 +566,7 @@ function startGraphAnimation() {
     if (!state.graphSim) return;
     const running = state.graphSim.tick();
     updateSvgPositions();
-    if (running || state.graphMoveNode) {
+    if (running || state.graphDragNode) {
       state.graphAnimFrame = requestAnimationFrame(loop);
     } else {
       state.graphAnimFrame = null;
@@ -588,7 +588,7 @@ function teardownGraph() {
     state.graphSim = null;
   }
   state.graphSvgRefs = null;
-  state.graphMoveNode = null;
+  state.graphDragNode = null;
   
   if (els.graphPane) {
     // Explicitly remove all child nodes to help GC
@@ -635,7 +635,7 @@ function attachGraphInteraction() {
     if (nodeGroup) {
       e.preventDefault();
       const nodeId = nodeGroup.dataset.nodeId;
-      state.graphMoveNode = nodeId;
+      state.graphDragNode = nodeId;
       const svgPt = screenToSvg(e.clientX, e.clientY);
       const pos = state.graphNodePositions.get(nodeId);
       if (pos) {
@@ -654,7 +654,7 @@ function attachGraphInteraction() {
       state.selectedGraphNodeId = null;
       state.selectedGraphEdgeIdx = parseInt(edgeGroup.dataset.edgeIdx, 10);
       updateSvgPositions();
-      updateGraphInspectorPanel();
+      updateGraphDetailPanel();
       return;
     }
     // Pan
@@ -664,9 +664,9 @@ function attachGraphInteraction() {
   });
 
   svgWrap.addEventListener("mousemove", (e) => {
-    if (state.graphMoveNode) {
+    if (state.graphDragNode) {
       const svgPt = screenToSvg(e.clientX, e.clientY);
-      state.graphSim?.setNodePosition(state.graphMoveNode, svgPt.x - dragOffset.x, svgPt.y - dragOffset.y);
+      state.graphSim?.setNodePosition(state.graphDragNode, svgPt.x - dragOffset.x, svgPt.y - dragOffset.y);
       return;
     }
     if (isPanning) {
@@ -676,10 +676,10 @@ function attachGraphInteraction() {
   });
 
   const endInteraction = (e) => {
-    if (state.graphMoveNode) {
+    if (state.graphDragNode) {
       const moved = clickStart ? Math.hypot(e.clientX - clickStart.x, e.clientY - clickStart.y) : 999;
       const elapsed = clickStart ? Date.now() - clickStart.time : 999;
-      const nodeId = state.graphMoveNode;
+      const nodeId = state.graphDragNode;
 
       if (moved < 5 && elapsed < 300) {
         // It was a click, not a drag — check for double-click
@@ -695,14 +695,14 @@ function attachGraphInteraction() {
           lastClickNodeId = nodeId;
           state.selectedGraphNodeId = nodeId;
           updateSvgPositions();
-          updateGraphInspectorPanel();
+          updateGraphDetailPanel();
         }
       }
       const pos = state.graphNodePositions.get(nodeId);
       if (pos && !pos.pinned) {
         state.graphSim?.unpinNode(nodeId);
       }
-      state.graphMoveNode = null;
+      state.graphDragNode = null;
       clickStart = null;
       return;
     }
@@ -990,10 +990,10 @@ function updateGraphLegend(subgraph) {
 }
 
 // Update detail panel
-function updateGraphInspectorPanel() {
+function updateGraphDetailPanel() {
   const sub = state.graphCurrentSubgraph;
-  const panel = els.graphInspectorPanel;
-  const content = els.graphInspectorContent;
+  const panel = els.graphDetailPanel;
+  const content = els.graphDetailContent;
   
   if (!sub || (!state.selectedGraphNodeId && state.selectedGraphEdgeIdx == null)) {
     panel.classList.add("is-empty");
@@ -1009,7 +1009,7 @@ function updateGraphInspectorPanel() {
       return;
     }
     panel.classList.remove("is-empty");
-    panel.classList.toggle("is-collapsed", state.graphInspectorCollapsed);
+    panel.classList.toggle("is-collapsed", state.graphDetailCollapsed);
     const relations = graphRelations(sub, node).slice(0, 12);
     const matches = graphSearchMatches(sub);
     const searchSummary = graphSearchQuery()
@@ -1032,7 +1032,7 @@ function updateGraphInspectorPanel() {
       return;
     }
     panel.classList.remove("is-empty");
-    panel.classList.toggle("is-collapsed", state.graphInspectorCollapsed);
+    panel.classList.toggle("is-collapsed", state.graphDetailCollapsed);
     content.innerHTML = renderEdgeDetailCard(edge);
   }
 }

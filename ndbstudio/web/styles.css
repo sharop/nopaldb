@@ -1625,7 +1625,7 @@ th.sort-desc::after { content: "\25BC"; }
   color: var(--accent-strong);
 }
 
-/* Graph redesign: interactive interactive visualization */
+/* Graph redesign: Neo4j-style interactive visualization */
 .graph-context-menu {
   position: fixed;
   z-index: 300;
@@ -1726,7 +1726,7 @@ th.sort-desc::after { content: "\25BC"; }
   flex-shrink: 0;
 }
 
-/* interactive node interactions */
+/* Neo4j-style node interactions */
 .graph-node-group { cursor: grab; }
 .graph-node-group:active { cursor: grabbing; }
 

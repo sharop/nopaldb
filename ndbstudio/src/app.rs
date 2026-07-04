@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use tokio::runtime::{Builder, Runtime};
 
 use crate::session::{
-    CacheStatus, ChangeKind, RunMode, SessionState, default_session_path, load_session_state,
-    save_session_state, session_summary, session_v2_enabled_from_env,
+    default_session_path, load_session_state, save_session_state, session_summary,
+    session_v2_enabled_from_env, CacheStatus, ChangeKind, RunMode, SessionState,
 };
 use crate::ui::{
     editor::QueryEditor,
@@ -25,7 +25,9 @@ use crate::ui::{
     results::{ResultsMode, ResultsView},
     schema::SchemaView,
 };
-use crate::workbench::{self, QueryExecutionResult, QueryInvalidation, QueryRunRequest};
+use crate::workbench::{
+    self, QueryExecutionResult, QueryInvalidation, QueryRunRequest,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -170,7 +172,8 @@ impl App {
             .build()
             .context("failed to create async runtime")?;
 
-        runtime.block_on(workbench::open_graph(db_path))
+        runtime
+            .block_on(workbench::open_graph(db_path))
     }
 
     pub fn from_graph(db_path: &str, graph: Graph) -> Result<Self> {
@@ -279,11 +282,7 @@ impl App {
         let out = if summary.is_empty() {
             run_mode_short(mode).to_string()
         } else {
-            format!(
-                "{}: {}",
-                run_mode_short(mode),
-                truncate_one_line(summary, 96)
-            )
+            format!("{}: {}", run_mode_short(mode), truncate_one_line(summary, 96))
         };
         Some(out)
     }
@@ -342,11 +341,7 @@ impl App {
             .skip(self.palette.selected.saturating_sub(limit / 2))
             .take(limit)
             .map(|(idx, e)| {
-                let marker = if idx == self.palette.selected {
-                    ">"
-                } else {
-                    " "
-                };
+                let marker = if idx == self.palette.selected { ">" } else { " " };
                 format!("{} {}  [{}]", marker, e.title, e.detail)
             })
             .collect()
@@ -623,16 +618,20 @@ impl App {
                     self.status_message = "Graph depth min: 1".to_string();
                 }
             }
-            KeyCode::Char('J') if self.side_panel != SidePanel::None => match self.side_panel {
-                SidePanel::Schema => self.schema.scroll_down(),
-                SidePanel::Graph => self.graph_view.scroll_down(),
-                SidePanel::None => {}
-            },
-            KeyCode::Char('K') if self.side_panel != SidePanel::None => match self.side_panel {
-                SidePanel::Schema => self.schema.scroll_up(),
-                SidePanel::Graph => self.graph_view.scroll_up(),
-                SidePanel::None => {}
-            },
+            KeyCode::Char('J') if self.side_panel != SidePanel::None => {
+                match self.side_panel {
+                    SidePanel::Schema => self.schema.scroll_down(),
+                    SidePanel::Graph => self.graph_view.scroll_down(),
+                    SidePanel::None => {}
+                }
+            }
+            KeyCode::Char('K') if self.side_panel != SidePanel::None => {
+                match self.side_panel {
+                    SidePanel::Schema => self.schema.scroll_up(),
+                    SidePanel::Graph => self.graph_view.scroll_up(),
+                    SidePanel::None => {}
+                }
+            }
             KeyCode::Enter
                 if self.side_panel == SidePanel::Graph
                     && key.modifiers.contains(KeyModifiers::SHIFT) =>
@@ -793,7 +792,8 @@ impl App {
                 KeyCode::Backspace => {
                     self.session_browser.filter_text.pop();
                     self.reset_session_browser_selection();
-                    self.status_message = format!("Filter: {}", self.session_browser.filter_text);
+                    self.status_message =
+                        format!("Filter: {}", self.session_browser.filter_text);
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.session_browser.filter_text.clear();
@@ -803,7 +803,8 @@ impl App {
                 KeyCode::Char(c) => {
                     self.session_browser.filter_text.push(c);
                     self.reset_session_browser_selection();
-                    self.status_message = format!("Filter: {}", self.session_browser.filter_text);
+                    self.status_message =
+                        format!("Filter: {}", self.session_browser.filter_text);
                 }
                 _ => {}
             }
@@ -1033,8 +1034,7 @@ impl App {
                 }
             }
             "browser filter" => {
-                self.status_message =
-                    format!("Session filter: {}", self.session_browser.filter_text);
+                self.status_message = format!("Session filter: {}", self.session_browser.filter_text);
             }
             "browser filter clear" => {
                 self.status_message = self
@@ -1158,8 +1158,7 @@ impl App {
             }
             "session" => {
                 if self.session_v2_enabled {
-                    self.status_message =
-                        format!("Session v2: {}", session_summary(&self.session_state));
+                    self.status_message = format!("Session v2: {}", session_summary(&self.session_state));
                 } else {
                     self.status_message =
                         "Session v2 disabled. Set NDBSTUDIO_SESSION_V2=1".to_string();
@@ -1705,8 +1704,8 @@ impl App {
             side_panel_width: self.side_panel_width,
         };
 
-        let raw =
-            serde_json::to_string_pretty(&prefs).context("failed to serialize UI preferences")?;
+        let raw = serde_json::to_string_pretty(&prefs)
+            .context("failed to serialize UI preferences")?;
         std::fs::write(&path, raw)
             .with_context(|| format!("failed to write UI preferences to {}", path.display()))?;
         Ok(())
@@ -1735,8 +1734,7 @@ impl App {
             return;
         }
 
-        self.session_state
-            .set_active_query_text(&self.editor.content());
+        self.session_state.set_active_query_text(&self.editor.content());
         let path = match default_session_path() {
             Ok(p) => p,
             Err(_) => return,
@@ -1746,8 +1744,7 @@ impl App {
 
     fn create_new_tab(&mut self, title: Option<&str>) -> Result<String> {
         self.ensure_session_v2()?;
-        self.session_state
-            .set_active_query_text(&self.editor.content());
+        self.session_state.set_active_query_text(&self.editor.content());
         self.session_state.create_tab(title);
         if let Some(tab) = self.session_state.active_tab() {
             let tab_title = tab.title.clone();
@@ -1761,8 +1758,7 @@ impl App {
 
     fn activate_next_tab(&mut self) -> Result<String> {
         self.ensure_session_v2()?;
-        self.session_state
-            .set_active_query_text(&self.editor.content());
+        self.session_state.set_active_query_text(&self.editor.content());
         self.session_state.activate_next_tab();
         if let Some(tab) = self.session_state.active_tab() {
             let tab_title = tab.title.clone();
@@ -1776,8 +1772,7 @@ impl App {
 
     fn activate_prev_tab(&mut self) -> Result<String> {
         self.ensure_session_v2()?;
-        self.session_state
-            .set_active_query_text(&self.editor.content());
+        self.session_state.set_active_query_text(&self.editor.content());
         self.session_state.activate_prev_tab();
         if let Some(tab) = self.session_state.active_tab() {
             let tab_title = tab.title.clone();
@@ -1791,8 +1786,7 @@ impl App {
 
     fn close_active_tab(&mut self) -> Result<String> {
         self.ensure_session_v2()?;
-        self.session_state
-            .set_active_query_text(&self.editor.content());
+        self.session_state.set_active_query_text(&self.editor.content());
         if !self.session_state.close_active_tab() {
             return Ok("Cannot close last tab".to_string());
         }
@@ -1867,10 +1861,7 @@ impl App {
             .collect::<Vec<_>>();
         self.results
             .set_data(vec!["name".to_string(), "query".to_string()], rows);
-        Ok(format!(
-            "{} snippets",
-            self.session_state.saved_queries.len()
-        ))
+        Ok(format!("{} snippets", self.session_state.saved_queries.len()))
     }
 
     fn load_snippet_to_editor(&mut self, name: &str) -> Result<String> {
@@ -1899,17 +1890,17 @@ impl App {
     fn rerun_timeline_query(&mut self, index_raw: &str) -> Result<String> {
         self.ensure_session_v2()?;
         let trimmed = index_raw.trim();
-        let (idx_part, mode_override) =
-            if let Some((left, right)) = trimmed.split_once("--as") {
-                (
-                    left.trim(),
-                    Some(parse_run_mode(right.trim()).ok_or_else(|| {
-                        anyhow::anyhow!("invalid --as mode (run|explain|profile)")
-                    })?),
-                )
-            } else {
-                (trimmed, None)
-            };
+        let (idx_part, mode_override) = if let Some((left, right)) = trimmed.split_once("--as") {
+            (
+                left.trim(),
+                Some(
+                    parse_run_mode(right.trim())
+                        .ok_or_else(|| anyhow::anyhow!("invalid --as mode (run|explain|profile)"))?,
+                ),
+            )
+        } else {
+            (trimmed, None)
+        };
 
         let idx = idx_part
             .trim()
@@ -2051,16 +2042,14 @@ impl App {
             }
         }
         if rows.is_empty() {
-            rows.push(vec![target_id.clone(), target_id, "self".to_string()]);
+            rows.push(vec![
+                target_id.clone(),
+                target_id,
+                "self".to_string(),
+            ]);
         }
-        self.results.set_data(
-            vec![
-                "source".to_string(),
-                "target".to_string(),
-                "type".to_string(),
-            ],
-            rows,
-        );
+        self.results
+            .set_data(vec!["source".to_string(), "target".to_string(), "type".to_string()], rows);
         let _ = self.results.set_mode_from_name("graph");
         Ok(format!("Timeline DAG around entry {}", idx))
     }
@@ -2252,10 +2241,7 @@ impl App {
         match scope.to_ascii_lowercase().as_str() {
             "session" => {
                 let rate = self.recent_cache_hit_rate(n, false).unwrap_or(0.0) * 100.0;
-                Ok(format!(
-                    "Cache hit-rate recent {} (session): {:.1}%",
-                    n, rate
-                ))
+                Ok(format!("Cache hit-rate recent {} (session): {:.1}%", n, rate))
             }
             "tab" => {
                 let rate = self.recent_cache_hit_rate(n, true).unwrap_or(0.0) * 100.0;
@@ -2367,11 +2353,7 @@ impl App {
         let query = self.palette.query.trim().to_lowercase();
 
         let base_cmds = vec![
-            (
-                "Run Query",
-                "run current editor query",
-                PaletteAction::Execute(RunMode::Run),
-            ),
+            ("Run Query", "run current editor query", PaletteAction::Execute(RunMode::Run)),
             (
                 "Explain Query",
                 "explain current editor query",
@@ -2382,21 +2364,9 @@ impl App {
                 "profile current editor query",
                 PaletteAction::Execute(RunMode::Profile),
             ),
-            (
-                "Help",
-                ":help",
-                PaletteAction::RunCommand("help".to_string()),
-            ),
-            (
-                "Toggle Schema Panel",
-                ":schema",
-                PaletteAction::RunCommand("schema".to_string()),
-            ),
-            (
-                "Toggle Graph Panel",
-                ":graph",
-                PaletteAction::RunCommand("graph".to_string()),
-            ),
+            ("Help", ":help", PaletteAction::RunCommand("help".to_string())),
+            ("Toggle Schema Panel", ":schema", PaletteAction::RunCommand("schema".to_string())),
+            ("Toggle Graph Panel", ":graph", PaletteAction::RunCommand("graph".to_string())),
             (
                 "Refresh Graph",
                 ":graph refresh",
@@ -2668,8 +2638,7 @@ impl App {
         match self.session_browser.active {
             SessionPane::Timeline => {
                 let max = self.filtered_timeline_indices(200).len().saturating_sub(1);
-                self.session_browser.timeline_idx =
-                    (self.session_browser.timeline_idx + 1).min(max);
+                self.session_browser.timeline_idx = (self.session_browser.timeline_idx + 1).min(max);
             }
             SessionPane::Snippets => {
                 let max = self.filtered_snippet_indices(200).len().saturating_sub(1);
@@ -2685,12 +2654,10 @@ impl App {
     fn session_browser_select_prev(&mut self) {
         match self.session_browser.active {
             SessionPane::Timeline => {
-                self.session_browser.timeline_idx =
-                    self.session_browser.timeline_idx.saturating_sub(1);
+                self.session_browser.timeline_idx = self.session_browser.timeline_idx.saturating_sub(1);
             }
             SessionPane::Snippets => {
-                self.session_browser.snippet_idx =
-                    self.session_browser.snippet_idx.saturating_sub(1);
+                self.session_browser.snippet_idx = self.session_browser.snippet_idx.saturating_sub(1);
             }
             SessionPane::Tabs => {
                 self.session_browser.tab_idx = self.session_browser.tab_idx.saturating_sub(1);
@@ -2709,10 +2676,7 @@ impl App {
         self.editor.set_content(query);
         self.mode = Mode::Normal;
         self.execute_query_with_mode(run_mode)?;
-        Ok(format!(
-            "Running selected item [{}]",
-            run_mode_label(run_mode)
-        ))
+        Ok(format!("Running selected item [{}]", run_mode_label(run_mode)))
     }
 
     fn load_selected_session_item(&mut self) -> Result<String> {
@@ -3005,9 +2969,7 @@ impl App {
     }
 
     fn refresh_graph_view(&mut self) -> Result<()> {
-        let snapshot = self
-            .runtime
-            .block_on(workbench::build_graph_snapshot(&self.graph))?;
+        let snapshot = self.runtime.block_on(workbench::build_graph_snapshot(&self.graph))?;
         let node_data = snapshot
             .nodes
             .iter()
@@ -3016,13 +2978,7 @@ impl App {
         let edge_data = snapshot
             .edges
             .iter()
-            .map(|e| {
-                (
-                    e.source.to_string(),
-                    e.target.to_string(),
-                    e.edge_type.clone(),
-                )
-            })
+            .map(|e| (e.source.to_string(), e.target.to_string(), e.edge_type.clone()))
             .collect::<Vec<_>>();
         self.graph_view.set_snapshot(node_data, edge_data);
         self.graph_last_refresh = Some(Local::now().format("%H:%M:%S").to_string());
@@ -3143,9 +3099,7 @@ impl App {
         for node in nodes {
             for key in ["name", "title"] {
                 if let Some(PropertyValue::String(value)) = node.properties.get(key)
-                    && candidates
-                        .iter()
-                        .any(|candidate| candidate == &value.to_lowercase())
+                    && candidates.iter().any(|candidate| candidate == &value.to_lowercase())
                 {
                     return Ok(Some(node.id.to_string()));
                 }
@@ -3162,10 +3116,8 @@ impl App {
 
         let labels = self.graph_view.available_labels();
         if labels.is_empty() {
-            self.results.set_data(
-                vec!["label".to_string()],
-                vec![vec!["(no labels)".to_string()]],
-            );
+            self.results
+                .set_data(vec!["label".to_string()], vec![vec!["(no labels)".to_string()]]);
             return Ok("No labels found in graph".to_string());
         }
 
@@ -3619,9 +3571,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        ResultCache, build_query_hash, compute_hit_rate, database_name, format_count,
-        help_version_line, normalize_query_for_cache, parse_command_value, parse_run_mode,
-        parse_session_filter,
+        build_query_hash, compute_hit_rate, database_name, format_count, help_version_line,
+        normalize_query_for_cache, parse_command_value, parse_run_mode, parse_session_filter, ResultCache,
     };
 
     #[test]
@@ -3738,21 +3689,9 @@ mod tests {
             },
         );
 
-        assert!(
-            cache
-                .get("a", &normalize_query_for_cache("find a"))
-                .is_some()
-        );
-        assert!(
-            cache
-                .get("b", &normalize_query_for_cache("find b"))
-                .is_none()
-        );
-        assert!(
-            cache
-                .get("c", &normalize_query_for_cache("find c"))
-                .is_some()
-        );
+        assert!(cache.get("a", &normalize_query_for_cache("find a")).is_some());
+        assert!(cache.get("b", &normalize_query_for_cache("find b")).is_none());
+        assert!(cache.get("c", &normalize_query_for_cache("find c")).is_some());
     }
 
     #[test]
@@ -3769,14 +3708,9 @@ mod tests {
             },
         );
 
-        assert!(
-            cache
-                .get(
-                    "same-key",
-                    &normalize_query_for_cache("find x.name as bridge from (x:Family)")
-                )
-                .is_none()
-        );
+        assert!(cache
+            .get("same-key", &normalize_query_for_cache("find x.name as bridge from (x:Family)"))
+            .is_none());
     }
 
     #[test]

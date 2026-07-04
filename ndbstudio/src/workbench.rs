@@ -5,20 +5,20 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use nopaldb::{parse_query, Graph, NqlResult, PropertyValue};
 use nopaldb::query::nql::QueryResult;
 use nopaldb::query::nql::parser::ast::{PatternElement, Projection};
-use nopaldb::{Graph, NqlResult, PropertyValue, parse_query};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::mapper::to_tabular_result;
+use crate::session::{ChangeKind, RunMode};
 #[cfg(feature = "web")]
 use crate::session::{
-    CacheStatus, FindingDraft, FindingEntry, ImpactedRun, QueryGraphEdge, QueryGraphNode,
-    QueryTabResultSnapshot, ResultGraphEdge, ResultGraphHint, ResultGraphMode, SavedQuery,
-    SessionState, TimelineEntry, UiPreferences, default_session_path, load_session_state,
-    save_session_state,
+    default_session_path, load_session_state, save_session_state, CacheStatus, FindingDraft,
+    FindingEntry, ImpactedRun, QueryGraphEdge, QueryGraphNode, QueryTabResultSnapshot,
+    ResultGraphEdge, ResultGraphHint, ResultGraphMode, SavedQuery, SessionState, TimelineEntry,
+    UiPreferences,
 };
-use crate::session::{ChangeKind, RunMode};
 #[cfg(feature = "web")]
 use std::collections::{BTreeSet, VecDeque};
 
@@ -186,9 +186,8 @@ impl WorkbenchState {
 
         // Ensure parent directory exists before Graph::open
         if let Some(parent) = Path::new(&resolved_path).parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create database directory {}", parent.display())
-            })?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create database directory {}", parent.display()))?;
         }
 
         let graph = open_graph(&resolved_path).await?;
@@ -207,9 +206,7 @@ impl WorkbenchState {
         };
 
         // Remove existing entry for same path, then insert at front
-        self.registry
-            .projects
-            .retain(|p| p.db_path != resolved_path);
+        self.registry.projects.retain(|p| p.db_path != resolved_path);
         self.registry.projects.insert(0, entry.clone());
         save_project_registry(&self.registry)?;
         let _ = update_recent_dbs(&resolved_path);
@@ -232,12 +229,7 @@ impl WorkbenchState {
         notes: Option<&str>,
         tags: Option<Vec<String>>,
     ) -> Result<Option<ProjectEntry>> {
-        let Some(project) = self
-            .registry
-            .projects
-            .iter_mut()
-            .find(|p| p.db_path == db_path)
-        else {
+        let Some(project) = self.registry.projects.iter_mut().find(|p| p.db_path == db_path) else {
             return Ok(None);
         };
         if let Some(n) = name {
@@ -261,12 +253,7 @@ impl WorkbenchState {
     }
 
     pub fn toggle_project_pin(&mut self, db_path: &str) -> Result<Option<ProjectEntry>> {
-        let Some(project) = self
-            .registry
-            .projects
-            .iter_mut()
-            .find(|p| p.db_path == db_path)
-        else {
+        let Some(project) = self.registry.projects.iter_mut().find(|p| p.db_path == db_path) else {
             return Ok(None);
         };
         project.pinned = !project.pinned;
@@ -339,10 +326,7 @@ impl WorkbenchState {
         Ok(deleted)
     }
 
-    pub fn create_finding(
-        &mut self,
-        request: FindingCreateRequest,
-    ) -> Result<Option<FindingEntry>> {
+    pub fn create_finding(&mut self, request: FindingCreateRequest) -> Result<Option<FindingEntry>> {
         let finding = self.session.add_finding(FindingDraft {
             title: request.title,
             body: request.body,
@@ -364,11 +348,9 @@ impl WorkbenchState {
         finding_id: &str,
         request: FindingUpdateRequest,
     ) -> Result<Option<FindingEntry>> {
-        let finding = self.session.update_finding(
-            finding_id,
-            request.title.as_deref(),
-            request.body.as_deref(),
-        );
+        let finding = self
+            .session
+            .update_finding(finding_id, request.title.as_deref(), request.body.as_deref());
         if finding.is_some() {
             self.persist_session()?;
         }
@@ -413,11 +395,7 @@ impl WorkbenchState {
         Ok(Some(self.session.clone()))
     }
 
-    pub fn update_tab_query(
-        &mut self,
-        tab_id: &str,
-        query_text: &str,
-    ) -> Result<Option<SessionState>> {
+    pub fn update_tab_query(&mut self, tab_id: &str, query_text: &str) -> Result<Option<SessionState>> {
         if !self.session.set_query_text_for_tab(tab_id, query_text) {
             return Ok(None);
         }
@@ -568,16 +546,12 @@ impl WorkbenchState {
     ) -> Result<QueryRunResponse> {
         let (query, mode) = {
             let recent = self.session.recent_timeline(1000);
-            let entry = recent
-                .get(recent_index)
-                .ok_or_else(|| anyhow::anyhow!("timeline entry {} not found", recent_index + 1))?;
+            let entry = recent.get(recent_index).ok_or_else(|| {
+                anyhow::anyhow!("timeline entry {} not found", recent_index + 1)
+            })?;
             (entry.query.clone(), run_mode.unwrap_or(entry.run_mode))
         };
-        self.run_query(QueryRunRequest {
-            query,
-            run_mode: mode,
-        })
-        .await
+        self.run_query(QueryRunRequest { query, run_mode: mode }).await
     }
 
     pub async fn run_query(&mut self, request: QueryRunRequest) -> Result<QueryRunResponse> {
@@ -930,9 +904,7 @@ pub async fn build_session_open_snapshot(
 fn sorted_projects(projects: &[ProjectEntry]) -> Vec<ProjectEntry> {
     let mut sorted = projects.to_vec();
     sorted.sort_by(|a, b| {
-        b.pinned
-            .cmp(&a.pinned)
-            .then_with(|| b.last_opened_at.cmp(&a.last_opened_at))
+        b.pinned.cmp(&a.pinned).then_with(|| b.last_opened_at.cmp(&a.last_opened_at))
     });
     sorted
 }
@@ -961,8 +933,9 @@ fn recent_dbs_path() -> Result<PathBuf> {
 fn load_or_create_session(db_path: &str) -> Result<(SessionState, bool)> {
     let session_path = session_path_for_db(db_path)?;
     if session_path.exists() {
-        let state = load_session_state(&session_path)
-            .with_context(|| format!("failed to restore session for database at {}", db_path))?;
+        let state = load_session_state(&session_path).with_context(|| {
+            format!("failed to restore session for database at {}", db_path)
+        })?;
         return Ok((state, true));
     }
     let state = SessionState::new(db_path);
@@ -990,8 +963,8 @@ fn save_recent_dbs(recent_dbs: &[String]) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    let raw =
-        serde_json::to_string_pretty(recent_dbs).context("failed to serialize recent DB list")?;
+    let raw = serde_json::to_string_pretty(recent_dbs)
+        .context("failed to serialize recent DB list")?;
     std::fs::write(&path, raw)
         .with_context(|| format!("failed to write recent DB list to {}", path.display()))?;
     Ok(())
@@ -1052,8 +1025,8 @@ fn save_project_registry(registry: &ProjectRegistry) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    let raw =
-        serde_json::to_string_pretty(registry).context("failed to serialize project registry")?;
+    let raw = serde_json::to_string_pretty(registry)
+        .context("failed to serialize project registry")?;
     std::fs::write(&path, raw)
         .with_context(|| format!("failed to write project registry to {}", path.display()))?;
     Ok(())
@@ -1254,10 +1227,7 @@ fn property_value_as_string_for_display(value: &PropertyValue) -> Option<String>
         PropertyValue::Int(value) => Some(value.to_string()),
         PropertyValue::Float(value) => Some(value.to_string()),
         PropertyValue::Bool(value) => Some(value.to_string()),
-        PropertyValue::Null
-        | PropertyValue::Bytes(_)
-        | PropertyValue::List(_)
-        | PropertyValue::Object(_) => None,
+        PropertyValue::Null | PropertyValue::Bytes(_) | PropertyValue::List(_) | PropertyValue::Object(_) => None,
     }
 }
 
@@ -1270,9 +1240,7 @@ pub async fn build_graph_subgraph(
     label: Option<&str>,
 ) -> Result<GraphSubgraphResponse> {
     let snapshot = build_graph_snapshot(graph).await?;
-    let label_filter = label
-        .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|v| !v.is_empty());
+    let label_filter = label.map(|value| value.trim().to_ascii_lowercase()).filter(|v| !v.is_empty());
     let requested_limit = limit.clamp(1, 500);
     let requested_depth = depth.clamp(1, 3);
 
@@ -1299,12 +1267,7 @@ pub async fn build_graph_subgraph(
     }
 
     let focus_id = focus_node_id
-        .and_then(|id| {
-            visible_nodes
-                .iter()
-                .find(|node| node.id == id)
-                .map(|_| id.to_string())
-        })
+        .and_then(|id| visible_nodes.iter().find(|node| node.id == id).map(|_| id.to_string()))
         .unwrap_or_else(|| visible_nodes[0].id.clone());
 
     let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
@@ -1375,10 +1338,7 @@ pub async fn build_graph_subgraph(
     })
 }
 
-pub async fn execute_query(
-    graph: &Graph,
-    request: &QueryRunRequest,
-) -> Result<QueryExecutionResult> {
+pub async fn execute_query(graph: &Graph, request: &QueryRunRequest) -> Result<QueryExecutionResult> {
     let (statement, mode_label) = match request.run_mode {
         RunMode::Run => (request.query.clone(), "Run"),
         RunMode::Explain => (maybe_prefix_explain(&request.query), "Explain"),
@@ -1458,10 +1418,7 @@ pub async fn execute_query(
 #[cfg(feature = "web")]
 #[cfg_attr(not(test), allow(dead_code))]
 fn graph_hint_from_query_result(result: &QueryResult) -> Option<ResultGraphHint> {
-    combine_row_graph_hints(
-        &row_graph_hints_from_query_result(result),
-        "Auto-focused from query results",
-    )
+    combine_row_graph_hints(&row_graph_hints_from_query_result(result), "Auto-focused from query results")
 }
 
 #[cfg(feature = "web")]
@@ -1516,10 +1473,7 @@ fn row_graph_hint_from_values(
         if seen_nodes.insert(string_value.clone()) {
             row_node_ids.push(string_value.clone());
         }
-        if matches!(
-            kind,
-            GraphCandidateKind::Node | GraphCandidateKind::EdgeEndpoint
-        ) {
+        if matches!(kind, GraphCandidateKind::Node | GraphCandidateKind::EdgeEndpoint) {
             let _ = kind;
         }
     }
@@ -1592,9 +1546,7 @@ async fn derive_graph_hints(
     query_result: &QueryResult,
 ) -> (Option<ResultGraphHint>, Vec<Option<ResultGraphHint>>) {
     let direct_row_hints = row_graph_hints_from_query_result(query_result);
-    if let Some(hint) =
-        combine_row_graph_hints(&direct_row_hints, "Auto-focused from query results")
-    {
+    if let Some(hint) = combine_row_graph_hints(&direct_row_hints, "Auto-focused from query results") {
         return (Some(hint), direct_row_hints);
     }
 
@@ -1643,9 +1595,7 @@ fn property_value_as_string(value: &PropertyValue) -> Option<String> {
 #[cfg(feature = "web")]
 #[allow(dead_code)]
 async fn fallback_graph_hint_from_pattern(graph: &Graph, query: &str) -> Option<ResultGraphHint> {
-    fallback_graph_hints_from_pattern(graph, query)
-        .await
-        .map(|(hint, _)| hint)
+    fallback_graph_hints_from_pattern(graph, query).await.map(|(hint, _)| hint)
 }
 
 #[cfg(feature = "web")]
@@ -1674,12 +1624,10 @@ fn fallback_graph_hint_query(query: &str) -> Option<String> {
 
     let query_lower = query.to_ascii_lowercase();
     let from_index = find_clause_boundary(&query_lower, "from")?;
-    let where_index =
-        find_clause_boundary(&query_lower[from_index..], "where").map(|idx| from_index + idx);
+    let where_index = find_clause_boundary(&query_lower[from_index..], "where").map(|idx| from_index + idx);
     let order_index =
         find_order_by_boundary(&query_lower[from_index..]).map(|idx| from_index + idx);
-    let limit_index =
-        find_clause_boundary(&query_lower[from_index..], "limit").map(|idx| from_index + idx);
+    let limit_index = find_clause_boundary(&query_lower[from_index..], "limit").map(|idx| from_index + idx);
 
     let end = query.len();
     let first_after_from = [where_index, order_index, limit_index]
@@ -1708,8 +1656,7 @@ fn fallback_graph_hint_query(query: &str) -> Option<String> {
     // or `pagerank` (no dot in name) would otherwise be detected as graph-candidate
     // columns by `graph_candidate_kind`, fail the UUID check, and corrupt the hint.
     // We only need node IDs to tell the graph which nodes to highlight.
-    let id_projections: Vec<String> = pattern_variables
-        .iter()
+    let id_projections: Vec<String> = pattern_variables.iter()
         .map(|v| format!("{}.id", v))
         .collect();
     let find_clause = format!("find {}", id_projections.join(", "));
@@ -1988,15 +1935,15 @@ fn truncate_one_line(input: &str, max_len: usize) -> String {
 mod tests {
     #[cfg(feature = "web")]
     use super::{
-        ProjectEntry, ProjectRegistry, fallback_graph_hint_query, graph_hint_from_query_result,
-        row_graph_hints_from_query_result, sanitize_db_name, session_file_key, sorted_projects,
-        touch_project, touch_recent_dbs,
+        fallback_graph_hint_query, graph_hint_from_query_result, row_graph_hints_from_query_result,
+        sanitize_db_name, session_file_key, sorted_projects, touch_project, touch_recent_dbs,
+        ProjectEntry, ProjectRegistry,
     };
     use super::{database_name, default_run_mode, maybe_prefix_explain};
     use crate::session::RunMode;
-    use nopaldb::PropertyValue;
     #[cfg(feature = "web")]
     use nopaldb::query::nql::{QueryResult, Row};
+    use nopaldb::PropertyValue;
     #[cfg(feature = "web")]
     use std::collections::HashMap;
 
@@ -2045,10 +1992,7 @@ mod tests {
         assert_eq!(updated.first().map(String::as_str), Some("/tmp/db-4.db"));
         assert_eq!(updated.len(), 10);
         assert_eq!(
-            updated
-                .iter()
-                .filter(|path| path.as_str() == "/tmp/db-4.db")
-                .count(),
+            updated.iter().filter(|path| path.as_str() == "/tmp/db-4.db").count(),
             1
         );
     }
@@ -2068,10 +2012,7 @@ mod tests {
 
         let hint = graph_hint_from_query_result(&result).expect("graph hint");
         assert_eq!(hint.node_ids.len(), 1);
-        assert_eq!(
-            hint.focus_node_id.as_deref(),
-            Some("105f9844-f5ed-4223-bf1c-9cafbe676fc6")
-        );
+        assert_eq!(hint.focus_node_id.as_deref(), Some("105f9844-f5ed-4223-bf1c-9cafbe676fc6"));
     }
 
     #[cfg(feature = "web")]
@@ -2103,15 +2044,11 @@ mod tests {
         let row_hints = row_graph_hints_from_query_result(&result);
         assert_eq!(row_hints.len(), 2);
         assert_eq!(
-            row_hints[0]
-                .as_ref()
-                .and_then(|hint| hint.focus_node_id.as_deref()),
+            row_hints[0].as_ref().and_then(|hint| hint.focus_node_id.as_deref()),
             Some("105f9844-f5ed-4223-bf1c-9cafbe676fc6")
         );
         assert_eq!(
-            row_hints[1]
-                .as_ref()
-                .and_then(|hint| hint.focus_node_id.as_deref()),
+            row_hints[1].as_ref().and_then(|hint| hint.focus_node_id.as_deref()),
             Some("305f9844-f5ed-4223-bf1c-9cafbe676fc6")
         );
     }
@@ -2131,9 +2068,7 @@ mod tests {
 
         let rewritten = fallback_graph_hint_query(query).expect("fallback query");
         assert!(rewritten.contains("find a.id, x.id, m.id"));
-        assert!(
-            rewritten.contains("from (a:Family)-[:MARRIAGE]->(x:Family)-[:MARRIAGE]->(m:Family)")
-        );
+        assert!(rewritten.contains("from (a:Family)-[:MARRIAGE]->(x:Family)-[:MARRIAGE]->(m:Family)"));
         assert!(rewritten.contains("where a.faction = \"Albizzi\" and m.faction = \"Medici\""));
         assert!(rewritten.contains("limit 10"));
         assert!(!rewritten.to_ascii_lowercase().contains("order by"));
@@ -2168,34 +2103,19 @@ mod tests {
         let later = "2026-01-02T00:00:00Z".to_string();
         let projects = vec![
             ProjectEntry {
-                db_path: "/a".into(),
-                name: "A".into(),
-                description: String::new(),
-                notes: String::new(),
-                tags: vec![],
-                pinned: false,
-                created_at: now.clone(),
-                last_opened_at: now.clone(),
+                db_path: "/a".into(), name: "A".into(), description: String::new(),
+                notes: String::new(), tags: vec![], pinned: false,
+                created_at: now.clone(), last_opened_at: now.clone(),
             },
             ProjectEntry {
-                db_path: "/b".into(),
-                name: "B".into(),
-                description: String::new(),
-                notes: String::new(),
-                tags: vec![],
-                pinned: true,
-                created_at: now.clone(),
-                last_opened_at: now.clone(),
+                db_path: "/b".into(), name: "B".into(), description: String::new(),
+                notes: String::new(), tags: vec![], pinned: true,
+                created_at: now.clone(), last_opened_at: now.clone(),
             },
             ProjectEntry {
-                db_path: "/c".into(),
-                name: "C".into(),
-                description: String::new(),
-                notes: String::new(),
-                tags: vec![],
-                pinned: false,
-                created_at: now.clone(),
-                last_opened_at: later.clone(),
+                db_path: "/c".into(), name: "C".into(), description: String::new(),
+                notes: String::new(), tags: vec![], pinned: false,
+                created_at: now.clone(), last_opened_at: later.clone(),
             },
         ];
         let sorted = sorted_projects(&projects);

@@ -272,11 +272,7 @@ impl SessionState {
             .iter()
             .position(|t| t.id == self.active_tab_id)
             .unwrap_or(0);
-        let prev = if idx == 0 {
-            self.tabs.len() - 1
-        } else {
-            idx - 1
-        };
+        let prev = if idx == 0 { self.tabs.len() - 1 } else { idx - 1 };
         self.active_tab_id = self.tabs[prev].id.clone();
     }
 
@@ -399,10 +395,7 @@ impl SessionState {
         title: Option<&str>,
         body: Option<&str>,
     ) -> Option<FindingEntry> {
-        let finding = self
-            .findings
-            .iter_mut()
-            .find(|item| item.id == finding_id)?;
+        let finding = self.findings.iter_mut().find(|item| item.id == finding_id)?;
         if let Some(value) = title {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
@@ -497,7 +490,7 @@ impl SessionState {
             }
         }
 
-        impacted.sort_by_key(|b| std::cmp::Reverse(b.impact_score));
+        impacted.sort_by(|a, b| b.impact_score.cmp(&a.impact_score));
         impacted
     }
 
@@ -564,7 +557,8 @@ impl SessionState {
                 e.change_kind,
                 ChangeKind::DataWrite | ChangeKind::SchemaWrite
             )
-        }) && seen.insert(prev_write.id.clone())
+        })
+            && seen.insert(prev_write.id.clone())
         {
             out.push(QueryGraphEdge {
                 from_run_id: prev_write.id.clone(),
@@ -576,7 +570,8 @@ impl SessionState {
         if let Some(shared) = self.timeline.iter().rev().find(|e| {
             overlaps(touched_labels, &e.touched_labels)
                 || overlaps(touched_edge_types, &e.touched_edge_types)
-        }) && seen.insert(shared.id.clone())
+        })
+            && seen.insert(shared.id.clone())
         {
             out.push(QueryGraphEdge {
                 from_run_id: shared.id.clone(),
@@ -629,11 +624,7 @@ impl SessionState {
         self.query_graph = QueryGraph { nodes, edges };
     }
 
-    fn semantic_impact_score(
-        &self,
-        source: &TimelineEntry,
-        candidate: &TimelineEntry,
-    ) -> Option<u8> {
+    fn semantic_impact_score(&self, source: &TimelineEntry, candidate: &TimelineEntry) -> Option<u8> {
         if matches!(source.change_kind, ChangeKind::SchemaWrite) {
             return Some(100);
         }
@@ -837,6 +828,7 @@ fn overlaps(left: &[String], right: &[String]) -> bool {
     right.iter().any(|v| set.contains(&v.to_ascii_lowercase()))
 }
 
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedQuery {
     pub id: String,
@@ -915,24 +907,12 @@ impl Default for UiPreferences {
     }
 }
 
-fn default_theme() -> String {
-    "light".to_string()
-}
-fn default_workspace_tab() -> String {
-    "results".to_string()
-}
-fn default_run_mode_str() -> String {
-    "run".to_string()
-}
-fn default_graph_layout() -> String {
-    "radial".to_string()
-}
-fn default_graph_depth() -> u32 {
-    1
-}
-fn default_graph_limit() -> u32 {
-    50
-}
+fn default_theme() -> String { "light".to_string() }
+fn default_workspace_tab() -> String { "results".to_string() }
+fn default_run_mode_str() -> String { "run".to_string() }
+fn default_graph_layout() -> String { "radial".to_string() }
+fn default_graph_depth() -> u32 { 1 }
+fn default_graph_limit() -> u32 { 50 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResultRef {
@@ -1037,8 +1017,8 @@ fn parse_truthy_flag(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        CacheStatus, ChangeKind, FindingDraft, QueryTabResultSnapshot, RunMode, SessionState,
-        parse_truthy_flag,
+        parse_truthy_flag, CacheStatus, ChangeKind, FindingDraft, QueryTabResultSnapshot,
+        RunMode, SessionState,
     };
 
     #[test]
@@ -1122,10 +1102,7 @@ mod tests {
         let second = state.create_tab(Some("Two"));
         assert!(state.rename_tab(&second, "Two renamed"));
         assert!(state.activate_tab_by_id(&second));
-        assert_eq!(
-            state.active_tab().map(|tab| tab.title.as_str()),
-            Some("Two renamed")
-        );
+        assert_eq!(state.active_tab().map(|tab| tab.title.as_str()), Some("Two renamed"));
         assert!(state.close_tab_by_id(&second));
         assert_eq!(state.tabs.len(), 1);
         assert_eq!(state.active_tab_id, first);
@@ -1148,9 +1125,7 @@ mod tests {
         let tab = state.active_tab().expect("active tab");
         assert_eq!(tab.last_run_mode, Some(RunMode::Run));
         assert_eq!(
-            tab.last_result
-                .as_ref()
-                .and_then(|result| result.headers.first()),
+            tab.last_result.as_ref().and_then(|result| result.headers.first()),
             Some(&"n".to_string())
         );
     }
@@ -1174,11 +1149,7 @@ mod tests {
         assert_eq!(state.findings[0].title, "Bridge family");
 
         let updated = state
-            .update_finding(
-                &finding.id,
-                Some("Bridge family updated"),
-                Some("Refined interpretation"),
-            )
+            .update_finding(&finding.id, Some("Bridge family updated"), Some("Refined interpretation"))
             .expect("finding updated");
         assert_eq!(updated.title, "Bridge family updated");
         assert_eq!(updated.body, "Refined interpretation");

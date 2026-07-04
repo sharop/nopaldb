@@ -1,13 +1,13 @@
 use ratatui::{
-    Frame,
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
+    Frame,
 };
 
 use crate::app::App;
-use crate::ui::{ACCENT, BG, ERROR, FG, SUCCESS};
+use crate::ui::{ACCENT, BG, FG, SUCCESS, ERROR};
 
 #[derive(Clone)]
 pub struct QueryHistoryEntry {
@@ -68,16 +68,14 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     if app.history.entries.is_empty() {
-        let empty_message =
-            Paragraph::new("No query history yet").style(Style::default().fg(Color::DarkGray));
+        let empty_message = Paragraph::new("No query history yet")
+            .style(Style::default().fg(Color::DarkGray));
         f.render_widget(empty_message, inner);
         return;
     }
 
     // Show history entries (most recent first)
-    let items: Vec<ListItem> = app
-        .history
-        .entries
+    let items: Vec<ListItem> = app.history.entries
         .iter()
         .rev()
         .take(inner.height as usize)
@@ -90,7 +88,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
             };
 
             let time_str = entry.timestamp.format("%H:%M:%S").to_string();
-
+            
             // Truncate long queries
             let query_preview = if entry.query.len() > 60 {
                 format!("{}...", &entry.query[..60])
@@ -100,10 +98,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
 
             let line = Line::from(vec![
                 Span::styled(format!("{} ", status_icon), status_style),
-                Span::styled(
-                    format!("[{}] ", time_str),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(format!("[{}] ", time_str), Style::default().fg(Color::DarkGray)),
                 Span::styled(query_preview, Style::default().fg(FG)),
             ]);
 
@@ -111,25 +106,24 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let list = List::new(items).style(Style::default().fg(FG).bg(BG));
+    let list = List::new(items)
+        .style(Style::default().fg(FG).bg(BG));
 
     f.render_widget(list, inner);
 
     // Show navigation hint
-    let hint = format!(
-        " {} queries • Ctrl+p/n: navigate • q/Esc: back ",
-        app.history.entries.len()
-    );
+    let hint = format!(" {} queries • Ctrl+p/n: navigate • q/Esc: back ", app.history.entries.len());
     let hint_y = area.bottom().saturating_sub(1);
     let hint_x = area.x + 1;
-
+    
     if hint_x < area.right() && hint_y > area.y {
         let width = hint.len().min(area.width.saturating_sub(2) as usize) as u16;
         if width == 0 {
             return;
         }
         let hint_area = Rect::new(hint_x, hint_y, width, 1);
-        let hint_widget = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
+        let hint_widget = Paragraph::new(hint)
+            .style(Style::default().fg(Color::DarkGray));
         f.render_widget(hint_widget, hint_area);
     }
 }
