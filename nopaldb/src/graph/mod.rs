@@ -401,12 +401,17 @@ impl Graph {
         // Guardar en storage
         self.storage.insert_node(&node).await?;
 
-        // Inicializar en índices de adyacencia
+        // Inicializar adyacencia SOLO si el nodo es nuevo: un upsert de un
+        // nodo existente (update de commit o replay del WAL) NO debe borrar
+        // sus aristas de la adyacencia (bug histórico: se re-insertaba
+        // Vec::new() y se persistía una lista vacía).
         let mut adj_out = self.adjacency_out.write().await;
         let mut adj_in = self.adjacency_in.write().await;
 
-        adj_out.insert(node_id, Vec::new());
-        adj_in.insert(node_id, Vec::new());
+        adj_out.entry(node_id).or_default();
+        adj_in.entry(node_id).or_default();
+        let out_list = adj_out.get(&node_id).cloned().unwrap_or_default();
+        let in_list = adj_in.get(&node_id).cloned().unwrap_or_default();
 
         drop(adj_out);
         drop(adj_in);
@@ -428,9 +433,9 @@ impl Graph {
             }
         }
 
-        // Persistir índices vacíos
-        self.storage.save_adjacency_out(node_id, &[]).await?;
-        self.storage.save_adjacency_in(node_id, &[]).await?;
+        // Persistir las listas reales (vacías solo si el nodo es nuevo)
+        self.storage.save_adjacency_out(node_id, &out_list).await?;
+        self.storage.save_adjacency_in(node_id, &in_list).await?;
 
         if !existed {
             self.bump_topology_version();
@@ -1839,17 +1844,48 @@ impl Graph {
 
 
     /// Replay operaciones desde WAL (recovery)
+    /// Redo idempotente de un upsert de nodo commiteado, reconstruyendo la
+    /// cadena MVCC con el timestamp original del commit. Retorna true si
+    /// aplicó algo.
+    async fn replay_node_upsert(&self, node: Node, commit_ts: u64) -> Result<bool> {
+        match self.storage.get_current_version(node.id).await {
+            Ok(cur_num) => {
+                let cur = self.storage.get_node_version(node.id, cur_num).await?;
+                if cur.timestamp >= commit_ts {
+                    // Esta versión (o una posterior) ya fue aplicada.
+                    return Ok(false);
+                }
+                let mut invalidated = cur.clone();
+                invalidated.invalidate(commit_ts);
+                let new_version = VersionedNode::new_version(&cur, node.clone(), commit_ts);
+                self.commit_node_atomic(&node, Some(&invalidated), &new_version)
+                    .await?;
+                // Adyacencia + índices de propiedades (el batch no los cubre)
+                self.add_node_internal(node, false).await?;
+                Ok(true)
+            }
+            Err(_) => {
+                // Sin cadena: primera versión con el timestamp del commit
+                let first = VersionedNode::new(node.clone(), commit_ts);
+                self.commit_node_atomic(&node, None, &first).await?;
+                self.add_node_internal(node, false).await?;
+                Ok(true)
+            }
+        }
+    }
+
     async fn replay_wal(&self) -> Result<()> {
-        let operations = self.wal.get_replay_operations().await?;
+        let operations = self.wal.get_replay_operations_with_ts().await?;
 
         let mut replayed = 0;
 
-        for operation in operations {
+        for (operation, commit_ts) in operations {
             match operation {
                 WalRecord::InsertNode { node, .. } => {
-                    // Solo insertar si no existe (idempotencia)
-                    if !self.storage.node_exists(node.id).await? {
-                        self.add_node_internal(node, false).await?;
+                    // Redo con cadena MVCC: un crash post-WAL/pre-apply deja el
+                    // nodo sin versión current, y un update commiteado no
+                    // aplicado debe reconstruirse — no saltarse.
+                    if self.replay_node_upsert(node, commit_ts).await? {
                         replayed += 1;
                     }
                 }
@@ -1879,9 +1915,9 @@ impl Graph {
                 }
 
                 WalRecord::UpdateNode { node_id: _, new_node, .. } => {
-                    // Update es insert (replace)
-                    self.add_node_internal(new_node, false).await?;
-                    replayed += 1;
+                    if self.replay_node_upsert(new_node, commit_ts).await? {
+                        replayed += 1;
+                    }
                 }
 
                 _ => {}

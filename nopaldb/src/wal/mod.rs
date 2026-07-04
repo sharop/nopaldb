@@ -147,27 +147,49 @@ impl WalManager {
     }
 
     pub async fn append(&self, record: WalRecord) -> Result<u64> {
+        self.append_batch(std::slice::from_ref(&record)).await
+    }
+
+    /// Escribe un lote de registros con UN solo fsync al final (group commit
+    /// a nivel de transacción). Un commit pequeño pasaba de N+2 fsyncs — uno
+    /// por registro Begin/ops/Commit — a exactamente 1: el costo dominante
+    /// del commit. Durabilidad intacta: el lote completo está en disco antes
+    /// de retornar; si un crash rasga el lote, el Commit no aparece en el log
+    /// y el recovery trata la transacción como no confirmada.
+    ///
+    /// Retorna la posición del primer registro del lote.
+    pub async fn append_batch(&self, records: &[WalRecord]) -> Result<u64> {
+        if records.is_empty() {
+            let position = self.position.lock().await;
+            return Ok(*position);
+        }
+
+        // Serializar todo el lote a un solo buffer (un write, un fsync)
+        let mut buffer: Vec<u8> = Vec::new();
+        for record in records {
+            let data = serde_json::to_vec(record)
+                .map_err(|e| NopalError::SerializationError(e.to_string()))?;
+            buffer.extend_from_slice(&(data.len() as u64).to_le_bytes());
+            buffer.extend_from_slice(&data);
+        }
+
         let mut file = self.file.lock().await;
         let mut position = self.position.lock().await;
 
-        // ✅ Usar JSON en lugar de Bincode
-        let data = serde_json::to_vec(&record)
-            .map_err(|e| NopalError::SerializationError(e.to_string()))?;
-
-        // Write length prefix
-        let len = data.len() as u64;
-        let len_bytes = len.to_le_bytes();
-
-        file.write_all(&len_bytes)?;
-        file.write_all(&data)?;
+        file.write_all(&buffer)?;
         file.sync_all()?;
 
-        let record_position = *position;
-        *position += 8 + len;
+        let batch_position = *position;
+        *position += buffer.len() as u64;
 
-        log::debug!("WAL append: {:?} at position {}", record, record_position);
+        log::debug!(
+            "WAL append_batch: {} record(s), {} bytes at position {}",
+            records.len(),
+            buffer.len(),
+            batch_position
+        );
 
-        Ok(record_position)
+        Ok(batch_position)
     }
 
     pub async fn read_all(&self) -> Result<Vec<WalRecord>> {
@@ -422,14 +444,27 @@ impl WalManager {
 
     /// Obtiene operaciones para replay (solo txs commiteadas)
     pub async fn get_replay_operations(&self) -> Result<Vec<WalRecord>> {
+        Ok(self
+            .get_replay_operations_with_ts()
+            .await?
+            .into_iter()
+            .map(|(record, _)| record)
+            .collect())
+    }
+
+    /// Como `get_replay_operations`, pero cada operación viene acompañada del
+    /// timestamp lógico del Commit de su transacción — necesario para que el
+    /// replay reconstruya cadenas de versiones MVCC con los timestamps
+    /// originales del commit, no con relojes nuevos.
+    pub async fn get_replay_operations_with_ts(&self) -> Result<Vec<(WalRecord, u64)>> {
         let records = self.read_all().await?;
-        let mut committed_txs = std::collections::HashSet::new();
+        let mut committed_txs = std::collections::HashMap::new();
         let mut replay_ops = Vec::new();
 
-        // Primer pase: identificar txs commiteadas
+        // Primer pase: identificar txs commiteadas y su timestamp de commit
         for record in &records {
-            if let WalRecord::Commit { tx_id, .. } = record {
-                committed_txs.insert(*tx_id);
+            if let WalRecord::Commit { tx_id, timestamp } = record {
+                committed_txs.insert(*tx_id, *timestamp);
             }
         }
 
@@ -441,9 +476,10 @@ impl WalManager {
                 | WalRecord::DeleteNode { tx_id, .. }
                 | WalRecord::InsertEdge { tx_id, .. }
                 | WalRecord::DeleteEdge { tx_id, .. }
-                    if committed_txs.contains(tx_id) =>
+                    if committed_txs.contains_key(tx_id) =>
                 {
-                    replay_ops.push(record);
+                    let ts = committed_txs[tx_id];
+                    replay_ops.push((record, ts));
                 }
                 _ => {}
             }

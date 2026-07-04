@@ -88,6 +88,42 @@ fn bench_commit_small_tx(c: &mut Criterion) {
     group.finish();
 }
 
+// (a2) Throughput con 8 escritores commiteando concurrentemente:
+//      mide el efecto del group commit del WAL (1 fsync por commit).
+fn bench_commit_concurrent(c: &mut Criterion) {
+    let rt = rt();
+    let dir = tempfile::tempdir().unwrap();
+    let (graph, ids) = rt.block_on(seeded_graph(dir.path(), 128));
+
+    let mut group = c.benchmark_group("commit");
+    group.sample_size(15);
+    let mut round = 0usize;
+    group.bench_function("8_concurrent_small_tx", |b| {
+        b.to_async(&rt).iter(|| {
+            round += 1;
+            let g = Arc::clone(&graph);
+            let base = round * 8;
+            let target = ids[round % ids.len()];
+            async move {
+                let mut handles = Vec::with_capacity(8);
+                for k in 0..8usize {
+                    let g = Arc::clone(&g);
+                    handles.push(tokio::spawn(async move {
+                        let mut tx = g.begin_transaction().await.expect("begin");
+                        let a = tx.add_node(person(2_000_000 + base + k)).await.expect("add");
+                        tx.add_edge(Edge::new(a, target, "KNOWS")).expect("edge");
+                        tx.commit().await.expect("commit");
+                    }));
+                }
+                for h in handles {
+                    h.await.expect("commit task");
+                }
+            }
+        });
+    });
+    group.finish();
+}
+
 // (b) Lecturas: mismo lote de 64 get_node repartido en 1/4/8 tasks.
 fn bench_read_concurrency(c: &mut Criterion) {
     let rt = rt();
@@ -167,6 +203,7 @@ fn bench_bulk_load(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_commit_small_tx,
+    bench_commit_concurrent,
     bench_read_concurrency,
     bench_reads_with_active_writer,
     bench_bulk_load

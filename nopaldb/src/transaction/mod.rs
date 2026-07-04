@@ -763,47 +763,54 @@ impl Transaction {
 
 
         // P1. Escribir en el WAL antes de modificar el storage.
+        // Todo el write-set va en UN lote con UN solo fsync (group commit a
+        // nivel de transacción): antes eran N+2 fsyncs por commit.
         let wal = self.graph.wal();
 
-        // Write BEGIN marker
-        wal.append(WalRecord::Begin {
+        let mut wal_records = Vec::with_capacity(
+            2 + self.deleted_nodes.len() + self.pending_nodes.len() + self.pending_edges.len(),
+        );
+
+        wal_records.push(WalRecord::Begin {
             tx_id: self.id,
             timestamp: self.timestamp,
-        }).await?;
+        });
 
-        // Write DELETE operations
         for node_id in &self.deleted_nodes {
             let node = self.graph.get_node(*node_id).await?;
-            wal.append(WalRecord::DeleteNode {
+            wal_records.push(WalRecord::DeleteNode {
                 tx_id: self.id,
                 node_id: *node_id,
                 node,
-            }).await?;
+            });
         }
 
-        // Write INSERT/UPDATE nodes
         for node in self.pending_nodes.values() {
-            wal.append(WalRecord::InsertNode {
+            wal_records.push(WalRecord::InsertNode {
                 tx_id: self.id,
                 node: node.clone(),
-            }).await?;
+            });
         }
 
-        // Write INSERT edges
         for edge in self.pending_edges.values() {
-            wal.append(WalRecord::InsertEdge {
+            wal_records.push(WalRecord::InsertEdge {
                 tx_id: self.id,
                 edge: edge.clone(),
-            }).await?;
+            });
         }
 
-        // Write COMMIT marker
-        wal.append(WalRecord::Commit {
+        wal_records.push(WalRecord::Commit {
             tx_id: self.id,
             timestamp: commit_timestamp,
-        }).await?;
+        });
 
-        log::info!("Transaction {} written to WAL", self.id);
+        wal.append_batch(&wal_records).await?;
+
+        log::info!(
+            "Transaction {} written to WAL ({} records, 1 fsync)",
+            self.id,
+            wal_records.len()
+        );
 
 
         //P2. Aplicar cambios al storage con MVCC
@@ -906,8 +913,11 @@ impl Transaction {
             self.graph.index_node_properties(node).await?;
         }
 
-        // 5. Flush índices a disco
-        self.graph.flush_indices().await?;
+        // 5. (eliminado) El flush completo de adyacencia era redundante y
+        //    O(nodos totales) por commit: cada operación del single-writer
+        //    apply ya persiste sus listas de adyacencia afectadas, y el
+        //    crash recovery reconstruye desde las aristas. El flush global
+        //    queda solo en checkpoint() y en las cargas bulk.
 
         // 5b. Persistir relojes lógicos: garantiza que un reopen posterior
         //     retome timestamps/tx ids por encima de lo commiteado.
