@@ -45,20 +45,3 @@ jobs:
 
       - name: Test clock persistence and concurrency regressions
         run: cargo test -p nopaldb --test clock_persistence_test --test concurrent_writers_test
-
-  # Tests de estrés que documentan races RMW conocidos en escrituras directas
-  # (se corrigen con el applier single-writer). Informativo: no bloquea el PR.
-  stress-known-races:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    continue-on-error: true
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Concurrent-writer stress (known races, informational)
-        run: cargo test -p nopaldb --test concurrent_writers_test -- --ignored

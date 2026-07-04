@@ -8,9 +8,10 @@
 // Estado por test:
 // - Los paths TRANSACCIONALES están serializados por el commit lock del Graph
 //   → esos tests deben pasar hoy y quedan como regresión.
-// - Los paths DIRECTOS (sin transacción) siguen expuestos a races RMW
-//   → esos tests documentan el bug y están #[ignore] hasta que exista el
-//     applier single-writer (issue I8). Correr con: cargo test -- --ignored
+// - Los paths DIRECTOS (sin transacción) pasan por el mismo embudo desde que
+//   existe el single-writer apply (write-gate, src/graph/applier.rs), así que
+//   TODA la suite corre como regresión activa. Si un test falla aquí, hay una
+//   escritura que quedó fuera del embudo.
 
 use nopaldb::{Direction, Edge, Graph, Node, PropertyValue};
 use std::sync::Arc;
@@ -23,14 +24,12 @@ fn person(name: &str) -> Node {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// A. Escrituras directas de aristas al MISMO nodo (race: la adyacencia se
-//    snapshotea bajo el lock pero se PERSISTE después de soltarlo — un snapshot
-//    viejo puede sobrescribir a uno nuevo). Ventana estrecha: este test puede
-//    pasar por suerte en una corrida dada; el invariante queda exigido para I8.
-//    El reproductor determinista del lost-update es el test B (property index).
+// A. Escrituras directas de aristas al MISMO nodo. Antes: la adyacencia se
+//    snapshoteaba bajo el lock pero se persistía después de soltarlo (un
+//    snapshot viejo podía sobrescribir a uno nuevo). Ahora snapshot y
+//    persistencia ocurren dentro del write-gate — regresión activa.
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "known RMW race window in direct writes (stale adjacency snapshot) — fixed by the single-writer applier (I8)"]
 async fn direct_concurrent_edges_to_same_node_keep_adjacency_exact() -> nopaldb::Result<()> {
     let dir = tempfile::tempdir().unwrap();
     let graph = Arc::new(Graph::open(dir.path()).await?);
@@ -78,10 +77,9 @@ async fn direct_concurrent_edges_to_same_node_keep_adjacency_exact() -> nopaldb:
 // ─────────────────────────────────────────────────────────────────────────────
 // B. Escrituras directas de nodos con el MISMO valor de propiedad indexada
 //    (race: lista bajo `idx:prop:{prop}:{value}` se actualiza read-modify-write)
-//    Conocido-roto hasta I8.
+//    Serializado por el single-writer apply — regresión activa.
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "known RMW race in the property index — fixed by the single-writer applier (I8)"]
 async fn direct_concurrent_nodes_same_property_keep_index_exact() -> nopaldb::Result<()> {
     let dir = tempfile::tempdir().unwrap();
     let graph = Arc::new(Graph::open(dir.path()).await?);

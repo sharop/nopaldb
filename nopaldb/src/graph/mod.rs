@@ -1,6 +1,7 @@
 // src/graph/mod.rs
 
 pub mod view;
+mod applier;
 pub use view::{GraphView, Subgraph};
 
 use std::collections::{HashMap, BinaryHeap, VecDeque, HashSet};
@@ -69,6 +70,10 @@ pub struct Graph {
     /// Mutex de serialización para la fase de commit de transacciones.
     /// Previene condiciones de carrera en índices de adyacencia y lost updates MVCC.
     commit_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Write-gate del single-writer apply: serializa TODA aplicación física
+    /// de escrituras (directas y de commit) para eliminar races RMW en
+    /// adyacencia, índice de propiedades y versiones. Ver `graph/applier.rs`.
+    write_gate: Arc<tokio::sync::Mutex<()>>,
 
     /// Mapa de transacciones activas: tx_id → timestamp de inicio.
     /// Usado por el GC para calcular el horizonte seguro de purga.
@@ -284,6 +289,7 @@ impl Graph {
             auto_gc_stop_tx: Arc::new(Mutex::new(None)),
             auto_gc_config: Arc::new(RwLock::new(None)),
             commit_lock: Arc::new(tokio::sync::Mutex::new(())),
+            write_gate: Arc::new(tokio::sync::Mutex::new(())),
 
             active_tx_timestamps: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             topology_version: Arc::new(AtomicU64::new(1)),
@@ -338,8 +344,11 @@ impl Graph {
     }
 
 
-    /// Persiste los índices en disco
+    /// Persiste los índices en disco.
+    /// Toma el write-gate: escribe snapshots completos de adyacencia y no debe
+    /// interlevarse con aplicaciones físicas concurrentes.
     pub async fn flush_indices(&self) -> Result<()> {
+        let _gate = self.write_gate.lock().await;
         let adj_out = self.adjacency_out.read().await;
         let adj_in = self.adjacency_in.read().await;
 
@@ -362,12 +371,21 @@ impl Graph {
         self.add_node_internal(node, false).await
     }
 
-    /// Metodo INTERNO: agrega nodo con control de indexación
+    /// Metodo INTERNO: agrega nodo con control de indexación.
+    /// Encola la aplicación física en el single-writer apply.
     pub(crate) async fn add_node_internal(
         &self,
         node: Node,
         skip_indexing: bool,
     ) -> Result<NodeId> {
+        let node_id = node.id;
+        self.submit_write(applier::WriteOp::AddNode { node, skip_indexing })
+            .await?;
+        Ok(node_id)
+    }
+
+    /// Aplicación física de AddNode. Solo el single-writer apply debe llamarla.
+    async fn apply_add_node(&self, node: Node, skip_indexing: bool) -> Result<NodeId> {
         let node_id = node.id;
         let existed = self.storage.node_exists(node_id).await?;
 
@@ -386,7 +404,7 @@ impl Graph {
 
         // Indexar propiedades SOLO si no se debe skip
         if !skip_indexing {
-            self.index_node_properties(&node).await?;
+            self.apply_index_node_properties(&node).await?;
 
             // actualizar índices secundarios
             for(property_key, property_value) in &node.properties {
@@ -413,7 +431,15 @@ impl Graph {
     }
 
     /// Indexa las propiedades de un nodo (uso interno)
+    /// Indexa las propiedades de un nodo (vía single-writer apply: las listas
+    /// bajo `idx:prop:` se actualizan read-modify-write).
     pub(crate) async fn index_node_properties(&self, node: &Node) -> Result<()> {
+        self.submit_write(applier::WriteOp::IndexNodeProperties { node: node.clone() })
+            .await
+    }
+
+    /// Aplicación física de la indexación. Solo el single-writer apply debe llamarla.
+    async fn apply_index_node_properties(&self, node: &Node) -> Result<()> {
         for (key, value) in &node.properties {
             self.storage.save_property_index(key, value, node.id).await?;
         }
@@ -487,6 +513,7 @@ impl Graph {
             auto_gc_stop_tx: Arc::new(Mutex::new(None)),
             auto_gc_config: Arc::new(RwLock::new(None)),
             commit_lock: Arc::new(tokio::sync::Mutex::new(())),
+            write_gate: Arc::new(tokio::sync::Mutex::new(())),
 
             active_tx_timestamps: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             topology_version: Arc::new(AtomicU64::new(1)),
@@ -561,6 +588,47 @@ impl Graph {
     /// Allocates a monotonically increasing logical timestamp for MVCC/transactions.
     pub(crate) fn next_logical_timestamp(&self) -> u64 {
         self.next_timestamp.fetch_add(1, AtomicOrdering::SeqCst)
+    }
+
+    // ─── Single-writer apply ────────────────────────────────────────────────
+    //
+    // Único punto de entrada para la aplicación física de escrituras. El
+    // write-gate garantiza que cada operación compuesta (varias llamadas a
+    // storage + índices) se aplica sin interleaving con otros escritores.
+    // Las LECTURAS nunca pasan por aquí. Ver `graph/applier.rs`.
+
+    /// Aplica una operación de escritura bajo el write-gate (serializado).
+    pub(crate) async fn submit_write(&self, op: applier::WriteOp) -> Result<()> {
+        let _gate = self.write_gate.lock().await;
+        self.apply_write_op(op).await
+    }
+
+    /// Despacho de operaciones físicas. SOLO debe llamarse con el write-gate
+    /// tomado (vía `submit_write`). Los cuerpos `apply_*` no deben volver a
+    /// entrar al embudo (el Mutex no es reentrante).
+    async fn apply_write_op(&self, op: applier::WriteOp) -> Result<()> {
+        use applier::WriteOp;
+        match op {
+            WriteOp::AddNode { node, skip_indexing } => {
+                self.apply_add_node(node, skip_indexing).await.map(|_| ())
+            }
+            WriteOp::AddEdgeAt { edge, timestamp } => {
+                self.apply_add_edge_at(edge, timestamp).await.map(|_| ())
+            }
+            WriteOp::DeleteNode { id } => self.apply_delete_node(id).await,
+            WriteOp::DeleteEdgeAt { id, timestamp } => {
+                self.apply_delete_edge_at(id, timestamp).await
+            }
+            WriteOp::IndexNodeProperties { node } => {
+                self.apply_index_node_properties(&node).await
+            }
+            WriteOp::AddPropertyIndexEntry { property, value, node_id } => {
+                self.storage.save_property_index(&property, &value, node_id).await
+            }
+            WriteOp::RemovePropertyIndexEntry { property, value, node_id } => {
+                self.storage.remove_from_property_index(&property, &value, node_id).await
+            }
+        }
     }
 
     /// Persiste las cotas actuales de los relojes lógicos (`next_timestamp`,
@@ -725,14 +793,26 @@ impl Graph {
         self.storage.insert_edge(edge).await
     }
 
-    /// Remove a property value from the property index — used by UPDATE executor (P1)
+    /// Remove a property value from the property index — used by UPDATE executor (P1).
+    /// Vía single-writer apply: las listas `idx:prop:` se actualizan RMW.
     pub async fn storage_remove_property_index(&self, property: &str, value: &PropertyValue, node_id: NodeId) -> Result<()> {
-        self.storage.remove_from_property_index(property, value, node_id).await
+        self.submit_write(applier::WriteOp::RemovePropertyIndexEntry {
+            property: property.to_string(),
+            value: value.clone(),
+            node_id,
+        })
+        .await
     }
 
-    /// Add a property value to the property index — used by UPDATE executor (P1)
+    /// Add a property value to the property index — used by UPDATE executor (P1).
+    /// Vía single-writer apply: las listas `idx:prop:` se actualizan RMW.
     pub async fn storage_add_property_index(&self, property: &str, value: &PropertyValue, node_id: NodeId) -> Result<()> {
-        self.storage.save_property_index(property, value, node_id).await
+        self.submit_write(applier::WriteOp::AddPropertyIndexEntry {
+            property: property.to_string(),
+            value: value.clone(),
+            node_id,
+        })
+        .await
     }
 
     /// Get all nodes with label filter (for query executor)
@@ -992,6 +1072,11 @@ impl Graph {
 
     /// Elimina un nodo (y sus aristas)
     pub async fn delete_node(&self, id: NodeId) -> Result<()> {
+        self.submit_write(applier::WriteOp::DeleteNode { id }).await
+    }
+
+    /// Aplicación física de DeleteNode. Solo el single-writer apply debe llamarla.
+    async fn apply_delete_node(&self, id: NodeId) -> Result<()> {
         // ✅ Obtener nodo antes de borrar
         let node = self.get_node(id).await?;
 
@@ -1053,7 +1138,16 @@ impl Graph {
     }
 
     /// Variante interna: inserta arista con timestamp MVCC explícito (usado en commit de tx).
+    /// Encola la aplicación física en el single-writer apply.
     pub(crate) async fn add_edge_at(&self, edge: Edge, timestamp: u64) -> Result<EdgeId> {
+        let edge_id = edge.id;
+        self.submit_write(applier::WriteOp::AddEdgeAt { edge, timestamp })
+            .await?;
+        Ok(edge_id)
+    }
+
+    /// Aplicación física de AddEdgeAt. Solo el single-writer apply debe llamarla.
+    async fn apply_add_edge_at(&self, edge: Edge, timestamp: u64) -> Result<EdgeId> {
         let edge_id = edge.id;
         let source = edge.source;
         let target = edge.target;
@@ -1126,7 +1220,14 @@ impl Graph {
     }
 
     /// Variante interna: elimina arista con timestamp MVCC explícito (usado en commit de tx).
+    /// Encola la aplicación física en el single-writer apply.
     pub(crate) async fn delete_edge_at(&self, id: EdgeId, timestamp: u64) -> Result<()> {
+        self.submit_write(applier::WriteOp::DeleteEdgeAt { id, timestamp })
+            .await
+    }
+
+    /// Aplicación física de DeleteEdgeAt. Solo el single-writer apply debe llamarla.
+    async fn apply_delete_edge_at(&self, id: EdgeId, timestamp: u64) -> Result<()> {
         // 1. Obtener la arista para saber source/target
         let edge = self.get_edge(id).await?;
         let source = edge.source;
@@ -2547,6 +2648,9 @@ impl Graph {
 
     /// Inserta múltiples nodos en batch (sin indexación de propiedades).
     pub async fn add_nodes_batch(&self, nodes: Vec<Node>) -> Result<Vec<NodeId>> {
+        // Single-writer apply: los lotes mutan adyacencia y no deben
+        // interlevarse con otras aplicaciones físicas.
+        let _gate = self.write_gate.lock().await;
         if nodes.is_empty() {
             return Ok(Vec::new());
         }
@@ -2576,6 +2680,9 @@ impl Graph {
 
     /// Inserta múltiples aristas en batch.
     pub async fn add_edges_batch(&self, edges: Vec<Edge>) -> Result<Vec<EdgeId>> {
+        // Single-writer apply: los lotes mutan adyacencia y no deben
+        // interlevarse con otras aplicaciones físicas.
+        let _gate = self.write_gate.lock().await;
         if edges.is_empty() {
             return Ok(Vec::new());
         }
