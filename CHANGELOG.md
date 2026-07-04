@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.28] - 2026-07-04
+
+Consolidated entry for the 0.4.x series.
+
+### ✨ Highlights
+- **Isolation Levels** (new opt-in `full-isolation` feature, included in the `full` tier):
+  `ReadUncommitted` / `ReadCommitted` (default) / `RepeatableRead` / `Serializable`,
+  per-node lock manager with wait-for-graph **deadlock detection**, and MVCC snapshot reads.
+  See [docs/ISOLATION_LEVELS.md](docs/ISOLATION_LEVELS.md) and [docs/DEADLOCK_DETECTION.md](docs/DEADLOCK_DETECTION.md).
+- **Storage concurrency**: removed the global storage lock; reads no longer block behind writers.
+- **NQL**: path queries (quantifiers, metadata, reducers), embedding functions (`similar_to`, KNN,
+  path similarity/anomaly), structured `PROFILE`, and write CRUD improvements.
+- **Full-text search**: Tantivy-backed index behind the optional `fulltext` feature (in `core`).
+- **MCP server**: agentic context tools (project-structure indexing, episodic events,
+  PR-context validation), Arrow export over shared memory, input validation and NQL escaping.
+- **NDBStudio**: query workbench with graph-hint fallback, session browser, timeline, and a web UI refresh.
+- **Python**: abi3 wheels (one wheel for CPython 3.10+), PyPI release workflow, PyO3 0.29.
+
+### Added
+- `full-isolation` feature: `IsolationLevel`, `Transaction::with_isolation`, `LockManager`, deadlock detection.
+- Synthetic benchmark examples (`examples/benchmarks.rs`, `examples/benchmark_community_dual.rs`) and benchmark report in `docs/benchmarks/`.
+- New docs: property indexing internals, executor architecture (ES), Arrow performance notes, REPL workbench ADR/roadmap.
+
+### Changed
+- Version alignment across workspace, crate and Python package (0.4.28).
+- Dependency updates including security bumps (`lz4_flex`, `time`, `tokio`, `rand`, `bytes`).
+
+### Removed
+- Orphan/dead modules (`nopaldb/src/isolation.rs` legacy stub, unused NDBStudio scaffolding).
+
+---
+
 ## [0.3.0] - 2026-02-12
 
 ### ✨ Highlights

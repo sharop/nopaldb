@@ -126,15 +126,23 @@ let history = graph.history(node_id).await?;
 
 Las aristas tienen cadena MVCC completa via `VersionedEdge` (tree `"versioned_edges"`). `get_edges_of_type_at(edge_type, timestamp)` consulta el historial; `graph.edge_history(id)` retorna todas las versiones.
 
-### Niveles de aislamiento
+### Niveles de aislamiento (feature `full-isolation`)
+
+Disponibles compilando con la feature `full-isolation` (incluida en el tier `full`). Sin la feature, las transacciones operan en modo ReadCommitted.
+
+```rust
+let tx = graph.begin_transaction().await?          // default: ReadCommitted
+    .with_isolation(IsolationLevel::Serializable); // opt-in por transaccion
+```
 
 | Nivel | Comportamiento |
 |-------|---------------|
+| `ReadUncommitted` | hoy equivale a `ReadCommitted` (cada tx tiene write buffer propio; no hay dirty data visible) |
 | `ReadCommitted` | default; ve commits ya confirmados |
-| `RepeatableRead` | snapshot MVCC al inicio de la tx |
-| `Serializable` | validacion de conflictos en writes |
+| `RepeatableRead` | snapshot MVCC al inicio de la tx via `get_node_at_strict()` con timestamp monotono |
+| `Serializable` | snapshot + locks read/write por nodo (2PL via `LockManager`) + tracking de predicate reads + validacion de conflictos en `commit()` |
 
-**Estado actual:** `RepeatableRead` y `Serializable` leen snapshot MVCC via `get_node_at_strict()` con timestamp monotono. Serializable parcialmente implementado — no confiar en el para joins multi-hop criticos todavia.
+El `LockManager` mantiene un wait-for graph entre transacciones y aborta con `NopalError::Deadlock` cuando detecta un ciclo. Detalle y ejemplos: [ISOLATION_LEVELS.md](ISOLATION_LEVELS.md) y [DEADLOCK_DETECTION.md](DEADLOCK_DETECTION.md).
 
 ### WAL
 
