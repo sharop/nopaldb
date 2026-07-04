@@ -14,4 +14,7 @@ Convencion sugerida:
 - `08-error-chain.png`
 - `ndbstudio-flow.gif`
 
-Usa estos nombres desde los documentos de NDBStudio que necesiten capturas.
+Referencia:
+
+- Ver `/Users/sharop/Proyectos/nopaldb/docs/ndbstudio/media.md`
+

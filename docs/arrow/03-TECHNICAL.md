@@ -114,7 +114,7 @@ let sum = ages.sum();
 - AVX2: 256-bit (8 × i32)
 - AVX-512: 512-bit (16 × i32)
 
-### SIMD Notes
+### Benchmarks SIMD
 ```
 Operación: Sumar 1M integers
 
@@ -398,7 +398,7 @@ let result = filtered.collect()?;  // ← Ejecuta TODO aquí
 *k = SIMD width (4-16)  
 **Con sorted columns
 
-### Real-World Performance Notes
+### Real-World Benchmarks
 ```
 Dataset: 1M nodes
 
@@ -502,6 +502,35 @@ pub fn write_parquet(batch: &RecordBatch, path: &Path) -> Result<()> {
     
     Ok(())
 }
+```
+
+## 🔮 Future Optimizations
+
+### Planned Improvements
+
+1. **Incremental Export**
+```rust
+   // Export solo nodos modificados
+   graph.export_delta("snapshot.parquet").await?;
+```
+
+2. **Predicate Pushdown**
+```rust
+   // Filter antes de export (más eficiente)
+   graph.to_arrow_filtered(|node| node.label == "Person").await?;
+```
+
+3. **Parallel Export**
+```rust
+   // Export paralelo por shards
+   graph.to_arrow_parallel(num_threads: 8).await?;
+```
+
+4. **Property Columns**
+```rust
+   // Export properties como columnas
+   // id | label | name | age | active
+   graph.to_arrow_with_properties(&["name", "age"]).await?;
 ```
 
 ## 📚 References

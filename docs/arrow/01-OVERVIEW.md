@@ -193,7 +193,7 @@ nopaldb = { version = "0.1", default-features = false }
 nopaldb = { version = "0.1", features = ["analytics"] }
 # Binary size: 15-20 MB
 
-# Full
+# Full (TODO)
 [dependencies]
 nopaldb = { version = "0.1", features = ["full"] }
 # Binary size: 20-30 MB
@@ -205,6 +205,7 @@ nopaldb = { version = "0.1", features = ["full"] }
 2. [Technical Details](03-TECHNICAL.md) - Detalles técnicos
 3. [Examples](04-EXAMPLES.md) - Casos de uso reales
 4. [ML Integration](05-ML-INTEGRATION.md) - PyTorch y TensorFlow
+5. [Performance](06-PERFORMANCE.md) - Benchmarks
 
 ---
 

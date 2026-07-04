@@ -459,7 +459,7 @@ python examples/test_all_algorithms.py
 
 ## 📚 References
 
-### References
+### Academic Papers
 - **PageRank**: Page, L., et al. "The PageRank Citation Ranking" (1999)
 - **Betweenness**: Brandes, U. "A Faster Algorithm for Betweenness Centrality" (2001)
 - **Clustering**: Watts, D.J., Strogatz, S.H. "Collective dynamics of 'small-world' networks" (1998)
@@ -471,6 +471,22 @@ python examples/test_all_algorithms.py
 - **Caching** is used where appropriate
 - **Memory-efficient** adjacency list construction
 - **Configurable** parameters for all algorithms
+
+---
+
+## 🚀 Roadmap
+
+### Coming in v0.3.0
+- Triangle Counting
+- K-Core Decomposition
+- Label Propagation
+- Parallel execution (Rayon)
+
+### Future
+- Graph Neural Networks (GNN) integration
+- Streaming algorithms
+- Approximation algorithms for massive graphs
+- GPU acceleration
 
 ---
 
