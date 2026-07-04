@@ -1420,8 +1420,6 @@ impl StorageBackend for Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "embeddings")]
-    use crate::embeddings::Embedding;
     use crate::types::PropertyValue;
     use crate::mvcc::VersionedNode;
 
