@@ -54,6 +54,7 @@ impl PyTransaction {
     ///     >>> node_id = tx.add_node("Person", {"name": "Alice", "age": 30})
     fn add_node(
         &mut self,
+        py: Python<'_>,
         label: &str,
         properties: &Bound<'_, PyDict>
     ) -> PyResult<String> {
@@ -94,13 +95,7 @@ impl PyTransaction {
         }
         let node_id = node.id;
 
-        // Add to transaction (blocking on async)
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create runtime: {}", e)
-            ))?;
-
-        let _ = rt.block_on(async {
+        let _ = crate::python::runtime::block_on(py, async {
             tx.add_node(node).await
         });
 
@@ -187,15 +182,10 @@ impl PyTransaction {
     ///
     /// Example:
     ///     >>> tx.commit()
-    fn commit(&mut self) -> PyResult<()> {
+    fn commit(&mut self, py: Python<'_>) -> PyResult<()> {
         let tx = self.take_inner()?;
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create runtime: {}", e)
-            ))?;
-
-        let result = rt.block_on(async {
+        let result = crate::python::runtime::block_on(py, async {
             tx.commit().await
         });
 
@@ -206,15 +196,10 @@ impl PyTransaction {
     ///
     /// Example:
     ///     >>> tx.rollback()
-    fn rollback(&mut self) -> PyResult<()> {
+    fn rollback(&mut self, py: Python<'_>) -> PyResult<()> {
         let tx = self.take_inner()?;
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create runtime: {}", e)
-            ))?;
-
-        let result = rt.block_on(async {
+        let result = crate::python::runtime::block_on(py, async {
             tx.rollback()
         });
 

@@ -25,14 +25,8 @@ pub fn export_to_arrow<'py>(
     graph: &RustGraph,
     label: Option<&str>,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    // Create tokio runtime
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-            format!("Failed to create runtime: {}", e)
-        ))?;
-
     // Export to Arrow RecordBatch with label filter
-    let batch = rt.block_on(async {
+    let batch = crate::python::runtime::block_on(py, async {
         graph.to_arrow_with_label(label).await
     });
 
@@ -84,12 +78,9 @@ pub fn export_edges_to_arrow<'py>(
     use arrow::ipc::writer::StreamWriter;
     use std::io::Cursor;
 
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))?;
-
     let graph_clone = Arc::clone(graph);
 
-    let batch = rt.block_on(async move {
+    let batch = crate::python::runtime::block_on(py, async move {
         let edges = graph_clone.get_all_edges().await
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))?;
 
@@ -129,13 +120,10 @@ pub fn export_graph_to_arrow<'py>(
     use arrow::ipc::writer::StreamWriter;
     use std::io::Cursor;
 
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))?;
-
     let graph_clone = Arc::clone(graph);
     let label = label_filter.map(|s| s.to_string());
 
-    let (nodes_batch, edges_batch) = rt.block_on(async move {
+    let (nodes_batch, edges_batch) = crate::python::runtime::block_on(py, async move {
         crate::arrow_export::graph_to_arrow(&graph_clone, label.as_deref()).await
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))
     })?;
