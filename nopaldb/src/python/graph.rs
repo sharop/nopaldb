@@ -161,14 +161,51 @@ impl PyGraph {
     ///     >>> tx = graph.begin_transaction()
     ///     >>> node_id = tx.add_node("Person", {"name": "Alice"})
     ///     >>> tx.commit()
-    fn begin_transaction(&self, py: Python<'_>) -> PyResult<PyTransaction> {
+    /// Begin a transaction.
+    ///
+    /// isolation: None (default ReadCommitted) | "read_uncommitted" |
+    ///            "read_committed" | "repeatable_read" | "serializable"
+    ///            (requires the `full-isolation` feature)
+    #[pyo3(signature = (isolation=None))]
+    fn begin_transaction(&self, py: Python<'_>, isolation: Option<&str>) -> PyResult<PyTransaction> {
         let graph = self.graph()?;
 
         let tx = crate::python::runtime::block_on(py, async move {
             graph.begin_transaction().await
         });
+        let tx = to_py_result(tx)?;
 
-        to_py_result(tx).map(PyTransaction::new)
+        let tx = match isolation {
+            None => tx,
+            Some(level) => {
+                #[cfg(feature = "full-isolation")]
+                {
+                    use crate::transaction::IsolationLevel;
+                    let level = match level.to_ascii_lowercase().as_str() {
+                        "read_uncommitted" => IsolationLevel::ReadUncommitted,
+                        "read_committed" => IsolationLevel::ReadCommitted,
+                        "repeatable_read" => IsolationLevel::RepeatableRead,
+                        "serializable" => IsolationLevel::Serializable,
+                        other => {
+                            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                                "Invalid isolation level '{}'. Use 'read_uncommitted' | 'read_committed' | 'repeatable_read' | 'serializable'",
+                                other
+                            )))
+                        }
+                    };
+                    tx.with_isolation(level)
+                }
+                #[cfg(not(feature = "full-isolation"))]
+                {
+                    let _ = level;
+                    return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                        "Isolation levels require building with the 'full-isolation' feature",
+                    ));
+                }
+            }
+        };
+
+        Ok(PyTransaction::new(tx))
     }
 
     /// Get node count

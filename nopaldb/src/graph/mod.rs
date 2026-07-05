@@ -437,6 +437,13 @@ impl Graph {
         self.storage.save_adjacency_out(node_id, &out_list).await?;
         self.storage.save_adjacency_in(node_id, &in_list).await?;
 
+        // Visibilidad para la validación Serializable: las escrituras directas
+        // también cuentan como modificación (safety net para escritores que
+        // no pasan por el LockManager).
+        #[cfg(feature = "full-isolation")]
+        self.mark_modified(node_id, self.next_timestamp.load(AtomicOrdering::SeqCst))
+            .await?;
+
         if !existed {
             self.bump_topology_version();
         }
@@ -1133,6 +1140,10 @@ impl Graph {
         // Borrar nodo del storage
         self.storage.delete_node(id).await?;
 
+        #[cfg(feature = "full-isolation")]
+        self.mark_modified(id, self.next_timestamp.load(AtomicOrdering::SeqCst))
+            .await?;
+
         // Limpiar índices de adyacencia del nodo eliminado
         let mut adj_out = self.adjacency_out.write().await;
         let mut adj_in = self.adjacency_in.write().await;
@@ -1203,6 +1214,13 @@ impl Graph {
 
         self.storage.save_adjacency_out(source, &source_edges).await?;
         self.storage.save_adjacency_in(target, &target_edges).await?;
+
+        // Los endpoints cuentan como modificados para validación Serializable
+        #[cfg(feature = "full-isolation")]
+        {
+            self.mark_modified(source, timestamp).await?;
+            self.mark_modified(target, timestamp).await?;
+        }
 
         self.bump_topology_version();
 
@@ -1288,6 +1306,12 @@ impl Graph {
 
         self.storage.save_adjacency_out(source, &source_edges).await?;
         self.storage.save_adjacency_in(target, &target_edges).await?;
+
+        #[cfg(feature = "full-isolation")]
+        {
+            self.mark_modified(source, timestamp).await?;
+            self.mark_modified(target, timestamp).await?;
+        }
 
         self.bump_topology_version();
 
@@ -2004,6 +2028,11 @@ impl Graph {
             config.dry_run
         );
 
+        // Single-writer apply: el GC hace read-modify-write sobre las listas
+        // de versiones y no debe interlevarse con commits ni escrituras
+        // directas. Costo asumido: los escritores esperan mientras dura el
+        // ciclo de GC (usar max_nodes_per_cycle para acotarlo).
+        let _gate = self.write_gate.lock().await;
         self.storage.gc_old_versions(&config).await
     }
 

@@ -41,7 +41,7 @@ jobs:
         run: cargo test -p ndbstudio
 
       - name: Test isolation feature (full-isolation)
-        run: cargo test -p nopaldb --features full-isolation --test p1_isolation_levels_test --test deadlock_tests
+        run: cargo test -p nopaldb --features full-isolation --test p1_isolation_levels_test --test deadlock_tests --test p1_isolation_concurrent_test
 
       - name: Test clock persistence and concurrency regressions
         run: cargo test -p nopaldb --test clock_persistence_test --test concurrent_writers_test --test adjacency_update_regression_test
