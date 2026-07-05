@@ -1,17 +1,18 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use crossterm::{
     cursor::Show,
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
-    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
+    Frame,
+    Terminal,
 };
 use std::{
     io,
@@ -24,9 +25,9 @@ mod app;
 mod engine;
 mod session;
 mod ui;
+mod workbench;
 #[cfg(feature = "web")]
 mod web_server;
-mod workbench;
 
 use app::{App, Mode};
 
@@ -75,13 +76,8 @@ fn run_tui(db_path: &str) -> Result<()> {
 
 #[derive(Debug, PartialEq, Eq)]
 enum LaunchMode {
-    Tui {
-        db_path: String,
-    },
-    Web {
-        db_path: Option<String>,
-        bind_addr: String,
-    },
+    Tui { db_path: String },
+    Web { db_path: Option<String>, bind_addr: String },
 }
 
 fn parse_args<I>(args: I) -> Result<LaunchMode>
@@ -197,10 +193,12 @@ fn draw_loading_screen(f: &mut Frame, db_path: &str, elapsed: Duration, tick: us
 
     let elapsed_s = elapsed.as_secs_f32();
     let mut lines = vec![
-        Line::from(vec![Span::styled(
-            format!("{} Cargando las tunas al nopal...", spinner_char),
-            Style::default().fg(ui::ACCENT).add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![
+            Span::styled(
+                format!("{} Cargando las tunas al nopal...", spinner_char),
+                Style::default().fg(ui::ACCENT).add_modifier(Modifier::BOLD),
+            ),
+        ]),
         Line::from(Span::styled(
             format!("DB: {}", db_path),
             Style::default().fg(ui::FG),
@@ -260,7 +258,10 @@ fn animated_logo_lines(tick: usize) -> Vec<Line<'static>> {
                 .enumerate()
                 .map(|(x, ch)| {
                     let draw_char = render_pixel(ch, x, y, width, sweep, tick);
-                    Span::styled(draw_char.to_string(), pixel_style(ch, x, y, tick))
+                    Span::styled(
+                        draw_char.to_string(),
+                        pixel_style(ch, x, y, tick),
+                    )
                 })
                 .collect::<Vec<_>>();
             Line::from(spans)
@@ -296,9 +297,7 @@ fn pixel_style(ch: char, x: usize, y: usize, tick: usize) -> Style {
                 Style::default().fg(ui::SUCCESS)
             }
         }
-        't' | '*' => Style::default()
-            .fg(Color::Rgb(240, 86, 52))
-            .add_modifier(Modifier::BOLD),
+        't' | '*' => Style::default().fg(Color::Rgb(240, 86, 52)).add_modifier(Modifier::BOLD),
         's' => Style::default().fg(Color::Rgb(230, 190, 85)),
         '|' | '_' => Style::default().fg(Color::Rgb(120, 180, 110)),
         '.' => Style::default().fg(Color::Rgb(70, 180, 170)),
@@ -338,7 +337,10 @@ fn animated_brand_line(tick: usize) -> Line<'static> {
     Line::from(centered)
 }
 
-fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+fn run_app<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+) -> Result<()> {
     loop {
         if app.quit_requested() {
             break;
@@ -393,7 +395,7 @@ impl Drop for TerminalGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{LaunchMode, parse_args};
+    use super::{parse_args, LaunchMode};
 
     #[test]
     fn parse_tui_mode_from_db_path() {

@@ -1,13 +1,13 @@
 use ratatui::{
-    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
+    Frame,
 };
 
 use crate::app::{App, FocusedPane};
-use crate::ui::{ACCENT, BG, BORDER, FG};
+use crate::ui::{ACCENT, BG, FG, BORDER};
 
 pub struct QueryEditor {
     lines: Vec<String>,
@@ -126,7 +126,7 @@ impl QueryEditor {
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     let is_focused = matches!(app.focused_pane(), FocusedPane::Editor);
-
+    
     let border_style = if is_focused {
         Style::default().fg(ACCENT)
     } else {
@@ -154,10 +154,8 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
 
     // Render editor content with line numbers
     let (cursor_line, cursor_col) = app.editor.cursor_position();
-
-    let lines: Vec<Line> = app
-        .editor
-        .lines
+    
+    let lines: Vec<Line> = app.editor.lines
         .iter()
         .enumerate()
         .map(|(i, line)| {
@@ -170,10 +168,10 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
 
             // Basic syntax highlighting
             let content_spans = highlight_nql(line);
-
+            
             let mut spans = vec![Span::styled(line_num, line_num_style)];
             spans.extend(content_spans);
-
+            
             Line::from(spans)
         })
         .collect();
@@ -189,7 +187,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         // Calculate cursor position on screen
         let cursor_x = inner.x + 6 + cursor_col as u16; // 6 = line number width
         let cursor_y = inner.y + cursor_line as u16;
-
+        
         if cursor_x < inner.right() && cursor_y < inner.bottom() {
             f.set_cursor(cursor_x, cursor_y);
         }
@@ -198,23 +196,19 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
 
 /// Basic NQL syntax highlighting
 fn highlight_nql(line: &str) -> Vec<Span<'_>> {
-    let keywords = [
-        "find", "from", "where", "order", "by", "limit", "add", "delete", "update",
-    ];
+    let keywords = ["find", "from", "where", "order", "by", "limit", "add", "delete", "update"];
     let functions = ["pagerank", "shortestPath", "louvain", "betweenness"];
-
+    
     let mut spans = Vec::new();
     let mut current = String::new();
-
+    
     for word in line.split_whitespace() {
         if !current.is_empty() {
             spans.push(Span::raw(" "));
         }
-
+        
         let style = if keywords.contains(&word.to_lowercase().as_str()) {
-            Style::default()
-                .fg(Color::LightBlue)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)
         } else if functions.iter().any(|f| word.contains(f)) {
             Style::default().fg(Color::LightGreen)
         } else if word.starts_with('"') || word.starts_with('\'') {
@@ -224,14 +218,14 @@ fn highlight_nql(line: &str) -> Vec<Span<'_>> {
         } else {
             Style::default().fg(FG)
         };
-
+        
         spans.push(Span::styled(word.to_string(), style));
         current = word.to_string();
     }
-
+    
     if spans.is_empty() {
         spans.push(Span::raw(line.to_string()));
     }
-
+    
     spans
 }

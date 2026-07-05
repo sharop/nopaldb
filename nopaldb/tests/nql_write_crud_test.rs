@@ -20,10 +20,7 @@ async fn test_add_relationship_persists_edge_properties() -> Result<()> {
 
     let edges = graph.get_all_edges().await?;
     assert_eq!(edges.len(), 1);
-    assert_eq!(
-        edges[0].properties.get("since"),
-        Some(&PropertyValue::Int(2020))
-    );
+    assert_eq!(edges[0].properties.get("since"), Some(&PropertyValue::Int(2020)));
     assert_eq!(
         edges[0].properties.get("strength"),
         Some(&PropertyValue::String("high".into()))
@@ -59,10 +56,7 @@ async fn test_update_relationship_properties_via_nql() -> Result<()> {
 
     let edges = graph.get_all_edges().await?;
     assert_eq!(edges.len(), 1);
-    assert_eq!(
-        edges[0].properties.get("since"),
-        Some(&PropertyValue::Int(2024))
-    );
+    assert_eq!(edges[0].properties.get("since"), Some(&PropertyValue::Int(2024)));
     assert_eq!(
         edges[0].properties.get("strength"),
         Some(&PropertyValue::String("high".into()))

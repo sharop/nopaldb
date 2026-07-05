@@ -1,8 +1,8 @@
 // src/shacl/shape.rs
 //! Definicion de NodeShape, PropertyShape, Target y ConstraintType.
 
-use crate::types::{NodeId, NodeKind, PropertyValue};
 use uuid::Uuid;
+use crate::types::{NodeId, PropertyValue, NodeKind};
 
 /// Target de un NodeShape — determina que nodos se validan.
 #[derive(Debug, Clone)]

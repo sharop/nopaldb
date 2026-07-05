@@ -23,28 +23,22 @@ async fn test_simple_nql_query() -> Result<()> {
     println!("✅ Inserted 10 test nodes\n");
 
     // Execute NQL query
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find p.name, p.age
         from (p:Person)
         where p.age > 25
         limit 3
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     println!("📊 Query result:");
     println!("   Rows: {}", result.len());
     println!("   Columns: {:?}\n", result.columns);
 
     for (i, row) in result.rows().iter().enumerate() {
-        println!(
-            "   Row {}: name={:?}, age={:?}",
-            i,
-            row.get("p.name"),
-            row.get("p.age")
-        );
+        println!("   Row {}: name={:?}, age={:?}",
+                 i,
+                 row.get("p.name"),
+                 row.get("p.age"));
     }
 
     assert!(result.len() <= 3); // LIMIT 3
@@ -79,14 +73,10 @@ async fn test_wildcard_query() -> Result<()> {
     println!("✅ Inserted test node\n");
 
     // Execute wildcard query
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find *
         from (n:Test)
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     println!("📊 Wildcard query result:");
     println!("   Rows: {}", result.len());
@@ -117,7 +107,8 @@ async fn test_no_filter_query() -> Result<()> {
     let mut tx = graph.begin_transaction().await?;
 
     for i in 0..5 {
-        let node = Node::new("Item").with_property("id", PropertyValue::Int(i));
+        let node = Node::new("Item")
+            .with_property("id", PropertyValue::Int(i));
 
         tx.add_node(node).await?;
     }
@@ -127,14 +118,10 @@ async fn test_no_filter_query() -> Result<()> {
     println!("✅ Inserted 5 test nodes\n");
 
     // Query without WHERE
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find i.id
         from (i:Item)
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     println!("📊 Query result: {} rows", result.len());
 
@@ -153,7 +140,8 @@ async fn test_limit_offset() -> Result<()> {
     let mut tx = graph.begin_transaction().await?;
 
     for i in 0..20 {
-        let node = Node::new("Number").with_property("value", PropertyValue::Int(i));
+        let node = Node::new("Number")
+            .with_property("value", PropertyValue::Int(i));
 
         tx.add_node(node).await?;
     }
@@ -163,15 +151,11 @@ async fn test_limit_offset() -> Result<()> {
     println!("✅ Inserted 20 test nodes\n");
 
     // Query with LIMIT and OFFSET
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find n.value
         from (n:Number)
         limit 5 offset 10
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     println!("📊 Query result: {} rows", result.len());
     println!("   Expected: 5 rows (LIMIT 5)");
@@ -204,15 +188,11 @@ async fn test_multiple_conditions() -> Result<()> {
     println!("✅ Inserted 20 test nodes\n");
 
     // Query with comparison
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find p.price, p.stock
         from (p:Product)
         where p.price >= 50
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     println!("📊 Query result: {} rows", result.len());
 
@@ -253,27 +233,19 @@ async fn test_different_labels() -> Result<()> {
     println!("✅ Inserted 5 Person + 3 Company nodes\n");
 
     // Query only Persons
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find p.name
         from (p:Person)
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     println!("📊 Query result (Person): {} rows", result.len());
     assert_eq!(result.len(), 5, "Should return only Person nodes");
 
     // Query only Companies
-    let result2 = graph
-        .execute_nql(
-            r#"
+    let result2 = graph.execute_nql(r#"
         find c.name
         from (c:Company)
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     println!("📊 Query result (Company): {} rows", result2.len());
     assert_eq!(result2.len(), 3, "Should return only Company nodes");
@@ -290,7 +262,8 @@ async fn test_empty_result() -> Result<()> {
     // Insert test data
     let mut tx = graph.begin_transaction().await?;
 
-    let node = Node::new("Test").with_property("value", PropertyValue::Int(10));
+    let node = Node::new("Test")
+        .with_property("value", PropertyValue::Int(10));
 
     tx.add_node(node).await?;
     tx.commit().await?;
@@ -298,15 +271,11 @@ async fn test_empty_result() -> Result<()> {
     println!("✅ Inserted test node\n");
 
     // Query that returns no results
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find t.value
         from (t:Test)
         where t.value > 100
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     println!("📊 Query result: {} rows", result.len());
     assert_eq!(result.len(), 0, "Should return empty result");
@@ -338,14 +307,10 @@ async fn test_string_property() -> Result<()> {
     println!("✅ Inserted 2 user nodes\n");
 
     // Query users
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find u.username
         from (u:User)
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     println!("📊 Query result: {} rows", result.len());
 
@@ -369,7 +334,8 @@ async fn test_nonexistent_label() -> Result<()> {
     // Insert test data
     let mut tx = graph.begin_transaction().await?;
 
-    let node = Node::new("Real").with_property("value", PropertyValue::Int(42));
+    let node = Node::new("Real")
+        .with_property("value", PropertyValue::Int(42));
 
     tx.add_node(node).await?;
     tx.commit().await?;
@@ -377,21 +343,13 @@ async fn test_nonexistent_label() -> Result<()> {
     println!("✅ Inserted node with label 'Real'\n");
 
     // Query non-existent label
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find f.value
         from (f:Fake)
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     println!("📊 Query result: {} rows", result.len());
-    assert_eq!(
-        result.len(),
-        0,
-        "Should return empty for non-existent label"
-    );
+    assert_eq!(result.len(), 0, "Should return empty for non-existent label");
 
     println!("\n✅ Non-existent label query executed successfully!");
 
@@ -419,19 +377,13 @@ async fn test_order_by_non_projected_column() -> Result<()> {
     tx.add_node(carol).await?;
     tx.commit().await?;
 
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find p.name
         from (p:Person)
         order by p.age
-    "#,
-        )
-        .await?;
+    "#).await?;
 
-    let names: Vec<String> = result
-        .rows()
-        .iter()
+    let names: Vec<String> = result.rows().iter()
         .filter_map(|row| {
             if let Some(PropertyValue::String(name)) = row.get("p.name") {
                 Some(name.clone())
@@ -457,17 +409,15 @@ async fn test_export_csv_to_path() -> Result<()> {
     tx.add_node(node).await?;
     tx.commit().await?;
 
-    let path = std::env::temp_dir().join(format!("nql_export_test_{}.csv", uuid::Uuid::new_v4()));
+    let path = std::env::temp_dir()
+        .join(format!("nql_export_test_{}.csv", uuid::Uuid::new_v4()));
     let path_str = path.to_string_lossy();
 
-    let query = format!(
-        r#"
+    let query = format!(r#"
         find p.name, p.age
         from (p:Person)
         export csv with path="{}", header=true
-    "#,
-        path_str
-    );
+    "#, path_str);
 
     let result = graph.execute_nql(&query).await?;
 
@@ -494,15 +444,11 @@ async fn test_export_jsonl_inline() -> Result<()> {
     tx.add_node(node).await?;
     tx.commit().await?;
 
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find p.name, p.age
         from (p:Person)
         export json with jsonl=true
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     assert_eq!(result.columns, vec!["format", "data"]);
     assert_eq!(result.len(), 1);
@@ -527,19 +473,16 @@ async fn test_export_prefix_not_supported() -> Result<()> {
     let graph = Graph::in_memory().await?;
 
     let mut tx = graph.begin_transaction().await?;
-    let node = Node::new("Person").with_property("name", PropertyValue::String("Alice".into()));
+    let node = Node::new("Person")
+        .with_property("name", PropertyValue::String("Alice".into()));
     tx.add_node(node).await?;
     tx.commit().await?;
 
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         export json with jsonl=true
         find p.name
         from (p:Person)
-    "#,
-        )
-        .await;
+    "#).await;
 
     assert!(result.is_err(), "prefix export should be rejected");
 
@@ -557,16 +500,12 @@ async fn test_single_quotes_and_block_comments() -> Result<()> {
     tx.add_node(node).await?;
     tx.commit().await?;
 
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         /* Block comment should be ignored */
         find p.name
         from (p:Person)
         where p.city = 'CDMX' // inline comment
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     assert_eq!(result.len(), 1);
 
@@ -585,60 +524,55 @@ async fn test_pattern_group_by_count() -> Result<()> {
 
     let mut tx = graph.begin_transaction().await?;
 
-    let alice = tx
-        .add_node(Node::new("Officer").with_property("name", PropertyValue::String("Alice".into())))
-        .await?;
-    let bob = tx
-        .add_node(Node::new("Officer").with_property("name", PropertyValue::String("Bob".into())))
-        .await?;
+    let alice = tx.add_node(
+        Node::new("Officer")
+            .with_property("name", PropertyValue::String("Alice".into()))
+    ).await?;
+    let bob = tx.add_node(
+        Node::new("Officer")
+            .with_property("name", PropertyValue::String("Bob".into()))
+    ).await?;
 
-    let e1 = tx
-        .add_node(Node::new("Entity").with_property("name", PropertyValue::String("E1".into())))
-        .await?;
-    let e2 = tx
-        .add_node(Node::new("Entity").with_property("name", PropertyValue::String("E2".into())))
-        .await?;
-    let e3 = tx
-        .add_node(Node::new("Entity").with_property("name", PropertyValue::String("E3".into())))
-        .await?;
+    let e1 = tx.add_node(
+        Node::new("Entity")
+            .with_property("name", PropertyValue::String("E1".into()))
+    ).await?;
+    let e2 = tx.add_node(
+        Node::new("Entity")
+            .with_property("name", PropertyValue::String("E2".into()))
+    ).await?;
+    let e3 = tx.add_node(
+        Node::new("Entity")
+            .with_property("name", PropertyValue::String("E3".into()))
+    ).await?;
 
     tx.add_edge(Edge::new(alice, e1, "OFFICER_OF"))?;
     tx.add_edge(Edge::new(alice, e2, "OFFICER_OF"))?;
     tx.add_edge(Edge::new(bob, e3, "OFFICER_OF"))?;
     tx.commit().await?;
 
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find o.name, count(*) as num_entities
         from (o:Officer)-[:OFFICER_OF]->(e:Entity)
         group by o.name
         order by o.name asc
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     assert_eq!(result.len(), 2);
 
     let rows = result.rows();
-    let alice_count = rows
-        .iter()
-        .find_map(|r| match (r.get("o.name"), r.get("num_entities")) {
-            (Some(PropertyValue::String(name)), Some(PropertyValue::Int(n))) if name == "Alice" => {
-                Some(*n)
-            }
+    let alice_count = rows.iter().find_map(|r| {
+        match (r.get("o.name"), r.get("num_entities")) {
+            (Some(PropertyValue::String(name)), Some(PropertyValue::Int(n))) if name == "Alice" => Some(*n),
             _ => None,
-        })
-        .unwrap_or_default();
-    let bob_count = rows
-        .iter()
-        .find_map(|r| match (r.get("o.name"), r.get("num_entities")) {
-            (Some(PropertyValue::String(name)), Some(PropertyValue::Int(n))) if name == "Bob" => {
-                Some(*n)
-            }
+        }
+    }).unwrap_or_default();
+    let bob_count = rows.iter().find_map(|r| {
+        match (r.get("o.name"), r.get("num_entities")) {
+            (Some(PropertyValue::String(name)), Some(PropertyValue::Int(n))) if name == "Bob" => Some(*n),
             _ => None,
-        })
-        .unwrap_or_default();
+        }
+    }).unwrap_or_default();
 
     assert_eq!(alice_count, 2);
     assert_eq!(bob_count, 1);
@@ -652,12 +586,14 @@ async fn test_pattern_group_by_having_count() -> Result<()> {
 
     let mut tx = graph.begin_transaction().await?;
 
-    let alice = tx
-        .add_node(Node::new("Officer").with_property("name", PropertyValue::String("Alice".into())))
-        .await?;
-    let bob = tx
-        .add_node(Node::new("Officer").with_property("name", PropertyValue::String("Bob".into())))
-        .await?;
+    let alice = tx.add_node(
+        Node::new("Officer")
+            .with_property("name", PropertyValue::String("Alice".into()))
+    ).await?;
+    let bob = tx.add_node(
+        Node::new("Officer")
+            .with_property("name", PropertyValue::String("Bob".into()))
+    ).await?;
 
     let e1 = tx.add_node(Node::new("Entity")).await?;
     let e2 = tx.add_node(Node::new("Entity")).await?;
@@ -668,16 +604,12 @@ async fn test_pattern_group_by_having_count() -> Result<()> {
     tx.add_edge(Edge::new(bob, e3, "OFFICER_OF"))?;
     tx.commit().await?;
 
-    let result = graph
-        .execute_nql(
-            r#"
+    let result = graph.execute_nql(r#"
         find o.name, count(*) as num_entities
         from (o:Officer)-[:OFFICER_OF]->(e:Entity)
         group by o.name
         having count(*) > 1
-    "#,
-        )
-        .await?;
+    "#).await?;
 
     assert_eq!(result.len(), 1);
     assert_eq!(

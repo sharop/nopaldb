@@ -33,10 +33,7 @@ async fn test_import_owl_via_graph_method() {
 
     let report = graph.import_turtle(ttl).await.unwrap();
 
-    assert_eq!(
-        report.classes_added, 2,
-        "should have added Person and Student"
-    );
+    assert_eq!(report.classes_added, 2, "should have added Person and Student");
     assert_eq!(report.subclass_edges_added, 1, "Student ⊑ Person");
 
     // Nodes exist in graph
@@ -51,10 +48,7 @@ async fn test_import_owl_via_graph_method() {
         .execute_nql("find p.label from (p:Person)")
         .await
         .unwrap();
-    assert!(
-        !result.rows.is_empty(),
-        "NQL query should return Person nodes"
-    );
+    assert!(!result.rows.is_empty(), "NQL query should return Person nodes");
 }
 
 // ---------------------------------------------------------------------------
@@ -170,16 +164,10 @@ async fn test_import_then_reasoner_classify() {
     // Retrieve node IDs from the graph to cross-reference with the reasoner.
     let a_nodes = graph.get_nodes_by_label("A").await.unwrap();
     let c_nodes = graph.get_nodes_by_label("C").await.unwrap();
-    let a_id = a_nodes
-        .iter()
-        .find(|n| n.kind == nopaldb::types::NodeKind::Class)
-        .map(|n| n.id)
-        .expect("Class A must exist");
-    let c_id = c_nodes
-        .iter()
-        .find(|n| n.kind == nopaldb::types::NodeKind::Class)
-        .map(|n| n.id)
-        .expect("Class C must exist");
+    let a_id = a_nodes.iter().find(|n| n.kind == nopaldb::types::NodeKind::Class)
+        .map(|n| n.id).expect("Class A must exist");
+    let c_id = c_nodes.iter().find(|n| n.kind == nopaldb::types::NodeKind::Class)
+        .map(|n| n.id).expect("Class C must exist");
 
     // CR1: C ⊑ B ⊑ A  → C ⊑ A transitively
     assert!(

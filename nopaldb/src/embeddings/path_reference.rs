@@ -3,8 +3,8 @@
 // PathReferenceEmbedding — referencia persistida de path embedding para E-8.
 // Clave unica por (name, node_model, edge_model).
 
-use crate::error::{NopalError, Result};
 use serde::{Deserialize, Serialize};
+use crate::error::{NopalError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PathReferenceEmbedding {
@@ -16,18 +16,17 @@ pub struct PathReferenceEmbedding {
 }
 
 impl PathReferenceEmbedding {
-    pub fn new(name: String, node_model: String, edge_model: String, vector: Vec<f32>) -> Self {
+    pub fn new(
+        name: String,
+        node_model: String,
+        edge_model: String,
+        vector: Vec<f32>,
+    ) -> Self {
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        Self {
-            name,
-            node_model,
-            edge_model,
-            vector,
-            created_at,
-        }
+        Self { name, node_model, edge_model, vector, created_at }
     }
 
     /// Clave de almacenamiento: "name\x00node_model\x00edge_model"

@@ -64,12 +64,7 @@ async fn test_time_travel_queries() {
     println!("\n📜 Complete history:");
     for (i, version) in history.iter().enumerate() {
         let age = version.node_data.properties.get("age").unwrap();
-        println!(
-            "  Version {}: t={}, age={:?}",
-            i + 1,
-            version.timestamp,
-            age
-        );
+        println!("  Version {}: t={}, age={:?}", i + 1, version.timestamp, age);
     }
 
     // Verificar que tenemos 3 versiones
@@ -90,7 +85,8 @@ async fn test_snapshot_queries() {
     // Crear nodo con versiones
     let node_id = {
         let mut tx = graph.begin_transaction().await.unwrap();
-        let node = Node::new("Counter").with_property("value", PropertyValue::Int(0));
+        let node = Node::new("Counter")
+            .with_property("value", PropertyValue::Int(0));
         let id = tx.add_node(node).await.unwrap();
         tx.commit().await.unwrap();
         id
@@ -108,8 +104,7 @@ async fn test_snapshot_queries() {
     {
         let mut tx = graph.begin_transaction().await.unwrap();
         let mut node = graph.get_node(node_id).await.unwrap();
-        node.properties
-            .insert("value".into(), PropertyValue::Int(100));
+        node.properties.insert("value".into(), PropertyValue::Int(100));
         tx.add_node(node).await.unwrap();
         tx.commit().await.unwrap();
     }
@@ -132,10 +127,7 @@ async fn test_snapshot_queries() {
     let node2 = snapshot2.get_node(node_id).await;
 
     // Al menos uno debe tener el nodo
-    assert!(
-        node1.is_ok() || node2.is_ok(),
-        "At least one snapshot should have the node"
-    );
+    assert!(node1.is_ok() || node2.is_ok(), "At least one snapshot should have the node");
 
     if let Ok(n) = node2 {
         println!("  Value in snapshot 2: {:?}", n.properties.get("value"));
@@ -153,8 +145,8 @@ async fn test_as_of_datomic_style() {
     // Crear dato
     let node_id = {
         let mut tx = graph.begin_transaction().await.unwrap();
-        let node =
-            Node::new("Document").with_property("status", PropertyValue::String("draft".into()));
+        let node = Node::new("Document")
+            .with_property("status", PropertyValue::String("draft".into()));
         let id = tx.add_node(node).await.unwrap();
         tx.commit().await.unwrap();
         id
@@ -173,8 +165,7 @@ async fn test_as_of_datomic_style() {
     {
         let mut tx = graph.begin_transaction().await.unwrap();
         let mut node = graph.get_node(node_id).await.unwrap();
-        node.properties
-            .insert("status".into(), PropertyValue::String("published".into()));
+        node.properties.insert("status".into(), PropertyValue::String("published".into()));
         tx.add_node(node).await.unwrap();
         tx.commit().await.unwrap();
     }

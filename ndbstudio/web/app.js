@@ -8,9 +8,9 @@ const defaultUiPrefs = {
   timelineFilter: "",
   timelineModeFilter: "",
   timelinePinnedOnly: false,
-  graphMode: "dataset",
+  graphDataMode: "dataset",
   graphTypeFilter: "",
-  graphHopLimit: 1,
+  graphDepth: 1,
   graphLimit: 50,
   graphVisualScale: 1,
   graphLayout: "radial",
@@ -53,10 +53,10 @@ const state = {
   graphPanOffset: { x: 0, y: 0 },
   dagVisualScale: 1,
   graphResultDirty: false,
-  // interactive graph redesign state
+  // Neo4j graph redesign state
   graphSim: null,
   graphNodePositions: new Map(),
-  graphMoveNode: null,
+  graphDragNode: null,
   graphContextMenu: null,
   graphHiddenNodes: new Set(),
   graphExpandedNodes: [],  // nodes added via double-click expand
@@ -65,7 +65,7 @@ const state = {
   graphAnimFrame: null,
   graphSvgRefs: null,  // { svg, rootG, edgeG, nodeG, svgWrap, edgeEls: Map, nodeEls: Map }
   graphCurrentSubgraph: null,
-  graphInspectorCollapsed: false,
+  graphDetailCollapsed: false,
   tabQueryPersistTimer: null,
   resultSortColumn: null,
   resultSortDirection: "asc",
@@ -152,12 +152,12 @@ const els = {
   graphSearchNextButton: document.getElementById("graphSearchNextButton"),
   graphSearchMeta: document.getElementById("graphSearchMeta"),
   graphReloadButton: document.getElementById("graphReloadButton"),
-  graphHopSelect: document.getElementById("graphHopSelect"),
+  graphDepthSelect: document.getElementById("graphDepthSelect"),
   graphLimitSelect: document.getElementById("graphLimitSelect"),
   graphLegend: document.getElementById("graphLegend"),
-  graphInspectorPanel: document.getElementById("graphInspectorPanel"),
-  graphInspectorToggle: document.getElementById("graphInspectorToggle"),
-  graphInspectorContent: document.getElementById("graphInspectorContent"),
+  graphDetailPanel: document.getElementById("graphDetailPanel"),
+  graphDetailToggle: document.getElementById("graphDetailToggle"),
+  graphDetailContent: document.getElementById("graphDetailContent"),
   graphFitButton: document.getElementById("graphFitButton"),
   graphResetButton: document.getElementById("graphResetButton"),
   graphContextMenu: document.getElementById("graphContextMenu"),
@@ -226,7 +226,7 @@ function saveUiPrefs() {
         workspace_tab: state.uiPrefs.workspaceTab || "results",
         run_mode: state.uiPrefs.runMode || "run",
         graph_layout: state.uiPrefs.graphLayout || "radial",
-        graph_depth: state.uiPrefs.graphHopLimit || 1,
+        graph_depth: state.uiPrefs.graphDepth || 1,
         graph_limit: state.uiPrefs.graphLimit || 50,
         graph_type_filter: state.uiPrefs.graphTypeFilter || "",
         sidebar_collapsed: Boolean(state.uiPrefs.sidebarCollapsed),
@@ -1101,7 +1101,7 @@ function showAddEdgeModal() {
   });
 }
 
-// ── interactive Graph Visualization ──────────────────────────────────
+// ── Neo4j-style Graph Visualization ──────────────────────────────────
 
 const NODE_PALETTE = [
   "#4C8BF5", "#E94F3B", "#F5A623", "#7B61FF", "#1ABC9C",
@@ -1661,7 +1661,7 @@ function startGraphAnimation() {
     if (!state.graphSim) return;
     const running = state.graphSim.tick();
     updateSvgPositions();
-    if (running || state.graphMoveNode) {
+    if (running || state.graphDragNode) {
       state.graphAnimFrame = requestAnimationFrame(loop);
     } else {
       state.graphAnimFrame = null;
@@ -1714,7 +1714,7 @@ function attachGraphInteraction() {
     if (nodeGroup) {
       e.preventDefault();
       const nodeId = nodeGroup.dataset.nodeId;
-      state.graphMoveNode = nodeId;
+      state.graphDragNode = nodeId;
       const svgPt = screenToSvg(e.clientX, e.clientY);
       const pos = state.graphNodePositions.get(nodeId);
       if (pos) {
@@ -1733,9 +1733,9 @@ function attachGraphInteraction() {
   });
 
   svgWrap.addEventListener("mousemove", (e) => {
-    if (state.graphMoveNode) {
+    if (state.graphDragNode) {
       const svgPt = screenToSvg(e.clientX, e.clientY);
-      state.graphSim?.setNodePosition(state.graphMoveNode, svgPt.x - dragOffset.x, svgPt.y - dragOffset.y);
+      state.graphSim?.setNodePosition(state.graphDragNode, svgPt.x - dragOffset.x, svgPt.y - dragOffset.y);
       return;
     }
     if (isPanning) {
@@ -1745,10 +1745,10 @@ function attachGraphInteraction() {
   });
 
   const endInteraction = (e) => {
-    if (state.graphMoveNode) {
+    if (state.graphDragNode) {
       const moved = clickStart ? Math.hypot(e.clientX - clickStart.x, e.clientY - clickStart.y) : 999;
       const elapsed = clickStart ? Date.now() - clickStart.time : 999;
-      const nodeId = state.graphMoveNode;
+      const nodeId = state.graphDragNode;
 
       if (moved < 5 && elapsed < 300) {
         // It was a click, not a drag — check for double-click
@@ -1764,14 +1764,14 @@ function attachGraphInteraction() {
           lastClickNodeId = nodeId;
           state.selectedGraphNodeId = nodeId;
           updateSvgPositions();
-          updateGraphInspectorPanel();
+          updateGraphDetailPanel();
         }
       }
       const pos = state.graphNodePositions.get(nodeId);
       if (pos && !pos.pinned) {
         state.graphSim?.unpinNode(nodeId);
       }
-      state.graphMoveNode = null;
+      state.graphDragNode = null;
       clickStart = null;
       return;
     }
@@ -2037,10 +2037,10 @@ function updateGraphLegend(subgraph) {
 }
 
 // Update detail panel
-function updateGraphInspectorPanel() {
+function updateGraphDetailPanel() {
   const sub = state.graphCurrentSubgraph;
-  const panel = els.graphInspectorPanel;
-  const content = els.graphInspectorContent;
+  const panel = els.graphDetailPanel;
+  const content = els.graphDetailContent;
   if (!sub || !state.selectedGraphNodeId) {
     panel.classList.add("is-empty");
     content.innerHTML = "";
@@ -2053,7 +2053,7 @@ function updateGraphInspectorPanel() {
     return;
   }
   panel.classList.remove("is-empty");
-  panel.classList.toggle("is-collapsed", state.graphInspectorCollapsed);
+  panel.classList.toggle("is-collapsed", state.graphDetailCollapsed);
   const relations = graphRelations(sub, node).slice(0, 12);
   const matches = graphSearchMatches(sub);
   const searchSummary = graphSearchQuery()
@@ -2140,7 +2140,7 @@ function currentGraphHint() {
   return result.graph_hint;
 }
 
-function refreshGraphStaleState() {
+function refreshGraphDirtyState() {
   // No-op: result-focus mode was removed, graph always shows dataset
 }
 
@@ -2524,7 +2524,7 @@ function focusGraphSearchMatch(step = 1) {
     : 0;
   state.selectedGraphNodeId = matches[nextIndex].id;
   updateSvgPositions();
-  updateGraphInspectorPanel();
+  updateGraphDetailPanel();
   centerGraphOnNode(state.selectedGraphNodeId);
   showToast(`Graph match ${nextIndex + 1} of ${matches.length}`);
 }
@@ -2640,7 +2640,7 @@ function applyServerUiPrefs(serverPrefs) {
     workspace_tab: "workspaceTab",
     run_mode: "runMode",
     graph_layout: "graphLayout",
-    graph_depth: "graphHopLimit",
+    graph_depth: "graphDepth",
     graph_limit: "graphLimit",
     graph_type_filter: "graphTypeFilter",
     sidebar_collapsed: "sidebarCollapsed",
@@ -3306,7 +3306,7 @@ function selectResultRow(rowIndex) {
   // Update graph selection highlight without full rebuild
   if (state.graphSvgRefs) {
     updateSvgPositions();
-    updateGraphInspectorPanel();
+    updateGraphDetailPanel();
   }
 }
 
@@ -3510,7 +3510,7 @@ function mergeExpandedNodes(subgraph) {
   return { ...subgraph, nodes: [...subgraph.nodes, ...newNodes], edges: [...subgraph.edges, ...newEdges] };
 }
 
-function currentGraphInfo() {
+function currentGraphData() {
   const base = state.workspace.graphSubgraph;
   if (!base) return null;
 
@@ -3650,10 +3650,10 @@ function applyGraphTypeFilter(subgraph) {
 }
 
 function renderGraphPane() {
-  refreshGraphStaleState();
+  refreshGraphDirtyState();
   stopGraphAnimation();
 
-  const unfilteredSubgraph = currentGraphInfo();
+  const unfilteredSubgraph = currentGraphData();
   renderGraphModeBanner(unfilteredSubgraph);
   renderGraphTypeFilterOptions(unfilteredSubgraph);
   let subgraph = applyGraphTypeFilter(unfilteredSubgraph);
@@ -3682,7 +3682,7 @@ function renderGraphPane() {
     );
     bindGuidedEmptyStateActions(els.graphPane);
     els.graphLegend.innerHTML = "";
-    els.graphInspectorPanel.classList.add("is-empty");
+    els.graphDetailPanel.classList.add("is-empty");
     state.graphCurrentSubgraph = null;
     state.graphSvgRefs = null;
     return;
@@ -3699,7 +3699,7 @@ function renderGraphPane() {
     );
     bindGuidedEmptyStateActions(els.graphPane);
     els.graphLegend.innerHTML = "";
-    els.graphInspectorPanel.classList.add("is-empty");
+    els.graphDetailPanel.classList.add("is-empty");
     state.graphCurrentSubgraph = null;
     state.graphSvgRefs = null;
     return;
@@ -3733,7 +3733,7 @@ function renderGraphPane() {
   initGraphPositions(subgraph, width, height);
   createGraphSvgDom(subgraph);
   updateGraphLegend(subgraph);
-  updateGraphInspectorPanel();
+  updateGraphDetailPanel();
   if (graphSearchQuery() && state.selectedGraphNodeId) {
     centerGraphOnNode(state.selectedGraphNodeId);
   }
@@ -4279,7 +4279,7 @@ async function loadTimelineEntryToEditor(index) {
   state.selectedResultRowIndex = null;
   renderQueryTabs();
   renderTimeline(state.workspace.timeline);
-  refreshGraphStaleState();
+  refreshGraphDirtyState();
   renderGraphPane();
   els.runSummary.textContent = `Loaded run #${index + 1} into the active tab.`;
 }
@@ -4327,7 +4327,7 @@ async function refreshGraphSubgraph() {
     return;
   }
   const params = new URLSearchParams({
-    depth: String(state.uiPrefs.graphHopLimit),
+    depth: String(state.uiPrefs.graphDepth),
     limit: String(state.uiPrefs.graphLimit),
   });
   if (state.selectedGraphNodeId) {
@@ -4400,7 +4400,7 @@ async function refreshWorkbench(requestedDbPath = null) {
 
   // Apply restored prefs to UI controls
   els.runMode.value = state.uiPrefs.runMode;
-  els.graphHopSelect.value = String(state.uiPrefs.graphHopLimit);
+  els.graphDepthSelect.value = String(state.uiPrefs.graphDepth);
   els.graphLimitSelect.value = String(state.uiPrefs.graphLimit);
   els.graphTypeFilter.value = state.uiPrefs.graphTypeFilter || "";
   els.graphSearchInput.value = state.graphSearch || "";
@@ -4586,7 +4586,7 @@ async function bootstrap() {
   els.timelineFilterInput.value = state.uiPrefs.timelineFilter;
   els.timelineModeFilter.value = state.uiPrefs.timelineModeFilter;
   els.timelinePinnedOnly.checked = state.uiPrefs.timelinePinnedOnly;
-  els.graphHopSelect.value = String(state.uiPrefs.graphHopLimit);
+  els.graphDepthSelect.value = String(state.uiPrefs.graphDepth);
   els.graphLimitSelect.value = String(state.uiPrefs.graphLimit);
   els.graphTypeFilter.value = state.uiPrefs.graphTypeFilter || "";
   els.dbPathInput.value = state.uiPrefs.dbDraftPath || "";
@@ -4896,8 +4896,8 @@ els.graphReloadButton.addEventListener("click", async () => {
     setStatus("error", "plain");
   }
 });
-els.graphHopSelect.addEventListener("change", async (event) => {
-  state.uiPrefs.graphHopLimit = Number(event.target.value || 1);
+els.graphDepthSelect.addEventListener("change", async (event) => {
+  state.uiPrefs.graphDepth = Number(event.target.value || 1);
   saveUiPrefs();
   await refreshGraphSubgraph();
 });
@@ -5000,7 +5000,7 @@ els.queryInput.addEventListener("keydown", (event) => {
 });
 els.queryInput.addEventListener("input", (event) => {
   schedulePersistActiveTabQuery(event.target.value || "");
-  refreshGraphStaleState();
+  refreshGraphDirtyState();
   renderGraphPane();
   syncEditorHighlight();
   updateAutocomplete();
@@ -5099,10 +5099,10 @@ els.graphResetButton.addEventListener("click", () => {
   saveUiPrefs();
   renderGraphPane();
 });
-els.graphInspectorToggle.addEventListener("click", () => {
-  state.graphInspectorCollapsed = !state.graphInspectorCollapsed;
-  els.graphInspectorPanel.classList.toggle("is-collapsed", state.graphInspectorCollapsed);
-  els.graphInspectorToggle.textContent = state.graphInspectorCollapsed ? "Expand" : "Collapse";
+els.graphDetailToggle.addEventListener("click", () => {
+  state.graphDetailCollapsed = !state.graphDetailCollapsed;
+  els.graphDetailPanel.classList.toggle("is-collapsed", state.graphDetailCollapsed);
+  els.graphDetailToggle.textContent = state.graphDetailCollapsed ? "Expand" : "Collapse";
 });
 document.addEventListener("click", (e) => {
   if (state.graphContextMenu && !e.target.closest(".graph-context-menu")) {

@@ -23,11 +23,7 @@ pub enum NqlResult {
     /// Result of PROFILE
     Profile(ProfileResult),
     /// Result of EXPORT (format name, serialized data)
-    Export {
-        format: String,
-        data: String,
-        rows_exported: usize,
-    },
+    Export { format: String, data: String, rows_exported: usize },
     /// Message for unsupported or informational responses
     Message(String),
 }
@@ -37,10 +33,9 @@ impl NqlResult {
     pub fn into_query(self) -> crate::error::Result<QueryResult> {
         match self {
             NqlResult::Query(r) => Ok(r),
-            other => Err(crate::error::NopalError::QueryExecutionError(format!(
-                "Expected Query result, got {:?}",
-                std::mem::discriminant(&other)
-            ))),
+            other => Err(crate::error::NopalError::QueryExecutionError(
+                format!("Expected Query result, got {:?}", std::mem::discriminant(&other))
+            )),
         }
     }
 
@@ -50,12 +45,7 @@ impl NqlResult {
             NqlResult::Query(r) => format!("{} rows returned", r.len()),
             NqlResult::Write(w) => format!(
                 "{} nodes created, {} edges created, {} nodes deleted, {} edges deleted, {} nodes updated, {} edges updated",
-                w.nodes_created,
-                w.edges_created,
-                w.nodes_deleted,
-                w.edges_deleted,
-                w.nodes_updated,
-                w.edges_updated
+                w.nodes_created, w.edges_created, w.nodes_deleted, w.edges_deleted, w.nodes_updated, w.edges_updated
             ),
             NqlResult::Index(msg) => msg.clone(),
             NqlResult::Explain(plan) => plan.clone(),
@@ -63,11 +53,7 @@ impl NqlResult {
                 "PROFILE query: {} rows, {:.3} ms",
                 profile.rows_returned, profile.execution_ms
             ),
-            NqlResult::Export {
-                format,
-                rows_exported,
-                ..
-            } => {
+            NqlResult::Export { format, rows_exported, .. } => {
                 format!("Exported {} rows as {}", rows_exported, format)
             }
             NqlResult::Message(msg) => msg.clone(),
@@ -221,6 +207,7 @@ impl Default for UpdateResult {
         Self::new()
     }
 }
+
 
 /// Single result row
 #[derive(Debug, Clone)]

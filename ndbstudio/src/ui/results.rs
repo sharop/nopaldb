@@ -1,11 +1,11 @@
 use std::time::Duration;
 
 use ratatui::{
-    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::Span,
     widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table},
+    Frame,
 };
 use serde_json::{Map, Value};
 
@@ -167,7 +167,9 @@ impl ResultsView {
             ResultsMode::Graph => build_graph_lines(&self.headers, &self.rows)
                 .len()
                 .saturating_sub(1),
-            ResultsMode::Plan => build_plan_lines(self).len().saturating_sub(1),
+            ResultsMode::Plan => build_plan_lines(self)
+                .len()
+                .saturating_sub(1),
         }
     }
 
@@ -240,11 +242,7 @@ impl ResultsView {
         } else {
             self.plan_operator_idx = self.plan_operator_idx.saturating_sub((-delta) as usize);
         }
-        if let Some(line_idx) = model
-            .operator_line_indices
-            .get(self.plan_operator_idx)
-            .copied()
-        {
+        if let Some(line_idx) = model.operator_line_indices.get(self.plan_operator_idx).copied() {
             self.scroll_offset = line_idx.saturating_sub(2);
         }
     }
@@ -258,10 +256,7 @@ impl ResultsView {
     }
 
     fn selected_plan_line_index(&self, model: &PlanRenderModel) -> Option<usize> {
-        model
-            .operator_line_indices
-            .get(self.plan_operator_idx)
-            .copied()
+        model.operator_line_indices.get(self.plan_operator_idx).copied()
     }
 }
 
@@ -324,48 +319,24 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
 fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
     let mode = app.results.mode();
     let table = if mode == ResultsMode::Table {
-        Span::styled(
-            " [Table] ",
-            Style::default()
-                .fg(BG)
-                .bg(ACCENT)
-                .add_modifier(Modifier::BOLD),
-        )
+        Span::styled(" [Table] ", Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD))
     } else {
         Span::styled(" Table ", Style::default().fg(FG))
     };
 
     let json = if mode == ResultsMode::Json {
-        Span::styled(
-            " [JSON] ",
-            Style::default()
-                .fg(BG)
-                .bg(ACCENT)
-                .add_modifier(Modifier::BOLD),
-        )
+        Span::styled(" [JSON] ", Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD))
     } else {
         Span::styled(" JSON ", Style::default().fg(FG))
     };
 
     let graph = if mode == ResultsMode::Graph {
-        Span::styled(
-            " [Graph] ",
-            Style::default()
-                .fg(BG)
-                .bg(ACCENT)
-                .add_modifier(Modifier::BOLD),
-        )
+        Span::styled(" [Graph] ", Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD))
     } else {
         Span::styled(" Graph ", Style::default().fg(FG))
     };
     let plan = if mode == ResultsMode::Plan {
-        Span::styled(
-            " [Plan] ",
-            Style::default()
-                .fg(BG)
-                .bg(ACCENT)
-                .add_modifier(Modifier::BOLD),
-        )
+        Span::styled(" [Plan] ", Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD))
     } else {
         Span::styled(" Plan ", Style::default().fg(FG))
     };
@@ -388,8 +359,8 @@ fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
         ));
     }
 
-    let tabs =
-        Paragraph::new(ratatui::text::Line::from(spans)).style(Style::default().fg(FG).bg(BG));
+    let tabs = Paragraph::new(ratatui::text::Line::from(spans))
+    .style(Style::default().fg(FG).bg(BG));
 
     f.render_widget(tabs, area);
 }
@@ -475,9 +446,7 @@ fn draw_plan_mode(f: &mut Frame, area: Rect, app: &App) {
                     .bg(ACCENT)
                     .add_modifier(Modifier::BOLD)
             } else if line.is_section_header {
-                Style::default()
-                    .fg(Color::Rgb(220, 200, 120))
-                    .add_modifier(Modifier::BOLD)
+                Style::default().fg(Color::Rgb(220, 200, 120)).add_modifier(Modifier::BOLD)
             } else if line.is_operator {
                 let (_, band, _) = estimate_operator_cost(&line.text);
                 Style::default().fg(cost_band_color(band))
@@ -493,9 +462,11 @@ fn draw_plan_mode(f: &mut Frame, area: Rect, app: &App) {
     let detail = selected
         .and_then(|idx| model.lines.get(idx))
         .map(|line| plan_operator_detail(&line.text))
-        .unwrap_or_else(|| PlanDetail {
-            text: "Selecciona un operador con j/k.\nz: colapsar/expandir seccion.".to_string(),
-            band: OperatorCostBand::Low,
+        .unwrap_or_else(|| {
+            PlanDetail {
+                text: "Selecciona un operador con j/k.\nz: colapsar/expandir seccion.".to_string(),
+                band: OperatorCostBand::Low,
+            }
         });
     let detail = Paragraph::new(detail.text)
         .block(
@@ -813,10 +784,7 @@ fn estimate_operator_cost(line: &str) -> (u8, OperatorCostBand, &'static str) {
     } else if l.contains("aggregate") {
         (68, "Agregacion; costo alto-medio segun cardinalidad.")
     } else if l.contains("join") {
-        (
-            84,
-            "Join entre sets; costo alto en ausencia de buenos filtros.",
-        )
+        (84, "Join entre sets; costo alto en ausencia de buenos filtros.")
     } else {
         (50, "Costo no clasificado; revisar plan completo.")
     };
@@ -916,7 +884,9 @@ fn build_graph_lines(headers: &[String], rows: &[Vec<String>]) -> Vec<String> {
     });
 
     let (Some(s_idx), Some(t_idx)) = (source_idx, target_idx) else {
-        return vec!["Need at least two columns (source/target) for graph mode".to_string()];
+        return vec![
+            "Need at least two columns (source/target) for graph mode".to_string(),
+        ];
     };
 
     let mut nodes = std::collections::BTreeSet::new();
@@ -940,14 +910,7 @@ fn build_graph_lines(headers: &[String], rows: &[Vec<String>]) -> Vec<String> {
         lines.push(format!("{} --[{}]--> {}", src, rel, dst));
     }
 
-    lines.insert(
-        1,
-        format!(
-            "Nodes: {} • Edges: {}",
-            nodes.len(),
-            lines.len().saturating_sub(2)
-        ),
-    );
+    lines.insert(1, format!("Nodes: {} • Edges: {}", nodes.len(), lines.len().saturating_sub(2)));
 
     if lines.len() == 2 {
         lines.push("No edge-like rows detected with current columns".to_string());

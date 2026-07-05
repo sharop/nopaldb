@@ -62,8 +62,8 @@ impl SemanticValidator {
             Statement::Add(create) => {
                 self.validate_add(create)?;
             }
-            Statement::CreateIndex(_) => {} // Always valid
-            Statement::DropIndex(_) => {}   // Always valid
+            Statement::CreateIndex(_) => {}, // Always valid
+            Statement::DropIndex(_) => {},   // Always valid
             Statement::Explain(inner) => {
                 let inner_validator = SemanticValidator::new();
                 inner_validator.validate(inner)?;
@@ -93,7 +93,7 @@ impl SemanticValidator {
             && !having_only_uses_algorithms(&having.condition)
         {
             return Err(NopalError::SemanticError(
-                "HAVING clause requires GROUP BY".to_string(),
+                "HAVING clause requires GROUP BY".to_string()
             ));
         }
 
@@ -103,13 +103,14 @@ impl SemanticValidator {
         //  - columnas presentes en GROUP BY
         if let Some(having) = &query.having {
             let empty_group_by: Vec<Expression> = Vec::new();
-            let group_by_exprs = query
-                .group_by
-                .as_ref()
+            let group_by_exprs = query.group_by.as_ref()
                 .map(|gb| &gb.expressions)
                 .unwrap_or(&empty_group_by);
 
-            self.validate_having_expression(&having.condition, group_by_exprs)?;
+            self.validate_having_expression(
+                &having.condition,
+                group_by_exprs,
+            )?;
         }
 
         // Rule 3: WHERE no permite agregaciones (count/sum/avg/etc.).
@@ -133,8 +134,7 @@ impl SemanticValidator {
             for item in &order_by.items {
                 if expr_contains_function_validator(&item.expression, &["path_eval"]) {
                     return Err(NopalError::SemanticError(
-                        "path_eval(\"...\") is not supported in ORDER BY in Path Queries F4-B"
-                            .to_string(),
+                        "path_eval(\"...\") is not supported in ORDER BY in Path Queries F4-B".to_string()
                     ));
                 }
             }
@@ -144,8 +144,7 @@ impl SemanticValidator {
             for expr in &group_by.expressions {
                 if expr_contains_function_validator(expr, &["path_eval"]) {
                     return Err(NopalError::SemanticError(
-                        "path_eval(\"...\") is not supported in GROUP BY in Path Queries F4-B"
-                            .to_string(),
+                        "path_eval(\"...\") is not supported in GROUP BY in Path Queries F4-B".to_string()
                     ));
                 }
             }
@@ -155,15 +154,14 @@ impl SemanticValidator {
             && expr_contains_function_validator(&having.condition, &["path_eval"])
         {
             return Err(NopalError::SemanticError(
-                "path_eval(\"...\") is not supported in HAVING in Path Queries F4-B".to_string(),
+                "path_eval(\"...\") is not supported in HAVING in Path Queries F4-B".to_string()
             ));
         }
 
         // Rule 4: If strict, ORDER BY columns must be in SELECT
         if self.strict
-            && let Some(order_by) = &query.order_by
-        {
-            self.validate_order_by_in_select(order_by, &query.find)?;
+            && let Some(order_by) = &query.order_by {
+                self.validate_order_by_in_select(order_by, &query.find)?;
         }
 
         // Rule 5: Path reducers not allowed in ORDER BY (F3 scope: FIND + WHERE only)
@@ -189,7 +187,9 @@ impl SemanticValidator {
         }
 
         // Rule 7: RETURN requires a single pattern with at least one relationship
-        if query.return_expr.is_some() && !self.query_is_single_pattern_with_relationships(query) {
+        if query.return_expr.is_some()
+            && !self.query_is_single_pattern_with_relationships(query)
+        {
             return Err(NopalError::SemanticError(
                 "RETURN requires a path pattern with at least one relationship in Path Queries F4-C".to_string()
             ));
@@ -199,30 +199,28 @@ impl SemanticValidator {
         if query.return_expr.is_some() {
             if query.order_by.is_some() {
                 return Err(NopalError::SemanticError(
-                    "RETURN is not supported with ORDER BY in Path Queries F4-C".to_string(),
+                    "RETURN is not supported with ORDER BY in Path Queries F4-C".to_string()
                 ));
             }
             if query.group_by.is_some() {
                 return Err(NopalError::SemanticError(
-                    "RETURN is not supported with GROUP BY in Path Queries F4-C".to_string(),
+                    "RETURN is not supported with GROUP BY in Path Queries F4-C".to_string()
                 ));
             }
             if query.having.is_some() {
                 return Err(NopalError::SemanticError(
-                    "RETURN is not supported with HAVING in Path Queries F4-C".to_string(),
+                    "RETURN is not supported with HAVING in Path Queries F4-C".to_string()
                 ));
             }
         }
 
         // Rule 9: path.result requires a RETURN clause
-        let uses_path_result = projections_use_path_property(&query.find.projections, "result")
-            || query
-                .filter
-                .as_ref()
-                .is_some_and(|f| expr_uses_path_property(&f.condition, "result"));
+        let uses_path_result =
+            projections_use_path_property(&query.find.projections, "result")
+            || query.filter.as_ref().is_some_and(|f| expr_uses_path_property(&f.condition, "result"));
         if uses_path_result && query.return_expr.is_none() {
             return Err(NopalError::SemanticError(
-                "path.result requires a RETURN clause in Path Queries F4-C".to_string(),
+                "path.result requires a RETURN clause in Path Queries F4-C".to_string()
             ));
         }
 
@@ -243,7 +241,7 @@ impl SemanticValidator {
             for item in &order_by.items {
                 if expr_uses_path_property(&item.expression, "result") {
                     return Err(NopalError::SemanticError(
-                        "path.result is not supported in ORDER BY in Path Queries F4-C".to_string(),
+                        "path.result is not supported in ORDER BY in Path Queries F4-C".to_string()
                     ));
                 }
             }
@@ -252,16 +250,17 @@ impl SemanticValidator {
             for expr in &group_by.expressions {
                 if expr_uses_path_property(expr, "result") {
                     return Err(NopalError::SemanticError(
-                        "path.result is not supported in GROUP BY in Path Queries F4-C".to_string(),
+                        "path.result is not supported in GROUP BY in Path Queries F4-C".to_string()
                     ));
                 }
             }
         }
 
         // Rule 12: semantic path filters are only supported in WHERE over a single path-aware pattern
-        let uses_semantic_path_filters_in_where = query.filter.as_ref().is_some_and(|filter| {
-            expr_contains_function_validator(&filter.condition, PATH_SEMANTIC_FILTERS)
-        });
+        let uses_semantic_path_filters_in_where = query
+            .filter
+            .as_ref()
+            .is_some_and(|filter| expr_contains_function_validator(&filter.condition, PATH_SEMANTIC_FILTERS));
         if uses_semantic_path_filters_in_where
             && !self.query_is_single_pattern_with_relationships(query)
         {
@@ -275,8 +274,7 @@ impl SemanticValidator {
                 && expr_contains_function_validator(expr, PATH_SEMANTIC_FILTERS)
             {
                 return Err(NopalError::SemanticError(
-                    "Semantic path filters are only supported in WHERE in Path Queries F4-D.1"
-                        .to_string(),
+                    "Semantic path filters are only supported in WHERE in Path Queries F4-D.1".to_string()
                 ));
             }
         }
@@ -305,8 +303,7 @@ impl SemanticValidator {
             && expr_contains_function_validator(&having.condition, PATH_SEMANTIC_FILTERS)
         {
             return Err(NopalError::SemanticError(
-                "Semantic path filters are not supported in HAVING in Path Queries F4-D.1"
-                    .to_string(),
+                "Semantic path filters are not supported in HAVING in Path Queries F4-D.1".to_string()
             ));
         }
 
@@ -317,29 +314,13 @@ impl SemanticValidator {
             }
         }
         if let Some(filter) = &query.filter {
-            self.validate_pattern_embedding_usage(
-                &filter.condition,
-                EmbeddingExprContext::Where,
-                query,
-            )?;
-            self.validate_path_embedding_usage(
-                &filter.condition,
-                EmbeddingExprContext::Where,
-                query,
-            )?;
+            self.validate_pattern_embedding_usage(&filter.condition, EmbeddingExprContext::Where, query)?;
+            self.validate_path_embedding_usage(&filter.condition, EmbeddingExprContext::Where, query)?;
         }
         if let Some(order_by) = &query.order_by {
             for item in &order_by.items {
-                self.validate_pattern_embedding_usage(
-                    &item.expression,
-                    EmbeddingExprContext::OrderBy,
-                    query,
-                )?;
-                self.validate_path_embedding_usage(
-                    &item.expression,
-                    EmbeddingExprContext::OrderBy,
-                    query,
-                )?;
+                self.validate_pattern_embedding_usage(&item.expression, EmbeddingExprContext::OrderBy, query)?;
+                self.validate_path_embedding_usage(&item.expression, EmbeddingExprContext::OrderBy, query)?;
             }
         }
         if let Some(group_by) = &query.group_by {
@@ -349,16 +330,8 @@ impl SemanticValidator {
             }
         }
         if let Some(having) = &query.having {
-            self.validate_pattern_embedding_usage(
-                &having.condition,
-                EmbeddingExprContext::Having,
-                query,
-            )?;
-            self.validate_path_embedding_usage(
-                &having.condition,
-                EmbeddingExprContext::Having,
-                query,
-            )?;
+            self.validate_pattern_embedding_usage(&having.condition, EmbeddingExprContext::Having, query)?;
+            self.validate_path_embedding_usage(&having.condition, EmbeddingExprContext::Having, query)?;
         }
 
         Ok(())
@@ -381,7 +354,7 @@ impl SemanticValidator {
                 // Las algorítmicas son per-node y no requieren que sus
                 // argumentos estén en GROUP BY (la pre-computación corre
                 // sobre todo el grafo).
-                let is_agg = is_aggregation_function(name);
+                let is_agg  = is_aggregation_function(name);
                 let is_algo = is_algorithm_function(name);
                 if !is_agg && !is_algo {
                     return Err(NopalError::SemanticError(format!(
@@ -433,8 +406,7 @@ impl SemanticValidator {
     fn validate_no_aggregations_in_where(&self, expr: &Expression) -> Result<()> {
         if expr.is_aggregation() {
             return Err(NopalError::SemanticError(
-                "Aggregation functions not allowed in WHERE clause. Use HAVING instead."
-                    .to_string(),
+                "Aggregation functions not allowed in WHERE clause. Use HAVING instead.".to_string()
             ));
         }
 
@@ -506,9 +478,7 @@ impl SemanticValidator {
                             ));
                         }
                         if args.len() != 2
-                            || !args.iter().all(|arg| {
-                                matches!(arg, Expression::Literal(PropertyValue::String(_)))
-                            })
+                            || !args.iter().all(|arg| matches!(arg, Expression::Literal(PropertyValue::String(_))))
                         {
                             return Err(NopalError::SemanticError(
                                 "pattern_has_embeddings(node_model, edge_model) requires exactly 2 string literal model names in PatternEmbedding E-3".to_string()
@@ -546,9 +516,7 @@ impl SemanticValidator {
                         }
 
                         if args.len() != 2
-                            || !args.iter().all(|arg| {
-                                matches!(arg, Expression::Literal(PropertyValue::String(_)))
-                            })
+                            || !args.iter().all(|arg| matches!(arg, Expression::Literal(PropertyValue::String(_))))
                         {
                             return Err(NopalError::SemanticError(
                                 "pattern_embedding(node_model, edge_model) requires exactly 2 string literal model names in PatternEmbedding E-3".to_string()
@@ -620,9 +588,7 @@ impl SemanticValidator {
                             ));
                         }
                         if args.len() != 2
-                            || !args.iter().all(|arg| {
-                                matches!(arg, Expression::Literal(PropertyValue::String(_)))
-                            })
+                            || !args.iter().all(|arg| matches!(arg, Expression::Literal(PropertyValue::String(_))))
                         {
                             return Err(NopalError::SemanticError(
                                 "path_has_embeddings(node_model, edge_model) requires exactly 2 string literal model names in PathEmbedding E-7".to_string()
@@ -660,9 +626,7 @@ impl SemanticValidator {
                         }
 
                         if args.len() != 2
-                            || !args.iter().all(|arg| {
-                                matches!(arg, Expression::Literal(PropertyValue::String(_)))
-                            })
+                            || !args.iter().all(|arg| matches!(arg, Expression::Literal(PropertyValue::String(_))))
                         {
                             return Err(NopalError::SemanticError(
                                 "path_embedding(node_model, edge_model) requires exactly 2 string literal model names in PathEmbedding E-7".to_string()
@@ -716,8 +680,7 @@ impl SemanticValidator {
                         if !self.query_is_single_pattern_with_relationships(query) {
                             return Err(NopalError::SemanticError(
                                 "path_knn_references requires a single linear path-aware pattern \
-                                 with at least one relationship (PathKNN E-9/E-10)"
-                                    .to_string(),
+                                 with at least one relationship (PathKNN E-9/E-10)".to_string()
                             ));
                         }
                         match context {
@@ -731,18 +694,17 @@ impl SemanticValidator {
                             EmbeddingExprContext::OrderBy => {
                                 return Err(NopalError::SemanticError(
                                     "path_knn_references cannot be used directly in ORDER BY; \
-                                     project it with an alias in FIND"
-                                        .to_string(),
+                                     project it with an alias in FIND".to_string()
                                 ));
                             }
                             EmbeddingExprContext::GroupBy => {
                                 return Err(NopalError::SemanticError(
-                                    "path_knn_references cannot be used in GROUP BY".to_string(),
+                                    "path_knn_references cannot be used in GROUP BY".to_string()
                                 ));
                             }
                             EmbeddingExprContext::Having => {
                                 return Err(NopalError::SemanticError(
-                                    "path_knn_references cannot be used in HAVING".to_string(),
+                                    "path_knn_references cannot be used in HAVING".to_string()
                                 ));
                             }
                         }
@@ -759,8 +721,7 @@ impl SemanticValidator {
                         if !self.query_is_single_pattern_with_relationships(query) {
                             return Err(NopalError::SemanticError(
                                 "path_anomaly_score requires a single linear path-aware pattern \
-                                 with at least one relationship (PathAnomaly E-10)"
-                                    .to_string(),
+                                 with at least one relationship (PathAnomaly E-10)".to_string()
                             ));
                         }
                         match context {
@@ -841,17 +802,17 @@ impl SemanticValidator {
 
         // Warn if GROUP BY without aggregations in SELECT
         if query.group_by.is_some() {
-            let has_aggregations = query.find.projections.iter().any(|proj| match proj {
-                Projection::Expression { expr, .. } => expr.is_aggregation(),
-                _ => false,
+            let has_aggregations = query.find.projections.iter().any(|proj| {
+                match proj {
+                    Projection::Expression { expr, .. } => expr.is_aggregation(),
+                    _ => false,
+                }
             });
 
             if !has_aggregations {
                 warnings.push(ValidationWarning {
                     level: WarningLevel::Info,
-                    message:
-                        "GROUP BY without aggregations in SELECT - consider if this is intended"
-                            .to_string(),
+                    message: "GROUP BY without aggregations in SELECT - consider if this is intended".to_string(),
                 });
             }
         }
@@ -870,12 +831,14 @@ impl SemanticValidator {
         // Rule 1: Must have at least one assignment
         if update.assignments.is_empty() {
             return Err(NopalError::SemanticError(
-                "UPDATE requires at least one SET assignment".to_string(),
+                "UPDATE requires at least one SET assignment".to_string()
             ));
         }
 
         // Rule 2: Variables in assignments must be in pattern
-        let pattern_vars: HashSet<_> = update.pattern.variables().into_iter().collect();
+        let pattern_vars: HashSet<_> = update.pattern.variables()
+            .into_iter()
+            .collect();
 
         for assignment in &update.assignments {
             if !pattern_vars.contains(&assignment.variable) {
@@ -947,7 +910,7 @@ impl SemanticValidator {
         // Rule 1: Must have at least one node or edge
         if create.pattern.elements.is_empty() {
             return Err(NopalError::SemanticError(
-                "CREATE requires at least one node or edge".to_string(),
+                "CREATE requires at least one node or edge".to_string()
             ));
         }
 
@@ -961,20 +924,15 @@ impl SemanticValidator {
 
 /// Verifica si un nombre de función es un path reducer de F3.
 fn is_path_reducer_fn(name: &str) -> bool {
-    matches!(
-        name.to_lowercase().as_str(),
-        "path_sum" | "path_min" | "path_max" | "path_avg"
-    )
+    matches!(name.to_lowercase().as_str(), "path_sum" | "path_min" | "path_max" | "path_avg")
 }
 
 /// Verifica recursivamente si una expresión contiene un path reducer.
 fn expr_contains_path_reducer_validator(expr: &Expression) -> bool {
     match expr {
         Expression::FunctionCall { name, .. } => is_path_reducer_fn(name),
-        Expression::BinaryOp { left, right, .. } => {
-            expr_contains_path_reducer_validator(left)
-                || expr_contains_path_reducer_validator(right)
-        }
+        Expression::BinaryOp { left, right, .. } =>
+            expr_contains_path_reducer_validator(left) || expr_contains_path_reducer_validator(right),
         Expression::UnaryOp { expr, .. } => expr_contains_path_reducer_validator(expr),
         _ => false,
     }
@@ -983,10 +941,7 @@ fn expr_contains_path_reducer_validator(expr: &Expression) -> bool {
 fn expr_contains_function_validator(expr: &Expression, names: &[&str]) -> bool {
     match expr {
         Expression::FunctionCall { name, args } => {
-            if names
-                .iter()
-                .any(|candidate| name.eq_ignore_ascii_case(candidate))
-            {
+            if names.iter().any(|candidate| name.eq_ignore_ascii_case(candidate)) {
                 return true;
             }
             args.iter()
@@ -1025,13 +980,11 @@ enum EmbeddingExprContext {
 fn expr_uses_path_property(expr: &Expression, prop: &str) -> bool {
     match expr {
         Expression::Property { variable, property } => variable == "path" && property == prop,
-        Expression::BinaryOp { left, right, .. } => {
-            expr_uses_path_property(left, prop) || expr_uses_path_property(right, prop)
-        }
+        Expression::BinaryOp { left, right, .. } =>
+            expr_uses_path_property(left, prop) || expr_uses_path_property(right, prop),
         Expression::UnaryOp { expr, .. } => expr_uses_path_property(expr, prop),
-        Expression::FunctionCall { args, .. } => {
-            args.iter().any(|a| expr_uses_path_property(a, prop))
-        }
+        Expression::FunctionCall { args, .. } =>
+            args.iter().any(|a| expr_uses_path_property(a, prop)),
         _ => false,
     }
 }
@@ -1054,10 +1007,9 @@ fn having_only_uses_algorithms(expr: &Expression) -> bool {
             if !is_algorithm_function(name) {
                 return false;
             }
-            args.iter().all(|a| {
-                matches!(a, Expression::Property { .. } | Expression::Literal(_))
-                    || having_only_uses_algorithms(a)
-            })
+            args.iter().all(|a| matches!(a,
+                Expression::Property { .. } | Expression::Literal(_)
+            ) || having_only_uses_algorithms(a))
         }
         Expression::BinaryOp { left, right, op } => {
             // Comparisons and logical ops are fine if both sides only have
@@ -1163,8 +1115,8 @@ impl Default for SemanticValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::PropertyValue;
     use std::collections::HashMap;
+    use crate::types::PropertyValue;
 
     #[test]
     fn test_having_without_group_by() {
@@ -1175,10 +1127,12 @@ mod tests {
             export: None,
             find: FindClause {
                 distinct: false,
-                projections: vec![Projection::Expression {
-                    expr: Expression::property_access("p", "name"),
-                    alias: None,
-                }],
+                projections: vec![
+                    Projection::Expression {
+                        expr: Expression::property_access("p", "name"),
+                        alias: None,
+                    },
+                ],
             },
             from: FromClause { patterns: vec![] },
             filter: None,
@@ -1196,12 +1150,7 @@ mod tests {
 
         let result = validator.validate_query(&query);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("HAVING clause requires GROUP BY")
-        );
+        assert!(result.unwrap_err().to_string().contains("HAVING clause requires GROUP BY"));
     }
 
     #[test]
@@ -1210,10 +1159,7 @@ mod tests {
 
         let query = Query {
             export: None,
-            find: FindClause {
-                distinct: false,
-                projections: vec![],
-            },
+            find: FindClause { distinct: false, projections: vec![] },
             from: FromClause { patterns: vec![] },
             filter: Some(WhereClause {
                 condition: Expression::function("count", vec![Expression::wildcard()]),
@@ -1230,12 +1176,7 @@ mod tests {
 
         let result = validator.validate_query(&query);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("not allowed in WHERE")
-        );
+        assert!(result.unwrap_err().to_string().contains("not allowed in WHERE"));
     }
 
     #[test]
@@ -1244,10 +1185,7 @@ mod tests {
 
         let query = Query {
             export: None,
-            find: FindClause {
-                distinct: false,
-                projections: vec![],
-            },
+            find: FindClause { distinct: false, projections: vec![] },
             from: FromClause {
                 patterns: vec![Pattern {
                     elements: vec![PatternElement::Node(NodePattern {
@@ -1319,9 +1257,7 @@ mod tests {
                 items: vec![OrderByItem {
                     expression: Expression::function(
                         "path_eval",
-                        vec![Expression::Literal(PropertyValue::String(
-                            "sum".to_string(),
-                        ))],
+                        vec![Expression::Literal(PropertyValue::String("sum".to_string()))],
                     ),
                     order: SortOrder::Asc,
                 }],
@@ -1332,12 +1268,10 @@ mod tests {
 
         let result = validator.validate_query(&query);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("path_eval(\"...\") is not supported in ORDER BY")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("path_eval(\"...\") is not supported in ORDER BY"));
     }
 
     // ─── F4-C validator tests ────────────────────────────────────────────────
@@ -1373,10 +1307,7 @@ mod tests {
         let validator = SemanticValidator::new();
         let query = Query {
             export: None,
-            find: FindClause {
-                distinct: false,
-                projections: vec![],
-            },
+            find: FindClause { distinct: false, projections: vec![] },
             from: FromClause {
                 patterns: vec![Pattern {
                     elements: vec![PatternElement::Node(NodePattern {
@@ -1398,12 +1329,7 @@ mod tests {
         };
         let result = validator.validate_query(&query);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("RETURN requires a path pattern")
-        );
+        assert!(result.unwrap_err().to_string().contains("RETURN requires a path pattern"));
     }
 
     #[test]
@@ -1411,10 +1337,7 @@ mod tests {
         let validator = SemanticValidator::new();
         let query = Query {
             export: None,
-            find: FindClause {
-                distinct: false,
-                projections: vec![],
-            },
+            find: FindClause { distinct: false, projections: vec![] },
             from: path_pattern(),
             filter: None,
             init: vec![],
@@ -1433,12 +1356,7 @@ mod tests {
         };
         let result = validator.validate_query(&query);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("RETURN is not supported with ORDER BY")
-        );
+        assert!(result.unwrap_err().to_string().contains("RETURN is not supported with ORDER BY"));
     }
 
     #[test]
@@ -1446,10 +1364,7 @@ mod tests {
         let validator = SemanticValidator::new();
         let query = Query {
             export: None,
-            find: FindClause {
-                distinct: false,
-                projections: vec![],
-            },
+            find: FindClause { distinct: false, projections: vec![] },
             from: path_pattern(),
             filter: None,
             init: vec![],
@@ -1465,12 +1380,7 @@ mod tests {
         };
         let result = validator.validate_query(&query);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("RETURN is not supported with GROUP BY")
-        );
+        assert!(result.unwrap_err().to_string().contains("RETURN is not supported with GROUP BY"));
     }
 
     #[test]
@@ -1501,12 +1411,7 @@ mod tests {
         };
         let result = validator.validate_query(&query);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("path.result requires a RETURN clause")
-        );
+        assert!(result.unwrap_err().to_string().contains("path.result requires a RETURN clause"));
     }
 
     #[test]
@@ -1514,10 +1419,7 @@ mod tests {
         let validator = SemanticValidator::new();
         let query = Query {
             export: None,
-            find: FindClause {
-                distinct: false,
-                projections: vec![],
-            },
+            find: FindClause { distinct: false, projections: vec![] },
             from: path_pattern(),
             filter: Some(WhereClause {
                 condition: Expression::Property {
@@ -1536,12 +1438,7 @@ mod tests {
         };
         let result = validator.validate_query(&query);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("path.state is not allowed in WHERE")
-        );
+        assert!(result.unwrap_err().to_string().contains("path.state is not allowed in WHERE"));
     }
 
     #[test]
@@ -1549,10 +1446,7 @@ mod tests {
         let validator = SemanticValidator::new();
         let query = Query {
             export: None,
-            find: FindClause {
-                distinct: false,
-                projections: vec![],
-            },
+            find: FindClause { distinct: false, projections: vec![] },
             from: path_pattern(),
             filter: Some(WhereClause {
                 condition: Expression::Property {
@@ -1571,12 +1465,7 @@ mod tests {
         };
         let result = validator.validate_query(&query);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("path.start is not allowed in WHERE")
-        );
+        assert!(result.unwrap_err().to_string().contains("path.start is not allowed in WHERE"));
     }
 
     #[test]
@@ -1584,10 +1473,7 @@ mod tests {
         let validator = SemanticValidator::new();
         let query = Query {
             export: None,
-            find: FindClause {
-                distinct: false,
-                projections: vec![],
-            },
+            find: FindClause { distinct: false, projections: vec![] },
             from: path_pattern(),
             filter: None,
             init: vec![],
@@ -1628,9 +1514,7 @@ mod tests {
             filter: Some(WhereClause {
                 condition: Expression::function(
                     "path_end_instanceOf",
-                    vec![Expression::Literal(PropertyValue::String(
-                        "FinancialEntity".into(),
-                    ))],
+                    vec![Expression::Literal(PropertyValue::String("FinancialEntity".into()))],
                 ),
             }),
             init: vec![],
@@ -1656,9 +1540,7 @@ mod tests {
                 projections: vec![Projection::Expression {
                     expr: Expression::function(
                         "path_end_instanceOf",
-                        vec![Expression::Literal(PropertyValue::String(
-                            "FinancialEntity".into(),
-                        ))],
+                        vec![Expression::Literal(PropertyValue::String("FinancialEntity".into()))],
                     ),
                     alias: Some("ok".into()),
                 }],
@@ -1677,12 +1559,7 @@ mod tests {
 
         let result = validator.validate_query(&query);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("only supported in WHERE")
-        );
+        assert!(result.unwrap_err().to_string().contains("only supported in WHERE"));
     }
 
     #[test]
@@ -1690,10 +1567,7 @@ mod tests {
         let validator = SemanticValidator::new();
         let query = Query {
             export: None,
-            find: FindClause {
-                distinct: false,
-                projections: vec![],
-            },
+            find: FindClause { distinct: false, projections: vec![] },
             from: FromClause {
                 patterns: vec![Pattern {
                     elements: vec![PatternElement::Node(NodePattern {
@@ -1706,9 +1580,7 @@ mod tests {
             filter: Some(WhereClause {
                 condition: Expression::function(
                     "path_any_instanceOf",
-                    vec![Expression::Literal(PropertyValue::String(
-                        "FinancialEntity".into(),
-                    ))],
+                    vec![Expression::Literal(PropertyValue::String("FinancialEntity".into()))],
                 ),
             }),
             init: vec![],
@@ -1723,12 +1595,7 @@ mod tests {
 
         let result = validator.validate_query(&query);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("single path pattern")
-        );
+        assert!(result.unwrap_err().to_string().contains("single path pattern"));
     }
 
     #[test]
@@ -1781,10 +1648,7 @@ mod tests {
         let validator = SemanticValidator::new();
         let query = Query {
             export: None,
-            find: FindClause {
-                distinct: false,
-                projections: vec![],
-            },
+            find: FindClause { distinct: false, projections: vec![] },
             from: path_pattern(),
             filter: Some(WhereClause {
                 condition: Expression::function(
@@ -1807,12 +1671,7 @@ mod tests {
 
         let result = validator.validate_query(&query);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("only supported in FIND")
-        );
+        assert!(result.unwrap_err().to_string().contains("only supported in FIND"));
     }
 
     #[test]
@@ -1881,11 +1740,7 @@ mod tests {
         let result = validator.validate_query(&query);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("exactly 3 arguments"),
-            "expected arity error, got: {}",
-            msg
-        );
+        assert!(msg.contains("exactly 3 arguments"), "expected arity error, got: {}", msg);
     }
 
     #[test]
@@ -1941,10 +1796,7 @@ mod tests {
             find: FindClause {
                 distinct: false,
                 projections: vec![Projection::Expression {
-                    expr: Expression::Property {
-                        variable: "n".into(),
-                        property: "id".into(),
-                    },
+                    expr: Expression::Property { variable: "n".into(), property: "id".into() },
                     alias: None,
                 }],
             },
@@ -1968,11 +1820,7 @@ mod tests {
         let result = validator.validate_query(&query);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("ORDER BY") || msg.contains("alias"),
-            "expected ORDER BY rejection, got: {}",
-            msg
-        );
+        assert!(msg.contains("ORDER BY") || msg.contains("alias"), "expected ORDER BY rejection, got: {}", msg);
     }
 
     // ────────────────────────────────────────────────────────────
@@ -2013,11 +1861,7 @@ mod tests {
         let result = validator.validate_query(&query);
         assert!(result.is_err(), "expected arity error");
         let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("4 arguments") || msg.contains("E-9"),
-            "expected arity error, got: {}",
-            msg
-        );
+        assert!(msg.contains("4 arguments") || msg.contains("E-9"), "expected arity error, got: {}", msg);
     }
 
     #[test]
@@ -2065,10 +1909,7 @@ mod tests {
             find: FindClause {
                 distinct: false,
                 projections: vec![Projection::Expression {
-                    expr: Expression::Property {
-                        variable: "n".into(),
-                        property: "id".into(),
-                    },
+                    expr: Expression::Property { variable: "n".into(), property: "id".into() },
                     alias: None,
                 }],
             },
@@ -2094,16 +1935,9 @@ mod tests {
             time_travel: None,
         };
         let result = validator.validate_query(&query);
-        assert!(
-            result.is_err(),
-            "expected SemanticError for path_knn_references in WHERE"
-        );
+        assert!(result.is_err(), "expected SemanticError for path_knn_references in WHERE");
         let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("WHERE") || msg.contains("E-9"),
-            "expected WHERE rejection, got: {}",
-            msg
-        );
+        assert!(msg.contains("WHERE") || msg.contains("E-9"), "expected WHERE rejection, got: {}", msg);
     }
 
     #[test]
@@ -2185,10 +2019,7 @@ mod tests {
         let validator = SemanticValidator::new();
         let query = Query {
             export: None,
-            find: FindClause {
-                distinct: false,
-                projections: vec![],
-            },
+            find: FindClause { distinct: false, projections: vec![] },
             from: path_pattern(),
             filter: Some(WhereClause {
                 condition: Expression::function(
@@ -2211,12 +2042,7 @@ mod tests {
 
         let result = validator.validate_query(&query);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("only supported in FIND")
-        );
+        assert!(result.unwrap_err().to_string().contains("only supported in FIND"));
     }
 
     #[test]
@@ -2283,12 +2109,7 @@ mod tests {
 
         let result = validator.validate_query(&query);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("no longer the official PatternEmbedding surface")
-        );
+        assert!(result.unwrap_err().to_string().contains("no longer the official PatternEmbedding surface"));
     }
 
     #[test]
@@ -2331,11 +2152,6 @@ mod tests {
 
         let result = validator.validate_query(&query);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("single path pattern")
-        );
+        assert!(result.unwrap_err().to_string().contains("single path pattern"));
     }
 }

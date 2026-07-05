@@ -59,9 +59,7 @@ impl LouvainCommunity {
         let config = self.config.clone();
         tokio::task::spawn_blocking(move || Self::detect_cpu(nodes, edges, config))
             .await
-            .map_err(|e| {
-                crate::error::NopalError::custom(format!("community detect join error: {e}"))
-            })?
+            .map_err(|e| crate::error::NopalError::custom(format!("community detect join error: {e}")))?
     }
 
     fn detect_cpu(
@@ -85,19 +83,12 @@ impl LouvainCommunity {
         // cuando la DB almacena aristas bidireccionales como dos filas.
         let mut adjacency: HashMap<NodeId, HashMap<NodeId, f64>> = HashMap::new();
         for edge in &edges {
-            adjacency
-                .entry(edge.source)
-                .or_default()
-                .insert(edge.target, 1.0);
-            adjacency
-                .entry(edge.target)
-                .or_default()
-                .insert(edge.source, 1.0);
+            adjacency.entry(edge.source).or_default().insert(edge.target, 1.0);
+            adjacency.entry(edge.target).or_default().insert(edge.source, 1.0);
         }
         // total_weight = número de aristas no-dirigidas (cada par cuenta una vez).
         // Sumamos todos los valores de adyacencia y dividimos por 2.
-        let total_weight: f64 = adjacency
-            .values()
+        let total_weight: f64 = adjacency.values()
             .flat_map(|nbrs| nbrs.values())
             .sum::<f64>()
             / 2.0;
@@ -212,7 +203,7 @@ impl LouvainCommunity {
         if let Some(neighbors) = adjacency.get(&node) {
             for (nbr, &w) in neighbors {
                 match communities.get(nbr).copied() {
-                    Some(c) if c == target_community => k_i_in_t += w,
+                    Some(c) if c == target_community  => k_i_in_t += w,
                     Some(c) if c == current_community => k_i_in_s += w,
                     _ => {}
                 }
@@ -224,12 +215,8 @@ impl LouvainCommunity {
         let mut sigma_s = 0.0_f64;
         for (&other, &comm) in communities {
             if let Some(&deg) = degrees.get(&other) {
-                if comm == target_community {
-                    sigma_t += deg;
-                }
-                if comm == current_community {
-                    sigma_s += deg;
-                }
+                if comm == target_community  { sigma_t += deg; }
+                if comm == current_community { sigma_s += deg; }
             }
         }
 
@@ -393,11 +380,7 @@ pub struct LeidenConfig {
 
 impl Default for LeidenConfig {
     fn default() -> Self {
-        LeidenConfig {
-            gamma: 0.1,
-            max_iterations: 10,
-            min_gain: 1e-9,
-        }
+        LeidenConfig { gamma: 0.1, max_iterations: 10, min_gain: 1e-9 }
     }
 }
 
@@ -423,19 +406,12 @@ impl LeidenCommunity {
 
     /// Crea instancia con gamma = 0.1 y valores por defecto.
     pub fn with_defaults() -> Self {
-        LeidenCommunity {
-            config: LeidenConfig::default(),
-        }
+        LeidenCommunity { config: LeidenConfig::default() }
     }
 
     /// Crea instancia configurando solo gamma; resto de parámetros por defecto.
     pub fn with_gamma(gamma: f64) -> Self {
-        LeidenCommunity {
-            config: LeidenConfig {
-                gamma,
-                ..LeidenConfig::default()
-            },
-        }
+        LeidenCommunity { config: LeidenConfig { gamma, ..LeidenConfig::default() } }
     }
 
     /// Detecta comunidades en el grafo usando el algoritmo Leiden.
@@ -451,9 +427,9 @@ impl LeidenCommunity {
         let config = self.config.clone();
         tokio::task::spawn_blocking(move || Self::detect_cpu(nodes, edges, config))
             .await
-            .map_err(|e| {
-                crate::error::NopalError::custom(format!("leiden detect join error: {e}"))
-            })?
+            .map_err(|e| crate::error::NopalError::custom(
+                format!("leiden detect join error: {e}")
+            ))?
     }
 
     /// Retorna el número de comunidades detectadas.
@@ -479,14 +455,8 @@ impl LeidenCommunity {
         // (a→b Y b→a en la DB) no dupliquen el peso a 2.0.
         let mut adjacency: HashMap<NodeId, HashMap<NodeId, f64>> = HashMap::new();
         for edge in &edges {
-            adjacency
-                .entry(edge.source)
-                .or_default()
-                .insert(edge.target, 1.0);
-            adjacency
-                .entry(edge.target)
-                .or_default()
-                .insert(edge.source, 1.0);
+            adjacency.entry(edge.source).or_default().insert(edge.target, 1.0);
+            adjacency.entry(edge.target).or_default().insert(edge.source, 1.0);
         }
 
         // Lista de NodeIds ordenada para iteración determinista
@@ -501,7 +471,10 @@ impl LeidenCommunity {
             .collect();
 
         // Tamaño de cada comunidad
-        let mut sizes: HashMap<usize, usize> = communities.iter().map(|(_, &c)| (c, 1)).collect();
+        let mut sizes: HashMap<usize, usize> = communities
+            .iter()
+            .map(|(_, &c)| (c, 1))
+            .collect();
 
         // Peso total de aristas internas de cada comunidad (singletons → 0)
         let mut e_in: HashMap<usize, f64> = (0..node_ids.len()).map(|i| (i, 0.0)).collect();
@@ -571,8 +544,9 @@ impl LeidenCommunity {
                 let n_s = sizes[&current_comm] as f64;
 
                 // e(v, C_s\{v}) — peso hacia otros nodos en la misma comunidad
-                let e_to_self_comm =
-                    Self::edge_weight_to_community(node_id, current_comm, adjacency, communities);
+                let e_to_self_comm = Self::edge_weight_to_community(
+                    node_id, current_comm, adjacency, communities,
+                );
 
                 let mut best_gain = min_gain;
                 let mut best_comm = current_comm;
@@ -581,8 +555,7 @@ impl LeidenCommunity {
                 let mut candidate_comms: Vec<usize> = adjacency
                     .get(&node_id)
                     .map(|nbrs| {
-                        let mut cs: Vec<usize> = nbrs
-                            .keys()
+                        let mut cs: Vec<usize> = nbrs.keys()
                             .filter_map(|nbr| {
                                 let c = communities[nbr];
                                 if c != current_comm { Some(c) } else { None }
@@ -599,10 +572,7 @@ impl LeidenCommunity {
                 for target_comm in candidate_comms {
                     let n_t = sizes[&target_comm] as f64;
                     let e_to_target = Self::edge_weight_to_community(
-                        node_id,
-                        target_comm,
-                        adjacency,
-                        communities,
+                        node_id, target_comm, adjacency, communities,
                     );
                     // ΔH(v: s→t) = e(v,C_t) − e(v,C_s\{v}) + γ·(|C_s|−1 − |C_t|)
                     let gain = e_to_target - e_to_self_comm + gamma * (n_s - 1.0 - n_t);
@@ -615,21 +585,17 @@ impl LeidenCommunity {
                 if best_comm != current_comm {
                     // Actualizar e_in de la comunidad origen y destino
                     let e_contrib = Self::edge_weight_to_community(
-                        node_id,
-                        current_comm,
-                        adjacency,
-                        communities,
+                        node_id, current_comm, adjacency, communities,
                     );
                     *e_in.entry(current_comm).or_insert(0.0) -= e_contrib;
                     *sizes.entry(current_comm).or_insert(1) -= 1;
 
                     // Mover v a best_comm
-                    *communities
-                        .get_mut(&node_id)
-                        .expect("node must be in communities") = best_comm;
+                    *communities.get_mut(&node_id).expect("node must be in communities") = best_comm;
 
-                    let e_to_new =
-                        Self::edge_weight_to_community(node_id, best_comm, adjacency, communities);
+                    let e_to_new = Self::edge_weight_to_community(
+                        node_id, best_comm, adjacency, communities,
+                    );
                     *e_in.entry(best_comm).or_insert(0.0) += e_to_new;
                     *sizes.entry(best_comm).or_insert(0) += 1;
 
@@ -692,8 +658,9 @@ impl LeidenCommunity {
 
         // Iterar en orden determinista (por community ID) para que next_ref_id
         // sea estable entre runs — crítico para reproducibilidad.
-        let mut sorted_comms: Vec<(usize, &Vec<NodeId>)> =
-            by_comm.iter().map(|(&id, nodes)| (id, nodes)).collect();
+        let mut sorted_comms: Vec<(usize, &Vec<NodeId>)> = by_comm.iter()
+            .map(|(&id, nodes)| (id, nodes))
+            .collect();
         sorted_comms.sort_unstable_by_key(|(id, _)| *id);
 
         for (base_comm_id, c_nodes) in sorted_comms {
@@ -708,26 +675,19 @@ impl LeidenCommunity {
 
             // e_c[v] = suma de pesos desde v hacia todos los nodos en C\{v}
             // Precomputado una sola vez por comunidad base.
-            let e_c: HashMap<NodeId, f64> = c_nodes
-                .iter()
-                .map(|&v| {
-                    let w = adjacency
-                        .get(&v)
-                        .map(|nbrs| {
-                            nbrs.iter()
-                                .filter(|(u, _)| c_set.contains(*u) && **u != v)
-                                .map(|(_, &w)| w)
-                                .sum::<f64>()
-                        })
-                        .unwrap_or(0.0);
-                    (v, w)
-                })
-                .collect();
+            let e_c: HashMap<NodeId, f64> = c_nodes.iter().map(|&v| {
+                let w = adjacency.get(&v)
+                    .map(|nbrs| nbrs.iter()
+                        .filter(|(u, _)| c_set.contains(*u) && **u != v)
+                        .map(|(_, &w)| w)
+                        .sum::<f64>())
+                    .unwrap_or(0.0);
+                (v, w)
+            }).collect();
 
             // ── Inicializar partición refinada: cada nodo en su singleton ──
             // ref_comm[v] = ID de la comunidad refinada de v (local a esta iteración)
-            let mut ref_comm: HashMap<NodeId, usize> = c_nodes
-                .iter()
+            let mut ref_comm: HashMap<NodeId, usize> = c_nodes.iter()
                 .enumerate()
                 .map(|(i, &v)| (v, next_ref_id + i))
                 .collect();
@@ -769,11 +729,9 @@ impl LeidenCommunity {
 
                 // Encontrar comunidades refinadas vecinas dentro de C (distintas de la propia)
                 let v_ref_comm = v_ref_comm_initial;
-                let mut candidate_refs: Vec<usize> = adjacency
-                    .get(&v)
+                let mut candidate_refs: Vec<usize> = adjacency.get(&v)
                     .map(|nbrs| {
-                        let mut cs: Vec<usize> = nbrs
-                            .keys()
+                        let mut cs: Vec<usize> = nbrs.keys()
                             .filter(|u| c_set.contains(*u))
                             .filter_map(|u| {
                                 let rc = ref_comm[u];
@@ -798,8 +756,7 @@ impl LeidenCommunity {
                     // ── Verificar bien-conexión de R en C ──────────────────
                     // e(R, C\R) = Σ_{u∈R} e_c[u] − 2·e_int(R)
                     // Bien-conectado si: e(R, C\R) ≥ γ · |R| · (|C| − |R|)
-                    let sum_ec_r: f64 = c_nodes
-                        .iter()
+                    let sum_ec_r: f64 = c_nodes.iter()
                         .filter(|&&u| ref_comm[&u] == r)
                         .map(|&u| e_c[&u])
                         .sum();
@@ -811,14 +768,11 @@ impl LeidenCommunity {
 
                     // ── Ganancia CPM de fusionar singleton {v} en R ────────
                     // ΔH(v→R) = e(v, R) − γ · |R|
-                    let e_v_r: f64 = adjacency
-                        .get(&v)
-                        .map(|nbrs| {
-                            nbrs.iter()
-                                .filter(|(u, _)| ref_comm.get(*u) == Some(&r))
-                                .map(|(_, &w)| w)
-                                .sum()
-                        })
+                    let e_v_r: f64 = adjacency.get(&v)
+                        .map(|nbrs| nbrs.iter()
+                            .filter(|(u, _)| ref_comm.get(*u) == Some(&r))
+                            .map(|(_, &w)| w)
+                            .sum())
                         .unwrap_or(0.0);
                     let gain = e_v_r - gamma * r_size;
 
@@ -831,14 +785,11 @@ impl LeidenCommunity {
                 // ── Aplicar fusión si hay ganancia ──────────────────────────
                 if let Some(target_r) = best_ref {
                     // Peso de v hacia target_r (para actualizar e_int)
-                    let e_v_r: f64 = adjacency
-                        .get(&v)
-                        .map(|nbrs| {
-                            nbrs.iter()
-                                .filter(|(u, _)| ref_comm.get(*u) == Some(&target_r))
-                                .map(|(_, &w)| w)
-                                .sum()
-                        })
+                    let e_v_r: f64 = adjacency.get(&v)
+                        .map(|nbrs| nbrs.iter()
+                            .filter(|(u, _)| ref_comm.get(*u) == Some(&target_r))
+                            .map(|(_, &w)| w)
+                            .sum())
                         .unwrap_or(0.0);
 
                     *ref_comm.get_mut(&v).expect("v in ref_comm") = target_r;
@@ -853,7 +804,9 @@ impl LeidenCommunity {
             // Si la partición refinada coincide exactamente con la base
             // (todos los nodos siguen en sus singletons originales O todos
             // están juntos en una sola comunidad), no hay cambio real.
-            let refined_comm_ids: HashSet<usize> = c_nodes.iter().map(|&v| ref_comm[&v]).collect();
+            let refined_comm_ids: HashSet<usize> = c_nodes.iter()
+                .map(|&v| ref_comm[&v])
+                .collect();
 
             if refined_comm_ids.len() == 1 {
                 // Todos en una comunidad: equivale a la base → sin cambio
@@ -914,14 +867,11 @@ impl LeidenCommunity {
                 *sizes.entry(global_id).or_insert(0) += 1;
 
                 // Recalcular e_in para v hacia su nueva comunidad global
-                let e_v_new_comm: f64 = adjacency
-                    .get(&v)
-                    .map(|nbrs| {
-                        nbrs.iter()
-                            .filter(|(u, _)| ref_comm.get(*u) == Some(&old_ref) && **u != v)
-                            .map(|(_, &w)| w)
-                            .sum()
-                    })
+                let e_v_new_comm: f64 = adjacency.get(&v)
+                    .map(|nbrs| nbrs.iter()
+                        .filter(|(u, _)| ref_comm.get(*u) == Some(&old_ref) && **u != v)
+                        .map(|(_, &w)| w)
+                        .sum())
                     .unwrap_or(0.0);
                 *e_in.entry(global_id).or_insert(0.0) += e_v_new_comm;
             }
@@ -942,35 +892,27 @@ impl LeidenCommunity {
         adjacency: &HashMap<NodeId, HashMap<NodeId, f64>>,
         communities: &HashMap<NodeId, usize>,
     ) -> f64 {
-        adjacency
-            .get(&node)
-            .map(|nbrs| {
-                nbrs.iter()
-                    .filter(|(nbr, _)| communities.get(*nbr) == Some(&community) && **nbr != node)
-                    .map(|(_, &w)| w)
-                    .sum()
-            })
+        adjacency.get(&node)
+            .map(|nbrs| nbrs.iter()
+                .filter(|(nbr, _)| communities.get(*nbr) == Some(&community) && **nbr != node)
+                .map(|(_, &w)| w)
+                .sum())
             .unwrap_or(0.0)
     }
 
     /// Renumera comunidades a IDs contiguos 0, 1, 2, …
-    fn renumber_communities(communities: HashMap<NodeId, usize>) -> Result<HashMap<NodeId, usize>> {
-        let mut unique: Vec<usize> = communities
-            .values()
-            .copied()
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
+    fn renumber_communities(
+        communities: HashMap<NodeId, usize>,
+    ) -> Result<HashMap<NodeId, usize>> {
+        let mut unique: Vec<usize> = communities.values().copied().collect::<HashSet<_>>()
+            .into_iter().collect();
         unique.sort_unstable();
 
-        let remap: HashMap<usize, usize> = unique
-            .into_iter()
-            .enumerate()
+        let remap: HashMap<usize, usize> = unique.into_iter().enumerate()
             .map(|(new_id, old_id)| (old_id, new_id))
             .collect();
 
-        Ok(communities
-            .into_iter()
+        Ok(communities.into_iter()
             .map(|(node, old)| (node, remap[&old]))
             .collect())
     }
@@ -980,7 +922,7 @@ impl LeidenCommunity {
 mod tests {
     use super::*;
     use crate::Graph;
-    use crate::types::{Edge, Node};
+    use crate::types::{Node, Edge};
     use std::collections::HashMap;
 
     fn make_node() -> Node {
@@ -1017,11 +959,11 @@ mod tests {
         let f = tx.add_node(make_node()).await.unwrap();
 
         // Triángulo 1: a-b-c (bidireccional, como lo almacena NopalDB)
-        for (s, t) in [(a, b), (b, a), (b, c), (c, b), (c, a), (a, c)] {
+        for (s, t) in [(a,b),(b,a),(b,c),(c,b),(c,a),(a,c)] {
             tx.add_edge(make_edge(s, t)).unwrap();
         }
         // Triángulo 2: d-e-f (bidireccional)
-        for (s, t) in [(d, e), (e, d), (e, f), (f, e), (f, d), (d, f)] {
+        for (s, t) in [(d,e),(e,d),(e,f),(f,e),(f,d),(d,f)] {
             tx.add_edge(make_edge(s, t)).unwrap();
         }
         // Puente c-d (bidireccional)
@@ -1034,19 +976,12 @@ mod tests {
         let n = LouvainCommunity::count_communities(&communities);
 
         // Con la fórmula de ganancia neta debe encontrar 2 comunidades: {a,b,c} y {d,e,f}.
-        assert_eq!(
-            n, 2,
-            "Dos triángulos + puente → 2 comunidades, obtuvo {}",
-            n
-        );
+        assert_eq!(n, 2, "Dos triángulos + puente → 2 comunidades, obtuvo {}", n);
         assert_eq!(communities[&a], communities[&b], "a y b deben estar juntos");
         assert_eq!(communities[&b], communities[&c], "b y c deben estar juntos");
         assert_eq!(communities[&d], communities[&e], "d y e deben estar juntos");
         assert_eq!(communities[&e], communities[&f], "e y f deben estar juntos");
-        assert_ne!(
-            communities[&a], communities[&d],
-            "Triángulos deben estar separados"
-        );
+        assert_ne!(communities[&a], communities[&d], "Triángulos deben estar separados");
     }
 
     #[tokio::test]
@@ -1062,11 +997,11 @@ mod tests {
         let f = tx.add_node(make_node()).await.unwrap();
 
         // Triángulo 1: a-b-c
-        for (s, t) in [(a, b), (b, c), (c, a)] {
+        for (s, t) in [(a,b),(b,c),(c,a)] {
             tx.add_edge(make_edge(s, t)).unwrap();
         }
         // Triángulo 2: d-e-f
-        for (s, t) in [(d, e), (e, f), (f, d)] {
+        for (s, t) in [(d,e),(e,f),(f,d)] {
             tx.add_edge(make_edge(s, t)).unwrap();
         }
         // Puente c-d
@@ -1077,17 +1012,11 @@ mod tests {
         let communities = louvain.detect(&graph).await.unwrap();
 
         let num_communities = LouvainCommunity::count_communities(&communities);
-        assert!(
-            (1..=6).contains(&num_communities),
-            "Expected 1-6 communities, got {}",
-            num_communities
-        );
+        assert!(num_communities >= 1 && num_communities <= 6,
+                "Expected 1-6 communities, got {}", num_communities);
 
         for &id in &[a, b, c, d, e, f] {
-            assert!(
-                communities.contains_key(&id),
-                "Node missing from communities"
-            );
+            assert!(communities.contains_key(&id), "Node missing from communities");
         }
     }
 
@@ -1096,27 +1025,31 @@ mod tests {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Helper: añade un nodo simple a una transacción y retorna su NodeId.
-    async fn add_test_node(tx: &mut crate::transaction::Transaction, label: &str) -> NodeId {
+    async fn add_test_node(
+        tx: &mut crate::transaction::Transaction,
+        label: &str,
+    ) -> NodeId {
         tx.add_node(Node {
             id: uuid::Uuid::new_v4(),
             label: label.to_string(),
             properties: HashMap::new(),
             kind: Default::default(),
-        })
-        .await
-        .unwrap()
+        }).await.unwrap()
     }
 
     /// Helper: añade una arista no-dirigida (añade dos aristas simétricas) a la transacción.
-    fn add_test_edge(tx: &mut crate::transaction::Transaction, src: NodeId, tgt: NodeId) {
+    fn add_test_edge(
+        tx: &mut crate::transaction::Transaction,
+        src: NodeId,
+        tgt: NodeId,
+    ) {
         tx.add_edge(Edge {
             id: uuid::Uuid::new_v4(),
             source: src,
             target: tgt,
             edge_type: "E".to_string(),
             properties: HashMap::new(),
-        })
-        .unwrap();
+        }).unwrap();
     }
 
     /// Grafo vacío: Leiden debe retornar mapa vacío sin panic.
@@ -1171,17 +1104,11 @@ mod tests {
         let communities = leiden.detect(&graph).await.unwrap();
 
         let n_comm = LeidenCommunity::count_communities(&communities);
-        assert!(
-            (1..=4).contains(&n_comm),
-            "Esperaba 1-4 comunidades con gamma=0.1, obtuvo {}",
-            n_comm
-        );
+        assert!(n_comm >= 1 && n_comm <= 4,
+            "Esperaba 1-4 comunidades con gamma=0.1, obtuvo {}", n_comm);
         // Todos los nodos deben estar asignados
         for &node in &[a, b, c, d, e, f] {
-            assert!(
-                communities.contains_key(&node),
-                "Nodo sin comunidad asignada"
-            );
+            assert!(communities.contains_key(&node), "Nodo sin comunidad asignada");
         }
     }
 
@@ -1209,11 +1136,7 @@ mod tests {
         let leiden = LeidenCommunity::with_gamma(0.0);
         let communities = leiden.detect(&graph).await.unwrap();
         let n_comm = LeidenCommunity::count_communities(&communities);
-        assert_eq!(
-            n_comm, 1,
-            "K4 con gamma=0.0 debe producir 1 comunidad, obtuvo {}",
-            n_comm
-        );
+        assert_eq!(n_comm, 1, "K4 con gamma=0.0 debe producir 1 comunidad, obtuvo {}", n_comm);
     }
 
     /// Grafo completo K4 con gamma muy alto: cada nodo en su propia comunidad.
@@ -1240,11 +1163,7 @@ mod tests {
         let leiden = LeidenCommunity::with_gamma(2.0);
         let communities = leiden.detect(&graph).await.unwrap();
         // Todos los nodos deben estar asignados
-        assert_eq!(
-            communities.len(),
-            4,
-            "Todos los nodos deben tener asignación"
-        );
+        assert_eq!(communities.len(), 4, "Todos los nodos deben tener asignación");
     }
 
     /// Determinismo: dos runs con la misma topología producen el mismo resultado.
@@ -1261,7 +1180,7 @@ mod tests {
             v
         };
         // Dos triángulos + puente
-        let pairs: &[(usize, usize)] = &[(0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3), (2, 3)];
+        let pairs: &[(usize, usize)] = &[(0,1),(1,2),(2,0),(3,4),(4,5),(5,3),(2,3)];
         for &(i, j) in pairs {
             add_test_edge(&mut tx, ids[i], ids[j]);
         }
@@ -1272,10 +1191,8 @@ mod tests {
         let r2 = leiden.detect(&graph).await.unwrap();
 
         for &id in &ids {
-            assert_eq!(
-                r1[&id], r2[&id],
-                "Leiden no es determinista: resultado distinto para el mismo nodo en dos runs"
-            );
+            assert_eq!(r1[&id], r2[&id],
+                "Leiden no es determinista: resultado distinto para el mismo nodo en dos runs");
         }
     }
 
@@ -1299,11 +1216,7 @@ mod tests {
 
         let leiden = LeidenCommunity::with_defaults();
         let communities = leiden.detect(&graph).await.unwrap();
-        assert_eq!(
-            communities.len(),
-            5,
-            "Todos los nodos deben tener asignación"
-        );
+        assert_eq!(communities.len(), 5, "Todos los nodos deben tener asignación");
         let n_comm = LeidenCommunity::count_communities(&communities);
         assert!(n_comm >= 1, "Al menos 1 comunidad debe existir");
     }
@@ -1322,31 +1235,18 @@ mod tests {
         // Crear los 15 nodos con UUIDs deterministas (from_u128) para que el
         // orden de iteración del algoritmo sea estable entre runs.
         let names = [
-            "Acciaiuoli",
-            "Albizzi",
-            "Barbadori",
-            "Bischeri",
-            "Castellani",
-            "Ginori",
-            "Guadagni",
-            "Lamberteschi",
-            "Medici",
-            "Pazzi",
-            "Peruzzi",
-            "Ridolfi",
-            "Salviati",
-            "Strozzi",
-            "Tornabuoni",
+            "Acciaiuoli", "Albizzi", "Barbadori", "Bischeri", "Castellani",
+            "Ginori", "Guadagni", "Lamberteschi", "Medici", "Pazzi",
+            "Peruzzi", "Ridolfi", "Salviati", "Strozzi", "Tornabuoni",
         ];
         let mut ids: BTreeMap<&str, NodeId> = BTreeMap::new();
         for (i, name) in names.iter().enumerate() {
             let node = Node {
                 id: uuid::Uuid::from_u128((i as u128 + 1) << 96),
                 label: "Family".to_string(),
-                properties: std::collections::HashMap::from([(
-                    "name".to_string(),
-                    crate::types::PropertyValue::String(name.to_string()),
-                )]),
+                properties: std::collections::HashMap::from([
+                    ("name".to_string(), crate::types::PropertyValue::String(name.to_string())),
+                ]),
                 kind: Default::default(),
             };
             ids.insert(name, tx.add_node(node).await.unwrap());
@@ -1398,56 +1298,27 @@ mod tests {
         let mut louv_groups: BTreeMap<usize, Vec<&str>> = BTreeMap::new();
         let mut leid_groups: BTreeMap<usize, Vec<&str>> = BTreeMap::new();
         for name in &names {
-            louv_groups
-                .entry(louv_comm[&ids[name]])
-                .or_default()
-                .push(name);
-            leid_groups
-                .entry(leid_comm[&ids[name]])
-                .or_default()
-                .push(name);
+            louv_groups.entry(louv_comm[&ids[name]]).or_default().push(name);
+            leid_groups.entry(leid_comm[&ids[name]]).or_default().push(name);
         }
-        for (c, members) in &louv_groups {
-            eprintln!("  Louvain {}: {:?}", c, members);
-        }
-        for (c, members) in &leid_groups {
-            eprintln!("  Leiden  {}: {:?}", c, members);
-        }
+        for (c, members) in &louv_groups { eprintln!("  Louvain {}: {:?}", c, members); }
+        for (c, members) in &leid_groups { eprintln!("  Leiden  {}: {:?}", c, members); }
 
         // Los 15 nodos deben estar asignados
-        assert_eq!(
-            louv_comm.len(),
-            15,
-            "Louvain: todos los nodos deben tener comunidad"
-        );
-        assert_eq!(
-            leid_comm.len(),
-            15,
-            "Leiden: todos los nodos deben tener comunidad"
-        );
+        assert_eq!(louv_comm.len(), 15, "Louvain: todos los nodos deben tener comunidad");
+        assert_eq!(leid_comm.len(), 15, "Leiden: todos los nodos deben tener comunidad");
 
         // Louvain: fórmula corregida → 5 comunidades
-        assert_eq!(
-            n_louv, 5,
-            "Louvain Florentine: esperaba 5 comunidades, obtuvo {}",
-            n_louv
-        );
+        assert_eq!(n_louv, 5, "Louvain Florentine: esperaba 5 comunidades, obtuvo {}", n_louv);
 
         // Leiden con gamma=0.1: también 5 comunidades (CPM más estricto que modularity)
-        assert_eq!(
-            n_leid, 5,
-            "Leiden Florentine: esperaba 5 comunidades, obtuvo {}",
-            n_leid
-        );
+        assert_eq!(n_leid, 5, "Leiden Florentine: esperaba 5 comunidades, obtuvo {}", n_leid);
 
         // Louvain: bloque Medici (Acciaiuoli, Medici, Ridolfi, Tornabuoni)
         let medici_comm = louv_comm[&ids["Medici"]];
         for &ally in &["Acciaiuoli", "Ridolfi", "Tornabuoni"] {
-            assert_eq!(
-                louv_comm[&ids[ally]], medici_comm,
-                "Louvain: {} debe estar con Medici",
-                ally
-            );
+            assert_eq!(louv_comm[&ids[ally]], medici_comm,
+                "Louvain: {} debe estar con Medici", ally);
         }
         // Louvain: bloque Strozzi-sur (Bischeri, Castellani, Peruzzi, Strozzi)
         // Nota: Barbadori es broker equidistante (1 arista a Medici, 1 a Castellani).
@@ -1455,16 +1326,11 @@ mod tests {
         // Louvain también lo coloca con Strozzi — resultado consistente.
         let strozzi_comm = louv_comm[&ids["Strozzi"]];
         for &ally in &["Bischeri", "Castellani", "Peruzzi"] {
-            assert_eq!(
-                louv_comm[&ids[ally]], strozzi_comm,
-                "Louvain: {} debe estar con Strozzi",
-                ally
-            );
+            assert_eq!(louv_comm[&ids[ally]], strozzi_comm,
+                "Louvain: {} debe estar con Strozzi", ally);
         }
-        assert_eq!(
-            louv_comm[&ids["Barbadori"]], strozzi_comm,
-            "Louvain: Barbadori debe estar con Strozzi (broker equidistante — resultado estable con Louvain)"
-        );
+        assert_eq!(louv_comm[&ids["Barbadori"]], strozzi_comm,
+            "Louvain: Barbadori debe estar con Strozzi (broker equidistante — resultado estable con Louvain)");
 
         // Leiden: bloque Medici sin Barbadori
         // Con UUIDs deterministas Leiden coloca a Barbadori con Strozzi (igual que Louvain).
@@ -1473,25 +1339,17 @@ mod tests {
         // No afirmamos la comunidad de Barbadori en Leiden por ser sensible al orden de iteración.
         let medici_leid = leid_comm[&ids["Medici"]];
         for &ally in &["Acciaiuoli", "Ridolfi", "Tornabuoni"] {
-            assert_eq!(
-                leid_comm[&ids[ally]], medici_leid,
-                "Leiden: {} debe estar con Medici",
-                ally
-            );
+            assert_eq!(leid_comm[&ids[ally]], medici_leid,
+                "Leiden: {} debe estar con Medici", ally);
         }
         // Leiden: Bischeri, Castellani, Peruzzi, Strozzi siempre juntos (cluster denso)
         let strozzi_leid = leid_comm[&ids["Strozzi"]];
         for &ally in &["Bischeri", "Castellani", "Peruzzi"] {
-            assert_eq!(
-                leid_comm[&ids[ally]], strozzi_leid,
-                "Leiden: {} debe estar con Strozzi",
-                ally
-            );
+            assert_eq!(leid_comm[&ids[ally]], strozzi_leid,
+                "Leiden: {} debe estar con Strozzi", ally);
         }
         // Pazzi y Salviati juntos (par aislado)
-        assert_eq!(
-            leid_comm[&ids["Pazzi"]], leid_comm[&ids["Salviati"]],
-            "Leiden: Pazzi y Salviati deben estar juntos"
-        );
+        assert_eq!(leid_comm[&ids["Pazzi"]], leid_comm[&ids["Salviati"]],
+            "Leiden: Pazzi y Salviati deben estar juntos");
     }
 }

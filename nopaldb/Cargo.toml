@@ -1,6 +1,6 @@
 [package]
 name = "nopaldb"
-version = "0.4.27"
+version = "0.4.28"
 authors = ["NopalDB Contributors"]
 description = "High-performance graph database with ACID transactions, MVCC time-travel, and Arrow analytics"
 keywords = ["graph", "database", "embedded", "mvcc", "arrow"]
@@ -63,6 +63,7 @@ tempfile = "3.19"
 tokio-test = "0.4"
 num_cpus = "1.16"
 env_logger = "0.11"              # For test logging
+criterion = { version = "0.5", features = ["async_tokio"] }
 
 
 [features]
@@ -82,6 +83,7 @@ reasoner = []
 owl-import = ["reasoner"]
 shacl = ["regex"]
 fulltext = ["tantivy"]
+full-isolation = []              # Isolation levels + lock manager + deadlock detection
 
 # Python compound features
 python-reasoner = ["python", "reasoner"]
@@ -91,8 +93,12 @@ python-full = ["python", "python-reasoner", "python-owl", "full"]
 # --- Tier meta-features ---
 core       = ["storage-sled", "analytics", "algorithms", "ml", "hypergraph", "embeddings", "embeddings-index", "fulltext"]
 semantic   = ["core", "reasoner", "owl-import", "shacl"]
-full       = ["semantic"]
+full       = ["semantic", "full-isolation"]
 
+
+[[bench]]
+name = "graph_ops"
+harness = false
 
 [[test]]
 name = "owl_import_integration_test"
@@ -130,6 +136,10 @@ required-features = ["analytics"]
 [[example]]
 name = "test_index_usage"
 path = "examples/test_index_usage.rs"
+required-features = []
+
+[[example]]
+name = "benchmarks"
 required-features = []
 
 [[example]]

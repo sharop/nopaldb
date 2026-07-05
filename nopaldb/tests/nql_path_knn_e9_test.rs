@@ -13,11 +13,7 @@ mod tests {
     }
 
     /// Extrae Vec<(name, score)> de un QueryResult row col que debe ser PropertyValue::List.
-    fn get_knn_list(
-        result: &nopaldb::query::nql::QueryResult,
-        row: usize,
-        col: &str,
-    ) -> Vec<(String, f64)> {
+    fn get_knn_list(result: &nopaldb::query::nql::QueryResult, row: usize, col: &str) -> Vec<(String, f64)> {
         match result.rows()[row].get(col) {
             Some(PropertyValue::List(items)) => items
                 .iter()
@@ -73,45 +69,35 @@ mod tests {
         graph.add_node_embedding(root, vec![1.0, 0.0], "nm").await?;
         graph.add_node_embedding(b, vec![1.0, 0.0], "nm").await?;
         graph.add_node_embedding(c, vec![0.0, 1.0], "nm").await?;
-        graph
-            .add_edge_embedding(rel_rb, vec![1.0, 0.0], "em")
-            .await?;
-        graph
-            .add_edge_embedding(rel_rc, vec![0.0, 1.0], "em")
-            .await?;
+        graph.add_edge_embedding(rel_rb, vec![1.0, 0.0], "em").await?;
+        graph.add_edge_embedding(rel_rc, vec![0.0, 1.0], "em").await?;
 
         // path Root→B: node_mean=[1,0], edge_mean=[1,0] → [1,0,1,0]
         // path Root→C: node_mean=[0.5,0.5], edge_mean=[0,1] → [0.5,0.5,0,1]
 
         // ref_ab ≈ [1,0,1,0] → máxima similitud con Root→B
-        graph
-            .add_path_reference_embedding(
-                "ref_ab".to_string(),
-                "nm".to_string(),
-                "em".to_string(),
-                vec![1.0, 0.0, 1.0, 0.0],
-            )
-            .await?;
+        graph.add_path_reference_embedding(
+            "ref_ab".to_string(),
+            "nm".to_string(),
+            "em".to_string(),
+            vec![1.0, 0.0, 1.0, 0.0],
+        ).await?;
 
         // ref_ac ≈ [0.5,0.5,0,1] normalizado → máxima similitud con Root→C
-        graph
-            .add_path_reference_embedding(
-                "ref_ac".to_string(),
-                "nm".to_string(),
-                "em".to_string(),
-                vec![0.5, 0.5, 0.0, 1.0],
-            )
-            .await?;
+        graph.add_path_reference_embedding(
+            "ref_ac".to_string(),
+            "nm".to_string(),
+            "em".to_string(),
+            vec![0.5, 0.5, 0.0, 1.0],
+        ).await?;
 
         // ref_unrelated = [0,1,0,0] → baja similitud con ambos
-        graph
-            .add_path_reference_embedding(
-                "ref_unrelated".to_string(),
-                "nm".to_string(),
-                "em".to_string(),
-                vec![0.0, 1.0, 0.0, 0.0],
-            )
-            .await?;
+        graph.add_path_reference_embedding(
+            "ref_unrelated".to_string(),
+            "nm".to_string(),
+            "em".to_string(),
+            vec![0.0, 1.0, 0.0, 0.0],
+        ).await?;
 
         Ok(graph)
     }
@@ -144,11 +130,7 @@ mod tests {
             refs[1].1
         );
         // ref_ab debe ser primera (score ≈ 1.0 para path Root→B)
-        assert_eq!(
-            refs[0].0, "ref_ab",
-            "expected ref_ab first, got {}",
-            refs[0].0
-        );
+        assert_eq!(refs[0].0, "ref_ab", "expected ref_ab first, got {}", refs[0].0);
         Ok(())
     }
 
@@ -173,14 +155,9 @@ mod tests {
         assert_eq!(result.len(), 1);
         let refs = get_knn_list(&result, 0, "refs");
         // Solo ref_ab tiene score ≈ 1.0; las otras deben estar por debajo
-        assert!(!refs.is_empty(), "expected at least ref_ab");
+        assert!(refs.len() >= 1, "expected at least ref_ab");
         for (name, score) in &refs {
-            assert!(
-                *score >= 0.95,
-                "ref {} has score {} below threshold 0.95",
-                name,
-                score
-            );
+            assert!(*score >= 0.95, "ref {} has score {} below threshold 0.95", name, score);
         }
         Ok(())
     }
@@ -208,22 +185,18 @@ mod tests {
         graph.add_edge_embedding(rel, vec![1.0, 1.0], "em").await?;
 
         // path vector: node_mean=[0.5,0.5], edge_mean=[1,1] → [0.5,0.5,1,1]
-        graph
-            .add_path_reference_embedding(
-                "self_ref".to_string(),
-                "nm".to_string(),
-                "em".to_string(),
-                vec![0.5, 0.5, 1.0, 1.0],
-            )
-            .await?;
-        graph
-            .add_path_reference_embedding(
-                "other_ref".to_string(),
-                "nm".to_string(),
-                "em".to_string(),
-                vec![1.0, 0.0, 0.0, 1.0],
-            )
-            .await?;
+        graph.add_path_reference_embedding(
+            "self_ref".to_string(),
+            "nm".to_string(),
+            "em".to_string(),
+            vec![0.5, 0.5, 1.0, 1.0],
+        ).await?;
+        graph.add_path_reference_embedding(
+            "other_ref".to_string(),
+            "nm".to_string(),
+            "em".to_string(),
+            vec![1.0, 0.0, 0.0, 1.0],
+        ).await?;
 
         let result = graph
             .execute_nql(
@@ -237,11 +210,7 @@ mod tests {
         assert_eq!(result.len(), 1);
         let refs = get_knn_list(&result, 0, "refs");
         assert_eq!(refs.len(), 2);
-        assert_eq!(
-            refs[0].0, "self_ref",
-            "expected self_ref first, got {}",
-            refs[0].0
-        );
+        assert_eq!(refs[0].0, "self_ref", "expected self_ref first, got {}", refs[0].0);
         assert!(
             (refs[0].1 - 1.0).abs() < 1e-5,
             "expected self_ref score ≈ 1.0, got {}",
@@ -272,22 +241,8 @@ mod tests {
         graph.add_node_embedding(b, vec![1.0, 0.0], "nm").await?;
         graph.add_edge_embedding(rel, vec![1.0, 0.0], "em").await?;
 
-        graph
-            .add_path_reference_embedding(
-                "r1".to_string(),
-                "nm".to_string(),
-                "em".to_string(),
-                vec![1.0, 0.0, 1.0, 0.0],
-            )
-            .await?;
-        graph
-            .add_path_reference_embedding(
-                "r2".to_string(),
-                "nm".to_string(),
-                "em".to_string(),
-                vec![0.0, 1.0, 0.0, 1.0],
-            )
-            .await?;
+        graph.add_path_reference_embedding("r1".to_string(), "nm".to_string(), "em".to_string(), vec![1.0, 0.0, 1.0, 0.0]).await?;
+        graph.add_path_reference_embedding("r2".to_string(), "nm".to_string(), "em".to_string(), vec![0.0, 1.0, 0.0, 1.0]).await?;
 
         // k=10 pero solo hay 2 referencias → devuelve 2 sin error
         let result = graph
@@ -301,12 +256,7 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         let refs = get_knn_list(&result, 0, "refs");
-        assert_eq!(
-            refs.len(),
-            2,
-            "expected 2 refs (all available), got {}",
-            refs.len()
-        );
+        assert_eq!(refs.len(), 2, "expected 2 refs (all available), got {}", refs.len());
         Ok(())
     }
 
@@ -332,14 +282,7 @@ mod tests {
         graph.add_node_embedding(b, vec![0.0, 1.0], "nm").await?;
         graph.add_edge_embedding(rel, vec![1.0, 1.0], "em").await?;
 
-        graph
-            .add_path_reference_embedding(
-                "ref1".to_string(),
-                "nm".to_string(),
-                "em".to_string(),
-                vec![0.5, 0.5, 1.0, 1.0],
-            )
-            .await?;
+        graph.add_path_reference_embedding("ref1".to_string(), "nm".to_string(), "em".to_string(), vec![0.5, 0.5, 1.0, 1.0]).await?;
 
         // min_score=1.1 → imposible, resultado vacío
         let result = graph
@@ -380,14 +323,7 @@ mod tests {
         graph.add_edge_embedding(rel, vec![1.0, 0.0], "em").await?;
 
         // Registrar referencias con un par distinto (nm2, em2)
-        graph
-            .add_path_reference_embedding(
-                "ref_other".to_string(),
-                "nm2".to_string(),
-                "em2".to_string(),
-                vec![1.0, 0.0, 1.0, 0.0],
-            )
-            .await?;
+        graph.add_path_reference_embedding("ref_other".to_string(), "nm2".to_string(), "em2".to_string(), vec![1.0, 0.0, 1.0, 0.0]).await?;
 
         // Consultar (nm, em) → sin referencias → lista vacía
         let result = graph
@@ -401,11 +337,7 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         let refs = get_knn_list(&result, 0, "refs");
-        assert_eq!(
-            refs.len(),
-            0,
-            "expected empty list when no refs for (nm, em)"
-        );
+        assert_eq!(refs.len(), 0, "expected empty list when no refs for (nm, em)");
         Ok(())
     }
 

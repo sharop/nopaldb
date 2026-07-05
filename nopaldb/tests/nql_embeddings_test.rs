@@ -7,8 +7,8 @@
 
 #[cfg(all(feature = "embeddings", feature = "embeddings-index"))]
 mod tests {
-    use nopaldb::Graph;
     use nopaldb::types::{Node, PropertyValue};
+    use nopaldb::Graph;
 
     /// Crea un grafo en memoria con 4 nodos "Article" con embeddings en R².
     /// Retorna (graph, node_ids) donde node_ids[i] corresponde al i-ésimo nodo.
@@ -16,10 +16,10 @@ mod tests {
         let graph = Graph::in_memory().await.unwrap();
 
         let data: Vec<(&str, Vec<f32>)> = vec![
-            ("alpha", vec![1.0, 0.0]), // eje X positivo
-            ("beta", vec![0.0, 1.0]),  // eje Y positivo
-            ("gamma", vec![1.0, 1.0]), // diagonal
-            ("delta", vec![0.5, 0.5]), // centro
+            ("alpha", vec![1.0, 0.0]),  // eje X positivo
+            ("beta",  vec![0.0, 1.0]),  // eje Y positivo
+            ("gamma", vec![1.0, 1.0]),  // diagonal
+            ("delta", vec![0.5, 0.5]),  // centro
         ];
 
         let mut ids = vec![];
@@ -27,10 +27,7 @@ mod tests {
             let node = Node::new("Article")
                 .with_property("title", PropertyValue::String(name.to_string()));
             graph.add_node(node.clone()).await.unwrap();
-            graph
-                .add_node_embedding(node.id, vec, "minilm")
-                .await
-                .unwrap();
+            graph.add_node_embedding(node.id, vec, "minilm").await.unwrap();
             ids.push(node.id);
         }
         (graph, ids)
@@ -51,29 +48,14 @@ mod tests {
         let result = graph.execute_nql(nql).await?;
 
         // Solo los 4 nodos con embedding deben aparecer
-        assert_eq!(
-            result.rows.len(),
-            4,
-            "should only return nodes with embedding"
-        );
+        assert_eq!(result.rows.len(), 4, "should only return nodes with embedding");
 
         // El nodo sin embedding no debe estar
-        let titles: Vec<_> = result
-            .rows
-            .iter()
+        let titles: Vec<_> = result.rows.iter()
             .filter_map(|r| r.get("n.title"))
-            .filter_map(|v| {
-                if let PropertyValue::String(s) = v {
-                    Some(s.as_str())
-                } else {
-                    None
-                }
-            })
+            .filter_map(|v| if let PropertyValue::String(s) = v { Some(s.as_str()) } else { None })
             .collect();
-        assert!(
-            !titles.contains(&"orphan"),
-            "orphan (no embedding) should not appear"
-        );
+        assert!(!titles.contains(&"orphan"), "orphan (no embedding) should not appear");
 
         // Todos los ids con embedding deben aparecer
         assert_eq!(titles.len(), 4);
@@ -113,11 +95,7 @@ mod tests {
             _ => panic!("expected Float for sim"),
         };
         // Similitud del nodo consigo mismo ≈ 1.0
-        assert!(
-            (sim - 1.0).abs() < 1e-5,
-            "self-similarity should be ~1.0, got {}",
-            sim
-        );
+        assert!((sim - 1.0).abs() < 1e-5, "self-similarity should be ~1.0, got {}", sim);
         Ok(())
     }
 
@@ -139,11 +117,7 @@ mod tests {
             Some(PropertyValue::Float(f)) => *f,
             _ => panic!("expected Float for sim"),
         };
-        assert!(
-            sim.abs() < 1e-5,
-            "orthogonal vectors should have sim ~0.0, got {}",
-            sim
-        );
+        assert!(sim.abs() < 1e-5, "orthogonal vectors should have sim ~0.0, got {}", sim);
         Ok(())
     }
 

@@ -3,17 +3,15 @@
 // Apache Arrow integration for NopalDB
 // Export graphs to columnar format for analytics
 
-use arrow::array::{
-    ArrayRef, BooleanArray, BooleanBuilder, Float64Builder, Int64Array, Int64Builder, RecordBatch,
-    StringArray, StringBuilder, UInt64Array,
-};
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::array::{ArrayRef, StringArray, Int64Array, UInt64Array, BooleanArray,
+                   RecordBatch, StringBuilder, Int64Builder, Float64Builder, BooleanBuilder};
+use arrow::datatypes::{Schema, Field, DataType};
 use std::sync::Arc;
 //use arrow::record_batch::RecordBatch;
-use crate::error::{NopalError, Result};
-use crate::mvcc::VersionedNode;
-use crate::types::{Edge, Node, PropertyValue};
 use std::collections::HashMap;
+use crate::error::{NopalError, Result};
+use crate::types::{Node, Edge, PropertyValue};
+use crate::mvcc::VersionedNode;
 
 /// Convierte nodos a Arrow RecordBatch (columnar format)
 ///
@@ -40,9 +38,7 @@ use std::collections::HashMap;
 /// ```
 pub fn nodes_to_arrow(nodes: &[Node]) -> Result<RecordBatch> {
     if nodes.is_empty() {
-        return Err(NopalError::Custom(
-            "Cannot convert empty node list to Arrow".into(),
-        ));
+        return Err(NopalError::Custom("Cannot convert empty node list to Arrow".into()));
     }
 
     // Define schema (columnar layout)
@@ -54,12 +50,15 @@ pub fn nodes_to_arrow(nodes: &[Node]) -> Result<RecordBatch> {
 
     // Extract columns (this is the magic of columnar format!)
     // Instead of row-by-row, we extract column-by-column
-    let ids: StringArray = nodes.iter().map(|n| Some(n.id.to_string())).collect();
+    let ids: StringArray = nodes.iter()
+        .map(|n| Some(n.id.to_string()))
+        .collect();
 
-    let labels: StringArray = nodes.iter().map(|n| Some(n.label.as_str())).collect();
+    let labels: StringArray = nodes.iter()
+        .map(|n| Some(n.label.as_str()))
+        .collect();
 
-    let prop_counts: Int64Array = nodes
-        .iter()
+    let prop_counts: Int64Array = nodes.iter()
         .map(|n| Some(n.properties.len() as i64))
         .collect();
 
@@ -72,7 +71,7 @@ pub fn nodes_to_arrow(nodes: &[Node]) -> Result<RecordBatch> {
             Arc::new(prop_counts) as ArrayRef,
         ],
     )
-    .map_err(|e| NopalError::Custom(format!("Arrow conversion error: {}", e)))?;
+        .map_err(|e| NopalError::Custom(format!("Arrow conversion error: {}", e)))?;
 
     log::info!("Converted {} nodes to Arrow RecordBatch", nodes.len());
 
@@ -83,10 +82,7 @@ pub fn nodes_to_arrow(nodes: &[Node]) -> Result<RecordBatch> {
 ///
 /// This exports individual properties as columns, providing a clean
 /// columnar format perfect for ML/analytics.
-pub fn nodes_to_arrow_with_properties(
-    nodes: &[Node],
-    label_filter: Option<&str>,
-) -> Result<RecordBatch> {
+pub fn nodes_to_arrow_with_properties(nodes: &[Node], label_filter: Option<&str>) -> Result<RecordBatch> {
     if nodes.is_empty() {
         return Err(NopalError::Custom("No nodes to export".into()));
     }
@@ -135,7 +131,7 @@ pub fn nodes_to_arrow_with_properties(
     for (prop_name, prop_type) in &property_schema {
         property_builders.insert(
             prop_name.clone(),
-            PropertyBuilder::new(*prop_type, filtered_nodes.len()),
+            PropertyBuilder::new(*prop_type, filtered_nodes.len())
         );
     }
 
@@ -160,9 +156,8 @@ pub fn nodes_to_arrow_with_properties(
     ];
 
     for prop_name in property_schema.keys() {
-        let builder = property_builders.remove(prop_name).ok_or_else(|| {
-            NopalError::Custom(format!("Missing property builder for '{}'", prop_name))
-        })?;
+        let builder = property_builders.remove(prop_name)
+            .ok_or_else(|| NopalError::Custom(format!("Missing property builder for '{}'", prop_name)))?;
         columns.push(builder.finish());
     }
 
@@ -174,9 +169,7 @@ pub fn nodes_to_arrow_with_properties(
 /// Export edges básico
 pub fn edges_to_arrow(edges: &[Edge]) -> Result<RecordBatch> {
     if edges.is_empty() {
-        return Err(NopalError::Custom(
-            "Cannot convert empty edge list to Arrow".into(),
-        ));
+        return Err(NopalError::Custom("Cannot convert empty edge list to Arrow".into()));
     }
 
     let schema = Arc::new(Schema::new(vec![
@@ -187,16 +180,23 @@ pub fn edges_to_arrow(edges: &[Edge]) -> Result<RecordBatch> {
         Field::new("property_count", DataType::Int64, false),
     ]));
 
-    let ids: StringArray = edges.iter().map(|e| Some(e.id.to_string())).collect();
+    let ids: StringArray = edges.iter()
+        .map(|e| Some(e.id.to_string()))
+        .collect();
 
-    let sources: StringArray = edges.iter().map(|e| Some(e.source.to_string())).collect();
+    let sources: StringArray = edges.iter()
+        .map(|e| Some(e.source.to_string()))
+        .collect();
 
-    let targets: StringArray = edges.iter().map(|e| Some(e.target.to_string())).collect();
+    let targets: StringArray = edges.iter()
+        .map(|e| Some(e.target.to_string()))
+        .collect();
 
-    let types: StringArray = edges.iter().map(|e| Some(e.edge_type.as_str())).collect();
+    let types: StringArray = edges.iter()
+        .map(|e| Some(e.edge_type.as_str()))
+        .collect();
 
-    let prop_counts: Int64Array = edges
-        .iter()
+    let prop_counts: Int64Array = edges.iter()
         .map(|e| Some(e.properties.len() as i64))
         .collect();
 
@@ -210,7 +210,7 @@ pub fn edges_to_arrow(edges: &[Edge]) -> Result<RecordBatch> {
             Arc::new(prop_counts) as ArrayRef,
         ],
     )
-    .map_err(|e| NopalError::Custom(format!("Arrow conversion error: {}", e)))?;
+        .map_err(|e| NopalError::Custom(format!("Arrow conversion error: {}", e)))?;
 
     log::info!("Converted {} edges to Arrow RecordBatch", edges.len());
     Ok(batch)
@@ -232,9 +232,7 @@ fn property_value_to_string(value: &PropertyValue) -> String {
 /// Export edges con propiedades dinámicas
 pub fn edges_to_arrow_with_properties(edges: &[Edge]) -> Result<RecordBatch> {
     if edges.is_empty() {
-        return Err(NopalError::Custom(
-            "Cannot convert empty edge list to Arrow".into(),
-        ));
+        return Err(NopalError::Custom("Cannot convert empty edge list to Arrow".into()));
     }
 
     // Collect all property keys
@@ -266,16 +264,24 @@ pub fn edges_to_arrow_with_properties(edges: &[Edge]) -> Result<RecordBatch> {
     let mut columns: Vec<ArrayRef> = Vec::new();
 
     // Fixed columns
-    let ids: StringArray = edges.iter().map(|e| Some(e.id.to_string())).collect();
+    let ids: StringArray = edges.iter()
+        .map(|e| Some(e.id.to_string()))
+        .collect();
     columns.push(Arc::new(ids));
 
-    let sources: StringArray = edges.iter().map(|e| Some(e.source.to_string())).collect();
+    let sources: StringArray = edges.iter()
+        .map(|e| Some(e.source.to_string()))
+        .collect();
     columns.push(Arc::new(sources));
 
-    let targets: StringArray = edges.iter().map(|e| Some(e.target.to_string())).collect();
+    let targets: StringArray = edges.iter()
+        .map(|e| Some(e.target.to_string()))
+        .collect();
     columns.push(Arc::new(targets));
 
-    let types: StringArray = edges.iter().map(|e| Some(e.edge_type.as_str())).collect();
+    let types: StringArray = edges.iter()
+        .map(|e| Some(e.edge_type.as_str()))
+        .collect();
     columns.push(Arc::new(types));
 
     // Property columns
@@ -362,8 +368,7 @@ fn infer_property_schema(nodes: &[&Node]) -> HashMap<String, PropertyType> {
                 PropertyValue::Object(_) | PropertyValue::List(_) => continue,
             };
 
-            schema
-                .entry(key.clone())
+            schema.entry(key.clone())
                 .and_modify(|existing| {
                     // If types don't match, mark as Mixed
                     if *existing != prop_type {
@@ -401,35 +406,49 @@ impl PropertyBuilder {
             PropertyType::String | PropertyType::Mixed => {
                 PropertyBuilder::String(StringBuilder::new())
             }
-            PropertyType::Int => PropertyBuilder::Int(Int64Builder::with_capacity(capacity)),
-            PropertyType::Float => PropertyBuilder::Float(Float64Builder::with_capacity(capacity)),
-            PropertyType::Bool => PropertyBuilder::Bool(BooleanBuilder::with_capacity(capacity)),
+            PropertyType::Int => {
+                PropertyBuilder::Int(Int64Builder::with_capacity(capacity))
+            }
+            PropertyType::Float => {
+                PropertyBuilder::Float(Float64Builder::with_capacity(capacity))
+            }
+            PropertyType::Bool => {
+                PropertyBuilder::Bool(BooleanBuilder::with_capacity(capacity))
+            }
         }
     }
 
     fn append_value(&mut self, value: &PropertyValue) {
         match self {
-            PropertyBuilder::String(b) => match value {
-                PropertyValue::String(s) => b.append_value(s),
-                PropertyValue::Int(i) => b.append_value(i.to_string()),
-                PropertyValue::Float(f) => b.append_value(f.to_string()),
-                PropertyValue::Bool(v) => b.append_value(v.to_string()),
-                PropertyValue::Null => b.append_value("null"),
-                PropertyValue::Bytes(bytes) => b.append_value(format!("<bytes:{}>", bytes.len())),
-                PropertyValue::Object(_) | PropertyValue::List(_) => b.append_value("<complex>"),
-            },
-            PropertyBuilder::Int(b) => match value {
-                PropertyValue::Int(i) => b.append_value(*i),
-                _ => b.append_null(),
-            },
-            PropertyBuilder::Float(b) => match value {
-                PropertyValue::Float(f) => b.append_value(*f),
-                _ => b.append_null(),
-            },
-            PropertyBuilder::Bool(b) => match value {
-                PropertyValue::Bool(v) => b.append_value(*v),
-                _ => b.append_null(),
-            },
+            PropertyBuilder::String(b) => {
+                match value {
+                    PropertyValue::String(s) => b.append_value(s),
+                    PropertyValue::Int(i) => b.append_value(i.to_string()),
+                    PropertyValue::Float(f) => b.append_value(f.to_string()),
+                    PropertyValue::Bool(v) => b.append_value(v.to_string()),
+                    PropertyValue::Null => b.append_value("null"),
+                    PropertyValue::Bytes(bytes) => b.append_value(format!("<bytes:{}>", bytes.len())),
+                    PropertyValue::Object(_) | PropertyValue::List(_) => b.append_value("<complex>"),
+                }
+            }
+            PropertyBuilder::Int(b) => {
+                match value {
+                    PropertyValue::Int(i) => b.append_value(*i),
+                    _ => b.append_null(),
+                }
+            }
+            PropertyBuilder::Float(b) => {
+                match value {
+                    PropertyValue::Float(f) => b.append_value(*f),
+                    _ => b.append_null(),
+                }
+            }
+            PropertyBuilder::Bool(b) => {
+                match value {
+                    PropertyValue::Bool(v) => b.append_value(*v),
+                    _ => b.append_null(),
+                }
+            }
         }
     }
 
@@ -464,9 +483,7 @@ impl PropertyBuilder {
 /// - is_current: Boolean
 pub fn versioned_nodes_to_arrow(nodes: &[VersionedNode]) -> Result<RecordBatch> {
     if nodes.is_empty() {
-        return Err(NopalError::Custom(
-            "Cannot convert empty versioned node list to Arrow".into(),
-        ));
+        return Err(NopalError::Custom("Cannot convert empty versioned node list to Arrow".into()));
     }
 
     let schema = Arc::new(Schema::new(vec![
@@ -479,22 +496,33 @@ pub fn versioned_nodes_to_arrow(nodes: &[VersionedNode]) -> Result<RecordBatch> 
         Field::new("is_current", DataType::Boolean, false),
     ]));
 
-    let ids: StringArray = nodes.iter().map(|n| Some(n.id.to_string())).collect();
+    let ids: StringArray = nodes.iter()
+        .map(|n| Some(n.id.to_string()))
+        .collect();
 
-    let labels: StringArray = nodes
-        .iter()
+    let labels: StringArray = nodes.iter()
         .map(|n| Some(n.node_data.label.as_str()))
         .collect();
 
-    let versions: UInt64Array = nodes.iter().map(|n| Some(n.version)).collect();
+    let versions: UInt64Array = nodes.iter()
+        .map(|n| Some(n.version))
+        .collect();
 
-    let timestamps: UInt64Array = nodes.iter().map(|n| Some(n.timestamp)).collect();
+    let timestamps: UInt64Array = nodes.iter()
+        .map(|n| Some(n.timestamp))
+        .collect();
 
-    let valid_from: UInt64Array = nodes.iter().map(|n| Some(n.valid_from)).collect();
+    let valid_from: UInt64Array = nodes.iter()
+        .map(|n| Some(n.valid_from))
+        .collect();
 
-    let valid_to: UInt64Array = nodes.iter().map(|n| n.valid_to).collect();
+    let valid_to: UInt64Array = nodes.iter()
+        .map(|n| n.valid_to)
+        .collect();
 
-    let is_current: BooleanArray = nodes.iter().map(|n| Some(n.valid_to.is_none())).collect();
+    let is_current: BooleanArray = nodes.iter()
+        .map(|n| Some(n.valid_to.is_none()))
+        .collect();
 
     let batch = RecordBatch::try_new(
         schema,
@@ -508,12 +536,9 @@ pub fn versioned_nodes_to_arrow(nodes: &[VersionedNode]) -> Result<RecordBatch> 
             Arc::new(is_current) as ArrayRef,
         ],
     )
-    .map_err(|e| NopalError::Custom(format!("Arrow conversion error: {}", e)))?;
+        .map_err(|e| NopalError::Custom(format!("Arrow conversion error: {}", e)))?;
 
-    log::info!(
-        "Converted {} versioned nodes to Arrow RecordBatch",
-        nodes.len()
-    );
+    log::info!("Converted {} versioned nodes to Arrow RecordBatch", nodes.len());
 
     Ok(batch)
 }
@@ -524,12 +549,16 @@ pub fn versioned_nodes_to_arrow(nodes: &[VersionedNode]) -> Result<RecordBatch> 
 /// - Efficient compression (SNAPPY)
 /// - Fast columnar queries
 /// - Industry standard format
-pub fn write_parquet(batch: &RecordBatch, path: impl AsRef<std::path::Path>) -> Result<()> {
+pub fn write_parquet(
+    batch: &RecordBatch,
+    path: impl AsRef<std::path::Path>,
+) -> Result<()> {
     use parquet::arrow::ArrowWriter;
     use parquet::file::properties::WriterProperties;
     use std::fs::File;
 
-    let file = File::create(path.as_ref()).map_err(NopalError::IoError)?;
+    let file = File::create(path.as_ref())
+        .map_err(NopalError::IoError)?;
 
     let props = WriterProperties::builder()
         .set_compression(parquet::basic::Compression::SNAPPY)
@@ -538,12 +567,10 @@ pub fn write_parquet(batch: &RecordBatch, path: impl AsRef<std::path::Path>) -> 
     let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))
         .map_err(|e| NopalError::Custom(format!("Parquet writer error: {}", e)))?;
 
-    writer
-        .write(batch)
+    writer.write(batch)
         .map_err(|e| NopalError::Custom(format!("Parquet write error: {}", e)))?;
 
-    writer
-        .close()
+    writer.close()
         .map_err(|e| NopalError::Custom(format!("Parquet close error: {}", e)))?;
 
     log::info!("Wrote Arrow RecordBatch to Parquet: {:?}", path.as_ref());
@@ -552,22 +579,23 @@ pub fn write_parquet(batch: &RecordBatch, path: impl AsRef<std::path::Path>) -> 
 }
 
 /// Lee RecordBatch desde archivo Parquet
-pub fn read_parquet(path: impl AsRef<std::path::Path>) -> Result<RecordBatch> {
+pub fn read_parquet(
+    path: impl AsRef<std::path::Path>,
+) -> Result<RecordBatch> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs::File;
 
-    let file = File::open(path.as_ref()).map_err(NopalError::IoError)?;
+    let file = File::open(path.as_ref())
+        .map_err(NopalError::IoError)?;
 
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| NopalError::Custom(format!("Parquet reader error: {}", e)))?;
 
-    let mut reader = builder
-        .build()
+    let mut reader = builder.build()
         .map_err(|e| NopalError::Custom(format!("Parquet build error: {}", e)))?;
 
     // Read first batch (assuming single batch for simplicity)
-    let batch = reader
-        .next()
+    let batch = reader.next()
         .ok_or_else(|| NopalError::Custom("No data in Parquet file".into()))?
         .map_err(|e| NopalError::Custom(format!("Parquet read error: {}", e)))?;
 
@@ -575,6 +603,8 @@ pub fn read_parquet(path: impl AsRef<std::path::Path>) -> Result<RecordBatch> {
 
     Ok(batch)
 }
+
+
 
 #[cfg(test)]
 mod tests {

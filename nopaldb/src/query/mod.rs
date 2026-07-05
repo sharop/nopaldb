@@ -1,14 +1,14 @@
 // src/query/mod.rs
 
-pub mod builder;
-pub mod filter;
 pub mod step;
+pub mod filter;
+pub mod builder;
 
 pub mod nql;
 
 pub mod sketch_manager;
 
+pub use step::{TraversalStep, TraversalState};
+pub use filter::{NodePredicate, FilterBuilder};
 pub use builder::TraverseBuilder;
-pub use filter::{FilterBuilder, NodePredicate};
-pub use sketch_manager::{Sketch, SketchManager, SketchPreview};
-pub use step::{TraversalState, TraversalStep};
+pub use sketch_manager::{SketchManager, Sketch, SketchPreview};

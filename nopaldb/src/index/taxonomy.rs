@@ -249,12 +249,18 @@ impl TaxonomyIndex {
 
     /// Direct (non-transitive) children of `parent`.
     pub fn direct_children(&self, parent: NodeId) -> Vec<NodeId> {
-        self.children.get(&parent).cloned().unwrap_or_default()
+        self.children
+            .get(&parent)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Direct (non-transitive) parents of `child`.
     pub fn direct_parents(&self, child: NodeId) -> Vec<NodeId> {
-        self.parents.get(&child).cloned().unwrap_or_default()
+        self.parents
+            .get(&child)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Number of registered Class nodes.
@@ -338,10 +344,9 @@ impl Index for TaxonomyIndex {
     /// Returns the single matching NodeId (or empty vec if not found).
     fn query(&self, query: &IndexQuery) -> Result<Vec<NodeId>> {
         match query {
-            IndexQuery::Equals(PropertyValue::String(label)) => Ok(self
-                .find_by_label(label)
-                .map(|id| vec![id])
-                .unwrap_or_default()),
+            IndexQuery::Equals(PropertyValue::String(label)) => {
+                Ok(self.find_by_label(label).map(|id| vec![id]).unwrap_or_default())
+            }
             _ => Err(NopalError::custom(
                 "TaxonomyIndex only supports IndexQuery::Equals(String(label))",
             )),
@@ -569,21 +574,13 @@ mod tests {
 
         // Cache must have been invalidated; re-query
         let desc2 = idx.descendants(animal);
-        assert_eq!(
-            desc2.len(),
-            2,
-            "cache should be invalidated after add_subclass"
-        );
+        assert_eq!(desc2.len(), 2, "cache should be invalidated after add_subclass");
         assert!(desc2.contains(&dog));
 
         // Remove the edge and verify re-invalidation
         idx.remove_subclass(mammal, dog).unwrap();
         let desc3 = idx.descendants(animal);
-        assert_eq!(
-            desc3.len(),
-            1,
-            "cache should be re-invalidated after remove_subclass"
-        );
+        assert_eq!(desc3.len(), 1, "cache should be re-invalidated after remove_subclass");
         assert!(!desc3.contains(&dog));
     }
 
@@ -641,25 +638,16 @@ mod tests {
         let animal = id();
 
         // Insert via trait
-        idx.insert(PropertyValue::String("Animal".to_string()), animal)
-            .unwrap();
+        idx.insert(PropertyValue::String("Animal".to_string()), animal).unwrap();
 
         assert_eq!(idx.size(), 1);
 
         // Query via trait
-        let result = idx
-            .query(&IndexQuery::Equals(PropertyValue::String(
-                "Animal".to_string(),
-            )))
-            .unwrap();
+        let result = idx.query(&IndexQuery::Equals(PropertyValue::String("Animal".to_string()))).unwrap();
         assert_eq!(result, vec![animal]);
 
         // Missing label returns empty vec
-        let result2 = idx
-            .query(&IndexQuery::Equals(PropertyValue::String(
-                "Unknown".to_string(),
-            )))
-            .unwrap();
+        let result2 = idx.query(&IndexQuery::Equals(PropertyValue::String("Unknown".to_string()))).unwrap();
         assert!(result2.is_empty());
     }
 
@@ -671,17 +659,14 @@ mod tests {
         let animal = id();
         let mammal = id();
 
-        idx.insert(PropertyValue::String("Animal".to_string()), animal)
-            .unwrap();
-        idx.insert(PropertyValue::String("Mammal".to_string()), mammal)
-            .unwrap();
+        idx.insert(PropertyValue::String("Animal".to_string()), animal).unwrap();
+        idx.insert(PropertyValue::String("Mammal".to_string()), mammal).unwrap();
         idx.add_subclass(animal, mammal).unwrap();
 
         assert_eq!(idx.size(), 2);
 
         // Remove via trait
-        idx.remove(&PropertyValue::String("Mammal".to_string()), mammal)
-            .unwrap();
+        idx.remove(&PropertyValue::String("Mammal".to_string()), mammal).unwrap();
 
         assert_eq!(idx.size(), 1);
         assert!(idx.direct_children(animal).is_empty());
@@ -697,12 +682,9 @@ mod tests {
         let mammal = id();
         let dog = id();
 
-        idx.insert(PropertyValue::String("Animal".to_string()), animal)
-            .unwrap();
-        idx.insert(PropertyValue::String("Mammal".to_string()), mammal)
-            .unwrap();
-        idx.insert(PropertyValue::String("Dog".to_string()), dog)
-            .unwrap();
+        idx.insert(PropertyValue::String("Animal".to_string()), animal).unwrap();
+        idx.insert(PropertyValue::String("Mammal".to_string()), mammal).unwrap();
+        idx.insert(PropertyValue::String("Dog".to_string()), dog).unwrap();
 
         // Wire hierarchy via add_relationship (parent → child)
         idx.add_relationship(animal, mammal).unwrap();

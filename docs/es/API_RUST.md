@@ -1,160 +1,102 @@
-# Referencia corta de API Rust
+# Referencia de API de NopalDB
 
-Esta pagina resume las entradas publicas principales exportadas por
-`nopaldb/src/lib.rs`. Para una lista exhaustiva usa `cargo doc -p nopaldb --open`.
+Esta referencia documenta las estructuras y funciones públicas disponibles en la librería `nopaldb`.
 
-## Imports comunes
+## Módulo `storage`
 
-```rust
-use nopaldb::{
-    Edge, Graph, IndexType, Node, PropertyValue, Result,
-};
-```
+El módulo principal para interactuar con la base de datos.
 
-## Abrir un grafo
+### `struct Storage`
 
-```rust
-let graph = Graph::open("data/mi_grafo.db").await?;
-```
+Manejador principal de la base de datos. Envuelve una instancia de `sled::Db`.
 
-Variantes disponibles:
+#### `Storage::new(path: &str) -> Self`
+Abre o crea una base de datos en la ruta especificada.
+- **Argumentos**:
+    - `path`: Ruta del sistema de archivos donde se guardarán los datos.
+- **Retorna**: Una nueva instancia de `Storage`.
+- **Pánico**: Si no puede abrir la base de datos, el programa entrará en pánico (panic).
 
-- `Graph::open(path)`
-- `Graph::open_with_profile(path, StorageProfile)`
-- `Graph::open_with_options(path, StorageOptions)`
-- `Graph::in_memory()`
-- `Graph::in_memory_with_profile(StorageProfile)`
-- `Graph::in_memory_with_options(StorageOptions)`
+#### `Storage::insert_node(&self, key: &str, value: &str) -> Result<(), sled::Error>`
+Inserta un par clave-valor simple.
+- **Argumentos**:
+    - `key`: Clave única para el nodo.
+    - `value`: Valor a almacenar.
+- **Retorna**: `Result` indicando éxito o error de `sled`.
 
-## CRUD basico
+#### `Storage::get_node(&self, key: &str) -> Option<String>`
+Recupera el valor asociado a una clave.
+- **Argumentos**:
+    - `key`: Clave a buscar.
+- **Retorna**: `Option<String>` con el valor si existe, o `None`.
 
-```rust
-let alice = Node::new("Person")
-    .with_property("name", PropertyValue::String("Alice".into()))
-    .with_property("age", PropertyValue::Int(30));
+#### `Storage::delete_node(&self, key: &str) -> Result<(), sled::Error>`
+Elimina un nodo por su clave.
+- **Argumentos**:
+    - `key`: Clave a eliminar.
+- **Retorna**: `Result` indicando éxito o error.
 
-let alice_id = graph.add_node(alice).await?;
+#### `Storage::insert_triple(&self, triple: RDFTriple) -> Result<(), sled::Error>`
+Inserta una tripleta RDF en la base de datos.
+- **Argumentos**:
+    - `triple`: La estructura `RDFTriple` a insertar.
+- **Retorna**: `Result` indicando éxito o error.
+- **Detalle**: Genera una clave interna combinando Sujeto y Predicado.
 
-let bob_id = graph
-    .add_node(Node::new("Person").with_property(
-        "name",
-        PropertyValue::String("Bob".into()),
-    ))
-    .await?;
+#### `Storage::get_object(&self, subject: &str, predicate: &str) -> Option<String>`
+Busca el objeto de una relación, dado un sujeto y un predicado.
+- **Argumentos**:
+    - `subject`: El nodo origen.
+    - `predicate`: La relación.
+- **Retorna**: `Option<String>` con el objeto (nodo destino) si existe.
 
-let edge = Edge::new(alice_id, bob_id, "KNOWS")
-    .with_property("since", PropertyValue::Int(2024));
+---
 
-let edge_id = graph.add_edge(edge).await?;
+## Módulo `transaction`
 
-let node = graph.get_node(alice_id).await?;
-let relationship = graph.get_edge(edge_id).await?;
+Provee mecanismos para ejecutar operaciones atómicas sobre el grafo.
 
-graph.delete_edge(edge_id).await?;
-graph.delete_node(bob_id).await?;
-```
+### `struct Transaction`
 
-## Transacciones
+Maneja el ciclo de vida de una transacción (ACID local).
 
-```rust
-let tx = graph.begin_transaction().await?;
+#### `Transaction::add_node(&mut self, node: Node) -> Result<NodeId>`
+Agrega un nodo al buffer de la transacción.
+- **Retorna**: El ID del nodo.
 
-let user_id = tx
-    .add_node(Node::new("User").with_property(
-        "name",
-        PropertyValue::String("Example User".into()),
-    ))
-    .await?;
+#### `Transaction::get_node(&self, id: NodeId) -> Result<Node>`
+Obtiene un nodo, incluyendo cambios pendientes en la transacción actual.
+- **Retorna**: El nodo solicitado o error si no existe.
 
-tx.commit().await?;
-```
+#### `Transaction::delete_node(&mut self, id: NodeId) -> Result<()>`
+Marca un nodo para eliminación.
 
-`Transaction` expone operaciones de lectura/escritura sobre nodos y aristas y
-termina con `commit()`, `rollback()` o `rollback_async()`.
+#### `Transaction::commit(self) -> Result<()>`
+Aplica permanentemente todos los cambios pendientes al grafo.
+- **Atomicidad**: Todos los cambios se aplican o ninguno.
 
-## NQL
+#### `Transaction::rollback(self) -> Result<()>`
+Descarta todos los cambios pendientes de la transacción.
 
-```rust
-let result = graph
-    .execute_nql(
-        r#"
-        find p.name, p.age
-        from (p:Person)
-        where p.age >= 18
-        order by p.name
-        "#,
-    )
-    .await?;
+---
 
-println!("{}", result.summary());
-```
+## Módulo `rdf_owl::rdf`
 
-`execute_nql` retorna `NqlResult`, que cubre consultas de lectura, escrituras,
-`EXPLAIN`, `PROFILE` y exportaciones soportadas por NQL.
+Estructuras de datos para representación semántica.
 
-## Indices
+### `struct RDFTriple`
 
-```rust
-let index_name = graph
-    .create_index("Person", "email", IndexType::Hash)
-    .await?;
+Representa una tripleta semántica: Sujeto -> Predicado -> Objeto.
 
-let indexes = graph.list_indexes().await;
+#### Campos
+- `pub subject: String`
+- `pub predicate: String`
+- `pub object: String`
 
-graph.drop_index(&index_name).await?;
-```
-
-Tipos publicos principales:
-
-- `IndexType::Hash`
-- `IndexType::BTree`
-- `IndexType::FullText` cuando el build incluye full-text
-
-## Schema inspection
-
-```rust
-let labels = graph.get_labels().await?;
-let edge_types = graph.get_edge_types().await?;
-let schema = graph.get_schema().await?;
-
-graph.rebuild_schema().await?;
-```
-
-Tambien existen conteos y propiedades por label/tipo de arista, como
-`get_label_count`, `get_label_properties`, `get_edge_type_count` y
-`get_edge_type_properties`.
-
-## Arrow
-
-Con las features publicas que incluyen Arrow:
-
-```rust
-let nodes = graph.to_arrow(None).await?;
-let edges = graph.edges_to_arrow().await?;
-let complete = graph.to_arrow_complete(None).await?;
-```
-
-## Embeddings, reasoner y SHACL
-
-Estas APIs estan detras de features:
-
-- `embeddings`: almacenamiento y busqueda de vectores.
-- `reasoner`: `ELReasoner`.
-- `owl-import`: import/export Turtle.
-- `shacl`: `ShaclValidator`.
-
-Build Rust completo:
-
-```bash
-cargo build -p nopaldb --release --features full
-```
-
-Wrapper Python:
-
-```bash
-make build-wheel
-cd nopaldb && maturin develop --release --features python-full
-```
-
-`cargo build --features full` compila la libreria Rust; el wrapper Python se
-construye con `maturin` para enlazar correctamente PyO3 contra Python.
+#### `RDFTriple::new(subject: &str, predicate: &str, object: &str) -> Self`
+Constructor para crear una nueva tripleta.
+- **Argumentos**:
+    - `subject`: Identificador del sujeto.
+    - `predicate`: Identificador del predicado (relación).
+    - `object`: Identificador o valor del objeto.
+- **Retorna**: Una nueva instancia de `RDFTriple`.

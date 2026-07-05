@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::{
-    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tokio::{net::TcpListener, sync::RwLock};
@@ -165,28 +165,19 @@ pub async fn serve(db_path: Option<String>, bind_addr: String) -> Result<()> {
         .route("/api/timeline", get(timeline))
         .route("/api/timeline/dag/{recent_index}", get(timeline_dag))
         .route("/api/timeline/impact/{recent_index}", get(timeline_impact))
-        .route(
-            "/api/timeline/pin/{recent_index}",
-            post(toggle_timeline_pin),
-        )
+        .route("/api/timeline/pin/{recent_index}", post(toggle_timeline_pin))
         .route("/api/timeline/rerun/{recent_index}", post(rerun_timeline))
         .route("/api/query/run", post(run_query))
         .route("/api/projects", get(list_projects))
         .route("/api/projects/create", post(create_project))
         .route("/api/projects/close", post(close_project))
         .route("/api/projects/update", axum::routing::put(update_project))
-        .route(
-            "/api/projects/remove",
-            axum::routing::delete(remove_project),
-        )
+        .route("/api/projects/remove", axum::routing::delete(remove_project))
         .route("/api/projects/pin", post(pin_project))
         .route("/api/session/ui-prefs", post(save_ui_prefs))
         .route("/api/reference", get(reference))
         .route("/api/queries/save", post(save_query))
-        .route(
-            "/api/queries/{query_id}",
-            axum::routing::delete(delete_query),
-        )
+        .route("/api/queries/{query_id}", axum::routing::delete(delete_query))
         .route("/api/findings", post(create_finding))
         .route(
             "/api/findings/{finding_id}",
@@ -333,7 +324,9 @@ async fn open_session(
     Ok(Json(snapshot))
 }
 
-async fn session_state(State(state): State<WebState>) -> Result<Json<SessionState>, WebError> {
+async fn session_state(
+    State(state): State<WebState>,
+) -> Result<Json<SessionState>, WebError> {
     let workbench = state.workbench.read().await;
     Ok(Json(workbench.session().clone()))
 }
@@ -370,10 +363,7 @@ async fn rename_tab(
     let session = workbench
         .rename_tab(&tab_id, &request.title)
         .map_err(internal_error)?
-        .ok_or((
-            StatusCode::BAD_REQUEST,
-            format!("unable to rename tab: {}", tab_id),
-        ))?;
+        .ok_or((StatusCode::BAD_REQUEST, format!("unable to rename tab: {}", tab_id)))?;
     Ok(Json(session))
 }
 
@@ -398,10 +388,7 @@ async fn close_tab(
     let session = workbench
         .close_tab(&tab_id)
         .map_err(internal_error)?
-        .ok_or((
-            StatusCode::BAD_REQUEST,
-            format!("unable to close tab: {}", tab_id),
-        ))?;
+        .ok_or((StatusCode::BAD_REQUEST, format!("unable to close tab: {}", tab_id)))?;
     Ok(Json(session))
 }
 
@@ -650,11 +637,7 @@ async fn timeline(
     Query(query): Query<TimelineQuery>,
 ) -> Result<Json<crate::workbench::TimelineSnapshot>, WebError> {
     let workbench = state.workbench.read().await;
-    Ok(Json(
-        workbench
-            .timeline_snapshot(query.limit.unwrap_or(100))
-            .map_err(internal_error)?,
-    ))
+    Ok(Json(workbench.timeline_snapshot(query.limit.unwrap_or(100)).map_err(internal_error)?))
 }
 
 async fn timeline_dag(
@@ -665,10 +648,7 @@ async fn timeline_dag(
     let workbench = state.workbench.read().await;
     let response = workbench
         .timeline_dag_for_recent(recent_index.saturating_sub(1), query.limit.unwrap_or(200))
-        .ok_or((
-            StatusCode::NOT_FOUND,
-            format!("timeline entry not found: {}", recent_index),
-        ))?;
+        .ok_or((StatusCode::NOT_FOUND, format!("timeline entry not found: {}", recent_index)))?;
     Ok(Json(response))
 }
 
@@ -684,10 +664,7 @@ async fn timeline_impact(
             query.limit.unwrap_or(200),
             query.threshold.unwrap_or(35).min(100),
         )
-        .ok_or((
-            StatusCode::NOT_FOUND,
-            format!("timeline entry not found: {}", recent_index),
-        ))?;
+        .ok_or((StatusCode::NOT_FOUND, format!("timeline entry not found: {}", recent_index)))?;
     Ok(Json(response))
 }
 
@@ -698,10 +675,7 @@ async fn toggle_timeline_pin(
     let mut workbench = state.workbench.write().await;
     let response = workbench
         .toggle_timeline_pin_recent(recent_index.saturating_sub(1))
-        .ok_or((
-            StatusCode::NOT_FOUND,
-            format!("timeline entry not found: {}", recent_index),
-        ))?;
+        .ok_or((StatusCode::NOT_FOUND, format!("timeline entry not found: {}", recent_index)))?;
     Ok(Json(response))
 }
 
@@ -718,15 +692,11 @@ async fn rerun_timeline(
     Ok(Json(response))
 }
 
-async fn list_projects(State(state): State<WebState>) -> Result<Json<Vec<ProjectEntry>>, WebError> {
+async fn list_projects(
+    State(state): State<WebState>,
+) -> Result<Json<Vec<ProjectEntry>>, WebError> {
     let workbench = state.workbench.read().await;
-    Ok(Json(
-        workbench
-            .session_open_snapshot()
-            .await
-            .map_err(internal_error)?
-            .projects,
-    ))
+    Ok(Json(workbench.session_open_snapshot().await.map_err(internal_error)?.projects))
 }
 
 async fn create_project(
@@ -735,18 +705,11 @@ async fn create_project(
 ) -> Result<Json<crate::workbench::SessionOpenSnapshot>, WebError> {
     let name = request.name.trim().to_string();
     if name.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "project name is required".to_string(),
-        ));
+        return Err((StatusCode::BAD_REQUEST, "project name is required".to_string()));
     }
     let mut workbench = state.workbench.write().await;
     workbench
-        .create_project(
-            &name,
-            request.db_path.as_deref(),
-            request.description.as_deref(),
-        )
+        .create_project(&name, request.db_path.as_deref(), request.description.as_deref())
         .await
         .map_err(internal_error)?;
     let snapshot = workbench
@@ -782,10 +745,7 @@ async fn update_project(
             request.tags,
         )
         .map_err(internal_error)?
-        .ok_or((
-            StatusCode::NOT_FOUND,
-            format!("project not found: {}", request.db_path),
-        ))?;
+        .ok_or((StatusCode::NOT_FOUND, format!("project not found: {}", request.db_path)))?;
     Ok(Json(updated))
 }
 
@@ -798,10 +758,7 @@ async fn remove_project(
         .delete_project(&request.db_path, request.delete_files)
         .map_err(internal_error)?;
     if !removed {
-        return Err((
-            StatusCode::NOT_FOUND,
-            format!("project not found: {}", request.db_path),
-        ));
+        return Err((StatusCode::NOT_FOUND, format!("project not found: {}", request.db_path)));
     }
     Ok(Json(OkResponse { ok: true }))
 }
@@ -814,10 +771,7 @@ async fn pin_project(
     let updated = workbench
         .toggle_project_pin(&request.db_path)
         .map_err(internal_error)?
-        .ok_or((
-            StatusCode::NOT_FOUND,
-            format!("project not found: {}", request.db_path),
-        ))?;
+        .ok_or((StatusCode::NOT_FOUND, format!("project not found: {}", request.db_path)))?;
     Ok(Json(updated))
 }
 
@@ -841,10 +795,7 @@ async fn save_query(
         .save_query_to_session(&request.name, &request.query)
         .map_err(internal_error)?;
     if !saved {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "query name and text are required".to_string(),
-        ));
+        return Err((StatusCode::BAD_REQUEST, "query name and text are required".to_string()));
     }
     Ok(Json(OkResponse { ok: true }))
 }
@@ -858,10 +809,7 @@ async fn delete_query(
         .delete_saved_query(&query_id)
         .map_err(internal_error)?;
     if !deleted {
-        return Err((
-            StatusCode::NOT_FOUND,
-            format!("saved query not found: {}", query_id),
-        ));
+        return Err((StatusCode::NOT_FOUND, format!("saved query not found: {}", query_id)));
     }
     Ok(Json(OkResponse { ok: true }))
 }
@@ -874,10 +822,7 @@ async fn create_finding(
     let finding = workbench
         .create_finding(request)
         .map_err(internal_error)?
-        .ok_or((
-            StatusCode::BAD_REQUEST,
-            "finding title or body is required".to_string(),
-        ))?;
+        .ok_or((StatusCode::BAD_REQUEST, "finding title or body is required".to_string()))?;
     Ok(Json(finding))
 }
 
@@ -890,10 +835,7 @@ async fn update_finding(
     let finding = workbench
         .update_finding(&finding_id, request)
         .map_err(internal_error)?
-        .ok_or((
-            StatusCode::NOT_FOUND,
-            format!("finding not found: {}", finding_id),
-        ))?;
+        .ok_or((StatusCode::NOT_FOUND, format!("finding not found: {}", finding_id)))?;
     Ok(Json(finding))
 }
 
@@ -906,10 +848,7 @@ async fn delete_finding(
         .delete_finding(&finding_id)
         .map_err(internal_error)?;
     if !deleted {
-        return Err((
-            StatusCode::NOT_FOUND,
-            format!("finding not found: {}", finding_id),
-        ));
+        return Err((StatusCode::NOT_FOUND, format!("finding not found: {}", finding_id)));
     }
     Ok(Json(OkResponse { ok: true }))
 }

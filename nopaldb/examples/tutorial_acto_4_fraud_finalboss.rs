@@ -20,14 +20,18 @@
 use nopaldb::Graph;
 use std::error::Error;
 
-const Q_TOPOLOGY: &str =
-    include_str!("../../docs/tutorial/acto_4_synthetic_fraud/queries/01_topology.nql");
-const Q_TOP_INBOUND: &str =
-    include_str!("../../docs/tutorial/acto_4_synthetic_fraud/queries/02_top_inbound.nql");
-const Q_RING_TRANSFERS: &str =
-    include_str!("../../docs/tutorial/acto_4_synthetic_fraud/queries/03_ring_transfers.nql");
-const Q_PATHS: &str =
-    include_str!("../../docs/tutorial/acto_4_synthetic_fraud/queries/05_path_chains.nql");
+const Q_TOPOLOGY: &str = include_str!(
+    "../../docs/tutorial/acto_4_synthetic_fraud/queries/01_topology.nql"
+);
+const Q_TOP_INBOUND: &str = include_str!(
+    "../../docs/tutorial/acto_4_synthetic_fraud/queries/02_top_inbound.nql"
+);
+const Q_RING_TRANSFERS: &str = include_str!(
+    "../../docs/tutorial/acto_4_synthetic_fraud/queries/03_ring_transfers.nql"
+);
+const Q_PATHS: &str = include_str!(
+    "../../docs/tutorial/acto_4_synthetic_fraud/queries/05_path_chains.nql"
+);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -50,9 +54,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     graph.close().await?;
     println!("\n=== Acto 4 (estructural) completado ===");
-    println!(
-        "Para community detection, embeddings, path-anomaly y Arrow export, ejecuta el notebook 04_synthetic_fraud.ipynb."
-    );
+    println!("Para community detection, embeddings, path-anomaly y Arrow export, ejecuta el notebook 04_synthetic_fraud.ipynb.");
     Ok(())
 }
 
@@ -90,9 +92,7 @@ async fn paso_2_top_inbound(graph: &Graph) -> Result<i64, Box<dyn Error>> {
 async fn paso_3_ring_transfers(graph: &Graph) -> Result<(), Box<dyn Error>> {
     println!("--- Paso 3: transfers de alto monto (>900k) ---");
     let result = graph.execute_nql(Q_RING_TRANSFERS).await?;
-    let amounts: Vec<f64> = result
-        .rows()
-        .iter()
+    let amounts: Vec<f64> = result.rows().iter()
         .filter_map(|r| r.get("e.amount").map(prop_to_f64))
         .collect();
     println!("transfers > 900k: {}", amounts.len());

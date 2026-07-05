@@ -1,22 +1,22 @@
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
+    Frame,
 };
 
 use crate::app::{App, Mode, SidePanel};
 
 pub mod editor;
 pub mod graph;
-pub mod help;
-pub mod history;
-pub mod palette;
 pub mod results;
 pub mod schema;
-pub mod session_browser;
+pub mod history;
 pub mod timeline;
+pub mod session_browser;
+pub mod help;
+pub mod palette;
 
 // Color palette (gruvbox-inspired minimalist)
 pub const BG: Color = Color::Rgb(40, 40, 40);
@@ -53,10 +53,10 @@ fn draw_main_view(f: &mut Frame, app: &App) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),               // Header
-            Constraint::Min(0),                  // Main area
+            Constraint::Length(1),      // Header
+            Constraint::Min(0),         // Main area
             Constraint::Length(timeline_height), // Timeline area
-            Constraint::Length(1),               // Status bar
+            Constraint::Length(1),      // Status bar
         ])
         .split(f.size());
 
@@ -69,14 +69,17 @@ fn draw_main_view(f: &mut Frame, app: &App) {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(left_width),   // Editor + results
+                Constraint::Percentage(left_width),  // Editor + results
                 Constraint::Percentage(schema_width), // Side panel
             ])
             .split(outer[1])
     } else {
         Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(100), Constraint::Length(0)])
+            .constraints([
+                Constraint::Percentage(100),
+                Constraint::Length(0),
+            ])
             .split(outer[1])
     };
 
@@ -118,12 +121,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     }
     header_text.push(' ');
 
-    let header = Paragraph::new(header_text).style(
-        Style::default()
-            .bg(ACCENT)
-            .fg(BG)
-            .add_modifier(Modifier::BOLD),
-    );
+    let header = Paragraph::new(header_text)
+        .style(Style::default().bg(ACCENT).fg(BG).add_modifier(Modifier::BOLD));
 
     f.render_widget(header, area);
 }
@@ -135,7 +134,7 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
         Mode::Command => {
             let cmd_text = format!(" :{} ", app.command_buffer());
             Span::styled(cmd_text, Style::default().bg(Color::Blue).fg(FG))
-        }
+        },
         Mode::Visual => Span::styled(" VISUAL ", Style::default().bg(Color::Magenta).fg(FG)),
         Mode::History => Span::styled(" HISTORY ", Style::default().bg(Color::Yellow).fg(BG)),
         Mode::Session => Span::styled(" SESSION ", Style::default().bg(Color::Cyan).fg(BG)),
@@ -149,7 +148,8 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
         Span::raw(&app.status_message),
     ]);
 
-    let status = Paragraph::new(status_text).style(Style::default().fg(FG).bg(BG));
+    let status = Paragraph::new(status_text)
+        .style(Style::default().fg(FG).bg(BG));
 
     f.render_widget(status, area);
 }
@@ -158,9 +158,9 @@ fn draw_history_view(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Header
-            Constraint::Min(0),    // History content
-            Constraint::Length(1), // Status bar
+            Constraint::Length(1),      // Header
+            Constraint::Min(0),         // History content
+            Constraint::Length(1),      // Status bar
         ])
         .split(f.size());
 

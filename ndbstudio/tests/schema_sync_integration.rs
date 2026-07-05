@@ -23,18 +23,8 @@ async fn write_then_rebuild_schema_reflects_updates() {
     assert!(schema.node_labels.contains(&"Person".to_string()));
     assert!(schema.edge_types.contains(&"KNOWS".to_string()));
 
-    assert_eq!(
-        schema
-            .node_counts
-            .get("Person")
-            .copied()
-            .unwrap_or_default(),
-        2
-    );
-    assert_eq!(
-        schema.edge_counts.get("KNOWS").copied().unwrap_or_default(),
-        1
-    );
+    assert_eq!(schema.node_counts.get("Person").copied().unwrap_or_default(), 2);
+    assert_eq!(schema.edge_counts.get("KNOWS").copied().unwrap_or_default(), 1);
     assert_eq!(schema.total_nodes, 2);
     assert_eq!(schema.total_edges, 1);
 }

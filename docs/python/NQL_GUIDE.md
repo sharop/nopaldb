@@ -1,6 +1,6 @@
 # NQL Guide (Nopal Query Language) 🔍
 
-NQL is the query language for NopalDB, built around property-graph patterns but optimized for Data Science and Python workflows.
+NQL is the query language for NopalDB, inspired by Cypher but optimized for Data Science and Python workflows.
 
 ---
 

@@ -2,11 +2,11 @@
 //
 // Python bindings for BulkLoader - High-performance bulk import API
 
-use super::to_py_result;
-use crate::graph::BulkLoader as RustBulkLoader;
-use crate::types::{Edge, Node, PropertyValue};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict};
+use pyo3::types::{PyDict, PyAny};
+use crate::graph::BulkLoader as RustBulkLoader;
+use crate::types::{Node, Edge, PropertyValue};
+use super::to_py_result;
 use uuid::Uuid;
 
 /// Python wrapper for high-performance BulkLoader
@@ -49,7 +49,7 @@ impl PyBulkLoader {
         // Check if already finished
         let loader = self.inner.as_mut().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "BulkLoader already finished. Create a new one.",
+                "BulkLoader already finished. Create a new one."
             )
         })?;
 
@@ -66,7 +66,9 @@ impl PyBulkLoader {
         let node_id = node.id;
 
         // Add to buffer (async)
-        let result = self.rt.block_on(async { loader.add_node(node).await });
+        let result = self.rt.block_on(async {
+            loader.add_node(node).await
+        });
 
         to_py_result(result)?;
 
@@ -83,25 +85,36 @@ impl PyBulkLoader {
     ///
     /// Example:
     ///     >>> loader.add_edge(alice_id, bob_id, "KNOWS")
-    fn add_edge(&mut self, source_id: &str, target_id: &str, label: &str) -> PyResult<()> {
+    fn add_edge(
+        &mut self,
+        source_id: &str,
+        target_id: &str,
+        label: &str,
+    ) -> PyResult<()> {
         let loader = self.inner.as_mut().ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("BulkLoader already finished")
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "BulkLoader already finished"
+            )
         })?;
 
         // Parse UUIDs
-        let source = Uuid::parse_str(source_id).map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid source UUID: {}", e))
-        })?;
+        let source = Uuid::parse_str(source_id)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Invalid source UUID: {}", e)
+            ))?;
 
-        let target = Uuid::parse_str(target_id).map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid target UUID: {}", e))
-        })?;
+        let target = Uuid::parse_str(target_id)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Invalid target UUID: {}", e)
+            ))?;
 
         // Create edge
         let edge = Edge::new(source, target, label);
 
         // Add to buffer
-        let result = self.rt.block_on(async { loader.add_edge(edge).await });
+        let result = self.rt.block_on(async {
+            loader.add_edge(edge).await
+        });
 
         to_py_result(result)
     }
@@ -116,11 +129,15 @@ impl PyBulkLoader {
     ///     >>> print(f"Loaded {stats['nodes']:,} nodes")
     fn finish(&mut self, py: Python) -> PyResult<Py<PyAny>> {
         let loader = self.inner.take().ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("BulkLoader already finished")
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "BulkLoader already finished"
+            )
         })?;
 
         // Finish bulk load
-        let stats = self.rt.block_on(async { loader.finish().await });
+        let stats = self.rt.block_on(async {
+            loader.finish().await
+        });
 
         let stats = to_py_result(stats)?;
 
@@ -166,12 +183,10 @@ impl PyBulkLoader {
 impl PyBulkLoader {
     /// Create from Rust BulkLoader
     pub(crate) fn new(loader: RustBulkLoader) -> PyResult<Self> {
-        let rt = tokio::runtime::Runtime::new().map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                "Failed to create runtime: {}",
-                e
-            ))
-        })?;
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                format!("Failed to create runtime: {}", e)
+            ))?;
 
         Ok(PyBulkLoader {
             inner: Some(loader),
@@ -208,17 +223,16 @@ fn python_to_property_value(py: Python, obj: Py<PyAny>) -> PyResult<PropertyValu
     }
 
     // Get type name for error
-    let type_name = obj
-        .bind(py)
-        .get_type()
-        .name()
+    let type_name = obj.bind(py).get_type().name()
         .map(|n| n.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
-    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
-        "Unsupported property type: {}. Supported: str, int, float, bool",
-        type_name
-    )))
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        format!(
+            "Unsupported property type: {}. Supported: str, int, float, bool",
+            type_name
+        )
+    ))
 }
 
 #[cfg(test)]

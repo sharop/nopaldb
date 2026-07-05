@@ -70,7 +70,9 @@ pub async fn import_turtle(
     let mut label_to_id: HashMap<String, NodeId> = HashMap::new();
 
     // Helper closure: resolve a term (prefixed or angle-bracket IRI) to a local name.
-    let resolve = |term: &str| -> String { local_name(term, &prefixes) };
+    let resolve = |term: &str| -> String {
+        local_name(term, &prefixes)
+    };
 
     // Track which subjects are known owl:Class IRIs (for Pass 3 exclusion).
     let mut class_iris: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -78,7 +80,7 @@ pub async fn import_turtle(
     // Pass 1: find rdf:type owl:Class triples.
     for triple in &triples {
         let pred = resolve(&triple.predicate);
-        let obj = resolve(&triple.object);
+        let obj  = resolve(&triple.object);
 
         if pred == "type" && obj == "Class" {
             let class_label = resolve(&triple.subject);
@@ -91,8 +93,9 @@ pub async fn import_turtle(
 
             // Idempotency: reuse existing node if label already in graph.
             let existing = graph.get_nodes_by_label(&class_label).await?;
-            let node_id = if let Some(existing_node) =
-                existing.into_iter().find(|n| n.kind == NodeKind::Class)
+            let node_id = if let Some(existing_node) = existing
+                .into_iter()
+                .find(|n| n.kind == NodeKind::Class)
             {
                 existing_node.id
             } else {
@@ -114,8 +117,8 @@ pub async fn import_turtle(
         let pred = resolve(&triple.predicate);
 
         if pred == "subClassOf" {
-            let sub_label = resolve(&triple.subject);
-            let super_label = resolve(&triple.object);
+            let sub_label    = resolve(&triple.subject);
+            let super_label  = resolve(&triple.object);
 
             if sub_label.is_empty() || super_label.is_empty() {
                 report.triples_skipped += 1;
@@ -159,7 +162,7 @@ pub async fn import_turtle(
 
     for triple in &triples {
         let pred = resolve(&triple.predicate);
-        let obj = resolve(&triple.object);
+        let obj  = resolve(&triple.object);
 
         if pred == "type" && obj != "Class" && !obj.is_empty() {
             // Skip subjects that were declared as owl:Class themselves.
@@ -170,9 +173,7 @@ pub async fn import_turtle(
             // Only add if the class is known (was declared as owl:Class in this file
             // or already in the graph).
             if label_to_id.contains_key(&obj) {
-                individuals
-                    .entry(triple.subject.clone())
-                    .or_insert_with(|| obj.clone());
+                individuals.entry(triple.subject.clone()).or_insert_with(|| obj.clone());
             }
         }
     }
@@ -206,8 +207,10 @@ pub async fn import_turtle(
             }
 
             let mut node = Node::new(class_label.as_str());
-            node.properties
-                .insert("iri".to_string(), PropertyValue::String(subj_iri.clone()));
+            node.properties.insert(
+                "iri".to_string(),
+                PropertyValue::String(subj_iri.clone()),
+            );
             for (k, v) in props {
                 node.properties.insert(k, v);
             }
@@ -368,15 +371,9 @@ fn parse_turtle(source: &str) -> (HashMap<String, String>, Vec<RDFTriple>) {
             let mut in_iri = false;
             let mut result = String::new();
             for ch in line.chars() {
-                if ch == '<' {
-                    in_iri = true;
-                }
-                if ch == '>' {
-                    in_iri = false;
-                }
-                if ch == '#' && !in_iri {
-                    break;
-                }
+                if ch == '<' { in_iri = true; }
+                if ch == '>' { in_iri = false; }
+                if ch == '#' && !in_iri { break; }
                 result.push(ch);
             }
             result
@@ -446,10 +443,7 @@ fn parse_turtle(source: &str) -> (HashMap<String, String>, Vec<RDFTriple>) {
                     break;
                 } else if next == ";" && i + 2 < tokens.len() {
                     // Abbreviated: subject ; pred2 obj2 .  — reuse last subject
-                    let last_subject = triples
-                        .last()
-                        .map(|t| t.subject.clone())
-                        .unwrap_or_default();
+                    let last_subject = triples.last().map(|t| t.subject.clone()).unwrap_or_default();
                     let pred2 = tokens[i + 1].clone();
                     let obj2 = tokens[i + 2].clone();
                     triples.push(RDFTriple::new(&last_subject, &pred2, &obj2));
@@ -511,12 +505,8 @@ fn tokenize(s: &str) -> Vec<String> {
             let mut tok = String::from(ch);
             i += 1;
             while i < chars.len() && chars[i] != delim {
-                if chars[i] == '\\' {
-                    i += 1;
-                } // escape
-                if i < chars.len() {
-                    tok.push(chars[i]);
-                }
+                if chars[i] == '\\' { i += 1; } // escape
+                if i < chars.len() { tok.push(chars[i]); }
                 i += 1;
             }
             tok.push(delim);
@@ -556,10 +546,10 @@ fn tokenize(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::Graph;
-    use crate::index::taxonomy::TaxonomyIndex;
     use std::collections::HashMap;
     use tempfile::TempDir;
+    use crate::graph::Graph;
+    use crate::index::taxonomy::TaxonomyIndex;
 
     async fn open_temp_graph() -> (Graph, TempDir) {
         let dir = TempDir::new().unwrap();
@@ -620,7 +610,7 @@ mod tests {
         assert_eq!(report.subclass_edges_added, 2);
 
         let animal_id = taxonomy.find_by_label("Animal").unwrap();
-        let dog_id = taxonomy.find_by_label("Dog").unwrap();
+        let dog_id    = taxonomy.find_by_label("Dog").unwrap();
 
         // Transitive: Dog ⊑ Animal
         assert!(taxonomy.is_subclass_of(dog_id, animal_id));
@@ -647,10 +637,8 @@ mod tests {
         let report = import_turtle(&graph, &mut taxonomy, ttl).await.unwrap();
 
         assert_eq!(report.classes_added, 1);
-        assert!(
-            report.triples_skipped > 0 || report.instances_added > 0,
-            "non-class triples should be processed or skipped"
-        );
+        assert!(report.triples_skipped > 0 || report.instances_added > 0,
+            "non-class triples should be processed or skipped");
     }
 
     // -----------------------------------------------------------------------
@@ -671,11 +659,7 @@ mod tests {
         import_turtle(&graph, &mut taxonomy, ttl).await.unwrap();
 
         let nodes = graph.get_nodes_by_label("Animal").await.unwrap();
-        assert_eq!(
-            nodes.len(),
-            1,
-            "second import should not duplicate the node"
-        );
+        assert_eq!(nodes.len(), 1, "second import should not duplicate the node");
 
         // Taxonomy size stays at 1
         assert_eq!(taxonomy.size(), 1);
@@ -725,14 +709,8 @@ mod tests {
     #[test]
     fn test_local_name_extraction() {
         let prefixes = HashMap::new();
-        assert_eq!(
-            local_name("<http://example.org/Animal>", &prefixes),
-            "Animal"
-        );
-        assert_eq!(
-            local_name("<http://www.w3.org/2002/07/owl#Class>", &prefixes),
-            "Class"
-        );
+        assert_eq!(local_name("<http://example.org/Animal>", &prefixes), "Animal");
+        assert_eq!(local_name("<http://www.w3.org/2002/07/owl#Class>", &prefixes), "Class");
         assert_eq!(local_name(":Animal", &prefixes), "Animal");
         assert_eq!(local_name("owl:Class", &prefixes), "Class");
         assert_eq!(local_name("rdfs:subClassOf", &prefixes), "subClassOf");
@@ -743,22 +721,10 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn test_parse_object_as_property_value() {
-        assert_eq!(
-            parse_object_as_property_value(r#""42""#),
-            PropertyValue::Int(42)
-        );
-        assert_eq!(
-            parse_object_as_property_value(r#""3.14""#),
-            PropertyValue::Float(3.14)
-        );
-        assert_eq!(
-            parse_object_as_property_value(r#""true""#),
-            PropertyValue::Bool(true)
-        );
-        assert_eq!(
-            parse_object_as_property_value(r#""false""#),
-            PropertyValue::Bool(false)
-        );
+        assert_eq!(parse_object_as_property_value(r#""42""#), PropertyValue::Int(42));
+        assert_eq!(parse_object_as_property_value(r#""3.14""#), PropertyValue::Float(3.14));
+        assert_eq!(parse_object_as_property_value(r#""true""#), PropertyValue::Bool(true));
+        assert_eq!(parse_object_as_property_value(r#""false""#), PropertyValue::Bool(false));
         assert_eq!(
             parse_object_as_property_value(r#""Alice""#),
             PropertyValue::String("Alice".to_string())

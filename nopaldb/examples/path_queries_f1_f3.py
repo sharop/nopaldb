@@ -9,6 +9,7 @@ Cubre:
 
 Caso de uso: detección de cadenas de transferencias bancarias sospechosas.
 
+SHAROP:PROBADO 09ABR26:Funcionando correctamente
 """
 
 import nopaldb
@@ -128,7 +129,7 @@ def main():
         ' where path_sum(amount) > 13000')
 
     print("\n" + "=" * 65)
-    print("  Listo. Ver la guia de NQL en docs/python/NQL_GUIDE.md")
+    print("  Listo. Ver docs/NQL_PATH_QUERIES_F1.md, F2.md, F3.md")
     print("=" * 65)
 
 

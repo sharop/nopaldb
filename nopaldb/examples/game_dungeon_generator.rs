@@ -3,7 +3,7 @@
 // Procedurally generate dungeons using graph structure
 // Rooms as nodes, corridors as edges
 
-use nopaldb::{Edge, Graph, Node, PropertyValue};
+use nopaldb::{Graph, Node, Edge, PropertyValue};
 use rand::Rng;
 
 #[tokio::main]
@@ -26,17 +26,21 @@ async fn main() -> nopaldb::Result<()> {
 
     // Find path
     println!("\n🗺️  Path to Treasure:");
-    let path = graph
-        .shortest_path(entrance, treasure, nopaldb::TraversalConfig::new())
-        .await?
-        .unwrap();
+    let path = graph.shortest_path(
+        entrance,
+        treasure,
+        nopaldb::TraversalConfig::new()
+    ).await?.unwrap();
 
     println!("  {} rooms to traverse", path.nodes.len());
 
     Ok(())
 }
 
-async fn generate_dungeon(graph: &Graph, num_rooms: usize) -> nopaldb::Result<uuid::Uuid> {
+async fn generate_dungeon(
+    graph: &Graph,
+    num_rooms: usize
+) -> nopaldb::Result<uuid::Uuid> {
     let mut rng = rand::thread_rng();
     let mut rooms = Vec::new();
 
@@ -49,14 +53,11 @@ async fn generate_dungeon(graph: &Graph, num_rooms: usize) -> nopaldb::Result<uu
             _ => "Boss",
         };
 
-        let room = graph
-            .add_node(
-                Node::new("Room")
-                    .with_property("id", PropertyValue::Int(i as i64))
-                    .with_property("type", PropertyValue::String(room_type.into()))
-                    .with_property("danger", PropertyValue::Int(rng.gen_range(1..10))),
-            )
-            .await?;
+        let room = graph.add_node(Node::new("Room")
+            .with_property("id", PropertyValue::Int(i as i64))
+            .with_property("type", PropertyValue::String(room_type.into()))
+            .with_property("danger", PropertyValue::Int(rng.gen_range(1..10)))
+        ).await?;
 
         rooms.push(room);
     }
@@ -64,15 +65,11 @@ async fn generate_dungeon(graph: &Graph, num_rooms: usize) -> nopaldb::Result<uu
     // Connect rooms randomly
     for i in 0..num_rooms - 1 {
         // Connect to next room
-        graph
-            .add_edge(Edge::new(rooms[i], rooms[i + 1], "CORRIDOR"))
-            .await?;
+        graph.add_edge(Edge::new(rooms[i], rooms[i + 1], "CORRIDOR")).await?;
 
         // Random extra connections
         if rng.gen_bool(0.3) && i + 2 < num_rooms {
-            graph
-                .add_edge(Edge::new(rooms[i], rooms[i + 2], "CORRIDOR"))
-                .await?;
+            graph.add_edge(Edge::new(rooms[i], rooms[i + 2], "CORRIDOR")).await?;
         }
     }
 
@@ -93,16 +90,23 @@ async fn print_room(graph: &Graph, room_id: uuid::Uuid) -> nopaldb::Result<()> {
     Ok(())
 }
 
-async fn find_treasure_room(graph: &Graph, entrance: uuid::Uuid) -> nopaldb::Result<uuid::Uuid> {
+async fn find_treasure_room(
+    graph: &Graph,
+    entrance: uuid::Uuid,
+) -> nopaldb::Result<uuid::Uuid> {
     // Use BFS to find furthest loot room
-    let result = graph.bfs(entrance, nopaldb::TraversalConfig::new()).await?;
+    let result = graph.bfs(
+        entrance,
+        nopaldb::TraversalConfig::new()
+    ).await?;
 
     // Find last loot room in traversal
     for &node_id in result.nodes.iter().rev() {
         let node = graph.get_node(node_id).await?;
-        if let Some(PropertyValue::String(t)) = node.properties.get("type")
-            && (t == "Loot" || t == "Boss") {
-            return Ok(node_id);
+        if let Some(PropertyValue::String(t)) = node.properties.get("type") {
+            if t == "Loot" || t == "Boss" {
+                return Ok(node_id);
+            }
         }
     }
 

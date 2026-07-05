@@ -3,13 +3,13 @@
 // Full-text search index using Tantivy
 
 use crate::error::{NopalError, Result};
-use crate::index::{Index, IndexQuery};
 use crate::types::{NodeId, PropertyValue};
-use std::path::PathBuf;
-use tantivy::collector::TopDocs;
-use tantivy::query::QueryParser;
-use tantivy::schema::*;
+use crate::index::{Index, IndexQuery};
 use tantivy::*;
+use tantivy::schema::*;
+use tantivy::query::QueryParser;
+use tantivy::collector::TopDocs;
+use std::path::PathBuf;
 
 /// Full-text search index powered by Tantivy
 pub struct FullTextIndex {
@@ -34,9 +34,8 @@ impl FullTextIndex {
         // Create index
         let index = if let Some(path) = path {
             let path = PathBuf::from(path);
-            std::fs::create_dir_all(&path).map_err(|e| {
-                NopalError::index_error(format!("Failed to create index directory: {}", e))
-            })?;
+            std::fs::create_dir_all(&path)
+                .map_err(|e| NopalError::index_error(format!("Failed to create index directory: {}", e)))?;
             tantivy::Index::create_in_dir(&path, schema.clone())
                 .map_err(|e| NopalError::index_error(format!("Failed to create index: {}", e)))?
         } else {
@@ -44,15 +43,13 @@ impl FullTextIndex {
         };
 
         // Create reader
-        let reader = index
-            .reader_builder()
+        let reader = index.reader_builder()
             .reload_policy(tantivy::ReloadPolicy::OnCommitWithDelay)
             .try_into()
             .map_err(|e| NopalError::index_error(format!("Failed to create reader: {}", e)))?;
 
         // Create writer (50MB heap)
-        let writer = index
-            .writer(50_000_000)
+        let writer = index.writer(50_000_000)
             .map_err(|e| NopalError::index_error(format!("Failed to create writer: {}", e)))?;
 
         Ok(FullTextIndex {
@@ -67,12 +64,10 @@ impl FullTextIndex {
     /// Commit pending changes
     fn commit(&mut self) -> Result<()> {
         if let Some(writer) = &mut self.writer {
-            writer
-                .commit()
+            writer.commit()
                 .map_err(|e| NopalError::index_error(format!("Failed to commit: {}", e)))?;
             // Reload reader so queries see the committed documents immediately
-            self.reader
-                .reload()
+            self.reader.reload()
                 .map_err(|e| NopalError::index_error(format!("Failed to reload reader: {}", e)))?;
         }
         Ok(())
@@ -84,11 +79,9 @@ impl Index for FullTextIndex {
         // Only index string values
         let text = match value {
             PropertyValue::String(s) => s,
-            _ => {
-                return Err(NopalError::index_error(
-                    "Full-text index only supports string values".to_string(),
-                ));
-            }
+            _ => return Err(NopalError::index_error(
+                "Full-text index only supports string values".to_string()
+            )),
         };
 
         if let Some(writer) = &mut self.writer {
@@ -98,8 +91,7 @@ impl Index for FullTextIndex {
                 self.content_field => text
             );
 
-            writer
-                .add_document(doc)
+            writer.add_document(doc)
                 .map_err(|e| NopalError::index_error(format!("Failed to add document: {}", e)))?;
 
             // Commit after each insert (could batch for performance)
@@ -121,44 +113,36 @@ impl Index for FullTextIndex {
     fn query(&self, query: &IndexQuery) -> Result<Vec<NodeId>> {
         let query_text = match query {
             IndexQuery::FullText(text) => text,
-            _ => {
-                return Err(NopalError::index_error(
-                    "Full-text index only supports full-text queries".to_string(),
-                ));
-            }
+            _ => return Err(NopalError::index_error(
+                "Full-text index only supports full-text queries".to_string()
+            )),
         };
 
         let searcher = self.reader.searcher();
 
         // Parse query
         let query_parser = QueryParser::for_index(&self.index, vec![self.content_field]);
-        let query = query_parser
-            .parse_query(query_text)
+        let query = query_parser.parse_query(query_text)
             .map_err(|e| NopalError::index_error(format!("Failed to parse query: {}", e)))?;
 
         // Search
-        let top_docs = searcher
-            .search(&query, &TopDocs::with_limit(1000))
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(1000))
             .map_err(|e| NopalError::index_error(format!("Search failed: {}", e)))?;
 
         // Extract node IDs
         let mut node_ids = Vec::new();
         for (_score, doc_address) in top_docs {
             // Use turbofish to specify TantivyDocument type
-            let retrieved_doc = searcher
-                .doc::<tantivy::TantivyDocument>(doc_address)
-                .map_err(|e| {
-                    NopalError::index_error(format!("Failed to retrieve document: {}", e))
-                })?;
+            let retrieved_doc = searcher.doc::<tantivy::TantivyDocument>(doc_address)
+                .map_err(|e| NopalError::index_error(format!("Failed to retrieve document: {}", e)))?;
 
             // Get all values for node_id field
             for field_value in retrieved_doc.get_all(self.node_id_field) {
                 // CompactDocValue tiene as_str() method
                 if let Some(text) = field_value.as_str()
-                    && let Ok(node_id) = uuid::Uuid::parse_str(text)
-                {
-                    node_ids.push(node_id);
-                    break; // Solo necesitamos el primer valor
+                    && let Ok(node_id) = uuid::Uuid::parse_str(text) {
+                        node_ids.push(node_id);
+                        break; // Solo necesitamos el primer valor
                 }
             }
         }
@@ -168,8 +152,7 @@ impl Index for FullTextIndex {
 
     fn clear(&mut self) -> Result<()> {
         if let Some(writer) = &mut self.writer {
-            writer
-                .delete_all_documents()
+            writer.delete_all_documents()
                 .map_err(|e| NopalError::index_error(format!("Failed to clear: {}", e)))?;
             self.commit()?;
         }
@@ -195,52 +178,38 @@ mod tests {
         let node3 = uuid::Uuid::new_v4();
 
         // Insert documents
-        index
-            .insert(
-                PropertyValue::String("fraud detection in financial networks".to_string()),
-                node1,
-            )
-            .unwrap();
+        index.insert(
+            PropertyValue::String("fraud detection in financial networks".to_string()),
+            node1
+        ).unwrap();
 
-        index
-            .insert(
-                PropertyValue::String("machine learning for anomaly detection".to_string()),
-                node2,
-            )
-            .unwrap();
+        index.insert(
+            PropertyValue::String("machine learning for anomaly detection".to_string()),
+            node2
+        ).unwrap();
 
-        index
-            .insert(
-                PropertyValue::String("synthetic_offshore papers investigation".to_string()),
-                node3,
-            )
-            .unwrap();
+        index.insert(
+            PropertyValue::String("harbor cay investigation".to_string()),
+            node3
+        ).unwrap();
 
         // Search — Tantivy uses OR by default for multi-word queries
         // "fraud detection" matches docs containing "fraud" OR "detection"
-        let results = index
-            .query(&IndexQuery::FullText("fraud detection".to_string()))
-            .unwrap();
+        let results = index.query(&IndexQuery::FullText("fraud detection".to_string())).unwrap();
         assert_eq!(results.len(), 2); // Both doc1 (fraud detection) and doc2 (anomaly detection)
         assert!(results.contains(&node1));
         assert!(results.contains(&node2));
 
         // Single word search
-        let results = index
-            .query(&IndexQuery::FullText("detection".to_string()))
-            .unwrap();
+        let results = index.query(&IndexQuery::FullText("detection".to_string())).unwrap();
         assert_eq!(results.len(), 2); // Both fraud detection and anomaly detection
 
         // Use AND for exact phrase matching: +fraud +detection
-        let results = index
-            .query(&IndexQuery::FullText("+fraud +detection".to_string()))
-            .unwrap();
+        let results = index.query(&IndexQuery::FullText("+fraud +detection".to_string())).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results.contains(&node1));
 
-        let results = index
-            .query(&IndexQuery::FullText("synthetic_offshore".to_string()))
-            .unwrap();
+        let results = index.query(&IndexQuery::FullText("harbor".to_string())).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results.contains(&node3));
     }
@@ -252,31 +221,23 @@ mod tests {
         let node1 = uuid::Uuid::new_v4();
         let node2 = uuid::Uuid::new_v4();
 
-        index
-            .insert(
-                PropertyValue::String("fraud detection algorithms".to_string()),
-                node1,
-            )
-            .unwrap();
+        index.insert(
+            PropertyValue::String("fraud detection algorithms".to_string()),
+            node1
+        ).unwrap();
 
-        index
-            .insert(
-                PropertyValue::String("fraud prevention systems".to_string()),
-                node2,
-            )
-            .unwrap();
+        index.insert(
+            PropertyValue::String("fraud prevention systems".to_string()),
+            node2
+        ).unwrap();
 
         // Boolean AND
-        let results = index
-            .query(&IndexQuery::FullText("fraud AND detection".to_string()))
-            .unwrap();
+        let results = index.query(&IndexQuery::FullText("fraud AND detection".to_string())).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results.contains(&node1));
 
         // Boolean OR
-        let results = index
-            .query(&IndexQuery::FullText("detection OR prevention".to_string()))
-            .unwrap();
+        let results = index.query(&IndexQuery::FullText("detection OR prevention".to_string())).unwrap();
         assert_eq!(results.len(), 2);
     }
 
@@ -289,17 +250,13 @@ mod tests {
 
         index.insert(value.clone(), node1).unwrap();
 
-        let results = index
-            .query(&IndexQuery::FullText("test".to_string()))
-            .unwrap();
+        let results = index.query(&IndexQuery::FullText("test".to_string())).unwrap();
         assert_eq!(results.len(), 1);
 
         // Remove
         index.remove(&value, node1).unwrap();
 
-        let results = index
-            .query(&IndexQuery::FullText("test".to_string()))
-            .unwrap();
+        let results = index.query(&IndexQuery::FullText("test".to_string())).unwrap();
         assert_eq!(results.len(), 0);
     }
 }

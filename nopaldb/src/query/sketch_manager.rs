@@ -15,12 +15,12 @@ use crate::error::{NopalError, Result};
 // This implements the "Bow-Tie Cognitive Model":
 // - SKETCH: Conceptual space (no persistence)
 // - PREVIEW: Reasoning space (analysis)
-use crate::Transaction;
-use crate::query::nql::executor::result::QueryResult;
-use crate::query::nql::executor::{Executor, UpdateResult};
-use crate::query::nql::parser::ast::{AddStmt, DeleteStmt, Query, Statement, UpdateStmt};
 use std::collections::HashMap;
 use std::time::SystemTime;
+use crate::query::nql::parser::ast::{Statement, DeleteStmt, UpdateStmt, AddStmt, Query};
+use crate::query::nql::executor::{Executor, UpdateResult};
+use crate::query::nql::executor::result::QueryResult;
+use crate::Transaction;
 
 // ═══════════════════════════════════════════════════════════════
 // SKETCH MANAGER
@@ -192,49 +192,62 @@ impl SketchManager {
     ) -> Result<SketchPreview> {
         // Check cache first (immutable borrow)
         if let Some(sketch) = self.sketches.get(name)
-            && let Some(cached) = &sketch.preview_cache
-        {
-            return Ok(cached.clone());
+            && let Some(cached) = &sketch.preview_cache {
+                return Ok(cached.clone());
         }
 
         // Clone statement to avoid borrow conflicts
-        let statement = self
-            .sketches
-            .get(name)
+        let statement = self.sketches.get(name)
             .ok_or_else(|| NopalError::SketchNotFound(name.to_string()))?
             .statement
             .clone();
 
         // Generate preview based on statement type
         let preview = match &statement {
-            Statement::Query(query) => self.preview_query(query, executor).await?,
-            Statement::Delete(delete) => self.preview_delete(delete, executor).await?,
-            Statement::Update(update) => self.preview_update(update, executor).await?,
-            Statement::Add(add) => self.preview_add(add)?,
-            Statement::CreateIndex(_) => SketchPreview {
-                preview_type: PreviewType::Other("CREATE INDEX operation".to_string()),
-                generated_at: SystemTime::now(),
-            },
-            Statement::DropIndex(_) => SketchPreview {
-                preview_type: PreviewType::Other("DROP INDEX operation".to_string()),
-                generated_at: SystemTime::now(),
-            },
-            Statement::Explain(_) => SketchPreview {
-                preview_type: PreviewType::Other("EXPLAIN query plan".to_string()),
-                generated_at: SystemTime::now(),
-            },
-            Statement::Profile(_) => SketchPreview {
-                preview_type: PreviewType::Other("PROFILE query execution".to_string()),
-                generated_at: SystemTime::now(),
-            },
+            Statement::Query(query) => {
+                self.preview_query(query, executor).await?
+            }
+            Statement::Delete(delete) => {
+                self.preview_delete(delete, executor).await?
+            }
+            Statement::Update(update) => {
+                self.preview_update(update, executor).await?
+            }
+            Statement::Add(add) => {
+                self.preview_add(add)?
+            }
+            Statement::CreateIndex(_) => {
+                SketchPreview{
+                    preview_type: PreviewType::Other("CREATE INDEX operation".to_string()),
+                    generated_at: SystemTime::now(),
+                }
+            }
+            Statement::DropIndex(_) => {
+                SketchPreview {
+                    preview_type: PreviewType::Other("DROP INDEX operation".to_string()),
+                    generated_at: SystemTime::now(),
+                }
+            }
+            Statement::Explain(_) => {
+                SketchPreview {
+                    preview_type: PreviewType::Other("EXPLAIN query plan".to_string()),
+                    generated_at: SystemTime::now(),
+                }
+            }
+            Statement::Profile(_) => {
+                SketchPreview {
+                    preview_type: PreviewType::Other("PROFILE query execution".to_string()),
+                    generated_at: SystemTime::now(),
+                }
+            }
             Statement::Sketch(_) => {
                 return Err(NopalError::InvalidSketch(
-                    "Cannot sketch a sketch".to_string(),
+                    "Cannot sketch a sketch".to_string()
                 ));
             }
             Statement::Commit(_) => {
                 return Err(NopalError::InvalidSketch(
-                    "Cannot sketch a commit".to_string(),
+                    "Cannot sketch a commit".to_string()
                 ));
             }
         };
@@ -265,9 +278,7 @@ impl SketchManager {
         executor: &mut Executor<'_>,
         _tx: &mut Transaction,
     ) -> Result<CommitResult> {
-        let sketch = self
-            .sketches
-            .remove(name)
+        let sketch = self.sketches.remove(name)
             .ok_or_else(|| NopalError::SketchNotFound(name.to_string()))?;
 
         // Execute based on statement type
@@ -278,25 +289,17 @@ impl SketchManager {
             }
             Statement::Delete(_delete) => {
                 // TODO: Implement execute_delete in executor
-                return Err(NopalError::query_error(
-                    "DELETE not yet implemented in executor",
-                ));
+                return Err(NopalError::query_error("DELETE not yet implemented in executor"));
             }
             Statement::Update(_update) => {
                 // TODO: Implement execute_update in executor
-                return Err(NopalError::query_error(
-                    "UPDATE not yet implemented in executor",
-                ));
+                return Err(NopalError::query_error("UPDATE not yet implemented in executor"));
             }
             Statement::CreateIndex(_) => {
-                return Err(NopalError::custom(
-                    "CreateIndex not supported in sketches yet",
-                ));
+                return Err(NopalError::custom("CreateIndex not supported in sketches yet"));
             }
             Statement::DropIndex(_) => {
-                return Err(NopalError::custom(
-                    "DropIndex not supported in sketches yet",
-                ));
+                return Err(NopalError::custom("DropIndex not supported in sketches yet"));
             }
             Statement::Explain(_) => {
                 return Err(NopalError::custom("Explain not supported in sketches yet"));
@@ -306,13 +309,11 @@ impl SketchManager {
             }
             Statement::Add(_add) => {
                 // TODO: Implement execute_add in executor
-                return Err(NopalError::query_error(
-                    "ADD not yet implemented in executor",
-                ));
+                return Err(NopalError::query_error("ADD not yet implemented in executor"));
             }
             Statement::Sketch(_) | Statement::Commit(_) => {
                 return Err(NopalError::InvalidCommit(
-                    "Cannot commit a sketch or commit statement".to_string(),
+                    "Cannot commit a sketch or commit statement".to_string()
                 ));
             }
         };
@@ -322,8 +323,7 @@ impl SketchManager {
 
     /// Discard a sketch without executing
     pub fn discard(&mut self, name: &str) -> Result<()> {
-        self.sketches
-            .remove(name)
+        self.sketches.remove(name)
             .ok_or_else(|| NopalError::SketchNotFound(name.to_string()))?;
         Ok(())
     }
@@ -425,7 +425,11 @@ impl SketchManager {
 
         // Count and sample
         let (nodes_affected, edges_affected) = executor.count_elements(&to_update);
-        let sample_changes = executor.sample_updates(&to_update, &update.assignments, 10);
+        let sample_changes = executor.sample_updates(
+            &to_update,
+            &update.assignments,
+            10
+        );
 
         Ok(SketchPreview {
             preview_type: PreviewType::UpdatePreview {
@@ -480,12 +484,16 @@ impl SketchManager {
             Statement::Explain(_) => Ok(()),
             Statement::Profile(_) => Ok(()),
             Statement::Add(_) => Ok(()),
-            Statement::Sketch(_) => Err(NopalError::InvalidSketch(
-                "Cannot sketch a sketch (no nested sketches)".to_string(),
-            )),
-            Statement::Commit(_) => Err(NopalError::InvalidSketch(
-                "Cannot sketch a commit".to_string(),
-            )),
+            Statement::Sketch(_) => {
+                Err(NopalError::InvalidSketch(
+                    "Cannot sketch a sketch (no nested sketches)".to_string()
+                ))
+            }
+            Statement::Commit(_) => {
+                Err(NopalError::InvalidSketch(
+                    "Cannot sketch a commit".to_string()
+                ))
+            }
         }
     }
 }
@@ -525,32 +533,21 @@ impl std::fmt::Display for SketchPreview {
             PreviewType::QueryResult(result) => {
                 write!(f, "Query result: {} rows", result.rows.len())
             }
-            PreviewType::DeletePreview {
-                nodes_affected,
-                edges_affected,
-                ..
-            } => {
+            PreviewType::DeletePreview { nodes_affected, edges_affected, .. } => {
                 write!(
                     f,
                     "Will delete: {} nodes, {} edges",
                     nodes_affected, edges_affected
                 )
             }
-            PreviewType::UpdatePreview {
-                nodes_affected,
-                edges_affected,
-                ..
-            } => {
+            PreviewType::UpdatePreview { nodes_affected, edges_affected, .. } => {
                 write!(
                     f,
                     "Will update: {} nodes, {} edges",
                     nodes_affected, edges_affected
                 )
             }
-            PreviewType::AddPreview {
-                nodes_to_add,
-                edges_to_add,
-            } => {
+            PreviewType::AddPreview { nodes_to_add, edges_to_add } => {
                 write!(
                     f,
                     "Will add: {} nodes, {} edges",

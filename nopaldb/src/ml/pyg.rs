@@ -76,8 +76,12 @@ impl PyGData {
         let x = Self::extract_node_features(&nodes)?;
 
         // 4. Build edge index (returns COO + raw edges for attr extraction)
-        let (edge_index, edges) =
-            Self::build_edge_index(graph, &nodes, &node_to_idx, edge_type).await?;
+        let (edge_index, edges) = Self::build_edge_index(
+            graph,
+            &nodes,
+            &node_to_idx,
+            edge_type,
+        ).await?;
 
         let num_edges = edge_index.source.len();
 
@@ -145,7 +149,9 @@ impl PyGData {
         }
 
         // Convertir Vec<f32> a bytes little-endian para MLTensor
-        let emb_bytes: Vec<u8> = emb_data.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let emb_bytes: Vec<u8> = emb_data.iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
 
         // Agregar como MLTensor adicional en x con nombre "embedding_<model>"
         base.x.push(crate::ml::arrow_tensor::MLTensor {
@@ -159,7 +165,9 @@ impl PyGData {
 
     /// Extrae features numéricas de nodos via Arrow RecordBatch.
     /// Retorna un MLTensor por columna numérica (Float32/Float64/Int32/Int64).
-    pub(crate) fn extract_node_features(nodes: &[Node]) -> Result<Vec<MLTensor>> {
+    pub(crate) fn extract_node_features(
+        nodes: &[Node],
+    ) -> Result<Vec<MLTensor>> {
         if nodes.is_empty() {
             return Ok(vec![]);
         }
@@ -256,16 +264,15 @@ impl PyGData {
 
             for edge in edges {
                 // Filter by edge type if specified
-                if let Some(et) = edge_type
-                    && edge.edge_type != et
-                {
+                if let Some(et) = edge_type && edge.edge_type != et {
                     continue;
                 }
 
                 // Only include if target is in our node set
-                if let (Some(&target_idx), Some(&source_idx)) =
-                    (node_to_idx.get(&edge.target), node_to_idx.get(&edge.source))
-                {
+                if let (Some(&target_idx), Some(&source_idx)) = (
+                    node_to_idx.get(&edge.target),
+                    node_to_idx.get(&edge.source),
+                ) {
                     source.push(source_idx);
                     target.push(target_idx);
                     collected_edges.push(edge);
@@ -298,10 +305,7 @@ mod tests {
         let pyg_data = PyGData::from_graph(&graph, "User", None).await.unwrap();
 
         assert_eq!(pyg_data.num_nodes, 10);
-        assert!(
-            !pyg_data.x.is_empty(),
-            "Should have at least one numeric tensor"
-        );
+        assert!(!pyg_data.x.is_empty(), "Should have at least one numeric tensor");
     }
 
     #[tokio::test]
@@ -322,10 +326,7 @@ mod tests {
         let tensors = PyGData::extract_node_features(&nodes).unwrap();
 
         // Debe haber al menos 1 tensor por columna numérica
-        assert!(
-            !tensors.is_empty(),
-            "Should extract at least one numeric column"
-        );
+        assert!(!tensors.is_empty(), "Should extract at least one numeric column");
 
         // Cada tensor debe tener 3 elementos (uno por nodo)
         for t in &tensors {

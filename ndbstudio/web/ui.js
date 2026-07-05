@@ -347,7 +347,7 @@ function currentGraphHint() {
   return result.graph_hint;
 }
 
-function refreshGraphStaleState() {
+function refreshGraphDirtyState() {
   // No-op: result-focus mode was removed, graph always shows dataset
 }
 
@@ -729,7 +729,7 @@ function focusGraphSearchMatch(step = 1) {
     : 0;
   state.selectedGraphNodeId = matches[nextIndex].id;
   updateSvgPositions();
-  updateGraphInspectorPanel();
+  updateGraphDetailPanel();
   centerGraphOnNode(state.selectedGraphNodeId);
   showToast(`Graph match ${nextIndex + 1} of ${matches.length}`);
 }
@@ -845,7 +845,7 @@ function applyServerUiPrefs(serverPrefs) {
     workspace_tab: "workspaceTab",
     run_mode: "runMode",
     graph_layout: "graphLayout",
-    graph_depth: "graphHopLimit",
+    graph_depth: "graphDepth",
     graph_limit: "graphLimit",
     graph_type_filter: "graphTypeFilter",
     sidebar_collapsed: "sidebarCollapsed",
@@ -1509,7 +1509,7 @@ function selectResultRow(rowIndex) {
   // Update graph selection highlight without full rebuild
   if (state.graphSvgRefs) {
     updateSvgPositions();
-    updateGraphInspectorPanel();
+    updateGraphDetailPanel();
   }
 }
 
@@ -1729,7 +1729,7 @@ function mergeExpandedNodes(subgraph) {
   return { ...subgraph, nodes: [...subgraph.nodes, ...newNodes], edges: [...subgraph.edges, ...newEdges] };
 }
 
-function currentGraphInfo() {
+function currentGraphData() {
   const base = state.workspace.graphSubgraph;
   if (!base) return null;
 
@@ -1869,10 +1869,10 @@ function applyGraphTypeFilter(subgraph) {
 }
 
 function renderGraphPane() {
-  refreshGraphStaleState();
+  refreshGraphDirtyState();
   if (typeof teardownGraph === 'function') teardownGraph();
 
-  const unfilteredSubgraph = currentGraphInfo();
+  const unfilteredSubgraph = currentGraphData();
   renderGraphModeBanner(unfilteredSubgraph);
   renderGraphTypeFilterOptions(unfilteredSubgraph);
   let subgraph = applyGraphTypeFilter(unfilteredSubgraph);
@@ -1901,7 +1901,7 @@ function renderGraphPane() {
     );
     bindGuidedEmptyStateActions(els.graphPane);
     els.graphLegend.innerHTML = "";
-    els.graphInspectorPanel.classList.add("is-empty");
+    els.graphDetailPanel.classList.add("is-empty");
     state.graphCurrentSubgraph = null;
     state.graphSvgRefs = null;
     return;
@@ -1918,7 +1918,7 @@ function renderGraphPane() {
     );
     bindGuidedEmptyStateActions(els.graphPane);
     els.graphLegend.innerHTML = "";
-    els.graphInspectorPanel.classList.add("is-empty");
+    els.graphDetailPanel.classList.add("is-empty");
     state.graphCurrentSubgraph = null;
     state.graphSvgRefs = null;
     return;
@@ -1952,7 +1952,7 @@ function renderGraphPane() {
   initGraphPositions(subgraph, width, height);
   createGraphSvgDom(subgraph);
   updateGraphLegend(subgraph);
-  updateGraphInspectorPanel();
+  updateGraphDetailPanel();
   if (graphSearchQuery() && state.selectedGraphNodeId) {
     centerGraphOnNode(state.selectedGraphNodeId);
   }

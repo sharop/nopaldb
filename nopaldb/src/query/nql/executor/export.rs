@@ -9,10 +9,10 @@
 //   find p.name, p.age from (p:Person) export arrow
 //   find * from (p:Person) export csv with separator="|"
 
-use super::result::{NqlResult, QueryResult};
 use crate::error::{NopalError, Result};
-use crate::query::nql::parser::ast::{ExportClause, ExportFormat};
 use crate::types::PropertyValue;
+use super::result::{QueryResult, NqlResult};
+use crate::query::nql::parser::ast::{ExportClause, ExportFormat};
 
 /// Execute export: convert a QueryResult into the requested format
 pub fn execute_export(result: &QueryResult, export: &ExportClause) -> Result<NqlResult> {
@@ -25,12 +25,8 @@ pub fn execute_export(result: &QueryResult, export: &ExportClause) -> Result<Nql
             let csv = export_csv(result, sep, include_header);
 
             if let Some(path) = option_as_owned_string(export, "path") {
-                std::fs::write(&path, &csv).map_err(|e| {
-                    NopalError::QueryExecutionError(format!(
-                        "Failed to write CSV export to '{}': {}",
-                        path, e
-                    ))
-                })?;
+                std::fs::write(&path, &csv)
+                    .map_err(|e| NopalError::QueryExecutionError(format!("Failed to write CSV export to '{}': {}", path, e)))?;
             }
 
             ("CSV".to_string(), csv)
@@ -45,24 +41,18 @@ pub fn execute_export(result: &QueryResult, export: &ExportClause) -> Result<Nql
             };
 
             if let Some(path) = option_as_owned_string(export, "path") {
-                std::fs::write(&path, &json).map_err(|e| {
-                    NopalError::QueryExecutionError(format!(
-                        "Failed to write JSON export to '{}': {}",
-                        path, e
-                    ))
-                })?;
+                std::fs::write(&path, &json)
+                    .map_err(|e| NopalError::QueryExecutionError(format!("Failed to write JSON export to '{}': {}", path, e)))?;
             }
 
             ("JSON".to_string(), json)
         }
-        ExportFormat::Arrow => ("Arrow".to_string(), export_arrow_summary(result)),
-        ExportFormat::Parquet(path) => (
-            "Parquet".to_string(),
-            format!(
-                "Parquet export to '{}' ({} rows) — use arrow_export::write_parquet for file I/O",
-                path, rows_exported
-            ),
-        ),
+        ExportFormat::Arrow => {
+            ("Arrow".to_string(), export_arrow_summary(result))
+        }
+        ExportFormat::Parquet(path) => {
+            ("Parquet".to_string(), format!("Parquet export to '{}' ({} rows) — use arrow_export::write_parquet for file I/O", path, rows_exported))
+        }
     };
 
     Ok(NqlResult::Export {
@@ -84,12 +74,12 @@ fn export_csv(result: &QueryResult, separator: &str, include_header: bool) -> St
 
     // Rows
     for row in &result.rows {
-        let values: Vec<String> = result
-            .columns
-            .iter()
-            .map(|col| match row.values.get(col) {
-                Some(val) => csv_escape(&property_to_string(val), separator),
-                None => String::new(),
+        let values: Vec<String> = result.columns.iter()
+            .map(|col| {
+                match row.values.get(col) {
+                    Some(val) => csv_escape(&property_to_string(val), separator),
+                    None => String::new(),
+                }
             })
             .collect();
         output.push_str(&values.join(separator));
@@ -196,26 +186,18 @@ fn property_to_json(val: &PropertyValue) -> String {
         PropertyValue::String(s) => format!("\"{}\"", json_escape(s)),
         PropertyValue::Int(i) => i.to_string(),
         PropertyValue::Float(f) => {
-            if f.is_nan() || f.is_infinite() {
-                "null".to_string()
-            } else {
-                f.to_string()
-            }
+            if f.is_nan() || f.is_infinite() { "null".to_string() }
+            else { f.to_string() }
         }
         PropertyValue::Bool(b) => b.to_string(),
         PropertyValue::Null => "null".to_string(),
         PropertyValue::Bytes(b) => format!("\"<{} bytes>\"", b.len()),
         PropertyValue::List(values) => {
-            let items = values
-                .iter()
-                .map(property_to_json)
-                .collect::<Vec<_>>()
-                .join(",");
+            let items = values.iter().map(property_to_json).collect::<Vec<_>>().join(",");
             format!("[{}]", items)
         }
         PropertyValue::Object(fields) => {
-            let items = fields
-                .iter()
+            let items = fields.iter()
                 .map(|(key, value)| format!("\"{}\":{}", json_escape(key), property_to_json(value)))
                 .collect::<Vec<_>>()
                 .join(",");
@@ -255,15 +237,13 @@ fn option_as_owned_string(export: &ExportClause, key: &str) -> Option<String> {
 }
 
 fn option_as_bool(export: &ExportClause, key: &str, default: bool) -> bool {
-    export
-        .options
-        .get(key)
-        .map(|v| match v {
+    export.options.get(key).map(|v| {
+        match v {
             PropertyValue::Bool(b) => *b,
             PropertyValue::String(s) => s != "false",
             _ => default,
-        })
-        .unwrap_or(default)
+        }
+    }).unwrap_or(default)
 }
 
 #[cfg(test)]

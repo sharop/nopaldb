@@ -1,7 +1,7 @@
 // src/embeddings/edge.rs
 
+use serde::{Serialize, Deserialize};
 use crate::types::EdgeId;
-use serde::{Deserialize, Serialize};
 
 /// Embedding de una arista (vector denso)
 ///
@@ -22,9 +22,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeEmbedding {
     pub edge_id: EdgeId,
-    pub vector: Vec<f32>, // Vector denso (dimensión depende del modelo)
-    pub model: String,    // Modelo que lo generó (ej: "concat-minilm", "transe")
-    pub version: u32,     // Versión del embedding (para invalidar caché)
+    pub vector: Vec<f32>,   // Vector denso (dimensión depende del modelo)
+    pub model: String,      // Modelo que lo generó (ej: "concat-minilm", "transe")
+    pub version: u32,       // Versión del embedding (para invalidar caché)
 }
 
 impl EdgeEmbedding {
@@ -44,9 +44,7 @@ impl EdgeEmbedding {
             return 0.0;
         }
 
-        let dot: f32 = self
-            .vector
-            .iter()
+        let dot: f32 = self.vector.iter()
             .zip(other.vector.iter())
             .map(|(a, b)| a * b)
             .sum();
@@ -63,8 +61,7 @@ impl EdgeEmbedding {
 
     /// Distancia euclidiana con otro EdgeEmbedding.
     pub fn euclidean_distance(&self, other: &EdgeEmbedding) -> f32 {
-        self.vector
-            .iter()
+        self.vector.iter()
             .zip(other.vector.iter())
             .map(|(a, b)| (a - b).powi(2))
             .sum::<f32>()

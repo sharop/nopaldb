@@ -3,8 +3,8 @@
 // Hash-based index for O(1) equality lookups
 
 use crate::error::Result;
-use crate::index::{Index, IndexQuery};
 use crate::types::{NodeId, PropertyValue};
+use crate::index::{Index, IndexQuery};
 use std::collections::HashMap;
 
 /// Hash index - O(1) equality lookups
@@ -29,7 +29,10 @@ impl HashIndex {
 
 impl Index for HashIndex {
     fn insert(&mut self, value: PropertyValue, node_id: NodeId) -> Result<()> {
-        self.map.entry(value).or_default().push(node_id);
+        self.map
+            .entry(value)
+            .or_default()
+            .push(node_id);
         Ok(())
     }
 
@@ -47,11 +50,13 @@ impl Index for HashIndex {
 
     fn query(&self, query: &IndexQuery) -> Result<Vec<NodeId>> {
         match query {
-            IndexQuery::Equals(value) => Ok(self.map.get(value).cloned().unwrap_or_default()),
+            IndexQuery::Equals(value) => {
+                Ok(self.map.get(value).cloned().unwrap_or_default())
+            }
             _ => {
                 // Hash index only supports equality
                 Err(crate::error::NopalError::index_error(
-                    "Hash index only supports equality queries".to_string(),
+                    "Hash index only supports equality queries".to_string()
                 ))
             }
         }
@@ -86,33 +91,23 @@ mod tests {
         let node3 = uuid::Uuid::new_v4();
 
         // Insert
-        index
-            .insert(PropertyValue::String("Alice".to_string()), node1)
-            .unwrap();
-        index
-            .insert(PropertyValue::String("Bob".to_string()), node2)
-            .unwrap();
-        index
-            .insert(PropertyValue::String("Alice".to_string()), node3)
-            .unwrap();
+        index.insert(PropertyValue::String("Alice".to_string()), node1).unwrap();
+        index.insert(PropertyValue::String("Bob".to_string()), node2).unwrap();
+        index.insert(PropertyValue::String("Alice".to_string()), node3).unwrap();
 
         // Query
-        let result = index
-            .query(&IndexQuery::Equals(PropertyValue::String(
-                "Alice".to_string(),
-            )))
-            .unwrap();
+        let result = index.query(&IndexQuery::Equals(
+            PropertyValue::String("Alice".to_string())
+        )).unwrap();
 
         assert_eq!(result.len(), 2);
         assert!(result.contains(&node1));
         assert!(result.contains(&node3));
 
         // Query non-existent
-        let result = index
-            .query(&IndexQuery::Equals(PropertyValue::String(
-                "Charlie".to_string(),
-            )))
-            .unwrap();
+        let result = index.query(&IndexQuery::Equals(
+            PropertyValue::String("Charlie".to_string())
+        )).unwrap();
         assert_eq!(result.len(), 0);
     }
 
@@ -153,31 +148,20 @@ mod tests {
 
         // Different types
         index.insert(PropertyValue::Int(42), node1).unwrap();
-        index
-            .insert(PropertyValue::String("42".to_string()), node2)
-            .unwrap();
+        index.insert(PropertyValue::String("42".to_string()), node2).unwrap();
         index.insert(PropertyValue::Float(42.0), node3).unwrap();
 
         // Each type is distinct
         assert_eq!(
-            index
-                .query(&IndexQuery::Equals(PropertyValue::Int(42)))
-                .unwrap()
-                .len(),
+            index.query(&IndexQuery::Equals(PropertyValue::Int(42))).unwrap().len(),
             1
         );
         assert_eq!(
-            index
-                .query(&IndexQuery::Equals(PropertyValue::String("42".to_string())))
-                .unwrap()
-                .len(),
+            index.query(&IndexQuery::Equals(PropertyValue::String("42".to_string()))).unwrap().len(),
             1
         );
         assert_eq!(
-            index
-                .query(&IndexQuery::Equals(PropertyValue::Float(42.0)))
-                .unwrap()
-                .len(),
+            index.query(&IndexQuery::Equals(PropertyValue::Float(42.0))).unwrap().len(),
             1
         );
     }

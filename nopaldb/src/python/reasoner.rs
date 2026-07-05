@@ -8,9 +8,9 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use super::to_py_result;
 use crate::reasoner::{Axiom, CompletionRule, ELReasoner};
 use crate::types::NodeId;
+use super::to_py_result;
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -18,7 +18,9 @@ use crate::types::NodeId;
 
 fn inference_to_py(inf: &crate::reasoner::Inference) -> PyInference {
     let (sub, super_class) = match &inf.axiom {
-        Axiom::SubClassOf { sub, super_class } => (sub.to_string(), super_class.to_string()),
+        Axiom::SubClassOf { sub, super_class } => {
+            (sub.to_string(), super_class.to_string())
+        }
         Axiom::ConjunctionInclusion { result, left, .. } => {
             // ConjunctionInclusion axioms are asserted (not derived) so they
             // should not appear here; use left/result as a fallback display.
@@ -29,22 +31,16 @@ fn inference_to_py(inf: &crate::reasoner::Inference) -> PyInference {
             // encoding for existential forms.
             (sub.to_string(), format!("exists({}).{}", role, filler))
         }
-        Axiom::ExistentialDomain {
-            role,
-            filler,
-            result,
-        } => (format!("exists({}).{}", role, filler), result.to_string()),
+        Axiom::ExistentialDomain { role, filler, result } => {
+            (format!("exists({}).{}", role, filler), result.to_string())
+        }
     };
     let rule = match inf.rule {
         CompletionRule::CR1 => "CR1",
         CompletionRule::CR2 => "CR2",
         CompletionRule::CR3 => "CR3",
     };
-    PyInference {
-        sub,
-        super_class,
-        rule: rule.to_string(),
-    }
+    PyInference { sub, super_class, rule: rule.to_string() }
 }
 
 // ---------------------------------------------------------------------------
@@ -133,9 +129,7 @@ impl PyELReasoner {
     /// Create a new, empty ELReasoner.
     #[new]
     pub fn new() -> Self {
-        Self {
-            inner: ELReasoner::new(),
-        }
+        Self { inner: ELReasoner::new() }
     }
 
     /// Register a class node in the reasoner's internal taxonomy.
@@ -275,8 +269,7 @@ impl PyELReasoner {
             pyo3::exceptions::PyValueError::new_err(format!("Invalid UUID: {}", result))
         })?;
         let inferences = to_py_result(
-            self.inner
-                .assert_existential_domain(role, filler_id, result_id),
+            self.inner.assert_existential_domain(role, filler_id, result_id)
         )?;
         Ok(inferences.iter().map(inference_to_py).collect())
     }
@@ -288,11 +281,7 @@ impl PyELReasoner {
     /// list[Inference]
     ///     All NEW inferences derived in this pass (empty if already saturated).
     pub fn classify_all(&mut self) -> Vec<PyInference> {
-        self.inner
-            .classify_all()
-            .iter()
-            .map(inference_to_py)
-            .collect()
+        self.inner.classify_all().iter().map(inference_to_py).collect()
     }
 
     /// Check if ``sub`` is a subclass of ``super_class`` (direct or inferred).
@@ -308,12 +297,8 @@ impl PyELReasoner {
     /// -------
     /// bool
     pub fn is_subclass_of(&mut self, sub: &str, super_class: &str) -> bool {
-        let Ok(sub_id) = sub.parse::<NodeId>() else {
-            return false;
-        };
-        let Ok(super_id) = super_class.parse::<NodeId>() else {
-            return false;
-        };
+        let Ok(sub_id) = sub.parse::<NodeId>() else { return false; };
+        let Ok(super_id) = super_class.parse::<NodeId>() else { return false; };
         self.inner.is_subclass_of(sub_id, super_id)
     }
 
@@ -328,14 +313,8 @@ impl PyELReasoner {
     /// -------
     /// list[str]
     pub fn superclasses(&self, node: &str) -> Vec<String> {
-        let Ok(id) = node.parse::<NodeId>() else {
-            return vec![];
-        };
-        self.inner
-            .superclasses(id)
-            .iter()
-            .map(|i| i.to_string())
-            .collect()
+        let Ok(id) = node.parse::<NodeId>() else { return vec![]; };
+        self.inner.superclasses(id).iter().map(|i| i.to_string()).collect()
     }
 
     /// All subclasses of ``node`` — direct and inferred — as UUID strings.
@@ -349,14 +328,8 @@ impl PyELReasoner {
     /// -------
     /// list[str]
     pub fn subclasses(&mut self, node: &str) -> Vec<String> {
-        let Ok(id) = node.parse::<NodeId>() else {
-            return vec![];
-        };
-        self.inner
-            .subclasses(id)
-            .iter()
-            .map(|i| i.to_string())
-            .collect()
+        let Ok(id) = node.parse::<NodeId>() else { return vec![]; };
+        self.inner.subclasses(id).iter().map(|i| i.to_string()).collect()
     }
 
     /// Number of direct SubClassOf edges currently asserted in the taxonomy.
@@ -375,11 +348,7 @@ impl PyELReasoner {
     /// -------
     /// list[Inference]
     pub fn derived_inferences(&self) -> Vec<PyInference> {
-        self.inner
-            .derived_inferences()
-            .iter()
-            .map(inference_to_py)
-            .collect()
+        self.inner.derived_inferences().iter().map(inference_to_py).collect()
     }
 
     fn __repr__(&self) -> String {
@@ -406,16 +375,12 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    fn uid() -> String {
-        Uuid::new_v4().to_string()
-    }
+    fn uid() -> String { Uuid::new_v4().to_string() }
 
     #[test]
     fn test_py_reasoner_register_and_assert() {
         let mut r = PyELReasoner::new();
-        let a = uid();
-        let b = uid();
-        let c = uid();
+        let a = uid(); let b = uid(); let c = uid();
 
         r.register_class(&a, "Animal").unwrap();
         r.register_class(&b, "Mammal").unwrap();
@@ -428,19 +393,13 @@ mod tests {
 
         // Dog ⊑ Animal (transitively)
         assert!(r.is_subclass_of(&c, &a), "Dog must be subclass of Animal");
-        assert!(
-            !r.is_subclass_of(&a, &c),
-            "Animal must NOT be subclass of Dog"
-        );
+        assert!(!r.is_subclass_of(&a, &c), "Animal must NOT be subclass of Dog");
     }
 
     #[test]
     fn test_py_reasoner_cr2() {
         let mut r = PyELReasoner::new();
-        let a = uid();
-        let b = uid();
-        let c = uid();
-        let d = uid();
+        let a = uid(); let b = uid(); let c = uid(); let d = uid();
 
         r.register_class(&a, "A").unwrap();
         r.register_class(&b, "B").unwrap();
@@ -451,12 +410,8 @@ mod tests {
         r.assert_subclass(&a, &c).unwrap(); // A ⊑ C
         let inferred = r.assert_conjunction(&b, &c, &d).unwrap(); // B ⊓ C ⊑ D → derive A ⊑ D
 
-        assert!(
-            inferred
-                .iter()
-                .any(|i| i.sub == a && i.super_class == d && i.rule == "CR2"),
-            "CR2 must derive A ⊑ D via Python API"
-        );
+        assert!(inferred.iter().any(|i| i.sub == a && i.super_class == d && i.rule == "CR2"),
+            "CR2 must derive A ⊑ D via Python API");
     }
 
     #[test]
@@ -469,9 +424,7 @@ mod tests {
     #[test]
     fn test_py_reasoner_superclasses_subclasses() {
         let mut r = PyELReasoner::new();
-        let a = uid();
-        let b = uid();
-        let c = uid();
+        let a = uid(); let b = uid(); let c = uid();
 
         r.register_class(&a, "A").unwrap();
         r.register_class(&b, "B").unwrap();
@@ -493,9 +446,7 @@ mod tests {
     #[test]
     fn test_py_reasoner_derived_count() {
         let mut r = PyELReasoner::new();
-        let a = uid();
-        let b = uid();
-        let c = uid();
+        let a = uid(); let b = uid(); let c = uid();
 
         r.register_class(&a, "A").unwrap();
         r.register_class(&b, "B").unwrap();
@@ -506,24 +457,14 @@ mod tests {
         r.classify_all();
 
         // C ⊑ A is derived (not direct)
-        assert!(
-            r.derived_count() > 0,
-            "derived_count must be > 0 after classify_all"
-        );
-        assert_eq!(
-            r.axiom_count(),
-            2,
-            "axiom_count must be 2 (direct edges only)"
-        );
+        assert!(r.derived_count() > 0, "derived_count must be > 0 after classify_all");
+        assert_eq!(r.axiom_count(), 2, "axiom_count must be 2 (direct edges only)");
     }
 
     #[test]
     fn test_py_reasoner_cr3_existential() {
         let mut r = PyELReasoner::new();
-        let a = uid();
-        let b = uid();
-        let c = uid();
-        let d = uid();
+        let a = uid(); let b = uid(); let c = uid(); let d = uid();
 
         r.register_class(&a, "A").unwrap();
         r.register_class(&b, "B").unwrap();
@@ -538,9 +479,7 @@ mod tests {
         let inferred = r.assert_existential_domain("R", &c, &d).unwrap();
 
         assert!(
-            inferred
-                .iter()
-                .any(|i| i.sub == a && i.super_class == d && i.rule == "CR3"),
+            inferred.iter().any(|i| i.sub == a && i.super_class == d && i.rule == "CR3"),
             "CR3 must derive A ⊑ D via Python API"
         );
     }

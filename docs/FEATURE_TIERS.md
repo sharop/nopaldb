@@ -15,7 +15,7 @@ full
             └─ default
 ```
 
-Tiers are additive: `full` includes `semantic`, `semantic` includes `core`, and `core` includes the default Sled storage backend. These tiers are Rust-only; they do not build the Python wrapper.
+Tiers are additive: `full` includes `semantic` plus `full-isolation`, `semantic` includes `core`, and `core` includes the default Sled storage backend. These tiers are Rust-only; they do not build the Python wrapper.
 
 ---
 
@@ -42,6 +42,7 @@ Everything in `default` plus Arrow/Parquet export, ML data helpers, graph algori
 | `hypergraph` | Hyperedges via `EdgeTarget` |
 | `embeddings` / `embeddings-index` | Semantic embeddings and HNSW indexing |
 | `fulltext` | Tantivy-backed full-text indexes |
+| `full-isolation` | Isolation levels, lock manager and deadlock detection (in the `full` tier) |
 
 ```bash
 cargo build -p nopaldb --features core
@@ -65,7 +66,7 @@ cargo test  -p nopaldb --features semantic --lib
 
 ### `full` — Complete Public Feature Set
 
-`full` is the complete public tier. In this community build it is an alias for `semantic`.
+`full` is the complete tier: everything in `semantic` plus `full-isolation` (transaction isolation levels, per-node lock manager and deadlock detection — see [ISOLATION_LEVELS.md](ISOLATION_LEVELS.md)).
 
 ```bash
 cargo build -p nopaldb --features full
@@ -150,6 +151,7 @@ cargo clippy -p nopaldb --features full -- -D warnings
 | Run graph algorithms | `--features core` |
 | Use OWL ontologies or Turtle files | `--features semantic` |
 | Validate SHACL shapes | `--features semantic` or `--features shacl` |
+| Use isolation levels / deadlock detection | `--features full` or `--features full-isolation` |
 | Build the Python package | `make build-wheel` or `maturin develop --features python-full` |
 | Enable every public capability | `--features full` |
 
@@ -168,7 +170,7 @@ full
             └─ default
 ```
 
-Los tiers son aditivos: `full` incluye `semantic`, `semantic` incluye `core`, y `core` incluye el backend Sled por defecto. Estos tiers son solo Rust; no construyen el wrapper Python.
+Los tiers son aditivos: `full` incluye `semantic` mas `full-isolation` (niveles de aislamiento, lock manager y deteccion de deadlocks — ver [ISOLATION_LEVELS.md](ISOLATION_LEVELS.md)), `semantic` incluye `core`, y `core` incluye el backend Sled por defecto. Estos tiers son solo Rust; no construyen el wrapper Python.
 
 ### Compilacion rapida por tier
 
@@ -217,5 +219,6 @@ maturin develop --release --features python-full
 | Ejecutar algoritmos de grafos | `--features core` |
 | Usar ontologias OWL o Turtle | `--features semantic` |
 | Validar shapes SHACL | `--features semantic` o `--features shacl` |
+| Usar niveles de aislamiento / deteccion de deadlocks | `--features full` o `--features full-isolation` |
 | Construir el paquete Python | `make build-wheel` o `maturin develop --features python-full` |
 | Activar todas las capacidades publicas | `--features full` |

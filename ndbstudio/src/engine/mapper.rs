@@ -25,7 +25,10 @@ pub fn to_tabular_result(result: NqlResult) -> TabularResult {
                 })
                 .collect::<Vec<_>>();
 
-            TabularResult { headers, rows }
+            TabularResult {
+                headers,
+                rows,
+            }
         }
         NqlResult::Write(write) => TabularResult {
             headers: vec![
@@ -69,14 +72,8 @@ pub fn to_tabular_result(result: NqlResult) -> TabularResult {
             headers: vec!["metric".to_string(), "value".to_string()],
             rows: vec![
                 vec!["statement_type".to_string(), profile.statement_type],
-                vec![
-                    "execution_ms".to_string(),
-                    format!("{:.3}", profile.execution_ms),
-                ],
-                vec![
-                    "rows_returned".to_string(),
-                    profile.rows_returned.to_string(),
-                ],
+                vec!["execution_ms".to_string(), format!("{:.3}", profile.execution_ms)],
+                vec!["rows_returned".to_string(), profile.rows_returned.to_string()],
                 vec!["path_query".to_string(), profile.path_query.to_string()],
                 vec!["plan".to_string(), profile.plan],
             ],

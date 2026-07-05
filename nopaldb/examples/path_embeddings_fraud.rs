@@ -19,8 +19,8 @@
 
 #[cfg(feature = "embeddings")]
 mod example {
-    use nopaldb::Graph;
     use nopaldb::types::{Edge, Node, PropertyValue};
+    use nopaldb::Graph;
 
     fn str_val(s: &str) -> PropertyValue {
         PropertyValue::String(s.to_string())
@@ -66,46 +66,24 @@ mod example {
         // Root y Alice/Bob: doméstico, diurno
         // Carol: alto cross-border, alta actividad nocturna
 
-        graph
-            .add_node_embedding(root, vec![0.5, 0.8, 0.1, 0.1], "fraud-v1")
-            .await?;
-        graph
-            .add_node_embedding(alice, vec![0.4, 0.9, 0.1, 0.1], "fraud-v1")
-            .await?;
-        graph
-            .add_node_embedding(bob, vec![0.5, 0.7, 0.2, 0.1], "fraud-v1")
-            .await?;
-        graph
-            .add_node_embedding(carol, vec![0.9, 0.3, 0.9, 0.8], "fraud-v1")
-            .await?;
+        graph.add_node_embedding(root,  vec![0.5, 0.8, 0.1, 0.1], "fraud-v1").await?;
+        graph.add_node_embedding(alice, vec![0.4, 0.9, 0.1, 0.1], "fraud-v1").await?;
+        graph.add_node_embedding(bob,   vec![0.5, 0.7, 0.2, 0.1], "fraud-v1").await?;
+        graph.add_node_embedding(carol, vec![0.9, 0.3, 0.9, 0.8], "fraud-v1").await?;
 
         // Modelo "baseline-v1" — mismos vectores, namespace separado para E-10
-        graph
-            .add_node_embedding(root, vec![0.5, 0.8, 0.1, 0.1], "baseline-v1")
-            .await?;
-        graph
-            .add_node_embedding(alice, vec![0.4, 0.9, 0.1, 0.1], "baseline-v1")
-            .await?;
-        graph
-            .add_node_embedding(bob, vec![0.5, 0.7, 0.2, 0.1], "baseline-v1")
-            .await?;
-        graph
-            .add_node_embedding(carol, vec![0.9, 0.3, 0.9, 0.8], "baseline-v1")
-            .await?;
+        graph.add_node_embedding(root,  vec![0.5, 0.8, 0.1, 0.1], "baseline-v1").await?;
+        graph.add_node_embedding(alice, vec![0.4, 0.9, 0.1, 0.1], "baseline-v1").await?;
+        graph.add_node_embedding(bob,   vec![0.5, 0.7, 0.2, 0.1], "baseline-v1").await?;
+        graph.add_node_embedding(carol, vec![0.9, 0.3, 0.9, 0.8], "baseline-v1").await?;
 
         // ── 3. Embeddings de aristas — modelo "tx-v1" ────────────────────────
         // Transferencias normales: bajo volumen, doméstico, diurno
         // Transferencia sospechosa a Carol: alto volumen, cross-border, nocturno
 
-        graph
-            .add_edge_embedding(edge_ra, vec![0.2, 0.0, 0.1, 0.1], "tx-v1")
-            .await?;
-        graph
-            .add_edge_embedding(edge_rb, vec![0.3, 0.0, 0.1, 0.1], "tx-v1")
-            .await?;
-        graph
-            .add_edge_embedding(edge_rc, vec![0.9, 0.0, 0.9, 0.9], "tx-v1")
-            .await?;
+        graph.add_edge_embedding(edge_ra, vec![0.2, 0.0, 0.1, 0.1], "tx-v1").await?;
+        graph.add_edge_embedding(edge_rb, vec![0.3, 0.0, 0.1, 0.1], "tx-v1").await?;
+        graph.add_edge_embedding(edge_rc, vec![0.9, 0.0, 0.9, 0.9], "tx-v1").await?;
 
         // ── 4. PathReferenceEmbeddings ────────────────────────────────────────
         //
@@ -121,51 +99,41 @@ mod example {
         //   Carol debería estar lejos de este centroide → alta anomalía.
 
         // -- E-8/E-9 references (fraud-v1 / tx-v1) ---------------------------
-        graph
-            .add_path_reference_embedding(
-                "normal_domestic_alice".to_string(),
-                "fraud-v1".to_string(),
-                "tx-v1".to_string(),
-                vec![0.475, 0.85, 0.10, 0.10, 0.20, 0.0, 0.10, 0.10],
-            )
-            .await?;
+        graph.add_path_reference_embedding(
+            "normal_domestic_alice".to_string(),
+            "fraud-v1".to_string(),
+            "tx-v1".to_string(),
+            vec![0.475, 0.85, 0.10, 0.10, 0.20, 0.0, 0.10, 0.10],
+        ).await?;
 
-        graph
-            .add_path_reference_embedding(
-                "normal_domestic_bob".to_string(),
-                "fraud-v1".to_string(),
-                "tx-v1".to_string(),
-                vec![0.50, 0.75, 0.15, 0.10, 0.30, 0.0, 0.10, 0.10],
-            )
-            .await?;
+        graph.add_path_reference_embedding(
+            "normal_domestic_bob".to_string(),
+            "fraud-v1".to_string(),
+            "tx-v1".to_string(),
+            vec![0.50, 0.75, 0.15, 0.10, 0.30, 0.0, 0.10, 0.10],
+        ).await?;
 
-        graph
-            .add_path_reference_embedding(
-                "fraud_ring_v1".to_string(),
-                "fraud-v1".to_string(),
-                "tx-v1".to_string(),
-                vec![0.90, 0.30, 0.90, 0.85, 0.90, 0.0, 0.90, 0.90],
-            )
-            .await?;
+        graph.add_path_reference_embedding(
+            "fraud_ring_v1".to_string(),
+            "fraud-v1".to_string(),
+            "tx-v1".to_string(),
+            vec![0.90, 0.30, 0.90, 0.85, 0.90, 0.0, 0.90, 0.90],
+        ).await?;
 
         // -- E-10 baseline (baseline-v1 / tx-v1) — solo patrones normales -----
-        graph
-            .add_path_reference_embedding(
-                "baseline_alice".to_string(),
-                "baseline-v1".to_string(),
-                "tx-v1".to_string(),
-                vec![0.475, 0.85, 0.10, 0.10, 0.20, 0.0, 0.10, 0.10],
-            )
-            .await?;
+        graph.add_path_reference_embedding(
+            "baseline_alice".to_string(),
+            "baseline-v1".to_string(),
+            "tx-v1".to_string(),
+            vec![0.475, 0.85, 0.10, 0.10, 0.20, 0.0, 0.10, 0.10],
+        ).await?;
 
-        graph
-            .add_path_reference_embedding(
-                "baseline_bob".to_string(),
-                "baseline-v1".to_string(),
-                "tx-v1".to_string(),
-                vec![0.50, 0.75, 0.15, 0.10, 0.30, 0.0, 0.10, 0.10],
-            )
-            .await?;
+        graph.add_path_reference_embedding(
+            "baseline_bob".to_string(),
+            "baseline-v1".to_string(),
+            "tx-v1".to_string(),
+            vec![0.50, 0.75, 0.15, 0.10, 0.30, 0.0, 0.10, 0.10],
+        ).await?;
 
         // ── 5. E-8: path_embedding_similarity ────────────────────────────────
         println!("=== E-8: path_embedding_similarity ===");
@@ -195,15 +163,11 @@ mod example {
 
         // ── 6. E-9: path_knn_references ──────────────────────────────────────
         println!("\n=== E-9: path_knn_references (top-2, min_score=0.0) ===");
-        let result = graph
-            .execute_nql(
-                r#"
+        let result = graph.execute_nql(r#"
             find n.name,
                  path_knn_references("fraud-v1", "tx-v1", 2, 0.0) as top_refs
             from (r:Account {name: "Root"})-[:TX]->(n:Account)
-        "#,
-            )
-            .await?;
+        "#).await?;
 
         for row in result.rows() {
             let name = match row.get("n.name") {
@@ -215,21 +179,11 @@ mod example {
                     .iter()
                     .map(|item| match item {
                         PropertyValue::Object(fields) => {
-                            let ref_name = fields
-                                .iter()
-                                .find(|(k, _)| k == "name")
-                                .map(|(_, v)| match v {
-                                    PropertyValue::String(s) => s.as_str(),
-                                    _ => "?",
-                                })
+                            let ref_name = fields.iter().find(|(k, _)| k == "name")
+                                .map(|(_, v)| match v { PropertyValue::String(s) => s.as_str(), _ => "?" })
                                 .unwrap_or("?");
-                            let score = fields
-                                .iter()
-                                .find(|(k, _)| k == "score")
-                                .map(|(_, v)| match v {
-                                    PropertyValue::Float(f) => *f,
-                                    _ => 0.0,
-                                })
+                            let score = fields.iter().find(|(k, _)| k == "score")
+                                .map(|(_, v)| match v { PropertyValue::Float(f) => *f, _ => 0.0 })
                                 .unwrap_or(0.0);
                             format!("{}({:.3})", ref_name, score)
                         }
@@ -247,16 +201,12 @@ mod example {
         // El centroide representa el comportamiento doméstico esperado.
         // Carol, con alto cross-border y actividad nocturna, estará lejos del centroide.
         println!("\n=== E-10: path_anomaly_score (baseline normal: alice + bob) ===");
-        let result = graph
-            .execute_nql(
-                r#"
+        let result = graph.execute_nql(r#"
             find n.name,
                  path_anomaly_score("baseline-v1", "tx-v1") as anomaly
             from (r:Account {name: "Root"})-[:TX]->(n:Account)
             order by anomaly desc
-        "#,
-            )
-            .await?;
+        "#).await?;
 
         for row in result.rows() {
             let name = match row.get("n.name") {
@@ -273,15 +223,11 @@ mod example {
 
         // ── 8. E-10: WHERE filter for anomalous paths ─────────────────────────
         println!("\n=== E-10: WHERE path_anomaly_score > 0.3 ===");
-        let result = graph
-            .execute_nql(
-                r#"
+        let result = graph.execute_nql(r#"
             find n.name
             from (r:Account {name: "Root"})-[:TX]->(n:Account)
             where path_anomaly_score("baseline-v1", "tx-v1") > 0.3
-        "#,
-            )
-            .await?;
+        "#).await?;
 
         if result.is_empty() {
             println!("  (no anomalous paths found)");

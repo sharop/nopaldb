@@ -56,7 +56,7 @@ cargo test -p nopaldb --features full --lib
 
 # Integration tests (require specific features)
 cargo test --test owl_import_integration_test --features owl-import
-cargo test --test pyg_integration_test --features ml
+cargo test --test p1_isolation_levels_test --features full-isolation
 
 # Full QA package
 make package-qa

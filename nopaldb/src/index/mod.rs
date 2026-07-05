@@ -2,10 +2,10 @@
 //
 // Index management system for NopalDB
 
+pub mod hash;
 pub mod btree;
 #[cfg(feature = "fulltext")]
 pub mod fulltext;
-pub mod hash;
 pub mod storage;
 pub mod taxonomy;
 
@@ -15,10 +15,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+pub use hash::HashIndex;
 pub use btree::BTreeIndex;
 #[cfg(feature = "fulltext")]
 pub use fulltext::FullTextIndex;
-pub use hash::HashIndex;
 pub use taxonomy::TaxonomyIndex;
 
 /// Index type
@@ -181,8 +181,7 @@ impl IndexManager {
                         // Step 2: create empty runtime indexes.
                         let mut rebuilt_indexes: HashMap<String, Box<dyn Index>> = HashMap::new();
                         let mut rebuilt_meta: HashMap<String, IndexMetadata> = HashMap::new();
-                        let mut indexes_by_label: HashMap<String, Vec<(String, String)>> =
-                            HashMap::new();
+                        let mut indexes_by_label: HashMap<String, Vec<(String, String)>> = HashMap::new();
                         // Track taxonomy index names for the post-loop rebuild pass.
                         let mut taxonomy_names: Vec<String> = Vec::new();
 
@@ -228,10 +227,9 @@ impl IndexManager {
                             if let Some(indexes_for_label) = indexes_by_label.get(&node.label) {
                                 for (index_name, property) in indexes_for_label {
                                     if let Some(value) = node.properties.get(property)
-                                        && let Some(index) = rebuilt_indexes.get_mut(index_name)
-                                    {
-                                        index.insert(value.clone(), node.id)?;
-                                        *counts.entry(index_name.clone()).or_insert(0) += 1;
+                                        && let Some(index) = rebuilt_indexes.get_mut(index_name) {
+                                            index.insert(value.clone(), node.id)?;
+                                            *counts.entry(index_name.clone()).or_insert(0) += 1;
                                     }
                                 }
                             }
@@ -266,9 +264,7 @@ impl IndexManager {
                                     }
                                     log::info!(
                                         "Rebuilt taxonomy index {} (label={}, edge_type={})",
-                                        tax_name,
-                                        label,
-                                        edge_type
+                                        tax_name, label, edge_type
                                     );
                                 }
                             }
@@ -318,10 +314,9 @@ impl IndexManager {
         // Check if index already exists
         let indexes = self.indexes.read().await;
         if indexes.contains_key(&index_name) {
-            return Err(crate::error::NopalError::index_error(format!(
-                "Index {} already exists",
-                index_name
-            )));
+            return Err(crate::error::NopalError::index_error(
+                format!("Index {} already exists", index_name)
+            ));
         }
         drop(indexes);
 
@@ -332,9 +327,7 @@ impl IndexManager {
             IndexType::FullText => {
                 #[cfg(feature = "fulltext")]
                 {
-                    let path = self
-                        .base_path
-                        .as_ref()
+                    let path = self.base_path.as_ref()
                         .map(|p| format!("{}/fulltext_{}", p, index_name));
                     Box::new(FullTextIndex::new(path)?)
                 }
@@ -470,24 +463,26 @@ impl IndexManager {
     }
 
     /// Query an index
-    pub async fn query(&self, index_name: &str, query: &IndexQuery) -> Result<Vec<NodeId>> {
+    pub async fn query(
+        &self,
+        index_name: &str,
+        query: &IndexQuery,
+    ) -> Result<Vec<NodeId>> {
         let indexes = self.indexes.read().await;
 
         if let Some(index) = indexes.get(index_name) {
             index.query(query)
         } else {
-            Err(crate::error::NopalError::index_error(format!(
-                "Index not found: {}",
-                index_name
-            )))
+            Err(crate::error::NopalError::index_error(
+                format!("Index not found: {}", index_name)
+            ))
         }
     }
 
     /// Get all indexes for a label
     pub async fn get_indexes_for_label(&self, label: &str) -> Vec<String> {
         let metadata = self.metadata.read().await;
-        metadata
-            .values()
+        metadata.values()
             .filter(|m| m.label == label)
             .map(|m| m.name.clone())
             .collect()
@@ -559,8 +554,7 @@ mod tests {
         let manager = IndexManager::new(None);
 
         // Create hash index
-        let index_name = manager
-            .create_index("Person", "name", IndexType::Hash)
+        let index_name = manager.create_index("Person", "name", IndexType::Hash)
             .await
             .unwrap();
 
@@ -577,15 +571,12 @@ mod tests {
     async fn test_index_manager_duplicate() {
         let manager = IndexManager::new(None);
 
-        manager
-            .create_index("Person", "name", IndexType::Hash)
+        manager.create_index("Person", "name", IndexType::Hash)
             .await
             .unwrap();
 
         // Try to create duplicate
-        let result = manager
-            .create_index("Person", "name", IndexType::Hash)
-            .await;
+        let result = manager.create_index("Person", "name", IndexType::Hash).await;
         assert!(result.is_err());
     }
 }

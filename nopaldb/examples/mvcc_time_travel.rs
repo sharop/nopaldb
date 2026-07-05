@@ -9,8 +9,8 @@
 //!   cargo run --example mvcc_time_travel
 //!   cargo run --example mvcc_time_travel --features reasoner
 
-use nopaldb::Graph;
 use nopaldb::types::{Node, PropertyValue};
+use nopaldb::Graph;
 
 #[cfg(feature = "reasoner")]
 fn now_secs() -> u64 {
@@ -44,12 +44,9 @@ async fn main() -> nopaldb::Result<()> {
     let paciente_id = {
         let mut tx = graph.begin_transaction().await?;
         let nodo = Node::new("Paciente")
-            .with_property("nombre", PropertyValue::String("Laura Gomez".into()))
-            .with_property(
-                "diagnostico",
-                PropertyValue::String("sospecha viral".into()),
-            )
-            .with_property("estado", PropertyValue::String("activo".into()));
+            .with_property("nombre",       PropertyValue::String("Laura Gomez".into()))
+            .with_property("diagnostico",  PropertyValue::String("sospecha viral".into()))
+            .with_property("estado",       PropertyValue::String("activo".into()));
         let id = tx.add_node(nodo).await?;
         tx.commit().await?;
         id
@@ -61,14 +58,8 @@ async fn main() -> nopaldb::Result<()> {
     {
         let mut tx = graph.begin_transaction().await?;
         let mut nodo = graph.get_node(paciente_id).await?;
-        nodo.properties.insert(
-            "diagnostico".into(),
-            PropertyValue::String("COVID-19 confirmado".into()),
-        );
-        nodo.properties.insert(
-            "tratamiento".into(),
-            PropertyValue::String("Remdesivir".into()),
-        );
+        nodo.properties.insert("diagnostico".into(),  PropertyValue::String("COVID-19 confirmado".into()));
+        nodo.properties.insert("tratamiento".into(),  PropertyValue::String("Remdesivir".into()));
         tx.add_node(nodo).await?;
         tx.commit().await?;
     }
@@ -79,10 +70,8 @@ async fn main() -> nopaldb::Result<()> {
     {
         let mut tx = graph.begin_transaction().await?;
         let mut nodo = graph.get_node(paciente_id).await?;
-        nodo.properties
-            .insert("estado".into(), PropertyValue::String("recuperado".into()));
-        nodo.properties
-            .insert("alta".into(), PropertyValue::String("2024-03-15".into()));
+        nodo.properties.insert("estado".into(), PropertyValue::String("recuperado".into()));
+        nodo.properties.insert("alta".into(),   PropertyValue::String("2024-03-15".into()));
         tx.add_node(nodo).await?;
         tx.commit().await?;
     }
@@ -117,10 +106,7 @@ async fn main() -> nopaldb::Result<()> {
     // Extraer timestamps internos del MVCC para as_of() y get_node_at()
     // history() ordena de mas reciente a mas antigua: [v3, v2, v1]
     let t_v1 = history.last().map(|v| v.timestamp).unwrap_or(0);
-    let t_v2 = history
-        .get(history.len().saturating_sub(2))
-        .map(|v| v.timestamp)
-        .unwrap_or(0);
+    let t_v2 = history.get(history.len().saturating_sub(2)).map(|v| v.timestamp).unwrap_or(0);
     println!();
 
     // ═══════════════════════════════════════════════════════════════════
@@ -220,8 +206,7 @@ async fn main() -> nopaldb::Result<()> {
                 target: eid,
                 edge_type: "subClassOf".into(),
                 properties: Default::default(),
-            })
-            .unwrap();
+            }).unwrap();
 
             tx.add_edge(nopaldb::types::Edge {
                 id: uuid::Uuid::new_v4(),
@@ -229,8 +214,7 @@ async fn main() -> nopaldb::Result<()> {
                 target: iid,
                 edge_type: "subClassOf".into(),
                 properties: Default::default(),
-            })
-            .unwrap();
+            }).unwrap();
 
             tx.commit().await?;
             (eid, vid)

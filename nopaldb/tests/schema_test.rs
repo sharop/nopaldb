@@ -8,13 +8,13 @@ async fn test_get_labels() {
     let graph = Graph::in_memory().await.unwrap();
     let mut tx = graph.begin_transaction().await.unwrap();
 
-    tx.add_node(Node::new("Person").with_property("name", PropertyValue::String("Alice".into())))
-        .await
-        .unwrap();
+    tx.add_node(Node::new("Person")
+        .with_property("name",PropertyValue::String("Alice".into())))
+        .await.unwrap();
 
-    tx.add_node(Node::new("Entity").with_property("name", PropertyValue::String("Corp".into())))
-        .await
-        .unwrap();
+    tx.add_node(Node::new("Entity")
+        .with_property("name",PropertyValue::String("Corp".into())))
+        .await.unwrap();
 
     tx.commit().await.unwrap();
 
@@ -32,21 +32,18 @@ async fn test_get_schema() {
     let mut props = HashMap::new();
     props.insert("name".to_string(), PropertyValue::String("Alice".into()));
     props.insert("age".to_string(), PropertyValue::Int(30.into()));
-    let alice = tx
-        .add_node(Node::new("Person").with_properties(props))
-        .await
-        .unwrap();
+    let alice = tx.add_node(Node::new("Person")
+        .with_properties(props)).await.unwrap();
 
     let mut props2 = HashMap::new();
     props2.insert("name".to_string(), PropertyValue::String("Bob".into()));
-    let bob = tx
-        .add_node(Node::new("Person").with_properties(props2))
-        .await
-        .unwrap();
+    let bob=tx.add_node(Node::new("Person")
+        .with_properties(props2)).await.unwrap();
 
     let mut edge_props = HashMap::new();
     edge_props.insert("since".to_string(), PropertyValue::Int(2020.into()));
-    tx.add_edge(Edge::new(alice, bob, "KNOWS").with_properties(edge_props))
+    tx.add_edge(Edge::new(alice, bob, "KNOWS")
+        .with_properties(edge_props))
         .unwrap();
 
     tx.commit().await.unwrap();
@@ -69,13 +66,9 @@ async fn test_get_label_properties() {
     let mut props = HashMap::new();
     props.insert("name".to_string(), PropertyValue::String("Alice".into()));
     props.insert("age".to_string(), PropertyValue::Int(30.into()));
-    props.insert(
-        "email".to_string(),
-        PropertyValue::String("alice@example.com".into()),
-    );
-    tx.add_node(Node::new("Person").with_properties(props))
-        .await
-        .unwrap();
+    props.insert("email".to_string(), PropertyValue::String("alice@example.com".into()));
+    tx.add_node(Node::new("Person")
+        .with_properties(props)).await.unwrap();
 
     tx.commit().await.unwrap();
 
@@ -94,9 +87,7 @@ async fn test_label_count() {
     for i in 0..5 {
         let mut props = HashMap::new();
         props.insert("id".to_string(), PropertyValue::Int(i.into()));
-        tx.add_node(Node::new("Person").with_properties(props))
-            .await
-            .unwrap();
+        tx.add_node(Node::new("Person").with_properties(props)).await.unwrap();
     }
 
     tx.commit().await.unwrap();

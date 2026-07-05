@@ -64,8 +64,10 @@ impl BetweennessCentrality {
         config: BetweennessConfig,
     ) -> Result<HashMap<NodeId, f64>> {
         let n = nodes.len();
-        let mut betweenness: HashMap<NodeId, f64> =
-            nodes.iter().map(|node| (node.id, 0.0)).collect();
+        let mut betweenness: HashMap<NodeId, f64> = nodes
+            .iter()
+            .map(|node| (node.id, 0.0))
+            .collect();
 
         let mut adjacency: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
 
@@ -116,7 +118,10 @@ impl BetweennessCentrality {
                 }
             }
 
-            let mut delta: HashMap<NodeId, f64> = nodes.iter().map(|node| (node.id, 0.0)).collect();
+            let mut delta: HashMap<NodeId, f64> = nodes
+                .iter()
+                .map(|node| (node.id, 0.0))
+                .collect();
 
             while let Some(w) = stack.pop() {
                 if let Some(preds) = predecessors.get(&w) {
@@ -163,7 +168,7 @@ impl BetweennessCentrality {
 mod tests {
     use super::*;
     use crate::Graph;
-    use crate::types::{Edge, Node};
+    use crate::types::{Node, Edge};
     use std::collections::HashMap;
 
     #[tokio::test]
@@ -173,35 +178,26 @@ mod tests {
 
         // Create linear graph: A -- B -- C
         // B should have highest betweenness (it's the bridge)
-        let a = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let a = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
-        let b = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let b = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
-        let c = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let c = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
         // A -- B
         tx.add_edge(Edge {
@@ -210,8 +206,7 @@ mod tests {
             target: b,
             edge_type: "CONNECTS".to_string(),
             properties: HashMap::new(),
-        })
-        .unwrap();
+        }).unwrap();
 
         // B -- C
         tx.add_edge(Edge {
@@ -220,8 +215,7 @@ mod tests {
             target: c,
             edge_type: "CONNECTS".to_string(),
             properties: HashMap::new(),
-        })
-        .unwrap();
+        }).unwrap();
 
         tx.commit().await.unwrap();
 
@@ -247,27 +241,21 @@ mod tests {
 
         // Create star graph: center connected to 3 periphery nodes
         // Center should have betweenness = 1.0 (normalized)
-        let center = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Center".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let center = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Center".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
         let mut periphery = Vec::new();
         for i in 0..3 {
-            let p = tx
-                .add_node(Node {
-                    id: uuid::Uuid::new_v4(),
-                    label: format!("P{}", i),
-                    properties: HashMap::new(),
-                    kind: Default::default(),
-                })
-                .await
-                .unwrap();
+            let p = tx.add_node(Node {
+                id: uuid::Uuid::new_v4(),
+                label: format!("P{}", i),
+                properties: HashMap::new(),
+                kind: Default::default(),
+            }).await.unwrap();
 
             tx.add_edge(Edge {
                 id: uuid::Uuid::new_v4(),
@@ -275,8 +263,7 @@ mod tests {
                 target: p,
                 edge_type: "CONNECTS".to_string(),
                 properties: HashMap::new(),
-            })
-            .unwrap();
+            }).unwrap();
 
             periphery.push(p);
         }

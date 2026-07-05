@@ -1,6 +1,6 @@
 // examples/ml_fraud_detection.rs
 
-use nopaldb::{Direction, Edge, Graph, Node, PropertyValue};
+use nopaldb::{Graph, Node, Edge, PropertyValue, Direction};
 use std::collections::HashMap;
 
 #[tokio::main]
@@ -39,85 +39,62 @@ async fn main() -> nopaldb::Result<()> {
 }
 
 async fn create_transaction_network(graph: &Graph) -> nopaldb::Result<Vec<uuid::Uuid>> {
-    let alice = graph
-        .add_node(
-            Node::new("Account")
-                .with_property("name", PropertyValue::String("Alice".into()))
-                .with_property("balance", PropertyValue::Int(10000)),
-        )
-        .await?;
+    let alice = graph.add_node(Node::new("Account")
+        .with_property("name", PropertyValue::String("Alice".into()))
+        .with_property("balance", PropertyValue::Int(10000))).await?;
 
-    let bob = graph
-        .add_node(
-            Node::new("Account")
-                .with_property("name", PropertyValue::String("Bob".into()))
-                .with_property("balance", PropertyValue::Int(5000)),
-        )
-        .await?;
+    let bob = graph.add_node(Node::new("Account")
+        .with_property("name", PropertyValue::String("Bob".into()))
+        .with_property("balance", PropertyValue::Int(5000))).await?;
 
-    let charlie = graph
-        .add_node(
-            Node::new("Account")
-                .with_property("name", PropertyValue::String("Charlie".into()))
-                .with_property("balance", PropertyValue::Int(1000)),
-        )
-        .await?;
+    let charlie = graph.add_node(Node::new("Account")
+        .with_property("name", PropertyValue::String("Charlie".into()))
+        .with_property("balance", PropertyValue::Int(1000))).await?;
 
-    let dana = graph
-        .add_node(
-            Node::new("Account")
-                .with_property("name", PropertyValue::String("Dana".into()))
-                .with_property("balance", PropertyValue::Int(1000)),
-        )
-        .await?;
+    let dana = graph.add_node(Node::new("Account")
+        .with_property("name", PropertyValue::String("Dana".into()))
+        .with_property("balance", PropertyValue::Int(1000))).await?;
 
-    let eve = graph
-        .add_node(
-            Node::new("Account")
-                .with_property("name", PropertyValue::String("Eve".into()))
-                .with_property("balance", PropertyValue::Int(1000)),
-        )
-        .await?;
+    let eve = graph.add_node(Node::new("Account")
+        .with_property("name", PropertyValue::String("Eve".into()))
+        .with_property("balance", PropertyValue::Int(1000))).await?;
 
     // Transacciones normales
-    graph
-        .add_edge(
-            Edge::new(alice, bob, "TRANSFER").with_property("amount", PropertyValue::Int(100)),
-        )
-        .await?;
+    graph.add_edge(Edge::new(alice, bob, "TRANSFER")
+        .with_property("amount", PropertyValue::Int(100))).await?;
 
-    graph
-        .add_edge(Edge::new(bob, alice, "TRANSFER").with_property("amount", PropertyValue::Int(50)))
-        .await?;
+    graph.add_edge(Edge::new(bob, alice, "TRANSFER")
+        .with_property("amount", PropertyValue::Int(50))).await?;
 
     // Patrón sospechoso: Circular transfer
-    graph
-        .add_edge(
-            Edge::new(charlie, dana, "TRANSFER").with_property("amount", PropertyValue::Int(500)),
-        )
-        .await?;
+    graph.add_edge(Edge::new(charlie, dana, "TRANSFER")
+        .with_property("amount", PropertyValue::Int(500))).await?;
 
-    graph
-        .add_edge(Edge::new(dana, eve, "TRANSFER").with_property("amount", PropertyValue::Int(500)))
-        .await?;
+    graph.add_edge(Edge::new(dana, eve, "TRANSFER")
+        .with_property("amount", PropertyValue::Int(500))).await?;
 
-    graph
-        .add_edge(
-            Edge::new(eve, charlie, "TRANSFER").with_property("amount", PropertyValue::Int(500)),
-        )
-        .await?;
+    graph.add_edge(Edge::new(eve, charlie, "TRANSFER")
+        .with_property("amount", PropertyValue::Int(500))).await?;
 
     Ok(vec![alice, bob, charlie, dana, eve])
 }
 
-async fn transaction_velocity(graph: &Graph, account_id: uuid::Uuid) -> nopaldb::Result<usize> {
+
+
+async fn transaction_velocity(
+    graph: &Graph,
+    account_id: uuid::Uuid,
+) -> nopaldb::Result<usize> {
     let outgoing = graph.edges_of(account_id, Direction::Outgoing).await?;
     let incoming = graph.edges_of(account_id, Direction::Incoming).await?;
 
     Ok(outgoing.len() + incoming.len())
 }
 
-async fn has_structuring_pattern(graph: &Graph, account_id: uuid::Uuid) -> nopaldb::Result<bool> {
+async fn has_structuring_pattern(
+    graph: &Graph,
+    account_id: uuid::Uuid,
+) -> nopaldb::Result<bool> {
     let edges = graph.edges_of(account_id, Direction::Outgoing).await?;
 
     let mut amounts: HashMap<i64, usize> = HashMap::new();
@@ -131,9 +108,13 @@ async fn has_structuring_pattern(graph: &Graph, account_id: uuid::Uuid) -> nopal
     Ok(amounts.values().any(|&count| count >= 3))
 }
 
+
 // Reemplazar calculate_fraud_risk:
 
-async fn calculate_fraud_risk(graph: &Graph, account_id: uuid::Uuid) -> nopaldb::Result<f64> {
+async fn calculate_fraud_risk(
+    graph: &Graph,
+    account_id: uuid::Uuid,
+) -> nopaldb::Result<f64> {
     let mut risk_score: f64 = 0.0;
 
     // FEATURE 1: Ciclos de 3+ nodos (money laundering)
@@ -192,8 +173,10 @@ async fn detect_cycle_with_length(
     let edges = graph.edges_of(current, Direction::Outgoing).await?;
 
     for edge in edges {
-        if edge.edge_type == "TRANSFER" && detect_cycle_with_length(graph, edge.target, visited, path).await? {
-            return Ok(true);
+        if edge.edge_type == "TRANSFER" {
+            if detect_cycle_with_length(graph, edge.target, visited, path).await? {
+                return Ok(true);
+            }
         }
     }
 

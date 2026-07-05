@@ -1,5 +1,5 @@
-use nopaldb::mvcc::GCConfig;
 use nopaldb::{Graph, Node, PropertyValue};
+use nopaldb::mvcc::GCConfig;
 
 async fn seed_versioned_person(graph: &Graph) -> nopaldb::Result<nopaldb::NodeId> {
     let mut tx1 = graph.begin_transaction().await?;
@@ -37,11 +37,7 @@ async fn test_p2_gc_deletes_old_versions_keep_one() -> nopaldb::Result<()> {
     let node_id = seed_versioned_person(&graph).await?;
 
     let history_before = graph.history(node_id).await?;
-    assert_eq!(
-        history_before.len(),
-        3,
-        "Expected 3 MVCC versions before GC"
-    );
+    assert_eq!(history_before.len(), 3, "Expected 3 MVCC versions before GC");
 
     let config = GCConfig {
         cutoff_timestamp: u64::MAX,
@@ -58,10 +54,7 @@ async fn test_p2_gc_deletes_old_versions_keep_one() -> nopaldb::Result<()> {
 
     let history_after = graph.history(node_id).await?;
     assert_eq!(history_after.len(), 1, "Only latest version should remain");
-    assert_eq!(
-        history_after[0].version, 3,
-        "Latest version must be preserved"
-    );
+    assert_eq!(history_after[0].version, 3, "Latest version must be preserved");
 
     Ok(())
 }
@@ -83,10 +76,7 @@ async fn test_p2_gc_dry_run_does_not_delete_versions() -> nopaldb::Result<()> {
     };
     let stats = graph.gc(config).await?;
 
-    assert_eq!(
-        stats.versions_deleted, 2,
-        "Dry run reports would-delete count"
-    );
+    assert_eq!(stats.versions_deleted, 2, "Dry run reports would-delete count");
     assert_eq!(stats.bytes_freed, 0, "Dry run must not free bytes");
 
     let history_after = graph.history(node_id).await?;
@@ -108,22 +98,12 @@ async fn test_p2_gc_respects_keep_at_least() -> nopaldb::Result<()> {
         use_active_horizon: false,
     };
     let stats = graph.gc(config).await?;
-    assert_eq!(
-        stats.versions_deleted, 1,
-        "GC should keep the latest 2 versions"
-    );
+    assert_eq!(stats.versions_deleted, 1, "GC should keep the latest 2 versions");
 
     let history_after = graph.history(node_id).await?;
     assert_eq!(history_after.len(), 2);
-    let kept_versions = history_after
-        .into_iter()
-        .map(|v| v.version)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        kept_versions,
-        vec![3, 2],
-        "Expected to keep latest versions only"
-    );
+    let kept_versions = history_after.into_iter().map(|v| v.version).collect::<Vec<_>>();
+    assert_eq!(kept_versions, vec![3, 2], "Expected to keep latest versions only");
 
     Ok(())
 }
@@ -165,11 +145,9 @@ async fn test_gc_respects_active_transaction_horizon() -> nopaldb::Result<()> {
 
     let history_after = graph.history(node_id).await?;
     assert_eq!(
-        history_after.len(),
-        3,
+        history_after.len(), 3,
         "GC with active_horizon must not delete versions when horizon={} (deleted={})",
-        sentinel_ts,
-        stats.versions_deleted
+        sentinel_ts, stats.versions_deleted
     );
 
     // Commit la tx sentinel y volver a ejecutar GC sin horizon — debe borrar
@@ -183,10 +161,7 @@ async fn test_gc_respects_active_transaction_horizon() -> nopaldb::Result<()> {
         use_active_horizon: false,
     };
     let stats2 = graph.gc(config2).await?;
-    assert!(
-        stats2.versions_deleted >= 2,
-        "After sentinel commit, GC should delete old versions"
-    );
+    assert!(stats2.versions_deleted >= 2, "After sentinel commit, GC should delete old versions");
 
     Ok(())
 }
@@ -198,10 +173,7 @@ async fn test_safe_gc_horizon_tracks_minimum() -> nopaldb::Result<()> {
 
     // Sin txs activas, el horizonte es >= 1 (current timestamp)
     let horizon_empty = graph.safe_gc_horizon();
-    assert!(
-        horizon_empty >= 1,
-        "Horizon without active txs should be >= 1"
-    );
+    assert!(horizon_empty >= 1, "Horizon without active txs should be >= 1");
 
     // Iniciar 3 transacciones
     let tx1 = graph.begin_transaction().await?;
@@ -214,10 +186,7 @@ async fn test_safe_gc_horizon_tracks_minimum() -> nopaldb::Result<()> {
     // El horizonte debe ser el mínimo de los 3
     let horizon = graph.safe_gc_horizon();
     let expected_min = ts1.min(ts2).min(ts3);
-    assert_eq!(
-        horizon, expected_min,
-        "Horizon must be min of all active tx timestamps"
-    );
+    assert_eq!(horizon, expected_min, "Horizon must be min of all active tx timestamps");
 
     // Hacer commit de tx1 y tx2
     tx1.commit().await?;
@@ -225,20 +194,14 @@ async fn test_safe_gc_horizon_tracks_minimum() -> nopaldb::Result<()> {
 
     // El horizonte ahora debe ser ts3
     let horizon_after = graph.safe_gc_horizon();
-    assert_eq!(
-        horizon_after, ts3,
-        "After committing tx1+tx2, horizon = ts3"
-    );
+    assert_eq!(horizon_after, ts3, "After committing tx1+tx2, horizon = ts3");
 
     // Hacer commit de tx3
     tx3.commit().await?;
 
     // Sin txs activas, el horizonte vuelve al timestamp actual
     let horizon_final = graph.safe_gc_horizon();
-    assert!(
-        horizon_final > ts3,
-        "After all commits, horizon should be current timestamp"
-    );
+    assert!(horizon_final > ts3, "After all commits, horizon should be current timestamp");
 
     Ok(())
 }
@@ -267,11 +230,9 @@ async fn test_gc_default_conservative() -> nopaldb::Result<()> {
 
     let history = graph.history(node_id).await?;
     assert_eq!(
-        history.len(),
-        3,
+        history.len(), 3,
         "gc_default with early active tx (horizon={}) should not delete versions (deleted={})",
-        horizon_ts,
-        stats.versions_deleted
+        horizon_ts, stats.versions_deleted
     );
 
     active_tx.commit().await?;

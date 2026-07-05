@@ -38,15 +38,9 @@ mod tests {
         // node embeddings: A=[1,0], B=[0,1] → mean=[0.5, 0.5]
         // edge embedding: TX=[1,1]
         // path E-7 vector: [0.5, 0.5, 1.0, 1.0]
-        graph
-            .add_node_embedding(a, vec![1.0, 0.0], "node-m")
-            .await?;
-        graph
-            .add_node_embedding(b, vec![0.0, 1.0], "node-m")
-            .await?;
-        graph
-            .add_edge_embedding(rel, vec![1.0, 1.0], "edge-m")
-            .await?;
+        graph.add_node_embedding(a, vec![1.0, 0.0], "node-m").await?;
+        graph.add_node_embedding(b, vec![0.0, 1.0], "node-m").await?;
+        graph.add_edge_embedding(rel, vec![1.0, 1.0], "edge-m").await?;
 
         // referencia = mismo vector que el path → cosine debe ser ~1.0
         graph
@@ -108,11 +102,7 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         let score = get_float(&result, 0, "score");
-        assert!(
-            score > 0.0 && score <= 1.0 + 1e-5,
-            "score out of range: {}",
-            score
-        );
+        assert!(score > 0.0 && score <= 1.0 + 1e-5, "score out of range: {}", score);
         Ok(())
     }
 
@@ -134,11 +124,7 @@ mod tests {
             "#,
             )
             .await?;
-        assert_eq!(
-            result_pass.len(),
-            1,
-            "expected 1 row to pass threshold 0.99"
-        );
+        assert_eq!(result_pass.len(), 1, "expected 1 row to pass threshold 0.99");
 
         // threshold 1.01 — nothing should pass
         let result_reject = graph
@@ -150,11 +136,7 @@ mod tests {
             "#,
             )
             .await?;
-        assert_eq!(
-            result_reject.len(),
-            0,
-            "expected 0 rows above threshold 1.01"
-        );
+        assert_eq!(result_reject.len(), 0, "expected 0 rows above threshold 1.01");
         Ok(())
     }
 
@@ -185,12 +167,8 @@ mod tests {
         graph.add_node_embedding(a, vec![1.0, 0.0], "nm").await?;
         graph.add_node_embedding(b, vec![1.0, 0.0], "nm").await?;
         graph.add_node_embedding(c, vec![0.0, 1.0], "nm").await?;
-        graph
-            .add_edge_embedding(rel_ab, vec![1.0, 0.0], "em")
-            .await?;
-        graph
-            .add_edge_embedding(rel_ac, vec![0.0, 1.0], "em")
-            .await?;
+        graph.add_edge_embedding(rel_ab, vec![1.0, 0.0], "em").await?;
+        graph.add_edge_embedding(rel_ac, vec![0.0, 1.0], "em").await?;
 
         // Referencia = path AB: node_mean=[1,0], edge_mean=[1,0] → [1,0,1,0]
         // path AB: score ≈ 1.0; path AC: node_mean=[0.5,0.5], edge_mean=[0,1] → [0.5,0.5,0,1]

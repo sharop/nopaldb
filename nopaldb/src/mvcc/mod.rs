@@ -3,9 +3,9 @@
 // Multi-Version Concurrency Control implementation
 // Includes Garbage Collection for old versions
 
+use serde::{Serialize, Deserialize};
+use crate::types::{Node, Edge, NodeId, EdgeId};
 use crate::error::Result;
-use crate::types::{Edge, EdgeId, Node, NodeId};
-use serde::{Deserialize, Serialize};
 
 /// Nodo versionado con metadata MVCC
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,7 +47,11 @@ impl VersionedNode {
     }
 
     /// Crea una nueva versión desde una anterior
-    pub fn new_version(previous: &VersionedNode, new_data: Node, timestamp: u64) -> Self {
+    pub fn new_version(
+        previous: &VersionedNode,
+        new_data: Node,
+        timestamp: u64,
+    ) -> Self {
         Self {
             id: previous.id,
             version: previous.version + 1,
@@ -66,7 +70,8 @@ impl VersionedNode {
 
     /// Verifica si esta versión es válida en un timestamp
     pub fn is_valid_at(&self, timestamp: u64) -> bool {
-        timestamp >= self.valid_from && self.valid_to.map(|to| timestamp < to).unwrap_or(true)
+        timestamp >= self.valid_from
+            && self.valid_to.map(|to| timestamp < to).unwrap_or(true)
     }
 
     /// Verifica si esta versión puede ser eliminada por GC
@@ -128,7 +133,8 @@ impl VersionedEdge {
 
     /// Verifica si esta versión es válida en un timestamp dado
     pub fn is_valid_at(&self, timestamp: u64) -> bool {
-        timestamp >= self.valid_from && self.valid_to.map(|to| timestamp < to).unwrap_or(true)
+        timestamp >= self.valid_from
+            && self.valid_to.map(|to| timestamp < to).unwrap_or(true)
     }
 
     /// Verifica si esta versión puede ser eliminada por GC
@@ -258,7 +264,10 @@ impl VersionManager {
     }
 
     /// Obtiene el historial completo de un nodo
-    pub async fn get_history(&self, _node_id: NodeId) -> Result<Vec<VersionedNode>> {
+    pub async fn get_history(
+        &self,
+        _node_id: NodeId,
+    ) -> Result<Vec<VersionedNode>> {
         // La lógica real está en Storage::get_node_history
         Ok(Vec::new())
     }
@@ -287,12 +296,14 @@ mod tests {
 
     #[test]
     fn test_version_chain() {
-        let node1 = Node::new("Person").with_property("age", PropertyValue::Int(25));
+        let node1 = Node::new("Person")
+            .with_property("age", PropertyValue::Int(25));
 
         let mut v1 = VersionedNode::new(node1, 100);
 
         // Update
-        let node2 = Node::new("Person").with_property("age", PropertyValue::Int(30));
+        let node2 = Node::new("Person")
+            .with_property("age", PropertyValue::Int(30));
 
         let v2 = VersionedNode::new_version(&v1, node2, 200);
 
@@ -312,15 +323,15 @@ mod tests {
         let node = Node::new("Test");
         let mut v = VersionedNode::new(node, 100);
 
-        assert!(!v.is_valid_at(50)); // Antes de valid_from
-        assert!(v.is_valid_at(100)); // En valid_from
-        assert!(v.is_valid_at(150)); // Durante validez
+        assert!(!v.is_valid_at(50));   // Antes de valid_from
+        assert!(v.is_valid_at(100));   // En valid_from
+        assert!(v.is_valid_at(150));   // Durante validez
 
         v.invalidate(200);
 
-        assert!(v.is_valid_at(150)); // Todavía válido
-        assert!(!v.is_valid_at(200)); // Invalidado en 200
-        assert!(!v.is_valid_at(250)); // Después de invalidación
+        assert!(v.is_valid_at(150));   // Todavía válido
+        assert!(!v.is_valid_at(200));  // Invalidado en 200
+        assert!(!v.is_valid_at(250));  // Después de invalidación
     }
 
     #[test]
@@ -337,8 +348,8 @@ mod tests {
         // Ahora es elegible si cutoff > valid_to
         assert!(!v.is_gc_eligible(100)); // cutoff antes de valid_to
         assert!(!v.is_gc_eligible(200)); // cutoff == valid_to
-        assert!(v.is_gc_eligible(201)); // cutoff > valid_to
-        assert!(v.is_gc_eligible(500)); // cutoff >> valid_to
+        assert!(v.is_gc_eligible(201));  // cutoff > valid_to
+        assert!(v.is_gc_eligible(500));  // cutoff >> valid_to
     }
 
     #[test]

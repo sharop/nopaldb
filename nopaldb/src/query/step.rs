@@ -1,27 +1,31 @@
 // src/query/step.rs
 
-use crate::graph::Direction;
 use crate::types::NodeId;
+use crate::graph::Direction;
 
 /// Un paso en el traversal
 #[derive(Debug, Clone)]
 pub enum TraversalStep {
     /// Moverse a vecinos siguiendo aristas de un tipo
     FollowEdge {
-        edge_type: Option<String>, // None = cualquier tipo
+        edge_type: Option<String>,  // None = cualquier tipo
         direction: Direction,
     },
-
+    
     /// Filtrar nodos por predicado
     Filter {
-        predicate: String, // Descripción para debug
+        predicate: String,  // Descripción para debug
     },
-
+    
     /// Limitar resultados
-    Limit { count: usize },
-
+    Limit {
+        count: usize,
+    },
+    
     /// Saltar N resultados
-    Skip { count: usize },
+    Skip {
+        count: usize,
+    },
 }
 
 /// Estado de ejecución del traversal
@@ -29,13 +33,13 @@ pub enum TraversalStep {
 pub struct TraversalState {
     /// Nodos actuales en el traversal
     pub current_nodes: Vec<NodeId>,
-
+    
     /// Total de nodos visitados
     pub visited_count: usize,
-
+    
     /// Máximo de nodos a retornar
     pub limit: Option<usize>,
-
+    
     /// Nodos a saltar
     pub skip: usize,
 }
@@ -49,7 +53,7 @@ impl TraversalState {
             skip: 0,
         }
     }
-
+    
     pub fn with_nodes(nodes: Vec<NodeId>) -> Self {
         Self {
             current_nodes: nodes,

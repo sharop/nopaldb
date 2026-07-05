@@ -3,7 +3,7 @@
 use nopaldb::Graph;
 
 #[tokio::test]
-#[ignore] // Solo corre con: cargo test -- --ignored
+#[ignore]  // Solo corre con: cargo test -- --ignored
 async fn test_konami_code() {
     println!("\n🎮 Running Konami Code test...\n");
 

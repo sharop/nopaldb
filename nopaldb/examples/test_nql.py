@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Test NQL Queries from Python
+SHAROP:PROBADO 26ENE26:Funcionando correctamente
 """
 
 import nopaldb

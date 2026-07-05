@@ -64,7 +64,8 @@ mod arrow_tests {
         let mut tx = graph.begin_transaction().await?;
 
         for i in 0..5 {
-            let node = Node::new("Test").with_property("value", PropertyValue::Int(i));
+            let node = Node::new("Test")
+                .with_property("value", PropertyValue::Int(i));
             tx.add_node(node).await?;
         }
 
@@ -106,7 +107,8 @@ mod arrow_tests {
         // Create node with multiple versions
         let node_id = {
             let mut tx = graph.begin_transaction().await?;
-            let node = Node::new("Counter").with_property("value", PropertyValue::Int(0));
+            let node = Node::new("Counter")
+                .with_property("value", PropertyValue::Int(0));
             let id = tx.add_node(node).await?;
             tx.commit().await?;
             id
@@ -120,8 +122,7 @@ mod arrow_tests {
         {
             let mut tx = graph.begin_transaction().await?;
             let mut node = graph.get_node(node_id).await?;
-            node.properties
-                .insert("value".into(), PropertyValue::Int(100));
+            node.properties.insert("value".into(), PropertyValue::Int(100));
             tx.add_node(node).await?;
             tx.commit().await?;
         }
@@ -134,8 +135,7 @@ mod arrow_tests {
         {
             let mut tx = graph.begin_transaction().await?;
             let mut node = graph.get_node(node_id).await?;
-            node.properties
-                .insert("value".into(), PropertyValue::Int(200));
+            node.properties.insert("value".into(), PropertyValue::Int(200));
             tx.add_node(node).await?;
             tx.commit().await?;
         }

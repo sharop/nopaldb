@@ -1,8 +1,8 @@
 use ratatui::{
-    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph},
+    Frame,
 };
 
 use crate::app::App;
@@ -49,8 +49,8 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     if app.schema.items.is_empty() {
-        let empty_message =
-            Paragraph::new("No schema loaded").style(Style::default().fg(Color::DarkGray));
+        let empty_message = Paragraph::new("No schema loaded")
+            .style(Style::default().fg(Color::DarkGray));
         f.render_widget(empty_message, inner);
         return;
     }
@@ -67,10 +67,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(SUCCESS)
             } else if item.starts_with("    ") {
                 Style::default().fg(Color::DarkGray)
-            } else if item.starts_with("Nodes")
-                || item.starts_with("Edges")
-                || item.starts_with("Statistics")
-            {
+            } else if item.starts_with("Nodes") || item.starts_with("Edges") || item.starts_with("Statistics") {
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(FG)

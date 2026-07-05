@@ -1,9 +1,9 @@
 // src/types.rs
 
-use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
+use serde::{Serialize, Deserialize};
 
 /// Identificador único para un nodo
 pub type NodeId = uuid::Uuid;
@@ -12,7 +12,7 @@ pub type NodeId = uuid::Uuid;
 pub type EdgeId = uuid::Uuid;
 
 /// Valor de una propiedad
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, )]
 #[serde(untagged)]
 pub enum PropertyValue {
     Null,
@@ -73,13 +73,13 @@ impl PropertyValue {
     /// Rango de tipo para ordenamiento cross-variant.
     fn type_rank(&self) -> u8 {
         match self {
-            PropertyValue::Null => 0,
-            PropertyValue::Bool(_) => 1,
-            PropertyValue::Int(_) => 2,
-            PropertyValue::Float(_) => 3,
+            PropertyValue::Null      => 0,
+            PropertyValue::Bool(_)   => 1,
+            PropertyValue::Int(_)    => 2,
+            PropertyValue::Float(_)  => 3,
             PropertyValue::String(_) => 4,
-            PropertyValue::Bytes(_) => 5,
-            PropertyValue::List(_) => 6,
+            PropertyValue::Bytes(_)  => 5,
+            PropertyValue::List(_)   => 6,
             PropertyValue::Object(_) => 7,
         }
     }
@@ -319,10 +319,7 @@ mod tests {
         use std::collections::HashMap;
 
         let mut map = HashMap::new();
-        map.insert(
-            PropertyValue::String("key".to_string()),
-            vec![uuid::Uuid::new_v4()],
-        );
+        map.insert(PropertyValue::String("key".to_string()), vec![uuid::Uuid::new_v4()]);
 
         assert!(map.contains_key(&PropertyValue::String("key".to_string())));
     }

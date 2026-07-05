@@ -1,6 +1,6 @@
 # NQL Query Language - Quick Reference
 
-**NQL (NopalDB Query Language)** is an intuitive and powerful graph query language designed for developers, **data scientists, analysts, and sociologists**. Its property-graph pattern syntax optimizes finding patterns and complex connections in your data.
+**NQL (NopalDB Query Language)** is an intuitive and powerful graph query language designed for developers, **data scientists, analysts, and sociologists**. Its Cypher-inspired syntax optimizes finding patterns and complex connections in your data.
 
 ---
 

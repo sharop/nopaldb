@@ -2,10 +2,10 @@
 //
 // Integration tests for NQL v0.2 write operations (ADD, DELETE, UPDATE)
 
-use nopaldb::query::nql::executor::Executor;
-use nopaldb::query::nql::parser::ast::Statement;
-use nopaldb::query::nql::parser::parse;
 use nopaldb::{Graph, Result};
+use nopaldb::query::nql::parser::parse;
+use nopaldb::query::nql::parser::ast::Statement;
+use nopaldb::query::nql::executor::Executor;
 
 // ═══════════════════════════════════════════════════════════
 // ADD OPERATION TESTS
@@ -118,15 +118,12 @@ async fn test_add_with_different_property_types() -> Result<()> {
     let mut tx = graph.begin_transaction().await?;
 
     // ADD with various property types
-    let stmt = parse(
-        r#"add (p:Person {
+    let stmt = parse(r#"add (p:Person {
         name: "Alice",
         age: 30,
         score: 95.5,
         active: true
-    })"#,
-    )
-    .unwrap();
+    })"#).unwrap();
 
     if let Statement::Add(add) = stmt {
         let result = executor.execute_add(&add, &mut tx).await?;

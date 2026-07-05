@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
 use ratatui::{
-    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph},
+    Frame,
 };
 
 use crate::app::App;
@@ -63,14 +63,8 @@ impl GraphView {
             *degree_map.entry(src.clone()).or_insert(0) += 1;
             *degree_map.entry(dst.clone()).or_insert(0) += 1;
 
-            self.adjacency
-                .entry(src.clone())
-                .or_default()
-                .push(dst.clone());
-            self.adjacency
-                .entry(dst.clone())
-                .or_default()
-                .push(src.clone());
+            self.adjacency.entry(src.clone()).or_default().push(dst.clone());
+            self.adjacency.entry(dst.clone()).or_default().push(src.clone());
 
             self.edge_types
                 .insert((src.clone(), dst.clone()), edge_type.clone());
@@ -79,8 +73,7 @@ impl GraphView {
         }
 
         let allowed_nodes: HashSet<String> = if let Some(filter) = &self.label_filter {
-            nodes
-                .iter()
+            nodes.iter()
                 .filter(|(_, label)| label.eq_ignore_ascii_case(filter))
                 .map(|(id, _)| id.clone())
                 .collect()
@@ -164,11 +157,7 @@ impl GraphView {
     }
 
     pub fn focus_selected_neighbor(&mut self) -> bool {
-        let Some(next_focus) = self
-            .neighbor_candidates
-            .get(self.selected_neighbor)
-            .cloned()
-        else {
+        let Some(next_focus) = self.neighbor_candidates.get(self.selected_neighbor).cloned() else {
             return false;
         };
         self.focus_id = Some(next_focus);
@@ -270,7 +259,11 @@ impl GraphView {
         ));
         self.lines.push(String::new());
 
-        let mut neighbors = self.adjacency.get(&focus.id).cloned().unwrap_or_default();
+        let mut neighbors = self
+            .adjacency
+            .get(&focus.id)
+            .cloned()
+            .unwrap_or_default();
         neighbors.sort_by_key(|id| std::cmp::Reverse(node_degree(&self.nodes, id)));
         neighbors.dedup();
 
@@ -284,12 +277,12 @@ impl GraphView {
             self.lines.push("  (no neighbors)".to_string());
         } else {
             for (idx, neighbor_id) in neighbors.iter().take(16).enumerate() {
-                let neighbor = self.nodes.iter().find(|n| &n.id == neighbor_id).cloned();
-                let marker = if idx == self.selected_neighbor {
-                    ">"
-                } else {
-                    " "
-                };
+                let neighbor = self
+                    .nodes
+                    .iter()
+                    .find(|n| &n.id == neighbor_id)
+                    .cloned();
+                let marker = if idx == self.selected_neighbor { ">" } else { " " };
                 if let Some(node) = neighbor {
                     let edge_type = self
                         .edge_types
@@ -331,8 +324,12 @@ impl GraphView {
                         if level_count <= 12 {
                             let src_label = node_label(&self.nodes, src);
                             let dst_label = node_label(&self.nodes, &dst);
-                            self.lines
-                                .push(format!("  L{} {} -> {}", level, src_label, dst_label));
+                            self.lines.push(format!(
+                                "  L{} {} -> {}",
+                                level,
+                                src_label,
+                                dst_label
+                            ));
                         }
                     }
                 }
@@ -368,8 +365,8 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     if app.graph_view.lines.is_empty() {
-        let empty_message =
-            Paragraph::new("No graph snapshot").style(Style::default().fg(Color::DarkGray));
+        let empty_message = Paragraph::new("No graph snapshot")
+            .style(Style::default().fg(Color::DarkGray));
         f.render_widget(empty_message, inner);
         return;
     }

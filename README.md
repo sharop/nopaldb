@@ -17,6 +17,7 @@ A high-performance embedded graph database written in Rust with **MVCC**, **ACID
 - ✅ **Persistent Storage** - Sled-based backend
 - ✅ **ACID Transactions** - Full transaction support
 - ✅ **MVCC** - Multi-Version Concurrency Control with snapshot isolation
+- ✅ **Isolation Levels** - `ReadCommitted` (default), `RepeatableRead`, `Serializable` with per-node locking and deadlock detection, via the `full-isolation` feature ([guide](docs/ISOLATION_LEVELS.md), [deadlock detection](docs/DEADLOCK_DETECTION.md))
 - ✅ **Write-Ahead Logging (WAL)** - Crash recovery and durability
 - ✅ **NQL Query Language** - property-graph pattern graph queries
 - ✅ **Apache Arrow Export** - Zero-copy ML pipelines
@@ -164,9 +165,9 @@ Notes:
 nopaldb = "0.3"
 
 # With a specific tier
-nopaldb = { version = "0.3", features = ["core"] }        # analytics + ML + algorithms
-nopaldb = { version = "0.3", features = ["semantic"] }     # + OWL reasoner
-nopaldb = { version = "0.3", features = ["full"] }         # complete public feature set
+nopaldb = { version = "0.4", features = ["core"] }        # analytics + ML + algorithms + full-text
+nopaldb = { version = "0.4", features = ["semantic"] }     # + OWL reasoner + SHACL
+nopaldb = { version = "0.4", features = ["full"] }         # complete feature set (includes full-isolation)
 ```
 
 #### Python
@@ -280,9 +281,17 @@ Integrates with:
 
 ---
 
+### Operational Model 🧩
+
+- **One process per data directory.** The storage engine takes a file lock on the database directory; a second process opening the same path will fail with a "could not acquire lock" error. Close the other process (app, MCP server, or NDBStudio) first.
+- **Share within the process by cloning the handle.** `Graph` is `Clone + Send + Sync`; clone it (cheap, `Arc`-backed) to use the same database from multiple threads or tasks.
+- For bulk ingestion use `BulkLoader`; for update-heavy datasets enable version GC with `start_auto_gc`.
+
+---
+
 ### Project Status 🗺️
 
-NopalDB Community includes the graph storage layer, MVCC transactions, WAL crash recovery, NQL query execution, Arrow export, Python bindings, graph algorithms, OWL-EL reasoning, Turtle import/export, SHACL validation, and feature tiers for compiling only the public capabilities you need.
+NopalDB Community includes the graph storage layer, MVCC transactions, isolation levels with deadlock detection (`full-isolation`), WAL crash recovery, NQL query execution, full-text search, Arrow export, Python bindings, graph algorithms, OWL-EL reasoning, Turtle import/export, SHACL validation, and feature tiers for compiling only the capabilities you need.
 
 The current public Rust tiers are `default`, `core`, `semantic`, and `full`. Python wheels use the separate `python-full` feature through `maturin`. See **[Feature Tiers Guide](docs/FEATURE_TIERS.md)** for build recipes.
 
@@ -362,6 +371,7 @@ Built with:
 - ✅ **Almacenamiento Persistente** - Backend basado en Sled
 - ✅ **Transacciones ACID** - Soporte completo de transacciones
 - ✅ **MVCC** - Control de Concurrencia Multi-Versión con aislamiento snapshot
+- ✅ **Niveles de Aislamiento** - `ReadCommitted` (default), `RepeatableRead`, `Serializable` con locking por nodo y detección de deadlocks, vía la feature `full-isolation` ([guía](docs/ISOLATION_LEVELS.md), [detección de deadlocks](docs/DEADLOCK_DETECTION.md))
 - ✅ **Write-Ahead Logging (WAL)** - Recuperación ante fallos y durabilidad
 - ✅ **Lenguaje de Consultas NQL** - Consultas de grafos basadas en patrones de grafos de propiedades
 - ✅ **Exportación Apache Arrow** - Pipelines ML zero-copy
@@ -468,9 +478,9 @@ Notas:
 nopaldb = "0.3"
 
 # Con un tier específico
-nopaldb = { version = "0.3", features = ["core"] }        # analytics + ML + algoritmos
-nopaldb = { version = "0.3", features = ["semantic"] }     # + reasoner OWL
-nopaldb = { version = "0.3", features = ["full"] }         # conjunto público completo
+nopaldb = { version = "0.4", features = ["core"] }        # analytics + ML + algoritmos + full-text
+nopaldb = { version = "0.4", features = ["semantic"] }     # + reasoner OWL + SHACL
+nopaldb = { version = "0.4", features = ["full"] }         # conjunto completo (incluye full-isolation)
 ```
 
 #### Python
@@ -512,6 +522,14 @@ Ver **[Guía de Feature Tiers](docs/FEATURE_TIERS.md)** para opciones de compila
 - **Minor (`X.Y.0`)**: incremento manual cuando se agrupan features para release.
 - **Major (`X.0.0`)**: incremento manual para breaking changes.
 - Fuente de verdad de versión: `Cargo.toml`, `nopaldb/Cargo.toml`, `nopaldb/pyproject.toml`.
+
+---
+
+### Modelo Operacional 🧩
+
+- **Un proceso por directorio de datos.** El motor de almacenamiento toma un file lock sobre el directorio; un segundo proceso que abra la misma ruta fallará con "could not acquire lock". Cierra primero el otro proceso (app, servidor MCP o NDBStudio).
+- **Comparte dentro del proceso clonando el handle.** `Graph` es `Clone + Send + Sync`; clónalo (barato, respaldado por `Arc`) para usar la misma base desde varios hilos o tasks.
+- Para cargas masivas usa `BulkLoader`; con datasets de muchas actualizaciones habilita el GC de versiones con `start_auto_gc`.
 
 ---
 

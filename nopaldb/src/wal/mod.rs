@@ -2,16 +2,16 @@
 //
 // Write-Ahead Log (WAL) implementation for durability
 
-use serde::{Deserialize, Serialize};
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::fs::{File, OpenOptions};
+use std::io::{Write, Read, Seek, SeekFrom};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use serde::{Serialize, Deserialize};
 
 use crate::error::{NopalError, Result};
+use crate::types::{Node, Edge, NodeId, EdgeId};
 use crate::transaction::TransactionId;
-use crate::types::{Edge, EdgeId, Node, NodeId};
 
 /// WAL Record Types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,7 +23,10 @@ pub enum WalRecord {
     },
 
     /// Insert node
-    InsertNode { tx_id: TransactionId, node: Node },
+    InsertNode {
+        tx_id: TransactionId,
+        node: Node,
+    },
 
     /// Update node
     UpdateNode {
@@ -41,7 +44,10 @@ pub enum WalRecord {
     },
 
     /// Insert edge
-    InsertEdge { tx_id: TransactionId, edge: Edge },
+    InsertEdge {
+        tx_id: TransactionId,
+        edge: Edge,
+    },
 
     /// Delete edge
     DeleteEdge {
@@ -57,7 +63,9 @@ pub enum WalRecord {
     },
 
     /// Abort transaction
-    Abort { tx_id: TransactionId },
+    Abort {
+        tx_id: TransactionId,
+    },
 
     /// Checkpoint marker
     Checkpoint {
@@ -73,6 +81,12 @@ pub struct RecoveryInfo {
     pub committed_txs: Vec<u64>,
     pub uncommitted_txs: Vec<u64>,
     pub operations_replayed: usize,
+    /// Máximo timestamp lógico observado en el WAL (0 si no hay registros).
+    /// Se usa al abrir para que los relojes nunca retrocedan por debajo
+    /// de lo que ya quedó registrado en el log.
+    pub max_timestamp: u64,
+    /// Máximo transaction id observado en el WAL (0 si no hay registros).
+    pub max_tx_id: u64,
 }
 
 /// WAL Manager - handles log writing and recovery
@@ -104,7 +118,23 @@ impl WalManager {
             .open(&wal_path)?;
 
         // Get current size
-        let position = file.metadata()?.len();
+        let file_len = file.metadata()?.len();
+
+        // Un SIGKILL a mitad de append deja una cola rasgada (length prefix o
+        // payload incompletos). Ese registro nunca fue confirmado (hay fsync
+        // por registro), así que se descarta truncando el archivo al último
+        // registro válido; de lo contrario el log queda ilegible y los
+        // appends posteriores caerían después de basura.
+        let mut file = file;
+        let (_, valid_len) = Self::scan_valid_records(&mut file)?;
+        if valid_len < file_len {
+            log::warn!(
+                "WAL has a torn tail ({} bytes past the last valid record) — truncating (crash during append)",
+                file_len - valid_len
+            );
+            file.set_len(valid_len)?;
+        }
+        let position = valid_len;
 
         log::info!("WAL opened at {:?}, size: {} bytes", wal_path, position);
 
@@ -117,32 +147,66 @@ impl WalManager {
     }
 
     pub async fn append(&self, record: WalRecord) -> Result<u64> {
+        self.append_batch(std::slice::from_ref(&record)).await
+    }
+
+    /// Escribe un lote de registros con UN solo fsync al final (group commit
+    /// a nivel de transacción). Un commit pequeño pasaba de N+2 fsyncs — uno
+    /// por registro Begin/ops/Commit — a exactamente 1: el costo dominante
+    /// del commit. Durabilidad intacta: el lote completo está en disco antes
+    /// de retornar; si un crash rasga el lote, el Commit no aparece en el log
+    /// y el recovery trata la transacción como no confirmada.
+    ///
+    /// Retorna la posición del primer registro del lote.
+    pub async fn append_batch(&self, records: &[WalRecord]) -> Result<u64> {
+        if records.is_empty() {
+            let position = self.position.lock().await;
+            return Ok(*position);
+        }
+
+        // Serializar todo el lote a un solo buffer (un write, un fsync)
+        let mut buffer: Vec<u8> = Vec::new();
+        for record in records {
+            let data = serde_json::to_vec(record)
+                .map_err(|e| NopalError::SerializationError(e.to_string()))?;
+            buffer.extend_from_slice(&(data.len() as u64).to_le_bytes());
+            buffer.extend_from_slice(&data);
+        }
+
         let mut file = self.file.lock().await;
         let mut position = self.position.lock().await;
 
-        // ✅ Usar JSON en lugar de Bincode
-        let data = serde_json::to_vec(&record)
-            .map_err(|e| NopalError::SerializationError(e.to_string()))?;
-
-        // Write length prefix
-        let len = data.len() as u64;
-        let len_bytes = len.to_le_bytes();
-
-        file.write_all(&len_bytes)?;
-        file.write_all(&data)?;
+        file.write_all(&buffer)?;
         file.sync_all()?;
 
-        let record_position = *position;
-        *position += 8 + len;
+        let batch_position = *position;
+        *position += buffer.len() as u64;
 
-        log::debug!("WAL append: {:?} at position {}", record, record_position);
+        log::debug!(
+            "WAL append_batch: {} record(s), {} bytes at position {}",
+            records.len(),
+            buffer.len(),
+            batch_position
+        );
 
-        Ok(record_position)
+        Ok(batch_position)
     }
 
     pub async fn read_all(&self) -> Result<Vec<WalRecord>> {
         let mut file = self.file.lock().await;
+        let (records, _) = Self::scan_valid_records(&mut file)?;
+        log::info!("Read {} records from WAL", records.len());
+        Ok(records)
+    }
+
+    /// Escanea el log tolerando una cola rasgada por crash: devuelve los
+    /// registros válidos y la longitud en bytes hasta el final del último
+    /// registro completo. Un prefijo de longitud incompleto, un payload
+    /// truncado o JSON corrupto al final marcan el fin del log válido.
+    fn scan_valid_records(file: &mut std::fs::File) -> Result<(Vec<WalRecord>, u64)> {
+        let file_len = file.metadata()?.len();
         let mut records = Vec::new();
+        let mut valid_len: u64 = 0;
 
         file.seek(SeekFrom::Start(0))?;
 
@@ -156,34 +220,49 @@ impl WalManager {
 
             let len = u64::from_le_bytes(len_bytes);
 
+            // Longitud absurda = prefijo rasgado/corrupto: fin del log válido.
+            if valid_len + 8 + len > file_len {
+                log::warn!("WAL record length ({}) exceeds file — torn tail, stopping scan", len);
+                break;
+            }
+
             let mut data = vec![0u8; len as usize];
-            file.read_exact(&mut data)?;
+            match file.read_exact(&mut data) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    log::warn!("WAL payload truncated — torn tail, stopping scan");
+                    break;
+                }
+                Err(e) => return Err(e.into()),
+            }
 
-            // ✅ Usar JSON en lugar de Bincode
-            let record: WalRecord = serde_json::from_slice(&data)
-                .map_err(|e| NopalError::SerializationError(e.to_string()))?;
-
-            records.push(record);
+            match serde_json::from_slice::<WalRecord>(&data) {
+                Ok(record) => {
+                    records.push(record);
+                    valid_len += 8 + len;
+                }
+                Err(e) => {
+                    log::warn!("WAL tail record undecodable ({}) — torn tail, stopping scan", e);
+                    break;
+                }
+            }
         }
 
-        log::info!("Read {} records from WAL", records.len());
-
-        Ok(records)
+        Ok((records, valid_len))
     }
 
     /// Crea un checkpoint en el WAL
     pub async fn checkpoint(&self, active_txs: Vec<TransactionId>) -> Result<()> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| NopalError::Custom(format!("System clock error: {}", e)))?
+            .map_err(|e|NopalError::Custom(format!("System clock error: {}", e)))?
             .as_millis() as u64;
 
         // Escribir registro de checkpoint
         self.append(WalRecord::Checkpoint {
             timestamp,
             active_transactions: active_txs.clone(),
-        })
-        .await?;
+        }).await?;
 
         // Actualizar timestamp del último checkpoint
         let mut last_checkpoint = self.last_checkpoint.lock().await;
@@ -259,7 +338,7 @@ impl WalManager {
 
     /// Truncate completo (para tests o limpieza)
     pub async fn truncate(&self) -> Result<()> {
-        let mut file = self.file.lock().await;
+        let mut  file = self.file.lock().await;
         let mut position = self.position.lock().await;
 
         file.set_len(0)?;
@@ -275,6 +354,7 @@ impl WalManager {
         Ok(())
     }
 
+
     /// Recupera el estado desde WAL
     pub async fn recover(&self) -> Result<RecoveryInfo> {
         log::info!("Starting WAL recovery...");
@@ -288,6 +368,8 @@ impl WalManager {
                 committed_txs: Vec::new(),
                 uncommitted_txs: Vec::new(),
                 operations_replayed: 0,
+                max_timestamp: 0,
+                max_tx_id: 0,
             });
         }
 
@@ -295,19 +377,26 @@ impl WalManager {
         let mut active_txs = std::collections::HashMap::new();
         let mut committed_txs = std::collections::HashSet::new();
         let mut uncommitted_txs = std::collections::HashSet::new();
+        let mut max_timestamp = 0u64;
+        let mut max_tx_id = 0u64;
 
         for record in &records {
             match record {
-                WalRecord::Begin { tx_id, .. } => {
+                WalRecord::Begin { tx_id, timestamp } => {
+                    max_tx_id = max_tx_id.max(*tx_id);
+                    max_timestamp = max_timestamp.max(*timestamp);
                     active_txs.insert(*tx_id, Vec::new());
                 }
 
-                WalRecord::Commit { tx_id, .. } => {
+                WalRecord::Commit { tx_id, timestamp } => {
+                    max_tx_id = max_tx_id.max(*tx_id);
+                    max_timestamp = max_timestamp.max(*timestamp);
                     committed_txs.insert(*tx_id);
                     active_txs.remove(tx_id);
                 }
 
                 WalRecord::Abort { tx_id } => {
+                    max_tx_id = max_tx_id.max(*tx_id);
                     active_txs.remove(tx_id);
                 }
 
@@ -317,13 +406,15 @@ impl WalManager {
                 | WalRecord::DeleteNode { tx_id, .. }
                 | WalRecord::InsertEdge { tx_id, .. }
                 | WalRecord::DeleteEdge { tx_id, .. } => {
+                    max_tx_id = max_tx_id.max(*tx_id);
                     if let Some(ops) = active_txs.get_mut(tx_id) {
                         ops.push(record.clone());
                     }
                 }
 
-                WalRecord::Checkpoint { .. } => {
+                WalRecord::Checkpoint { timestamp, .. } => {
                     // Checkpoint marca punto seguro
+                    max_timestamp = max_timestamp.max(*timestamp);
                     log::debug!("Found checkpoint in WAL");
                 }
             }
@@ -346,19 +437,34 @@ impl WalManager {
             committed_txs: committed_txs.into_iter().collect(),
             uncommitted_txs: uncommitted_txs.into_iter().collect(),
             operations_replayed: 0, // Se llenará durante replay
+            max_timestamp,
+            max_tx_id,
         })
     }
 
     /// Obtiene operaciones para replay (solo txs commiteadas)
     pub async fn get_replay_operations(&self) -> Result<Vec<WalRecord>> {
+        Ok(self
+            .get_replay_operations_with_ts()
+            .await?
+            .into_iter()
+            .map(|(record, _)| record)
+            .collect())
+    }
+
+    /// Como `get_replay_operations`, pero cada operación viene acompañada del
+    /// timestamp lógico del Commit de su transacción — necesario para que el
+    /// replay reconstruya cadenas de versiones MVCC con los timestamps
+    /// originales del commit, no con relojes nuevos.
+    pub async fn get_replay_operations_with_ts(&self) -> Result<Vec<(WalRecord, u64)>> {
         let records = self.read_all().await?;
-        let mut committed_txs = std::collections::HashSet::new();
+        let mut committed_txs = std::collections::HashMap::new();
         let mut replay_ops = Vec::new();
 
-        // Primer pase: identificar txs commiteadas
+        // Primer pase: identificar txs commiteadas y su timestamp de commit
         for record in &records {
-            if let WalRecord::Commit { tx_id, .. } = record {
-                committed_txs.insert(*tx_id);
+            if let WalRecord::Commit { tx_id, timestamp } = record {
+                committed_txs.insert(*tx_id, *timestamp);
             }
         }
 
@@ -370,8 +476,10 @@ impl WalManager {
                 | WalRecord::DeleteNode { tx_id, .. }
                 | WalRecord::InsertEdge { tx_id, .. }
                 | WalRecord::DeleteEdge { tx_id, .. }
-                if committed_txs.contains(tx_id) => {
-                    replay_ops.push(record);
+                    if committed_txs.contains_key(tx_id) =>
+                {
+                    let ts = committed_txs[tx_id];
+                    replay_ops.push((record, ts));
                 }
                 _ => {}
             }
@@ -406,26 +514,12 @@ mod tests {
         let wal = WalManager::new(&wal_path).await.unwrap();
 
         // Append records
-        let node = Node::new("Person").with_property("name", PropertyValue::String("Alice".into()));
+        let node = Node::new("Person")
+            .with_property("name", PropertyValue::String("Alice".into()));
 
-        wal.append(WalRecord::Begin {
-            tx_id: 1,
-            timestamp: 100,
-        })
-        .await
-        .unwrap();
-        wal.append(WalRecord::InsertNode {
-            tx_id: 1,
-            node: node.clone(),
-        })
-        .await
-        .unwrap();
-        wal.append(WalRecord::Commit {
-            tx_id: 1,
-            timestamp: 101,
-        })
-        .await
-        .unwrap();
+        wal.append(WalRecord::Begin { tx_id: 1, timestamp: 100 }).await.unwrap();
+        wal.append(WalRecord::InsertNode { tx_id: 1, node: node.clone() }).await.unwrap();
+        wal.append(WalRecord::Commit { tx_id: 1, timestamp: 101 }).await.unwrap();
 
         // Read back
         let records = wal.read_all().await.unwrap();

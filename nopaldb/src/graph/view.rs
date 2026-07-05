@@ -50,7 +50,7 @@ impl<'a> Subgraph<'a> {
             allowed_nodes,
         }
     }
-
+    
     /// Gives access to the underlying Graph reference
     pub fn inner(&self) -> &Graph {
         self.graph
@@ -76,7 +76,7 @@ impl<'a> GraphView for Subgraph<'a> {
         // Only return edges where BOTH source and target are in the allowed_nodes set.
         // The most efficient way without a custom index is to either scan all edges or check all allowed_nodes
         // out_edges and filter them. Iterating out_edges of allowed_nodes is likely faster for small subgraphs.
-
+        
         let mut edges = Vec::new();
         // Use a set to avoid duplicates if returning from both directions, but outgoing is sufficient to cover all edges
         // that start in our subgraph. If target is also in subgraph, it's valid.

@@ -6,16 +6,14 @@
 //! Ejecutar con:
 //!   cargo test --test shacl_validation_test --features shacl
 
-use nopaldb::Graph;
 use nopaldb::shacl::{
     ConstraintType, DatatypeKind, PathSpec, PropertyShape, ShaclValidator, Shape, Target,
 };
 use nopaldb::types::{Node, PropertyValue};
+use nopaldb::Graph;
 
 async fn make_graph() -> Graph {
-    Graph::in_memory()
-        .await
-        .expect("failed to create in-memory graph")
+    Graph::in_memory().await.expect("failed to create in-memory graph")
 }
 
 // --- T-1: minCount — nodo valido vs invalido ---
@@ -24,9 +22,12 @@ async fn make_graph() -> Graph {
 async fn test_min_count_valid_node() {
     let graph = make_graph().await;
     let mut tx = graph.begin_transaction().await.unwrap();
-    tx.add_node(Node::new("Person").with_property("age", PropertyValue::Int(25)))
-        .await
-        .unwrap();
+    tx.add_node(
+        Node::new("Person")
+            .with_property("age", PropertyValue::Int(25)),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     let shape = Shape::new("PersonShape")
@@ -48,7 +49,9 @@ async fn test_min_count_valid_node() {
 async fn test_min_count_missing_property() {
     let graph = make_graph().await;
     let mut tx = graph.begin_transaction().await.unwrap();
-    tx.add_node(Node::new("Person")).await.unwrap();
+    tx.add_node(Node::new("Person"))
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     let shape = Shape::new("PersonShape")
@@ -79,7 +82,8 @@ async fn test_datatype_int_expected_string_given() {
     let graph = make_graph().await;
     let mut tx = graph.begin_transaction().await.unwrap();
     tx.add_node(
-        Node::new("Sensor").with_property("reading", PropertyValue::String("not-a-number".into())),
+        Node::new("Sensor")
+            .with_property("reading", PropertyValue::String("not-a-number".into())),
     )
     .await
     .unwrap();
@@ -105,10 +109,7 @@ async fn test_datatype_int_expected_string_given() {
         .violations
         .iter()
         .any(|v| v.message.contains("datatype") || v.message.contains("tipo"));
-    assert!(
-        has_datatype_violation,
-        "Debe haber una violacion de datatype"
-    );
+    assert!(has_datatype_violation, "Debe haber una violacion de datatype");
 }
 
 // --- T-3: pattern (regex) ---
@@ -118,7 +119,8 @@ async fn test_pattern_email_valid() {
     let graph = make_graph().await;
     let mut tx = graph.begin_transaction().await.unwrap();
     tx.add_node(
-        Node::new("User").with_property("email", PropertyValue::String("alice@example.com".into())),
+        Node::new("User")
+            .with_property("email", PropertyValue::String("alice@example.com".into())),
     )
     .await
     .unwrap();
@@ -147,7 +149,8 @@ async fn test_pattern_email_invalid() {
     let graph = make_graph().await;
     let mut tx = graph.begin_transaction().await.unwrap();
     tx.add_node(
-        Node::new("User").with_property("email", PropertyValue::String("not-an-email".into())),
+        Node::new("User")
+            .with_property("email", PropertyValue::String("not-an-email".into())),
     )
     .await
     .unwrap();
@@ -178,7 +181,8 @@ async fn test_in_constraint_valid() {
     let graph = make_graph().await;
     let mut tx = graph.begin_transaction().await.unwrap();
     tx.add_node(
-        Node::new("Account").with_property("status", PropertyValue::String("active".into())),
+        Node::new("Account")
+            .with_property("status", PropertyValue::String("active".into())),
     )
     .await
     .unwrap();
@@ -210,7 +214,8 @@ async fn test_in_constraint_invalid() {
     let graph = make_graph().await;
     let mut tx = graph.begin_transaction().await.unwrap();
     tx.add_node(
-        Node::new("Account").with_property("status", PropertyValue::String("pending".into())),
+        Node::new("Account")
+            .with_property("status", PropertyValue::String("pending".into())),
     )
     .await
     .unwrap();
@@ -251,13 +256,19 @@ async fn test_target_class_multiple_nodes() {
     )
     .await
     .unwrap();
-    tx.add_node(Node::new("Person").with_property("name", PropertyValue::String("Bob".into())))
-        .await
-        .unwrap();
+    tx.add_node(
+        Node::new("Person")
+            .with_property("name", PropertyValue::String("Bob".into())),
+    )
+    .await
+    .unwrap();
     // Company no aplica al shape de Person
-    tx.add_node(Node::new("Company").with_property("name", PropertyValue::String("ACME".into())))
-        .await
-        .unwrap();
+    tx.add_node(
+        Node::new("Company")
+            .with_property("name", PropertyValue::String("ACME".into())),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     let shape = Shape::new("PersonShape")
@@ -330,9 +341,12 @@ async fn test_property_shape_edge_path() {
 async fn test_numeric_range_valid() {
     let graph = make_graph().await;
     let mut tx = graph.begin_transaction().await.unwrap();
-    tx.add_node(Node::new("Product").with_property("price", PropertyValue::Float(9.99)))
-        .await
-        .unwrap();
+    tx.add_node(
+        Node::new("Product")
+            .with_property("price", PropertyValue::Float(9.99)),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     let shape = Shape::new("ProductShape")
@@ -357,9 +371,12 @@ async fn test_numeric_range_valid() {
 async fn test_numeric_range_violation() {
     let graph = make_graph().await;
     let mut tx = graph.begin_transaction().await.unwrap();
-    tx.add_node(Node::new("Product").with_property("price", PropertyValue::Float(-5.0)))
-        .await
-        .unwrap();
+    tx.add_node(
+        Node::new("Product")
+            .with_property("price", PropertyValue::Float(-5.0)),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     let shape = Shape::new("ProductShape")
@@ -384,36 +401,40 @@ async fn test_programmatic_shapes_no_target_applies_to_all() {
     let graph = make_graph().await;
     let mut tx = graph.begin_transaction().await.unwrap();
     // Nodo de cualquier tipo
-    tx.add_node(Node::new("Thing").with_property("id_code", PropertyValue::String("X99".into())))
-        .await
-        .unwrap();
+    tx.add_node(
+        Node::new("Thing")
+            .with_property("id_code", PropertyValue::String("X99".into())),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     // Shape sin target = aplica a todos los nodos
-    let shape = Shape::new("AllNodesShape").with_property_shape(PropertyShape::new(
-        PathSpec::Property("id_code".into()),
-        vec![
-            ConstraintType::MinCount(1),
-            ConstraintType::Datatype(DatatypeKind::Str),
-        ],
-    ));
+    let shape = Shape::new("AllNodesShape")
+        .with_property_shape(PropertyShape::new(
+            PathSpec::Property("id_code".into()),
+            vec![
+                ConstraintType::MinCount(1),
+                ConstraintType::Datatype(DatatypeKind::Str),
+            ],
+        ));
 
     let report = ShaclValidator::from_shapes(vec![shape])
         .validate(&graph)
         .await
         .unwrap();
 
-    assert!(
-        report.conforms,
-        "Nodo con id_code string valido debe conformar"
-    );
+    assert!(report.conforms, "Nodo con id_code string valido debe conformar");
 }
 
 #[tokio::test]
 async fn test_validate_node_individual() {
     let graph = make_graph().await;
     let mut tx = graph.begin_transaction().await.unwrap();
-    let node_id = tx.add_node(Node::new("Person")).await.unwrap();
+    let node_id = tx
+        .add_node(Node::new("Person"))
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     let shape = Shape::new("PersonShape")
@@ -441,9 +462,12 @@ async fn test_from_graph_loads_shape_nodes() {
     )
     .await
     .unwrap();
-    tx.add_node(Node::new("Company").with_property("name", PropertyValue::String("ACME".into())))
-        .await
-        .unwrap();
+    tx.add_node(
+        Node::new("Company")
+            .with_property("name", PropertyValue::String("ACME".into())),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     // from_graph debe cargar el shape

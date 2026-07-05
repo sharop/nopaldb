@@ -22,7 +22,7 @@ pub struct ClusteringCoefficient {
 impl ClusteringCoefficient {
     /// Create new Clustering Coefficient instance
     pub fn new(config: ClusteringConfig) -> Self {
-        ClusteringCoefficient { _config: config }
+        ClusteringCoefficient { _config : config }
     }
 
     /// Create with default configuration
@@ -53,14 +53,8 @@ impl ClusteringCoefficient {
         let mut adjacency: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
 
         for edge in &edges {
-            adjacency
-                .entry(edge.source)
-                .or_default()
-                .insert(edge.target);
-            adjacency
-                .entry(edge.target)
-                .or_default()
-                .insert(edge.source);
+            adjacency.entry(edge.source).or_default().insert(edge.target);
+            adjacency.entry(edge.target).or_default().insert(edge.source);
         }
 
         for node in &nodes {
@@ -143,9 +137,7 @@ impl ClusteringCoefficient {
         let edges = graph.get_all_edges().await?;
         tokio::task::spawn_blocking(move || Self::compute_global_cpu(nodes, edges))
             .await
-            .map_err(|e| {
-                crate::error::NopalError::custom(format!("clustering global join error: {e}"))
-            })?
+            .map_err(|e| crate::error::NopalError::custom(format!("clustering global join error: {e}")))?
     }
 
     fn compute_global_cpu(
@@ -155,14 +147,8 @@ impl ClusteringCoefficient {
         let mut adjacency: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
 
         for edge in &edges {
-            adjacency
-                .entry(edge.source)
-                .or_default()
-                .insert(edge.target);
-            adjacency
-                .entry(edge.target)
-                .or_default()
-                .insert(edge.source);
+            adjacency.entry(edge.source).or_default().insert(edge.target);
+            adjacency.entry(edge.target).or_default().insert(edge.source);
         }
 
         let mut triangles = 0usize;
@@ -211,7 +197,7 @@ impl ClusteringCoefficient {
 mod tests {
     use super::*;
     use crate::Graph;
-    use crate::types::{Edge, Node};
+    use crate::types::{Node, Edge};
     use std::collections::HashMap;
 
     #[tokio::test]
@@ -221,35 +207,26 @@ mod tests {
 
         // Create complete triangle: A -- B -- C -- A
         // All nodes should have clustering coefficient = 1.0
-        let a = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let a = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
-        let b = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let b = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
-        let c = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Node".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let c = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Node".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
         // Create triangle
         tx.add_edge(Edge {
@@ -258,8 +235,7 @@ mod tests {
             target: b,
             edge_type: "CONNECTS".to_string(),
             properties: HashMap::new(),
-        })
-        .unwrap();
+        }).unwrap();
 
         tx.add_edge(Edge {
             id: uuid::Uuid::new_v4(),
@@ -267,8 +243,7 @@ mod tests {
             target: c,
             edge_type: "CONNECTS".to_string(),
             properties: HashMap::new(),
-        })
-        .unwrap();
+        }).unwrap();
 
         tx.add_edge(Edge {
             id: uuid::Uuid::new_v4(),
@@ -276,8 +251,7 @@ mod tests {
             target: a,
             edge_type: "CONNECTS".to_string(),
             properties: HashMap::new(),
-        })
-        .unwrap();
+        }).unwrap();
 
         tx.commit().await.unwrap();
 
@@ -305,27 +279,21 @@ mod tests {
         // Create star: center connected to 3 periphery nodes (no edges between periphery)
         // Center should have clustering = 0 (neighbors not connected)
         // Periphery nodes should have clustering = 0 (only 1 neighbor each)
-        let center = tx
-            .add_node(Node {
-                id: uuid::Uuid::new_v4(),
-                label: "Center".to_string(),
-                properties: HashMap::new(),
-                kind: Default::default(),
-            })
-            .await
-            .unwrap();
+        let center = tx.add_node(Node {
+            id: uuid::Uuid::new_v4(),
+            label: "Center".to_string(),
+            properties: HashMap::new(),
+            kind: Default::default(),
+        }).await.unwrap();
 
         let mut periphery = Vec::new();
         for i in 0..3 {
-            let p = tx
-                .add_node(Node {
-                    id: uuid::Uuid::new_v4(),
-                    label: format!("P{}", i),
-                    properties: HashMap::new(),
-                    kind: Default::default(),
-                })
-                .await
-                .unwrap();
+            let p = tx.add_node(Node {
+                id: uuid::Uuid::new_v4(),
+                label: format!("P{}", i),
+                properties: HashMap::new(),
+                kind: Default::default(),
+            }).await.unwrap();
 
             tx.add_edge(Edge {
                 id: uuid::Uuid::new_v4(),
@@ -333,8 +301,7 @@ mod tests {
                 target: p,
                 edge_type: "CONNECTS".to_string(),
                 properties: HashMap::new(),
-            })
-            .unwrap();
+            }).unwrap();
 
             periphery.push(p);
         }

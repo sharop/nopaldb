@@ -1,13 +1,13 @@
 // src/query/nql/executor/operators.rs
 
-use crate::error::{NopalError, Result};
-use crate::graph::Graph;
-use crate::query::nql::executor::result::Row;
-use crate::query::nql::parser::ast::{BinaryOperator, Expression};
-use crate::types::{Edge, Node, PropertyValue};
-use futures::future::BoxFuture;
-use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use crate::error::{NopalError, Result};
+use crate::types::{Node, Edge, PropertyValue};
+use crate::graph::Graph;
+use crate::query::nql::parser::ast::{Expression, BinaryOperator};
+use crate::query::nql::executor::result::Row;
+use futures::future::BoxFuture;
 
 // ================================================================================================
 // STREAMING TRAITS (Phase 2.5 — Volcano Model)
@@ -66,8 +66,7 @@ impl NodeStream for ScanNodesStream {
                 return Ok(None);
             }
 
-            let (nodes, next_cursor) = self
-                .graph
+            let (nodes, next_cursor) = self.graph
                 .scan_nodes_batch(
                     self.label.as_deref(),
                     self.cursor.as_deref(),
@@ -137,16 +136,8 @@ pub struct ProjectNodesStream<'a> {
 }
 
 impl<'a> ProjectNodesStream<'a> {
-    pub fn new(
-        input: Box<dyn NodeStream + 'a>,
-        variable: String,
-        projections: Vec<String>,
-    ) -> Self {
-        Self {
-            input,
-            variable,
-            projections,
-        }
+    pub fn new(input: Box<dyn NodeStream + 'a>, variable: String, projections: Vec<String>) -> Self {
+        Self { input, variable, projections }
     }
 }
 
@@ -163,14 +154,14 @@ impl<'a> RowStream for ProjectNodesStream<'a> {
                             // `find n from (n)` — bare variable, devolver id del nodo
                             row.set(proj, PropertyValue::String(node.id.to_string()));
                         } else if prop == "label" {
-                            row.set(proj, PropertyValue::String(node.label.clone()));
+                             row.set(proj, PropertyValue::String(node.label.clone()));
                         } else if prop == "id" {
-                            row.set(proj, PropertyValue::String(node.id.to_string()));
+                             row.set(proj, PropertyValue::String(node.id.to_string()));
                         } else if let Some(val) = node.properties.get(prop) {
-                            row.set(proj, val.clone());
+                             row.set(proj, val.clone());
                         }
                     } else if parts.len() == 1 && parts[0] == self.variable {
-                        row.set(proj, PropertyValue::String(node.id.to_string()));
+                         row.set(proj, PropertyValue::String(node.id.to_string()));
                     }
                 }
                 Ok(Some(row))
@@ -201,14 +192,8 @@ impl<'a> RowStream for ProjectWildcardStream<'a> {
                 for (key, val) in &node.properties {
                     row.set(format!("{}.{}", self.variable, key), val.clone());
                 }
-                row.set(
-                    format!("{}.label", self.variable),
-                    PropertyValue::String(node.label.clone()),
-                );
-                row.set(
-                    format!("{}.id", self.variable),
-                    PropertyValue::String(node.id.to_string()),
-                );
+                row.set(format!("{}.label", self.variable), PropertyValue::String(node.label.clone()));
+                row.set(format!("{}.id", self.variable), PropertyValue::String(node.id.to_string()));
                 Ok(Some(row))
             } else {
                 Ok(None)
@@ -230,7 +215,11 @@ pub async fn scan_nodes_stream<'a>(
     graph: &'a Graph,
     label: Option<&str>,
 ) -> Result<Box<dyn NodeStream + 'a>> {
-    let stream = ScanNodesStream::new(Arc::new(graph.clone()), label.map(|s| s.to_string()), 512);
+    let stream = ScanNodesStream::new(
+        Arc::new(graph.clone()),
+        label.map(|s| s.to_string()),
+        512,
+    );
     Ok(Box::new(stream))
 }
 
@@ -242,11 +231,7 @@ pub async fn execute_pattern(
     target_label: Option<&str>,
 ) -> Result<Vec<PatternMatch>> {
     // Implement via streaming for consistency
-    let source_stream = Box::new(ScanNodesStream::new(
-        Arc::new(graph.clone()),
-        source_label.map(|s| s.to_string()),
-        512,
-    ));
+    let source_stream = Box::new(ScanNodesStream::new(Arc::new(graph.clone()), source_label.map(|s| s.to_string()), 512));
     let mut traversal = TraverseStream::new(
         graph,
         source_stream,
@@ -254,7 +239,7 @@ pub async fn execute_pattern(
         target_label.map(|s| s.to_string()),
         HashMap::new(),
     );
-
+    
     let mut matches = Vec::new();
     while let Some(m) = traversal.next().await? {
         matches.push(m);
@@ -317,32 +302,18 @@ impl<'a> PatternMatchStream for TraverseStream<'a> {
                 if let Some(iter) = &mut self.edge_iter
                     && let Some(edge) = iter.next()
                 {
-                    if let Some(rt) = &self.rel_type
-                        && edge.edge_type != *rt
-                    {
-                        continue;
-                    }
+                    if let Some(rt) = &self.rel_type && edge.edge_type != *rt { continue; }
                     // Filtrar por propiedades inline de la arista, e.g. -[r:TRANS {amount: 1000}]->
                     if !self.edge_properties.is_empty()
-                        && self
-                            .edge_properties
-                            .iter()
-                            .any(|(k, v)| edge.properties.get(k) != Some(v))
+                        && self.edge_properties.iter().any(|(k, v)| edge.properties.get(k) != Some(v))
                     {
                         continue;
                     }
                     if let Ok(target) = self.graph.get_node(edge.target).await {
-                        if let Some(tl) = &self.target_label
-                            && target.label != *tl
-                        {
-                            continue;
-                        }
+                        if let Some(tl) = &self.target_label && target.label != *tl { continue; }
                         // Filtrar por propiedades inline del nodo destino, e.g. (b {active: true})
                         if !self.target_properties.is_empty()
-                            && self
-                                .target_properties
-                                .iter()
-                                .any(|(k, v)| target.properties.get(k) != Some(v))
+                            && self.target_properties.iter().any(|(k, v)| target.properties.get(k) != Some(v))
                         {
                             continue;
                         }
@@ -413,20 +384,8 @@ pub struct ProjectPatternStream<'a> {
 }
 
 impl<'a> ProjectPatternStream<'a> {
-    pub fn new(
-        input: Box<dyn PatternMatchStream + 'a>,
-        source_var: String,
-        target_var: String,
-        edge_var: Option<String>,
-        projections: Vec<String>,
-    ) -> Self {
-        Self {
-            input,
-            source_var,
-            target_var,
-            edge_var,
-            projections,
-        }
+    pub fn new(input: Box<dyn PatternMatchStream + 'a>, source_var: String, target_var: String, edge_var: Option<String>, projections: Vec<String>) -> Self {
+        Self { input, source_var, target_var, edge_var, projections }
     }
 }
 
@@ -437,40 +396,16 @@ impl<'a> RowStream for ProjectPatternStream<'a> {
                 let mut row = Row::new();
                 for proj in &self.projections {
                     if proj == "*" {
-                        for (k, v) in &m.source.properties {
-                            row.set(format!("{}.{}", self.source_var, k), v.clone());
-                        }
-                        for (k, v) in &m.target.properties {
-                            row.set(format!("{}.{}", self.target_var, k), v.clone());
-                        }
-                        row.set(
-                            format!("{}.label", self.source_var),
-                            PropertyValue::String(m.source.label.clone()),
-                        );
-                        row.set(
-                            format!("{}.id", self.source_var),
-                            PropertyValue::String(m.source.id.to_string()),
-                        );
-                        row.set(
-                            format!("{}.label", self.target_var),
-                            PropertyValue::String(m.target.label.clone()),
-                        );
-                        row.set(
-                            format!("{}.id", self.target_var),
-                            PropertyValue::String(m.target.id.to_string()),
-                        );
+                        for (k, v) in &m.source.properties { row.set(format!("{}.{}", self.source_var, k), v.clone()); }
+                        for (k, v) in &m.target.properties { row.set(format!("{}.{}", self.target_var, k), v.clone()); }
+                        row.set(format!("{}.label", self.source_var), PropertyValue::String(m.source.label.clone()));
+                        row.set(format!("{}.id", self.source_var), PropertyValue::String(m.source.id.to_string()));
+                        row.set(format!("{}.label", self.target_var), PropertyValue::String(m.target.label.clone()));
+                        row.set(format!("{}.id", self.target_var), PropertyValue::String(m.target.id.to_string()));
                         if let (Some(ev), Some(e)) = (&self.edge_var, &m.edge) {
-                            for (k, v) in &e.properties {
-                                row.set(format!("{}.{}", ev, k), v.clone());
-                            }
-                            row.set(
-                                format!("{}.type", ev),
-                                PropertyValue::String(e.edge_type.clone()),
-                            );
-                            row.set(
-                                format!("{}.id", ev),
-                                PropertyValue::String(e.id.to_string()),
-                            );
+                            for (k, v) in &e.properties { row.set(format!("{}.{}", ev, k), v.clone()); }
+                            row.set(format!("{}.type", ev), PropertyValue::String(e.edge_type.clone()));
+                            row.set(format!("{}.id", ev), PropertyValue::String(e.id.to_string()));
                         }
                         continue;
                     }
@@ -480,86 +415,45 @@ impl<'a> RowStream for ProjectPatternStream<'a> {
                         let prop = parts[1];
                         if prop == "*" {
                             if var == self.source_var {
-                                for (k, v) in &m.source.properties {
-                                    row.set(format!("{}.{}", self.source_var, k), v.clone());
-                                }
-                                row.set(
-                                    format!("{}.label", self.source_var),
-                                    PropertyValue::String(m.source.label.clone()),
-                                );
-                                row.set(
-                                    format!("{}.id", self.source_var),
-                                    PropertyValue::String(m.source.id.to_string()),
-                                );
+                                for (k, v) in &m.source.properties { row.set(format!("{}.{}", self.source_var, k), v.clone()); }
+                                row.set(format!("{}.label", self.source_var), PropertyValue::String(m.source.label.clone()));
+                                row.set(format!("{}.id", self.source_var), PropertyValue::String(m.source.id.to_string()));
                             } else if var == self.target_var {
-                                for (k, v) in &m.target.properties {
-                                    row.set(format!("{}.{}", self.target_var, k), v.clone());
-                                }
-                                row.set(
-                                    format!("{}.label", self.target_var),
-                                    PropertyValue::String(m.target.label.clone()),
-                                );
-                                row.set(
-                                    format!("{}.id", self.target_var),
-                                    PropertyValue::String(m.target.id.to_string()),
-                                );
+                                for (k, v) in &m.target.properties { row.set(format!("{}.{}", self.target_var, k), v.clone()); }
+                                row.set(format!("{}.label", self.target_var), PropertyValue::String(m.target.label.clone()));
+                                row.set(format!("{}.id", self.target_var), PropertyValue::String(m.target.id.to_string()));
                             } else if let Some(ev) = &self.edge_var
                                 && ev == var
                                 && let Some(e) = &m.edge
                             {
-                                for (k, v) in &e.properties {
-                                    row.set(format!("{}.{}", ev, k), v.clone());
-                                }
-                                row.set(
-                                    format!("{}.type", ev),
-                                    PropertyValue::String(e.edge_type.clone()),
-                                );
-                                row.set(
-                                    format!("{}.id", ev),
-                                    PropertyValue::String(e.id.to_string()),
-                                );
+                                for (k, v) in &e.properties { row.set(format!("{}.{}", ev, k), v.clone()); }
+                                row.set(format!("{}.type", ev), PropertyValue::String(e.edge_type.clone()));
+                                row.set(format!("{}.id", ev), PropertyValue::String(e.id.to_string()));
                             }
                         } else if var == self.source_var {
-                            if prop.is_empty() {
-                                row.set(proj, PropertyValue::String(m.source.id.to_string()));
-                            } else if prop == "label" {
-                                row.set(proj, PropertyValue::String(m.source.label.clone()));
-                            } else if prop == "id" {
-                                row.set(proj, PropertyValue::String(m.source.id.to_string()));
-                            } else if let Some(v) = m.source.properties.get(prop) {
-                                row.set(proj, v.clone());
-                            }
+                            if prop.is_empty() { row.set(proj, PropertyValue::String(m.source.id.to_string())); }
+                            else if prop == "label" { row.set(proj, PropertyValue::String(m.source.label.clone())); }
+                            else if prop == "id" { row.set(proj, PropertyValue::String(m.source.id.to_string())); }
+                            else if let Some(v) = m.source.properties.get(prop) { row.set(proj, v.clone()); }
                         } else if var == self.target_var {
-                            if prop.is_empty() {
-                                row.set(proj, PropertyValue::String(m.target.id.to_string()));
-                            } else if prop == "label" {
-                                row.set(proj, PropertyValue::String(m.target.label.clone()));
-                            } else if prop == "id" {
-                                row.set(proj, PropertyValue::String(m.target.id.to_string()));
-                            } else if let Some(v) = m.target.properties.get(prop) {
-                                row.set(proj, v.clone());
-                            }
+                            if prop.is_empty() { row.set(proj, PropertyValue::String(m.target.id.to_string())); }
+                            else if prop == "label" { row.set(proj, PropertyValue::String(m.target.label.clone())); }
+                            else if prop == "id" { row.set(proj, PropertyValue::String(m.target.id.to_string())); }
+                            else if let Some(v) = m.target.properties.get(prop) { row.set(proj, v.clone()); }
                         } else if let Some(ev) = &self.edge_var
                             && ev == var
                             && let Some(e) = &m.edge
                         {
-                            if prop.is_empty() {
-                                row.set(proj, PropertyValue::String(e.id.to_string()));
-                            } else if prop == "type" {
-                                row.set(proj, PropertyValue::String(e.edge_type.clone()));
-                            } else if prop == "id" {
-                                row.set(proj, PropertyValue::String(e.id.to_string()));
-                            } else if let Some(v) = e.properties.get(prop) {
-                                row.set(proj, v.clone());
-                            }
+                            if prop.is_empty() { row.set(proj, PropertyValue::String(e.id.to_string())); }
+                            else if prop == "type" { row.set(proj, PropertyValue::String(e.edge_type.clone())); }
+                            else if prop == "id" { row.set(proj, PropertyValue::String(e.id.to_string())); }
+                            else if let Some(v) = e.properties.get(prop) { row.set(proj, v.clone()); }
                         }
                     } else if parts.len() == 1 {
                         let var = parts[0];
-                        if var == self.source_var {
-                            row.set(proj, PropertyValue::String(m.source.id.to_string()));
-                        } else if var == self.target_var {
-                            row.set(proj, PropertyValue::String(m.target.id.to_string()));
-                        } else if let Some(ev) = &self.edge_var
+                        if var == self.source_var { row.set(proj, PropertyValue::String(m.source.id.to_string())); }
+                        else if var == self.target_var { row.set(proj, PropertyValue::String(m.target.id.to_string())); }
+                        else if let Some(ev) = &self.edge_var
                             && ev == var
                             && let Some(e) = &m.edge
                         {
@@ -582,12 +476,8 @@ impl<'a> RowStream for ProjectPatternStream<'a> {
 pub fn eval_condition(node: &Node, expr: &Expression, variable: &str) -> bool {
     match expr {
         Expression::BinaryOp { left, op, right } => match op {
-            BinaryOperator::And => {
-                eval_condition(node, left, variable) && eval_condition(node, right, variable)
-            }
-            BinaryOperator::Or => {
-                eval_condition(node, left, variable) || eval_condition(node, right, variable)
-            }
+            BinaryOperator::And => eval_condition(node, left, variable) && eval_condition(node, right, variable),
+            BinaryOperator::Or => eval_condition(node, left, variable) || eval_condition(node, right, variable),
             _ => {
                 let lv = eval_expression(node, left, variable);
                 let rv = eval_expression(node, right, variable);
@@ -608,48 +498,25 @@ pub fn eval_condition(node: &Node, expr: &Expression, variable: &str) -> bool {
     }
 }
 
-pub fn eval_expression(
-    node: &Node,
-    expr: &Expression,
-    expected_var: &str,
-) -> Option<PropertyValue> {
+pub fn eval_expression(node: &Node, expr: &Expression, expected_var: &str) -> Option<PropertyValue> {
     match expr {
         Expression::Literal(val) => Some(val.clone()),
         Expression::Property { variable, property } => {
-            if variable != expected_var {
-                return None;
-            }
-            if property.is_empty() {
-                return Some(PropertyValue::String(node.id.to_string()));
-            }
-            if property == "label" {
-                return Some(PropertyValue::String(node.label.clone()));
-            }
-            if property == "id" {
-                return Some(PropertyValue::String(node.id.to_string()));
-            }
+            if variable != expected_var { return None; }
+            if property.is_empty() { return Some(PropertyValue::String(node.id.to_string())); }
+            if property == "label" { return Some(PropertyValue::String(node.label.clone())); }
+            if property == "id" { return Some(PropertyValue::String(node.id.to_string())); }
             node.properties.get(property).cloned()
-        }
+        },
         _ => None,
     }
 }
 
-pub fn eval_pattern_condition(
-    m: &PatternMatch,
-    expr: &Expression,
-    source_var: &str,
-    target_var: &str,
-) -> bool {
+pub fn eval_pattern_condition(m: &PatternMatch, expr: &Expression, source_var: &str, target_var: &str) -> bool {
     match expr {
         Expression::BinaryOp { left, op, right } => match op {
-            BinaryOperator::And => {
-                eval_pattern_condition(m, left, source_var, target_var)
-                    && eval_pattern_condition(m, right, source_var, target_var)
-            }
-            BinaryOperator::Or => {
-                eval_pattern_condition(m, left, source_var, target_var)
-                    || eval_pattern_condition(m, right, source_var, target_var)
-            }
+            BinaryOperator::And => eval_pattern_condition(m, left, source_var, target_var) && eval_pattern_condition(m, right, source_var, target_var),
+            BinaryOperator::Or => eval_pattern_condition(m, left, source_var, target_var) || eval_pattern_condition(m, right, source_var, target_var),
             _ => {
                 let lv = eval_pattern_expression(m, left, source_var, target_var);
                 let rv = eval_pattern_expression(m, right, source_var, target_var);
@@ -663,51 +530,28 @@ pub fn eval_pattern_condition(
     }
 }
 
-pub fn eval_pattern_expression(
-    m: &PatternMatch,
-    expr: &Expression,
-    source_var: &str,
-    target_var: &str,
-) -> Option<PropertyValue> {
+pub fn eval_pattern_expression(m: &PatternMatch, expr: &Expression, source_var: &str, target_var: &str) -> Option<PropertyValue> {
     match expr {
         Expression::Literal(val) => Some(val.clone()),
         Expression::Property { variable, property } => {
             if property.is_empty() {
-                if variable == source_var {
-                    return Some(PropertyValue::String(m.source.id.to_string()));
-                }
-                if variable == target_var {
-                    return Some(PropertyValue::String(m.target.id.to_string()));
-                }
-                if let Some(e) = &m.edge {
-                    return Some(PropertyValue::String(e.id.to_string()));
-                }
+                if variable == source_var { return Some(PropertyValue::String(m.source.id.to_string())); }
+                if variable == target_var { return Some(PropertyValue::String(m.target.id.to_string())); }
+                if let Some(e) = &m.edge { return Some(PropertyValue::String(e.id.to_string())); }
                 return None;
             }
-            let node = if variable == source_var {
-                &m.source
-            } else if variable == target_var {
-                &m.target
-            } else {
+            let node = if variable == source_var { &m.source } else if variable == target_var { &m.target } else {
                 if let Some(e) = &m.edge {
-                    if property == "type" || property == "edge_type" {
-                        return Some(PropertyValue::String(e.edge_type.clone()));
-                    }
-                    if property == "id" {
-                        return Some(PropertyValue::String(e.id.to_string()));
-                    }
+                    if property == "type" || property == "edge_type" { return Some(PropertyValue::String(e.edge_type.clone())); }
+                    if property == "id" { return Some(PropertyValue::String(e.id.to_string())); }
                     return e.properties.get(property).cloned();
                 }
                 return None;
             };
-            if property == "label" {
-                return Some(PropertyValue::String(node.label.clone()));
-            }
-            if property == "id" {
-                return Some(PropertyValue::String(node.id.to_string()));
-            }
+            if property == "label" { return Some(PropertyValue::String(node.label.clone())); }
+            if property == "id" { return Some(PropertyValue::String(node.id.to_string())); }
             node.properties.get(property).cloned()
-        }
+        },
         _ => None,
     }
 }
@@ -724,14 +568,8 @@ pub fn compare_values(left: &PropertyValue, op: &BinaryOperator, right: &Propert
     }
 }
 
-pub fn filter_stream_from_expr<'a>(
-    input: Box<dyn NodeStream + 'a>,
-    expr: Arc<Expression>,
-    variable: String,
-) -> Box<dyn NodeStream + 'a> {
-    Box::new(FilterNodesStream::new(input, move |node| {
-        Ok(eval_condition(node, &expr, &variable))
-    }))
+pub fn filter_stream_from_expr<'a>(input: Box<dyn NodeStream + 'a>, expr: Arc<Expression>, variable: String) -> Box<dyn NodeStream + 'a> {
+    Box::new(FilterNodesStream::new(input, move |node| Ok(eval_condition(node, &expr, &variable))))
 }
 
 /// Graph-aware variant of `eval_condition` that resolves ontology predicates
@@ -749,10 +587,18 @@ pub fn eval_condition_with_graph(
 ) -> crate::error::Result<bool> {
     match expr {
         Expression::BinaryOp { left, op, right } => match op {
-            BinaryOperator::And => Ok(eval_condition_with_graph(node, left, variable, graph)?
-                && eval_condition_with_graph(node, right, variable, graph)?),
-            BinaryOperator::Or => Ok(eval_condition_with_graph(node, left, variable, graph)?
-                || eval_condition_with_graph(node, right, variable, graph)?),
+            BinaryOperator::And => {
+                Ok(
+                    eval_condition_with_graph(node, left, variable, graph)?
+                        && eval_condition_with_graph(node, right, variable, graph)?,
+                )
+            }
+            BinaryOperator::Or => {
+                Ok(
+                    eval_condition_with_graph(node, left, variable, graph)?
+                        || eval_condition_with_graph(node, right, variable, graph)?,
+                )
+            }
             _ => Ok(eval_condition(node, expr, variable)),
         },
         #[cfg(feature = "embeddings")]
@@ -782,12 +628,8 @@ pub fn eval_condition_with_graph(
                 Expression::Literal(PropertyValue::String(s)) => s.clone(),
                 _ => return Ok(false),
             };
-            let Some(mut tax) = graph.get_taxonomy_sync() else {
-                return Ok(false);
-            };
-            let Some(parent_id) = tax.find_by_label(&class_name) else {
-                return Ok(false);
-            };
+            let Some(mut tax) = graph.get_taxonomy_sync() else { return Ok(false); };
+            let Some(parent_id) = tax.find_by_label(&class_name) else { return Ok(false); };
             let result = match name.to_lowercase().as_str() {
                 "instanceof" => {
                     node.kind == crate::types::NodeKind::Individual
@@ -819,15 +661,8 @@ pub fn filter_stream_from_expr_with_graph<'a>(
     }))
 }
 
-pub fn filter_pattern_stream_from_expr<'a>(
-    input: Box<dyn PatternMatchStream + 'a>,
-    expr: Arc<Expression>,
-    source_var: String,
-    target_var: String,
-) -> Box<dyn PatternMatchStream + 'a> {
-    Box::new(FilterPatternStream::new(input, move |m| {
-        Ok(eval_pattern_condition(m, &expr, &source_var, &target_var))
-    }))
+pub fn filter_pattern_stream_from_expr<'a>(input: Box<dyn PatternMatchStream + 'a>, expr: Arc<Expression>, source_var: String, target_var: String) -> Box<dyn PatternMatchStream + 'a> {
+    Box::new(FilterPatternStream::new(input, move |m| Ok(eval_pattern_condition(m, &expr, &source_var, &target_var))))
 }
 
 // ================================================================================================

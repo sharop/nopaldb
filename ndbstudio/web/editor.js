@@ -282,8 +282,8 @@ async function initCodeMirrorEditor() {
           if (typeof schedulePersistActiveTabQuery === "function") {
             schedulePersistActiveTabQuery(text);
           }
-          if (typeof refreshGraphStaleState === "function") {
-            refreshGraphStaleState();
+          if (typeof refreshGraphDirtyState === "function") {
+            refreshGraphDirtyState();
           }
         }
       }),

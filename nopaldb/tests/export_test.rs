@@ -2,7 +2,7 @@
 //
 // P1: EXPORT clause integration tests (CSV, JSON, Arrow)
 
-use nopaldb::{Graph, Node, NqlResult, PropertyValue, Result};
+use nopaldb::{Graph, Node, PropertyValue, NqlResult, Result};
 
 async fn setup_graph() -> Result<Graph> {
     let graph = Graph::in_memory().await?;
@@ -11,9 +11,8 @@ async fn setup_graph() -> Result<Graph> {
         tx.add_node(
             Node::new("Person")
                 .with_property("name", PropertyValue::String(name.to_string()))
-                .with_property("age", PropertyValue::Int(*age)),
-        )
-        .await?;
+                .with_property("age", PropertyValue::Int(*age))
+        ).await?;
     }
     tx.commit().await?;
     Ok(graph)
@@ -27,16 +26,12 @@ async fn setup_graph() -> Result<Graph> {
 async fn test_export_csv() -> Result<()> {
     let graph = setup_graph().await?;
 
-    let result = graph
-        .execute_statement("find p.name, p.age from (p:Person) export csv")
-        .await?;
+    let result = graph.execute_statement(
+        "find p.name, p.age from (p:Person) export csv"
+    ).await?;
 
     match &result {
-        NqlResult::Export {
-            format,
-            data,
-            rows_exported,
-        } => {
+        NqlResult::Export { format, data, rows_exported } => {
             assert_eq!(format, "CSV");
             assert_eq!(*rows_exported, 3);
 
@@ -60,16 +55,12 @@ async fn test_export_csv() -> Result<()> {
 async fn test_export_csv_with_filter() -> Result<()> {
     let graph = setup_graph().await?;
 
-    let result = graph
-        .execute_statement(r#"find p.name from (p:Person) where p.age > 26 export csv"#)
-        .await?;
+    let result = graph.execute_statement(
+        r#"find p.name from (p:Person) where p.age > 26 export csv"#
+    ).await?;
 
     match &result {
-        NqlResult::Export {
-            rows_exported,
-            data,
-            ..
-        } => {
+        NqlResult::Export { rows_exported, data, .. } => {
             assert_eq!(*rows_exported, 2); // Alice(30) and Charlie(35)
             assert!(data.contains("Alice"));
             assert!(data.contains("Charlie"));
@@ -89,16 +80,12 @@ async fn test_export_csv_with_filter() -> Result<()> {
 async fn test_export_json() -> Result<()> {
     let graph = setup_graph().await?;
 
-    let result = graph
-        .execute_statement("find p.name, p.age from (p:Person) export json")
-        .await?;
+    let result = graph.execute_statement(
+        "find p.name, p.age from (p:Person) export json"
+    ).await?;
 
     match &result {
-        NqlResult::Export {
-            format,
-            data,
-            rows_exported,
-        } => {
+        NqlResult::Export { format, data, rows_exported } => {
             assert_eq!(format, "JSON");
             assert_eq!(*rows_exported, 3);
 
@@ -122,16 +109,12 @@ async fn test_export_json() -> Result<()> {
 async fn test_export_arrow() -> Result<()> {
     let graph = setup_graph().await?;
 
-    let result = graph
-        .execute_statement("find p.name, p.age from (p:Person) export arrow")
-        .await?;
+    let result = graph.execute_statement(
+        "find p.name, p.age from (p:Person) export arrow"
+    ).await?;
 
     match &result {
-        NqlResult::Export {
-            format,
-            rows_exported,
-            ..
-        } => {
+        NqlResult::Export { format, rows_exported, .. } => {
             assert_eq!(format, "Arrow");
             assert_eq!(*rows_exported, 3);
         }
@@ -150,7 +133,9 @@ async fn test_no_export_returns_query_result() -> Result<()> {
     let graph = setup_graph().await?;
 
     // Use execute_nql (not execute_statement) for queries without export
-    let result = graph.execute_nql("find p.name from (p:Person)").await?;
+    let result = graph.execute_nql(
+        "find p.name from (p:Person)"
+    ).await?;
 
     assert_eq!(result.len(), 3);
 
@@ -165,9 +150,9 @@ async fn test_no_export_returns_query_result() -> Result<()> {
 async fn test_api_to_csv() -> Result<()> {
     let graph = setup_graph().await?;
 
-    let result = graph
-        .execute_nql("find p.name, p.age from (p:Person) order by p.age asc")
-        .await?;
+    let result = graph.execute_nql(
+        "find p.name, p.age from (p:Person) order by p.age asc"
+    ).await?;
 
     let csv = result.to_csv();
     let lines: Vec<&str> = csv.trim().lines().collect();
@@ -186,9 +171,9 @@ async fn test_api_to_csv() -> Result<()> {
 async fn test_api_to_csv_custom_separator() -> Result<()> {
     let graph = setup_graph().await?;
 
-    let result = graph
-        .execute_nql("find p.name, p.age from (p:Person)")
-        .await?;
+    let result = graph.execute_nql(
+        "find p.name, p.age from (p:Person)"
+    ).await?;
 
     let tsv = result.to_csv_custom("\t", true);
     assert!(tsv.starts_with("p.name\tp.age\n"));
@@ -203,9 +188,9 @@ async fn test_api_to_csv_custom_separator() -> Result<()> {
 async fn test_api_to_json() -> Result<()> {
     let graph = setup_graph().await?;
 
-    let result = graph
-        .execute_nql("find p.name, p.age from (p:Person)")
-        .await?;
+    let result = graph.execute_nql(
+        "find p.name, p.age from (p:Person)"
+    ).await?;
 
     let json = result.to_json();
     assert!(json.starts_with('['));
@@ -220,7 +205,9 @@ async fn test_api_to_json() -> Result<()> {
 async fn test_api_to_json_pretty() -> Result<()> {
     let graph = setup_graph().await?;
 
-    let result = graph.execute_nql("find p.name from (p:Person)").await?;
+    let result = graph.execute_nql(
+        "find p.name from (p:Person)"
+    ).await?;
 
     let json = result.to_json_pretty();
     assert!(json.contains('\n'));
@@ -237,18 +224,12 @@ async fn test_api_to_json_pretty() -> Result<()> {
 async fn test_export_csv_with_order_and_limit() -> Result<()> {
     let graph = setup_graph().await?;
 
-    let result = graph
-        .execute_statement(
-            "find p.name, p.age from (p:Person) order by p.age desc limit 2 export csv",
-        )
-        .await?;
+    let result = graph.execute_statement(
+        "find p.name, p.age from (p:Person) order by p.age desc limit 2 export csv"
+    ).await?;
 
     match &result {
-        NqlResult::Export {
-            data,
-            rows_exported,
-            ..
-        } => {
+        NqlResult::Export { data, rows_exported, .. } => {
             assert_eq!(*rows_exported, 2);
             let lines: Vec<&str> = data.trim().lines().collect();
             assert_eq!(lines.len(), 3); // header + 2 rows

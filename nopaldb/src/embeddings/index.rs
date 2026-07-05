@@ -49,7 +49,11 @@ impl HnswIndex {
     /// Crea un índice vacío para el modelo y dimensión dados.
     ///
     /// `max_elements` es un hint de capacidad inicial (no un límite duro).
-    pub fn new(model: impl Into<String>, dimension: usize, max_elements: usize) -> Self {
+    pub fn new(
+        model: impl Into<String>,
+        dimension: usize,
+        max_elements: usize,
+    ) -> Self {
         let inner = Hnsw::<f32, DistCosine>::new(
             DEFAULT_MAX_NB_CONNECTION,
             max_elements,
@@ -102,9 +106,7 @@ impl HnswIndex {
         dimension: usize,
     ) -> Result<Self, NopalError> {
         if vectors.is_empty() {
-            return Err(NopalError::custom(
-                "HnswIndex::build_batch: no vectors provided",
-            ));
+            return Err(NopalError::custom("HnswIndex::build_batch: no vectors provided"));
         }
 
         // Validar dimensiones
@@ -112,9 +114,7 @@ impl HnswIndex {
             if vec.len() != dimension {
                 return Err(NopalError::custom(format!(
                     "HnswIndex::build_batch: node {} has dimension {}, expected {}",
-                    node_id,
-                    vec.len(),
-                    dimension
+                    node_id, vec.len(), dimension
                 )));
             }
         }
@@ -157,9 +157,7 @@ impl HnswIndex {
         if vector.len() != self.dimension {
             return Err(NopalError::custom(format!(
                 "HnswIndex({}): expected dimension {}, got {}",
-                self.model,
-                self.dimension,
-                vector.len()
+                self.model, self.dimension, vector.len()
             )));
         }
 
@@ -184,7 +182,11 @@ impl HnswIndex {
     ///
     /// Retorna `Vec<(NodeId, f32)>` ordenado por distancia ascendente (más cercano primero).
     /// La distancia es coseno: 0 = idénticos, 1 = ortogonales, 2 = opuestos.
-    pub fn search_knn(&self, query: &[f32], k: usize) -> Result<Vec<(NodeId, f32)>, NopalError> {
+    pub fn search_knn(
+        &self,
+        query: &[f32],
+        k: usize,
+    ) -> Result<Vec<(NodeId, f32)>, NopalError> {
         self.search_knn_with_ef(query, k, DEFAULT_EF_SEARCH)
     }
 
@@ -198,9 +200,7 @@ impl HnswIndex {
         if query.len() != self.dimension {
             return Err(NopalError::custom(format!(
                 "HnswIndex({}): query dimension {} != index dimension {}",
-                self.model,
-                query.len(),
-                self.dimension
+                self.model, query.len(), self.dimension
             )));
         }
 
@@ -317,11 +317,7 @@ mod tests {
         assert_eq!(results.len(), 1);
         // El más cercano a [1,0,0] debe ser id_a (distancia 0)
         assert_eq!(results[0].0, id_a);
-        assert!(
-            results[0].1 < 0.01,
-            "self-distance should be ~0, got {}",
-            results[0].1
-        );
+        assert!(results[0].1 < 0.01, "self-distance should be ~0, got {}", results[0].1);
     }
 
     #[test]
@@ -381,8 +377,12 @@ mod tests {
 
     #[test]
     fn test_dimension_mismatch_on_search() {
-        let index =
-            HnswIndex::build_batch(vec![(Uuid::new_v4(), vec![1.0, 0.0])], "test", 2).unwrap();
+        let index = HnswIndex::build_batch(
+            vec![(Uuid::new_v4(), vec![1.0, 0.0])],
+            "test",
+            2,
+        )
+        .unwrap();
         let result = index.search_knn(&[1.0, 0.0, 0.0], 1); // dim 3 != 2
         assert!(result.is_err());
     }
@@ -399,8 +399,12 @@ mod tests {
         assert_eq!(index.len(), 0);
         assert!(index.is_empty());
 
-        let index =
-            HnswIndex::build_batch(vec![(Uuid::new_v4(), vec![1.0, 0.0])], "test", 2).unwrap();
+        let index = HnswIndex::build_batch(
+            vec![(Uuid::new_v4(), vec![1.0, 0.0])],
+            "test",
+            2,
+        )
+        .unwrap();
         assert_eq!(index.len(), 1);
         assert!(!index.is_empty());
     }
@@ -427,7 +431,7 @@ mod tests {
         let index = HnswIndex::build_batch(vectors, "test", 3).unwrap();
 
         // Filtrar: solo id_b y id_c
-        let allowed = [id_b, id_c];
+        let allowed = vec![id_b, id_c];
         let results = index
             .search_knn_filtered(&[1.0, 0.0, 0.0], 1, DEFAULT_EF_SEARCH, |nid| {
                 allowed.contains(nid)

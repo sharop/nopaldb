@@ -8,8 +8,8 @@
 
 #[cfg(all(feature = "embeddings", feature = "embeddings-index"))]
 mod tests {
-    use nopaldb::Graph;
     use nopaldb::types::{Node, PropertyValue};
+    use nopaldb::Graph;
 
     /// Crea un grafo con 6 nodos Company con embeddings unitarios en R³.
     /// Los vectores están distribuidos angularmente para que la distancia coseno
@@ -20,23 +20,20 @@ mod tests {
         // Vectores diseñados para ranking claro con distancia coseno:
         // "Atlas" apunta al eje X. Los demás rotan progresivamente.
         let data: Vec<(&str, Vec<f32>)> = vec![
-            ("Atlas Fiduciary Group", vec![1.0, 0.0, 0.0]), // referencia
-            ("Shell Corp A", vec![0.95, 0.31, 0.0]),        // cercano (~18°)
-            ("Shell Corp B", vec![0.80, 0.60, 0.0]),        // medio (~37°)
-            ("Legit Corp", vec![0.50, 0.87, 0.0]),          // lejano (~60°)
-            ("Bank Nordic", vec![0.0, 1.0, 0.0]),           // ortogonal (~90°)
-            ("Fund Pacific", vec![0.0, 0.0, 1.0]),          // ortogonal (~90°)
+            ("Atlas Fiduciary Group", vec![1.0, 0.0, 0.0]),     // referencia
+            ("Shell Corp A",    vec![0.95, 0.31, 0.0]),    // cercano (~18°)
+            ("Shell Corp B",    vec![0.80, 0.60, 0.0]),    // medio (~37°)
+            ("Legit Corp",      vec![0.50, 0.87, 0.0]),    // lejano (~60°)
+            ("Bank Nordic",     vec![0.0, 1.0, 0.0]),      // ortogonal (~90°)
+            ("Fund Pacific",    vec![0.0, 0.0, 1.0]),      // ortogonal (~90°)
         ];
 
         let mut ids = vec![];
         for (name, vec) in data {
-            let node =
-                Node::new("Company").with_property("name", PropertyValue::String(name.to_string()));
+            let node = Node::new("Company")
+                .with_property("name", PropertyValue::String(name.to_string()));
             graph.add_node(node.clone()).await.unwrap();
-            graph
-                .add_node_embedding(node.id, vec, "minilm")
-                .await
-                .unwrap();
+            graph.add_node_embedding(node.id, vec, "minilm").await.unwrap();
             ids.push(node.id);
         }
         (graph, ids)
@@ -55,49 +52,22 @@ mod tests {
         "#;
         let result = graph.execute_nql(nql).await?;
 
-        assert_eq!(
-            result.rows.len(),
-            3,
-            "should return top 3 similar companies"
-        );
+        assert_eq!(result.rows.len(), 3, "should return top 3 similar companies");
 
         // Los resultados deben incluir Atlas Fiduciary Group (self), Shell Corp A, Shell Corp B
-        let names: Vec<String> = result
-            .rows
-            .iter()
+        let names: Vec<String> = result.rows.iter()
             .filter_map(|r| r.get("n.name"))
-            .filter_map(|v| {
-                if let PropertyValue::String(s) = v {
-                    Some(s.clone())
-                } else {
-                    None
-                }
-            })
+            .filter_map(|v| if let PropertyValue::String(s) = v { Some(s.clone()) } else { None })
             .collect();
 
-        assert!(
-            names.contains(&"Atlas Fiduciary Group".to_string()),
-            "self should be in results"
-        );
-        assert!(
-            names.contains(&"Shell Corp A".to_string()),
-            "closest should be in results"
-        );
+        assert!(names.contains(&"Atlas Fiduciary Group".to_string()), "self should be in results");
+        assert!(names.contains(&"Shell Corp A".to_string()), "closest should be in results");
         // Shell Corp B debería ser el tercero más cercano
-        assert!(
-            names.contains(&"Shell Corp B".to_string()),
-            "second closest should be in results"
-        );
+        assert!(names.contains(&"Shell Corp B".to_string()), "second closest should be in results");
 
         // Las empresas lejanas NO deben aparecer
-        assert!(
-            !names.contains(&"Bank Nordic".to_string()),
-            "orthogonal node should not be in top 3"
-        );
-        assert!(
-            !names.contains(&"Fund Pacific".to_string()),
-            "orthogonal node should not be in top 3"
-        );
+        assert!(!names.contains(&"Bank Nordic".to_string()), "orthogonal node should not be in top 3");
+        assert!(!names.contains(&"Fund Pacific".to_string()), "orthogonal node should not be in top 3");
 
         Ok(())
     }
@@ -108,14 +78,11 @@ mod tests {
 
         // Agregar propiedad "offshore" a algunos
         // (update via NQL o directamente)
-        let nql_update =
-            r#"UPDATE (n:Company) SET n.sector = "offshore" WHERE n.name = "Shell Corp A""#;
+        let nql_update = r#"UPDATE (n:Company) SET n.sector = "offshore" WHERE n.name = "Shell Corp A""#;
         graph.execute_nql(nql_update).await?;
-        let nql_update2 =
-            r#"UPDATE (n:Company) SET n.sector = "offshore" WHERE n.name = "Shell Corp B""#;
+        let nql_update2 = r#"UPDATE (n:Company) SET n.sector = "offshore" WHERE n.name = "Shell Corp B""#;
         graph.execute_nql(nql_update2).await?;
-        let nql_update3 =
-            r#"UPDATE (n:Company) SET n.sector = "legal" WHERE n.name = "Atlas Fiduciary Group""#;
+        let nql_update3 = r#"UPDATE (n:Company) SET n.sector = "legal" WHERE n.name = "Atlas Fiduciary Group""#;
         graph.execute_nql(nql_update3).await?;
 
         // similar_to con filtro adicional: solo offshore
@@ -127,17 +94,9 @@ mod tests {
         "#;
         let result = graph.execute_nql(nql).await?;
 
-        let names: Vec<String> = result
-            .rows
-            .iter()
+        let names: Vec<String> = result.rows.iter()
             .filter_map(|r| r.get("n.name"))
-            .filter_map(|v| {
-                if let PropertyValue::String(s) = v {
-                    Some(s.clone())
-                } else {
-                    None
-                }
-            })
+            .filter_map(|v| if let PropertyValue::String(s) = v { Some(s.clone()) } else { None })
             .collect();
 
         // Solo Shell Corp A y B son offshore y similares
@@ -162,10 +121,7 @@ mod tests {
         let result = graph.execute_nql(nql).await;
 
         // Debe retornar error porque el nodo referencia no existe
-        assert!(
-            result.is_err(),
-            "should error when reference node not found"
-        );
+        assert!(result.is_err(), "should error when reference node not found");
 
         Ok(())
     }
@@ -201,11 +157,7 @@ mod tests {
         let result = graph.execute_nql(nql).await?;
 
         // Debería retornar todos los 6 nodos (k=10 > 6)
-        assert_eq!(
-            result.rows.len(),
-            6,
-            "default k=10 should return all 6 nodes"
-        );
+        assert_eq!(result.rows.len(), 6, "default k=10 should return all 6 nodes");
 
         Ok(())
     }

@@ -31,7 +31,10 @@
 - **[Arquitectura](../ARCHITECTURE.md)**
 - **[Algoritmos](../ALGORITHMS.md)**
 - **[Indexación](../INDEXING_DOCS.MD)**
+- **[Indexación de Propiedades](../PROPERTY_INDEXING.md)**
 - **[Query Planner](../QUERY_PLANNER_DOCS.MD)**
+- **[Niveles de Aislamiento](../ISOLATION_LEVELS.md)**
+- **[Detección de Deadlocks](../DEADLOCK_DETECTION.md)**
 
 ---
 
@@ -48,12 +51,20 @@
 - **[Arrow Technical](../arrow/03-TECHNICAL.md)**
 - **[Arrow Examples](../arrow/04-EXAMPLES.md)**
 - **[Arrow ML Integration](../arrow/05-ML-INTEGRATION.md)**
+- **[Arrow Performance](../arrow/06-PERFORMANCE.md)**
+
+---
+
+## Roadmaps
+
+- **[Roadmap (Principal)](../ROADMAP.md)**
+- **[Roadmap Q1 2026 (Histórico)](../ROADMAP_Q1_2026.md)**
 
 ---
 
 ## Ejemplos
 
-- [Ejemplos Rust](../../nopaldb/examples/)
+- [examples/](../../examples/)
 
 ---
 

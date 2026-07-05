@@ -2,20 +2,21 @@
 //
 // Aggregation functions for NQL
 
-use crate::error::{NopalError, Result};
-#[cfg(feature = "algorithms")]
-use crate::graph::Direction;
-use crate::graph::Graph;
-use crate::query::nql::executor::result::{QueryResult, Row};
-use crate::query::nql::parser::ast::{Expression, GroupByClause, Projection, Query};
-use crate::types::NodeId;
-use crate::types::{Node, PropertyValue};
 #[cfg(feature = "algorithms")]
 use std::cmp::Reverse;
 #[cfg(any(feature = "algorithms", feature = "embeddings-index"))]
 use std::collections::HashMap;
 #[cfg(feature = "algorithms")]
 use std::collections::HashSet;
+use crate::error::{NopalError, Result};
+use crate::query::nql::executor::result::{QueryResult, Row};
+use crate::query::nql::parser::ast::{Expression, GroupByClause, Projection, Query};
+use crate::types::{Node, PropertyValue};
+#[cfg(feature = "algorithms")]
+use crate::graph::Direction;
+use crate::graph::Graph;
+#[cfg(feature = "algorithms")]
+use crate::types::NodeId;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AlgoResults — resultados precomputados de algoritmos de grafos
@@ -65,42 +66,34 @@ pub async fn precompute_for_query(
 /// Returns `PropertyValue::Null` if the algorithm wasn't pre-computed or the
 /// node is missing from the cache.
 #[cfg(feature = "algorithms")]
-pub fn lookup_algo_value(name: &str, node_id: &NodeId, cache: &AlgoResults) -> PropertyValue {
+pub fn lookup_algo_value(
+    name: &str,
+    node_id: &NodeId,
+    cache: &AlgoResults,
+) -> PropertyValue {
     let lower = name.to_lowercase();
     match lower.as_str() {
-        "pagerank" => cache
-            .pagerank
-            .as_ref()
+        "pagerank" => cache.pagerank.as_ref()
             .and_then(|m| m.get(node_id))
             .map(|v| PropertyValue::Float(*v))
             .unwrap_or(PropertyValue::Null),
-        "betweenness" => cache
-            .betweenness
-            .as_ref()
+        "betweenness" => cache.betweenness.as_ref()
             .and_then(|m| m.get(node_id))
             .map(|v| PropertyValue::Float(*v))
             .unwrap_or(PropertyValue::Null),
-        "clustering" => cache
-            .clustering
-            .as_ref()
+        "clustering" => cache.clustering.as_ref()
             .and_then(|m| m.get(node_id))
             .map(|v| PropertyValue::Float(*v))
             .unwrap_or(PropertyValue::Null),
-        "degree" => cache
-            .degree
-            .as_ref()
+        "degree" => cache.degree.as_ref()
             .and_then(|m| m.get(node_id))
             .map(|v| PropertyValue::Float(*v))
             .unwrap_or(PropertyValue::Null),
-        "community" | "community_fast" => cache
-            .community
-            .as_ref()
+        "community" | "community_fast" => cache.community.as_ref()
             .and_then(|m| m.get(node_id))
             .map(|v| PropertyValue::Int(*v as i64))
             .unwrap_or(PropertyValue::Null),
-        "leiden" => cache
-            .leiden
-            .as_ref()
+        "leiden" => cache.leiden.as_ref()
             .and_then(|m| m.get(node_id))
             .map(|v| PropertyValue::Int(*v as i64))
             .unwrap_or(PropertyValue::Null),
@@ -109,7 +102,11 @@ pub fn lookup_algo_value(name: &str, node_id: &NodeId, cache: &AlgoResults) -> P
 }
 
 #[cfg(not(feature = "algorithms"))]
-pub fn lookup_algo_value(_name: &str, _node_id: &NodeId, _cache: &AlgoResults) -> PropertyValue {
+pub fn lookup_algo_value(
+    _name: &str,
+    _node_id: &crate::NodeId,
+    _cache: &AlgoResults,
+) -> PropertyValue {
     PropertyValue::Null
 }
 
@@ -173,17 +170,7 @@ fn is_aggregation_or_algorithm_expr(expr: &Expression) -> bool {
             if matches!(name.as_str(), "count" | "sum" | "avg" | "min" | "max") {
                 return true;
             }
-            if matches!(
-                name.as_str(),
-                "pagerank"
-                    | "betweenness"
-                    | "clustering"
-                    | "degree"
-                    | "community"
-                    | "community_fast"
-                    | "leiden"
-                    | "shortestPath"
-            ) {
+            if matches!(name.as_str(), "pagerank" | "betweenness" | "clustering" | "degree" | "community" | "community_fast" | "leiden" | "shortestPath") {
                 return true;
             }
             #[cfg(feature = "embeddings")]
@@ -231,16 +218,12 @@ pub async fn execute_aggregations(
     } else {
         // SQL-like convenience: if projections mix aggregations with plain
         // property expressions, treat plain expressions as an implicit GROUP BY.
-        let implicit_group_exprs: Vec<Expression> = query
-            .find
-            .projections
-            .iter()
+        let implicit_group_exprs: Vec<Expression> = query.find.projections.iter()
             .filter_map(|projection| {
                 if let Projection::Expression { expr, .. } = projection
                     && !is_aggregation_or_algorithm_expr(expr)
-                    && matches!(expr, Expression::Property { .. })
-                {
-                    return Some(expr.clone());
+                    && matches!(expr, Expression::Property { .. }) {
+                        return Some(expr.clone());
                 }
                 None
             })
@@ -252,8 +235,7 @@ pub async fn execute_aggregations(
             let implicit_group_by = GroupByClause {
                 expressions: implicit_group_exprs,
             };
-            execute_grouped_aggregation(graph, nodes, query, variable, &implicit_group_by, &ctx)
-                .await
+            execute_grouped_aggregation(graph, nodes, query, variable, &implicit_group_by, &ctx).await
         }
     }
 }
@@ -271,8 +253,7 @@ async fn execute_simple_aggregation(
 
     for projection in &query.find.projections {
         if let Projection::Expression { expr, alias } = projection {
-            let (key, value) =
-                evaluate_aggregation(graph, expr, &nodes, variable, alias, ctx).await?;
+            let (key, value) = evaluate_aggregation(graph, expr, &nodes, variable, alias, ctx).await?;
             columns.push(key.clone());
             row.set(key, value);
         }
@@ -295,13 +276,10 @@ async fn execute_grouped_aggregation(
     // Group nodes by ALL GROUP BY expressions (I2: multi-column support).
     // BTreeMap gives deterministic iteration order (lexicographic by group key),
     // so `limit 1` always returns the same row for the same data.
-    let mut groups: std::collections::BTreeMap<String, Vec<Node>> =
-        std::collections::BTreeMap::new();
+    let mut groups: std::collections::BTreeMap<String, Vec<Node>> = std::collections::BTreeMap::new();
 
     for node in nodes {
-        let group_key = group_by
-            .expressions
-            .iter()
+        let group_key = group_by.expressions.iter()
             .map(|expr| evaluate_group_key(expr, &node, variable))
             .collect::<Result<Vec<_>>>()?
             .join("|");
@@ -318,30 +296,16 @@ async fn execute_grouped_aggregation(
     // Si la proyección declara un alias para esta expresión (e.g. `n.label as etiqueta`),
     // usar el alias como nombre de columna para que el resultado lo exponga correctamente.
     for expr in &group_by.expressions {
-        if let Expression::Property {
-            variable: v,
-            property,
-        } = expr
-        {
+        if let Expression::Property { variable: v, property } = expr {
             let raw_col = format!("{}.{}", v, property);
             if raw_col == node_id_col {
                 continue;
             }
-            let col_name = query
-                .find
-                .projections
-                .iter()
+            let col_name = query.find.projections.iter()
                 .find_map(|p| {
-                    if let Projection::Expression {
-                        expr: pexpr,
-                        alias: Some(a),
-                    } = p
-                        && let Expression::Property {
-                            variable: pv,
-                            property: pp,
-                        } = pexpr
-                        && pv == v
-                        && pp == property
+                    if let Projection::Expression { expr: pexpr, alias: Some(a) } = p
+                        && let Expression::Property { variable: pv, property: pp } = pexpr
+                        && pv == v && pp == property
                     {
                         Some(a.clone())
                     } else {
@@ -357,10 +321,9 @@ async fn execute_grouped_aggregation(
     for projection in &query.find.projections {
         if let Projection::Expression { expr, alias } = projection
             && is_aggregation_or_algorithm_expr(expr)
-            && let Expression::FunctionCall { name, .. } = expr
-        {
-            let col_name = alias.clone().unwrap_or_else(|| name.clone());
-            columns.push(col_name);
+            && let Expression::FunctionCall { name, .. } = expr {
+                let col_name = alias.clone().unwrap_or_else(|| name.clone());
+                columns.push(col_name);
         }
     }
 
@@ -372,40 +335,23 @@ async fn execute_grouped_aggregation(
         // Inject the UUID of the representative node for this group so the
         // graph-hint system (row_graph_hints_from_query_result) can focus correctly.
         if let Some(first_node) = group_nodes.first() {
-            row.set(
-                node_id_col.clone(),
-                PropertyValue::String(first_node.id.to_string()),
-            );
+            row.set(node_id_col.clone(), PropertyValue::String(first_node.id.to_string()));
         }
 
         // Parse composite key back and add all group columns (I2).
         // Usar el mismo nombre de columna (con alias si aplica) calculado arriba.
         let key_parts: Vec<&str> = group_key.split('|').collect();
         for (i, expr) in group_by.expressions.iter().enumerate() {
-            if let Expression::Property {
-                variable: v,
-                property,
-            } = expr
-            {
+            if let Expression::Property { variable: v, property } = expr {
                 let raw_key = format!("{}.{}", v, property);
                 if raw_key == node_id_col {
                     continue;
                 }
-                let row_key = query
-                    .find
-                    .projections
-                    .iter()
+                let row_key = query.find.projections.iter()
                     .find_map(|p| {
-                        if let Projection::Expression {
-                            expr: pexpr,
-                            alias: Some(a),
-                        } = p
-                            && let Expression::Property {
-                                variable: pv,
-                                property: pp,
-                            } = pexpr
-                            && pv == v
-                            && pp == property
+                        if let Projection::Expression { expr: pexpr, alias: Some(a) } = p
+                            && let Expression::Property { variable: pv, property: pp } = pexpr
+                            && pv == v && pp == property
                         {
                             Some(a.clone())
                         } else {
@@ -413,8 +359,7 @@ async fn execute_grouped_aggregation(
                         }
                     })
                     .unwrap_or(raw_key);
-                let value = key_parts
-                    .get(i)
+                let value = key_parts.get(i)
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "null".to_string());
                 row.set(row_key, PropertyValue::String(value));
@@ -424,11 +369,9 @@ async fn execute_grouped_aggregation(
         // Compute aggregations for this group
         for projection in &query.find.projections {
             if let Projection::Expression { expr, alias } = projection
-                && is_aggregation_or_algorithm_expr(expr)
-            {
-                let (key, value) =
-                    evaluate_aggregation(graph, expr, &group_nodes, variable, alias, ctx).await?;
-                row.set(key, value);
+                && is_aggregation_or_algorithm_expr(expr) {
+                    let (key, value) = evaluate_aggregation(graph, expr, &group_nodes, variable, alias, ctx).await?;
+                    row.set(key, value);
             }
         }
 
@@ -441,15 +384,11 @@ async fn execute_grouped_aggregation(
 /// Evaluate GROUP BY key
 fn evaluate_group_key(expr: &Expression, node: &Node, variable: &str) -> Result<String> {
     match expr {
-        Expression::Property {
-            variable: var,
-            property,
-        } => {
+        Expression::Property { variable: var, property } => {
             if var != variable {
-                return Err(NopalError::QueryExecutionError(format!(
-                    "Unknown variable in GROUP BY: {}",
-                    var
-                )));
+                return Err(NopalError::QueryExecutionError(
+                    format!("Unknown variable in GROUP BY: {}", var)
+                ));
             }
 
             // ✨ SPECIAL CASE: "label" is a Node field, not a property
@@ -463,9 +402,7 @@ fn evaluate_group_key(expr: &Expression, node: &Node, variable: &str) -> Result<
             }
 
             // Otherwise, get from properties
-            Ok(node
-                .properties
-                .get(property)
+            Ok(node.properties.get(property)
                 .map(|v| match v {
                     PropertyValue::String(s) => s.clone(),
                     PropertyValue::Int(i) => i.to_string(),
@@ -479,7 +416,7 @@ fn evaluate_group_key(expr: &Expression, node: &Node, variable: &str) -> Result<
                 .unwrap_or_else(|| "null".to_string()))
         }
         _ => Err(NopalError::QueryExecutionError(
-            "GROUP BY only supports property expressions".into(),
+            "GROUP BY only supports property expressions".into()
         )),
     }
 }
@@ -506,7 +443,7 @@ async fn evaluate_aggregation(
                 "sum" => {
                     if args.is_empty() {
                         return Err(NopalError::QueryExecutionError(
-                            "sum() requires an argument".into(),
+                            "sum() requires an argument".into()
                         ));
                     }
 
@@ -516,7 +453,7 @@ async fn evaluate_aggregation(
                 "avg" => {
                     if args.is_empty() {
                         return Err(NopalError::QueryExecutionError(
-                            "avg() requires an argument".into(),
+                            "avg() requires an argument".into()
                         ));
                     }
 
@@ -527,7 +464,7 @@ async fn evaluate_aggregation(
                 "min" => {
                     if args.is_empty() {
                         return Err(NopalError::QueryExecutionError(
-                            "min() requires an argument".into(),
+                            "min() requires an argument".into()
                         ));
                     }
 
@@ -537,7 +474,7 @@ async fn evaluate_aggregation(
                 "max" => {
                     if args.is_empty() {
                         return Err(NopalError::QueryExecutionError(
-                            "max() requires an argument".into(),
+                            "max() requires an argument".into()
                         ));
                     }
 
@@ -546,59 +483,28 @@ async fn evaluate_aggregation(
                 }
                 #[cfg(feature = "algorithms")]
                 "pagerank" => {
-                    let ranks = ctx.algo.pagerank.as_ref().ok_or_else(|| {
-                        NopalError::QueryExecutionError("pagerank algorithm not precomputed".into())
-                    })?;
-                    Ok((
-                        result_key,
-                        PropertyValue::Float(average_algo_scores(nodes, ranks)),
-                    ))
+                    let ranks = ctx.algo.pagerank.as_ref().ok_or_else(|| NopalError::QueryExecutionError("pagerank algorithm not precomputed".into()))?;
+                    Ok((result_key, PropertyValue::Float(average_algo_scores(nodes, ranks))))
                 }
                 #[cfg(feature = "algorithms")]
                 "betweenness" => {
-                    let scores = ctx.algo.betweenness.as_ref().ok_or_else(|| {
-                        NopalError::QueryExecutionError(
-                            "betweenness algorithm not precomputed".into(),
-                        )
-                    })?;
-                    Ok((
-                        result_key,
-                        PropertyValue::Float(average_algo_scores(nodes, scores)),
-                    ))
+                    let scores = ctx.algo.betweenness.as_ref().ok_or_else(|| NopalError::QueryExecutionError("betweenness algorithm not precomputed".into()))?;
+                    Ok((result_key, PropertyValue::Float(average_algo_scores(nodes, scores))))
                 }
                 #[cfg(feature = "algorithms")]
                 "clustering" => {
-                    let coeffs = ctx.algo.clustering.as_ref().ok_or_else(|| {
-                        NopalError::QueryExecutionError(
-                            "clustering algorithm not precomputed".into(),
-                        )
-                    })?;
-                    Ok((
-                        result_key,
-                        PropertyValue::Float(average_algo_scores(nodes, coeffs)),
-                    ))
+                    let coeffs = ctx.algo.clustering.as_ref().ok_or_else(|| NopalError::QueryExecutionError("clustering algorithm not precomputed".into()))?;
+                    Ok((result_key, PropertyValue::Float(average_algo_scores(nodes, coeffs))))
                 }
                 #[cfg(feature = "algorithms")]
                 "degree" => {
-                    let degrees = ctx.algo.degree.as_ref().ok_or_else(|| {
-                        NopalError::QueryExecutionError("degree algorithm not precomputed".into())
-                    })?;
-                    Ok((
-                        result_key,
-                        PropertyValue::Float(average_algo_scores(nodes, degrees)),
-                    ))
+                    let degrees = ctx.algo.degree.as_ref().ok_or_else(|| NopalError::QueryExecutionError("degree algorithm not precomputed".into()))?;
+                    Ok((result_key, PropertyValue::Float(average_algo_scores(nodes, degrees))))
                 }
                 #[cfg(feature = "algorithms")]
                 "community" | "community_fast" => {
-                    let communities = ctx.algo.community.as_ref().ok_or_else(|| {
-                        NopalError::QueryExecutionError(
-                            "community algorithm not precomputed".into(),
-                        )
-                    })?;
-                    Ok((
-                        result_key,
-                        PropertyValue::Float(average_algo_scores_usize(nodes, communities)),
-                    ))
+                    let communities = ctx.algo.community.as_ref().ok_or_else(|| NopalError::QueryExecutionError("community algorithm not precomputed".into()))?;
+                    Ok((result_key, PropertyValue::Float(average_algo_scores_usize(nodes, communities))))
                 }
                 #[cfg(feature = "algorithms")]
                 // leiden(n) — Constant Potts Model community detection (Traag et al. 2019).
@@ -608,20 +514,17 @@ async fn evaluate_aggregation(
                     let communities = ctx.algo.leiden.as_ref().ok_or_else(|| NopalError::QueryExecutionError(
                         "leiden algorithm not precomputed — asegúrate de tener feature `algorithms`".into()
                     ))?;
-                    Ok((
-                        result_key,
-                        PropertyValue::Float(average_algo_scores_usize(nodes, communities)),
-                    ))
+                    Ok((result_key, PropertyValue::Float(average_algo_scores_usize(nodes, communities))))
                 }
                 #[cfg(feature = "algorithms")]
-                "shortestPath" => execute_shortest_path(graph, args, &result_key).await,
+                "shortestPath" => {
+                    execute_shortest_path(graph, args, &result_key).await
+                }
                 #[cfg(not(feature = "algorithms"))]
-                "pagerank" | "betweenness" | "clustering" | "degree" | "community"
-                | "community_fast" | "leiden" | "shortestPath" => {
-                    Err(NopalError::QueryExecutionError(format!(
-                        "{}() requires feature `algorithms` (enable `--features core` or `--features algorithms`)",
-                        name
-                    )))
+                "pagerank" | "betweenness" | "clustering" | "degree" | "community" | "community_fast" | "leiden" | "shortestPath" => {
+                    Err(NopalError::QueryExecutionError(
+                        format!("{}() requires feature `algorithms` (enable `--features core` or `--features algorithms`)", name)
+                    ))
                 }
 
                 // ── Embedding functions ────────────────────────────────────
@@ -640,32 +543,29 @@ async fn evaluate_aggregation(
                     execute_embedding_similarity(graph, args, nodes, &result_key).await
                 }
                 #[cfg(feature = "embeddings-index")]
-                "knn_nodes" => execute_knn_nodes(graph, args, nodes, &result_key, ctx).await,
+                "knn_nodes" => {
+                    execute_knn_nodes(graph, args, nodes, &result_key, ctx).await
+                }
 
-                _ => Err(NopalError::QueryExecutionError(format!(
-                    "Unknown aggregation function: {}",
-                    name
-                ))),
+                _ => Err(NopalError::QueryExecutionError(
+                    format!("Unknown aggregation function: {}", name)
+                ))
             }
         }
         _ => Err(NopalError::QueryExecutionError(
-            "Not an aggregation expression".into(),
-        )),
+            "Not an aggregation expression".into()
+        ))
     }
 }
 
 /// Sum numeric property
 fn sum_property(nodes: &[Node], expr: &Expression, variable: &str) -> Result<f64> {
     match expr {
-        Expression::Property {
-            variable: var,
-            property,
-        } => {
+        Expression::Property { variable: var, property } => {
             if var != variable {
-                return Err(NopalError::QueryExecutionError(format!(
-                    "Unknown variable: {}",
-                    var
-                )));
+                return Err(NopalError::QueryExecutionError(
+                    format!("Unknown variable: {}", var)
+                ));
             }
 
             let mut sum = 0.0;
@@ -681,70 +581,64 @@ fn sum_property(nodes: &[Node], expr: &Expression, variable: &str) -> Result<f64
             Ok(sum)
         }
         _ => Err(NopalError::QueryExecutionError(
-            "Aggregation argument must be a property".into(),
-        )),
+            "Aggregation argument must be a property".into()
+        ))
     }
 }
 
 /// Find minimum property value
 fn min_property(nodes: &[Node], expr: &Expression, variable: &str) -> Result<PropertyValue> {
     match expr {
-        Expression::Property {
-            variable: var,
-            property,
-        } => {
+        Expression::Property { variable: var, property } => {
             if var != variable {
-                return Err(NopalError::QueryExecutionError(format!(
-                    "Unknown variable: {}",
-                    var
-                )));
+                return Err(NopalError::QueryExecutionError(
+                    format!("Unknown variable: {}", var)
+                ));
             }
 
             let mut min: Option<PropertyValue> = None;
             for node in nodes {
                 if let Some(value) = node.properties.get(property)
-                    && min.as_ref().is_none_or(|m| is_less_than(value, m))
-                {
-                    min = Some(value.clone());
+                    && min.as_ref().is_none_or(|m| is_less_than(value, m)) {
+                        min = Some(value.clone());
                 }
             }
 
-            min.ok_or_else(|| NopalError::QueryExecutionError("No values found for min()".into()))
+            min.ok_or_else(|| NopalError::QueryExecutionError(
+                "No values found for min()".into()
+            ))
         }
         _ => Err(NopalError::QueryExecutionError(
-            "Aggregation argument must be a property".into(),
-        )),
+            "Aggregation argument must be a property".into()
+        ))
     }
 }
 
 /// Find maximum property value
 fn max_property(nodes: &[Node], expr: &Expression, variable: &str) -> Result<PropertyValue> {
     match expr {
-        Expression::Property {
-            variable: var,
-            property,
-        } => {
+        Expression::Property { variable: var, property } => {
             if var != variable {
-                return Err(NopalError::QueryExecutionError(format!(
-                    "Unknown variable: {}",
-                    var
-                )));
+                return Err(NopalError::QueryExecutionError(
+                    format!("Unknown variable: {}", var)
+                ));
             }
 
             let mut max: Option<PropertyValue> = None;
             for node in nodes {
                 if let Some(value) = node.properties.get(property)
-                    && max.as_ref().is_none_or(|m| is_greater_than(value, m))
-                {
-                    max = Some(value.clone());
+                    && max.as_ref().is_none_or(|m| is_greater_than(value, m)) {
+                        max = Some(value.clone());
                 }
             }
 
-            max.ok_or_else(|| NopalError::QueryExecutionError("No values found for max()".into()))
+            max.ok_or_else(|| NopalError::QueryExecutionError(
+                "No values found for max()".into()
+            ))
         }
         _ => Err(NopalError::QueryExecutionError(
-            "Aggregation argument must be a property".into(),
-        )),
+            "Aggregation argument must be a property".into()
+        ))
     }
 }
 
@@ -806,20 +700,12 @@ async fn precompute_algorithms(
         match name.as_str() {
             "pagerank" if results.pagerank.is_none() => {
                 use crate::algorithms::pagerank::{PageRank, PageRankConfig};
-                let pr = PageRank::new(PageRankConfig {
-                    damping: 0.85,
-                    max_iterations: 100,
-                    tolerance: 1e-6,
-                    parallel: false,
-                });
+                let pr = PageRank::new(PageRankConfig { damping: 0.85, max_iterations: 100, tolerance: 1e-6, parallel: false });
                 results.pagerank = Some(pr.compute(graph).await?);
             }
             "betweenness" if results.betweenness.is_none() => {
                 use crate::algorithms::betweenness::{BetweennessCentrality, BetweennessConfig};
-                let bc = BetweennessCentrality::new(BetweennessConfig {
-                    normalize: true,
-                    parallel: false,
-                });
+                let bc = BetweennessCentrality::new(BetweennessConfig { normalize: true, parallel: false });
                 results.betweenness = Some(bc.compute(&subgraph).await?);
             }
             "clustering" if results.clustering.is_none() => {
@@ -829,10 +715,7 @@ async fn precompute_algorithms(
             }
             "degree" if results.degree.is_none() => {
                 use crate::algorithms::degree::{DegreeCentrality, DegreeConfig, DegreeType};
-                let dc = DegreeCentrality::new(DegreeConfig {
-                    degree_type: DegreeType::Total,
-                    normalize: false,
-                });
+                let dc = DegreeCentrality::new(DegreeConfig { degree_type: DegreeType::Total, normalize: false });
                 results.degree = Some(dc.compute(graph).await?);
             }
             "community" if results.community.is_none() => {
@@ -855,16 +738,10 @@ fn collect_algorithm_names(expr: &Expression, out: &mut std::collections::HashSe
     match expr {
         Expression::FunctionCall { name, args } => {
             let lower = name.to_lowercase();
-            if matches!(
-                lower.as_str(),
-                "pagerank"
-                    | "betweenness"
-                    | "clustering"
-                    | "degree"
-                    | "community"
-                    | "community_fast"
-                    | "leiden"
-            ) {
+            if matches!(lower.as_str(),
+                "pagerank" | "betweenness" | "clustering" | "degree"
+                | "community" | "community_fast" | "leiden")
+            {
                 out.insert(lower);
             }
             for a in args {
@@ -891,25 +768,15 @@ async fn precompute_algorithms(
 
 #[cfg(feature = "algorithms")]
 fn average_algo_scores(nodes: &[Node], scores: &HashMap<NodeId, f64>) -> f64 {
-    if nodes.is_empty() {
-        return 0.0;
-    }
-    let sum: f64 = nodes
-        .iter()
-        .filter_map(|n| scores.get(&n.id).copied())
-        .sum();
+    if nodes.is_empty() { return 0.0; }
+    let sum: f64 = nodes.iter().filter_map(|n| scores.get(&n.id).copied()).sum();
     sum / nodes.len() as f64
 }
 
 #[cfg(feature = "algorithms")]
 fn average_algo_scores_usize(nodes: &[Node], scores: &HashMap<NodeId, usize>) -> f64 {
-    if nodes.is_empty() {
-        return 0.0;
-    }
-    let sum: f64 = nodes
-        .iter()
-        .filter_map(|n| scores.get(&n.id).map(|&v| v as f64))
-        .sum();
+    if nodes.is_empty() { return 0.0; }
+    let sum: f64 = nodes.iter().filter_map(|n| scores.get(&n.id).map(|&v| v as f64)).sum();
     sum / nodes.len() as f64
 }
 
@@ -920,9 +787,8 @@ async fn get_or_compute_community_exact(graph: &Graph) -> Result<HashMap<uuid::U
 
     let current_topology = graph.topology_version();
     if let Some((cached_topology, assignments)) = graph.get_cached_community_partition_exact().await
-        && cached_topology == current_topology
-    {
-        return Ok(assignments);
+        && cached_topology == current_topology {
+            return Ok(assignments);
     }
 
     let lc = LouvainCommunity::with_defaults();
@@ -953,9 +819,7 @@ async fn get_or_compute_leiden(graph: &Graph) -> Result<HashMap<uuid::Uuid, usiz
 
     let leiden = LeidenCommunity::with_defaults();
     let assignments = leiden.detect(graph).await?;
-    graph
-        .set_cached_leiden_partition(current_topology, assignments.clone())
-        .await;
+    graph.set_cached_leiden_partition(current_topology, assignments.clone()).await;
     Ok(assignments)
 }
 
@@ -976,9 +840,7 @@ async fn compute_community_fast_map(
     let mut adjacency: HashMap<uuid::Uuid, Vec<uuid::Uuid>> = HashMap::new();
 
     for node in nodes {
-        let mut local = graph
-            .neighbors(node.id, Direction::Both)
-            .await?
+        let mut local = graph.neighbors(node.id, Direction::Both).await?
             .into_iter()
             .filter(|nid| selected_ids.contains(nid))
             .collect::<Vec<_>>();
@@ -998,7 +860,10 @@ async fn compute_community_fast_map(
         let mut next_labels = labels.clone();
 
         for node in nodes {
-            let neighbors = adjacency.get(&node.id).map(|n| n.as_slice()).unwrap_or(&[]);
+            let neighbors = adjacency
+                .get(&node.id)
+                .map(|n| n.as_slice())
+                .unwrap_or(&[]);
             if neighbors.is_empty() {
                 continue;
             }
@@ -1075,21 +940,17 @@ async fn execute_shortest_path(
     // Extract source UUID string from arg 0
     let source_str = match &args[0] {
         Expression::Literal(PropertyValue::String(s)) => s.clone(),
-        _ => {
-            return Err(NopalError::QueryExecutionError(
-                "shortestPath() arguments must be string literals (node UUIDs)".into(),
-            ));
-        }
+        _ => return Err(NopalError::QueryExecutionError(
+            "shortestPath() arguments must be string literals (node UUIDs)".into(),
+        )),
     };
 
     // Extract target UUID string from arg 1
     let target_str = match &args[1] {
         Expression::Literal(PropertyValue::String(s)) => s.clone(),
-        _ => {
-            return Err(NopalError::QueryExecutionError(
-                "shortestPath() arguments must be string literals (node UUIDs)".into(),
-            ));
-        }
+        _ => return Err(NopalError::QueryExecutionError(
+            "shortestPath() arguments must be string literals (node UUIDs)".into(),
+        )),
     };
 
     let source = Uuid::parse_str(&source_str).map_err(|_| {
@@ -1133,38 +994,29 @@ async fn execute_embedding_similarity(
     }
     let ref_uuid_str = match &args[1] {
         Expression::Literal(PropertyValue::String(s)) => s.clone(),
-        _ => {
-            return Err(NopalError::QueryExecutionError(
-                "embedding_similarity: second argument must be a UUID string".into(),
-            ));
-        }
+        _ => return Err(NopalError::QueryExecutionError(
+            "embedding_similarity: second argument must be a UUID string".into(),
+        )),
     };
     let model = match &args[2] {
         Expression::Literal(PropertyValue::String(s)) => s.clone(),
-        _ => {
-            return Err(NopalError::QueryExecutionError(
-                "embedding_similarity: third argument must be a model name string".into(),
-            ));
-        }
+        _ => return Err(NopalError::QueryExecutionError(
+            "embedding_similarity: third argument must be a model name string".into(),
+        )),
     };
 
     let ref_id = uuid::Uuid::parse_str(&ref_uuid_str).map_err(|_| {
         NopalError::QueryExecutionError(format!(
-            "embedding_similarity: invalid UUID '{}'",
-            ref_uuid_str
+            "embedding_similarity: invalid UUID '{}'", ref_uuid_str
         ))
     })?;
 
     // Cargar el embedding de referencia una sola vez
-    let ref_emb = graph
-        .get_node_embedding(ref_id, &model)
-        .await
-        .map_err(|_| {
-            NopalError::QueryExecutionError(format!(
-                "embedding_similarity: no embedding found for reference node '{}' model '{}'",
-                ref_uuid_str, model
-            ))
-        })?;
+    let ref_emb = graph.get_node_embedding(ref_id, &model).await
+        .map_err(|_| NopalError::QueryExecutionError(format!(
+            "embedding_similarity: no embedding found for reference node '{}' model '{}'",
+            ref_uuid_str, model
+        )))?;
 
     // Calcular similitud promedio sobre los nodos del grupo
     let mut total = 0.0_f64;
@@ -1203,19 +1055,15 @@ async fn execute_knn_nodes(
     }
     let k = match &args[1] {
         Expression::Literal(PropertyValue::Int(k)) => *k as usize,
-        _ => {
-            return Err(NopalError::QueryExecutionError(
-                "knn_nodes: second argument must be an integer k".into(),
-            ));
-        }
+        _ => return Err(NopalError::QueryExecutionError(
+            "knn_nodes: second argument must be an integer k".into(),
+        )),
     };
     let model = match &args[2] {
         Expression::Literal(PropertyValue::String(s)) => s.clone(),
-        _ => {
-            return Err(NopalError::QueryExecutionError(
-                "knn_nodes: third argument must be a model name string".into(),
-            ));
-        }
+        _ => return Err(NopalError::QueryExecutionError(
+            "knn_nodes: third argument must be a model name string".into(),
+        )),
     };
 
     // Tomar el primer nodo del grupo como representante
@@ -1240,8 +1088,7 @@ async fn execute_knn_nodes(
     let results = index.search_knn(&emb.vector, k)?;
     let json = format!(
         "[{}]",
-        results
-            .iter()
+        results.iter()
             .map(|(id, _dist)| format!("\"{}\"", id))
             .collect::<Vec<_>>()
             .join(",")

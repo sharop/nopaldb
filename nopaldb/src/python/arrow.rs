@@ -4,7 +4,7 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
-use std::sync::Arc; // ← AGREGAR ESTO
+use std::sync::Arc;  // ← AGREGAR ESTO
 
 //#[cfg(feature = "analytics")]
 //use arrow::record_batch::RecordBatch;
@@ -12,6 +12,8 @@ use std::sync::Arc; // ← AGREGAR ESTO
 use super::to_py_result;
 
 use crate::Graph as RustGraph;
+
+
 
 /// Export graph to Apache Arrow RecordBatch
 ///
@@ -24,15 +26,15 @@ pub fn export_to_arrow<'py>(
     label: Option<&str>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     // Create tokio runtime
-    let rt = tokio::runtime::Runtime::new().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-            "Failed to create runtime: {}",
-            e
-        ))
-    })?;
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+            format!("Failed to create runtime: {}", e)
+        ))?;
 
     // Export to Arrow RecordBatch with label filter
-    let batch = rt.block_on(async { graph.to_arrow_with_label(label).await });
+    let batch = rt.block_on(async {
+        graph.to_arrow_with_label(label).await
+    });
 
     let batch = to_py_result(batch)?;
 
@@ -40,27 +42,20 @@ pub fn export_to_arrow<'py>(
     let mut writer = Vec::new();
     {
         use arrow::ipc::writer::StreamWriter;
-        let mut stream_writer =
-            StreamWriter::try_new(&mut writer, &batch.schema()).map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                    "Failed to create Arrow writer: {}",
-                    e
-                ))
-            })?;
+        let mut stream_writer = StreamWriter::try_new(&mut writer, &batch.schema())
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                format!("Failed to create Arrow writer: {}", e)
+            ))?;
 
-        stream_writer.write(&batch).map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                "Failed to write Arrow batch: {}",
-                e
-            ))
-        })?;
+        stream_writer.write(&batch)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                format!("Failed to write Arrow batch: {}", e)
+            ))?;
 
-        stream_writer.finish().map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                "Failed to finish Arrow stream: {}",
-                e
-            ))
-        })?;
+        stream_writer.finish()
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                format!("Failed to finish Arrow stream: {}", e)
+            ))?;
     }
 
     // Return as Python bytes
@@ -75,15 +70,16 @@ pub fn export_to_arrow<'py>(
     _label: Option<&str>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-        "Arrow export requires 'analytics' feature. Rebuild with: maturin develop --features python,analytics",
+        "Arrow export requires 'analytics' feature. Rebuild with: maturin develop --features python,analytics"
     ))
 }
+
 
 /// Export edges to Arrow IPC stream
 #[cfg(feature = "analytics")]
 pub fn export_edges_to_arrow<'py>(
     py: Python<'py>,
-    graph: &Arc<RustGraph>, // ← CAMBIO: usar RustGraph directamente
+    graph: &Arc<RustGraph>,  // ← CAMBIO: usar RustGraph directamente
 ) -> PyResult<Bound<'py, PyBytes>> {
     use arrow::ipc::writer::StreamWriter;
     use std::io::Cursor;
@@ -94,14 +90,12 @@ pub fn export_edges_to_arrow<'py>(
     let graph_clone = Arc::clone(graph);
 
     let batch = rt.block_on(async move {
-        let edges = graph_clone
-            .get_all_edges()
-            .await
+        let edges = graph_clone.get_all_edges().await
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))?;
 
         if edges.is_empty() {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "No edges to export",
+                "No edges to export"
             ));
         }
 
@@ -115,23 +109,21 @@ pub fn export_edges_to_arrow<'py>(
         let mut writer = StreamWriter::try_new(&mut buffer, &batch.schema())
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))?;
 
-        writer
-            .write(&batch)
+        writer.write(&batch)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))?;
 
-        writer
-            .finish()
+        writer.finish()
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))?;
     }
 
-    Ok(PyBytes::new(py, &buffer.into_inner())) // ← CAMBIO: usar new() no new_bound()
+    Ok(PyBytes::new(py, &buffer.into_inner()))  // ← CAMBIO: usar new() no new_bound()
 }
 
 /// Export complete graph to Arrow IPC streams
 #[cfg(feature = "analytics")]
 pub fn export_graph_to_arrow<'py>(
     py: Python<'py>,
-    graph: &Arc<RustGraph>, // ← CAMBIO: usar RustGraph directamente
+    graph: &Arc<RustGraph>,  // ← CAMBIO: usar RustGraph directamente
     label_filter: Option<&str>,
 ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
     use arrow::ipc::writer::StreamWriter;
@@ -144,8 +136,7 @@ pub fn export_graph_to_arrow<'py>(
     let label = label_filter.map(|s| s.to_string());
 
     let (nodes_batch, edges_batch) = rt.block_on(async move {
-        crate::arrow_export::graph_to_arrow(&graph_clone, label.as_deref())
-            .await
+        crate::arrow_export::graph_to_arrow(&graph_clone, label.as_deref()).await
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))
     })?;
 
@@ -155,12 +146,10 @@ pub fn export_graph_to_arrow<'py>(
         let mut writer = StreamWriter::try_new(&mut nodes_buffer, &nodes_batch.schema())
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))?;
 
-        writer
-            .write(&nodes_batch)
+        writer.write(&nodes_batch)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))?;
 
-        writer
-            .finish()
+        writer.finish()
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))?;
     }
 
@@ -170,18 +159,16 @@ pub fn export_graph_to_arrow<'py>(
         let mut writer = StreamWriter::try_new(&mut edges_buffer, &edges_batch.schema())
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))?;
 
-        writer
-            .write(&edges_batch)
+        writer.write(&edges_batch)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))?;
 
-        writer
-            .finish()
+        writer.finish()
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))?;
     }
 
     Ok((
-        PyBytes::new(py, &nodes_buffer.into_inner()), // ← CAMBIO: usar new() no new_bound()
-        PyBytes::new(py, &edges_buffer.into_inner()), // ← CAMBIO: usar new() no new_bound()
+        PyBytes::new(py, &nodes_buffer.into_inner()),  // ← CAMBIO: usar new() no new_bound()
+        PyBytes::new(py, &edges_buffer.into_inner())   // ← CAMBIO: usar new() no new_bound()
     ))
 }
 
@@ -192,7 +179,7 @@ pub fn export_edges_to_arrow<'py>(
     _graph: &Arc<RustGraph>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-        "Arrow export requires 'analytics' feature. Rebuild with: maturin develop --features python,analytics",
+        "Arrow export requires 'analytics' feature. Rebuild with: maturin develop --features python,analytics"
     ))
 }
 
@@ -202,8 +189,8 @@ pub fn export_graph_to_arrow<'py>(
     _py: Python<'py>,
     _graph: &Arc<RustGraph>,
     _label_filter: Option<&str>,
-) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
+) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)>  {
     Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-        "Arrow export requires 'analytics' feature. Rebuild with: maturin develop --features python,analytics",
+        "Arrow export requires 'analytics' feature. Rebuild with: maturin develop --features python,analytics"
     ))
 }

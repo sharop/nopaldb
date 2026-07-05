@@ -19,21 +19,23 @@ use nopaldb::Graph;
 use std::error::Error;
 use std::fs;
 
-const Q_CLASSES: &str =
-    include_str!("../../docs/tutorial/acto_3_biomedical_owl/queries/01_classes.nql");
-const Q_INSTANCES: &str =
-    include_str!("../../docs/tutorial/acto_3_biomedical_owl/queries/02_instances_check.nql");
-const Q_SUBCLASS_EDGES: &str =
-    include_str!("../../docs/tutorial/acto_3_biomedical_owl/queries/03_subclassof_edges.nql");
-const Q_INSTANCEOF_NQL: &str =
-    include_str!("../../docs/tutorial/acto_3_biomedical_owl/queries/04_instanceof_nql.nql");
+const Q_CLASSES: &str = include_str!(
+    "../../docs/tutorial/acto_3_biomedical_owl/queries/01_classes.nql"
+);
+const Q_INSTANCES: &str = include_str!(
+    "../../docs/tutorial/acto_3_biomedical_owl/queries/02_instances_check.nql"
+);
+const Q_SUBCLASS_EDGES: &str = include_str!(
+    "../../docs/tutorial/acto_3_biomedical_owl/queries/03_subclassof_edges.nql"
+);
+const Q_INSTANCEOF_NQL: &str = include_str!(
+    "../../docs/tutorial/acto_3_biomedical_owl/queries/04_instanceof_nql.nql"
+);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1);
-    let db_path = args
-        .next()
-        .unwrap_or_else(|| "test_dbs/biomedical.db".to_string());
+    let db_path = args.next().unwrap_or_else(|| "test_dbs/biomedical.db".to_string());
     let ttl_path = args
         .next()
         .unwrap_or_else(|| "tutorials/data/biomedical.ttl".to_string());
@@ -105,10 +107,7 @@ async fn paso_3_subclass_edges(graph: &Graph) -> Result<(), Box<dyn Error>> {
     let result = graph.execute_nql(Q_SUBCLASS_EDGES).await?;
     for row in result.rows() {
         let sub = row.get("subclase").map(prop_to_string).unwrap_or_default();
-        let sup = row
-            .get("superclase")
-            .map(prop_to_string)
-            .unwrap_or_default();
+        let sup = row.get("superclase").map(prop_to_string).unwrap_or_default();
         println!("  {:<22} subClassOf {}", sub, sup);
     }
     println!();
@@ -159,24 +158,16 @@ fn gate(
 ) -> Result<(), Box<dyn Error>> {
     println!("--- Gate Acto 3 ---");
     println!("Esperado: 7 classes_added, 5 subclass_edges_added, 9 instances_added");
-    println!(
-        "Real:     {} / {} / {}",
-        report.classes_added, report.subclass_edges_added, report.instances_added
-    );
-    if report.classes_added != 7 || report.subclass_edges_added != 5 || report.instances_added != 9
-    {
+    println!("Real:     {} / {} / {}", report.classes_added, report.subclass_edges_added, report.instances_added);
+    if report.classes_added != 7 || report.subclass_edges_added != 5 || report.instances_added != 9 {
         return Err("Gate fallido: import_turtle reporto conteos inesperados".into());
     }
-    println!(
-        "instanceOf(n, \"Disease\") retorno {} individuos (esperado 5)",
-        instance_count
-    );
+    println!("instanceOf(n, \"Disease\") retorno {} individuos (esperado 5)", instance_count);
     if instance_count != 5 {
         return Err(format!(
             "Gate fallido: instanceOf deberia retornar 5 individuos Disease, got {}",
             instance_count
-        )
-        .into());
+        ).into());
     }
     println!("GATE OK - import + taxonomy + instanceOf NQL transitivo verificados.");
     Ok(())

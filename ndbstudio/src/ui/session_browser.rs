@@ -1,8 +1,8 @@
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph},
+    Frame,
 };
 
 use crate::app::App;
@@ -10,11 +10,7 @@ use crate::ui::{ACCENT, BG, FG, SUCCESS};
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     let filter = app.session_browser_filter_text();
-    let edit_marker = if app.session_browser_filter_editing() {
-        " (editing)"
-    } else {
-        ""
-    };
+    let edit_marker = if app.session_browser_filter_editing() { " (editing)" } else { "" };
     let title = if filter.is_empty() {
         format!(" Session Browser{} ", edit_marker)
     } else {
@@ -45,7 +41,8 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     draw_snippets_pane(f, panes[1], app);
     draw_tabs_pane(f, panes[2], app);
 
-    let hint = "/:filter (mode:run|explain|profile) • Tab:pane • j/k:move • Enter/r:run • l:load • p:pin • g:dag • d:detail • q/Esc:back";
+    let hint =
+        "/:filter (mode:run|explain|profile) • Tab:pane • j/k:move • Enter/r:run • l:load • p:pin • g:dag • d:detail • q/Esc:back";
     let footer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Length(1)])

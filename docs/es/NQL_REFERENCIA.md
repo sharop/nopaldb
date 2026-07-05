@@ -1,6 +1,6 @@
 # Lenguaje de Consultas NQL - Referencia Rápida
 
-**NQL (NopalDB Query Language)** es un lenguaje de consultas para grafos intuitivo y poderoso, diseñado tanto para desarrolladores como para **científicos de datos, analistas y sociólogos**. Su sintaxis de patrones para grafos de propiedades optimiza la búsqueda de patrones y conexiones complejas en tus datos.
+**NQL (NopalDB Query Language)** es un lenguaje de consultas para grafos intuitivo y poderoso, diseñado tanto para desarrolladores como para **científicos de datos, analistas y sociólogos**. Su sintaxis inspirada en Cypher optimiza la búsqueda de patrones y conexiones complejas en tus datos.
 
 ---
 
@@ -21,7 +21,7 @@
 
 ## Conceptos Básicos
 
-- **Nodos**: Las entidades de tus datos (Personas, Ciudades, Transacciones). Se escriben como `(n:Persona)`.
+- **Nodos**: Las entidades de tus datos (Personas, Ciudades, Transacciones). Se representan entre paréntesis `(n:Persona)`.
 - **Relaciones**: Cómo se conectan los nodos. Se representan con flechas `->`.
 - **Propiedades**: Detalles de nodos o relaciones, como `{nombre: "Ana", edad: 30}`.
 

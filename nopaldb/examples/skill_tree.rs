@@ -8,7 +8,7 @@
 // - Player progression tracking
 // - Unlockable abilities
 
-use nopaldb::{Edge, Graph, Node, PropertyValue, Result};
+use nopaldb::{Graph, Node, Edge, PropertyValue, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -33,9 +33,8 @@ async fn main() -> Result<()> {
         "Learn fundamental combat techniques",
         1,
         0,
-        "physical",
-    )
-    .await?;
+        "physical"
+    ).await?;
 
     let armor_training = create_skill(
         &graph,
@@ -44,9 +43,8 @@ async fn main() -> Result<()> {
         "Wear heavier armor",
         1,
         0,
-        "defense",
-    )
-    .await?;
+        "defense"
+    ).await?;
 
     // Tier 2: Intermediate Skills
     let power_strike = create_skill(
@@ -56,9 +54,8 @@ async fn main() -> Result<()> {
         "Deal massive damage with a single blow",
         2,
         1,
-        "physical",
-    )
-    .await?;
+        "physical"
+    ).await?;
 
     let shield_mastery = create_skill(
         &graph,
@@ -67,9 +64,8 @@ async fn main() -> Result<()> {
         "Improved blocking and shield bash",
         2,
         1,
-        "defense",
-    )
-    .await?;
+        "defense"
+    ).await?;
 
     // Tier 3: Advanced Skills
     let whirlwind = create_skill(
@@ -79,9 +75,8 @@ async fn main() -> Result<()> {
         "Spin and attack all nearby enemies",
         3,
         2,
-        "physical",
-    )
-    .await?;
+        "physical"
+    ).await?;
 
     let battle_cry = create_skill(
         &graph,
@@ -90,9 +85,8 @@ async fn main() -> Result<()> {
         "Boost allies and intimidate enemies",
         3,
         2,
-        "support",
-    )
-    .await?;
+        "support"
+    ).await?;
 
     // Tier 4: Master Skills
     let berserker_rage = create_skill(
@@ -102,9 +96,8 @@ async fn main() -> Result<()> {
         "Enter a powerful rage state",
         4,
         3,
-        "physical",
-    )
-    .await?;
+        "physical"
+    ).await?;
 
     let last_stand = create_skill(
         &graph,
@@ -113,9 +106,8 @@ async fn main() -> Result<()> {
         "Become invulnerable when near death",
         4,
         3,
-        "defense",
-    )
-    .await?;
+        "defense"
+    ).await?;
 
     println!("✅ Created 8 skills\n");
 
@@ -147,7 +139,7 @@ async fn main() -> Result<()> {
     // CREATE PLAYER
     // ═════════════════════════════════════════════════════════
 
-    let player = create_player(&graph, "Demo Player", 1, 5).await?;
+    let player = create_player(&graph, "Sharop", 1, 5).await?;
 
     // Player starts with basic skills
     let mut tx = graph.begin_transaction().await?;
@@ -165,15 +157,11 @@ async fn main() -> Result<()> {
     println!("📚 LEARNED SKILLS");
     println!("═══════════════════════════════════════\n");
 
-    let learned = graph
-        .execute_nql(
-            r#"
+    let learned = graph.execute_nql(r#"
         find s.name, s.description, s.tier, s.category
         from (p:Player) -> [:LEARNED] -> (s:Skill)
-        where p.name = "Demo Player"
-    "#,
-        )
-        .await?;
+        where p.name = "Sharop"
+    "#).await?;
 
     for row in learned.rows() {
         let tier = row.get_int("s.tier").unwrap_or(0);
@@ -197,16 +185,12 @@ async fn main() -> Result<()> {
     // Find skills that:
     // 1. Player hasn't learned
     // 2. Prerequisites are met
-    let available = graph
-        .execute_nql(
-            r#"
+    let available = graph.execute_nql(r#"
         find s.name, s.tier, s.cost, req.name
         from (s:Skill) -> [:REQUIRES] -> (req:Skill),
              (p:Player) -> [:LEARNED] -> (req)
-        where p.name = "Demo Player"
-    "#,
-        )
-        .await?;
+        where p.name = "Sharop"
+    "#).await?;
 
     println!("  Skills you can unlock:\n");
     for row in available.rows() {
@@ -229,25 +213,21 @@ async fn main() -> Result<()> {
     println!("🌳 SKILL TREE STRUCTURE");
     println!("═══════════════════════════════════════\n");
 
-    let tree = graph
-        .execute_nql(
-            r#"
+    let tree = graph.execute_nql(r#"
         find s1.name, s1.tier, s2.name
         from (s1:Skill) -> [:REQUIRES] -> (s2:Skill)
-    "#,
-        )
-        .await?;
+    "#).await?;
 
-    let mut by_tier: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+    let mut by_tier: std::collections::HashMap<i64, Vec<String>> =
+        std::collections::HashMap::new();
 
     for row in tree.rows() {
         let s1 = row.get_string("s1.name").unwrap_or("?".into());
         let s2 = row.get_string("s2.name").unwrap_or("?".into());
         let tier = row.get_int("s1.tier").unwrap_or(0);
 
-        by_tier
-            .entry(tier)
-            .or_default()
+        by_tier.entry(tier)
+            .or_insert_with(Vec::new)
             .push(format!("{} ← {}", s1, s2));
     }
 
@@ -278,16 +258,12 @@ async fn main() -> Result<()> {
     println!("✅ Skill learned! -1 skill point\n");
 
     // Check what's newly available
-    let newly_available = graph
-        .execute_nql(
-            r#"
+    let newly_available = graph.execute_nql(r#"
         find s.name, s.tier
         from (s:Skill) -> [:REQUIRES] -> (req:Skill),
              (p:Player) -> [:LEARNED] -> (req)
-        where p.name = "Demo Player"
-    "#,
-        )
-        .await?;
+        where p.name = "Sharop"
+    "#).await?;
 
     println!("🔓 Newly unlocked:\n");
     for row in newly_available.rows() {

@@ -15,9 +15,9 @@
 
 #[cfg(feature = "embeddings")]
 mod example {
-    use nopaldb::Graph;
     use nopaldb::embeddings::Embedding;
     use nopaldb::types::{Node, PropertyValue};
+    use nopaldb::Graph;
     use uuid::Uuid;
 
     // ---------------------------------------------------------------------------
@@ -30,8 +30,14 @@ mod example {
             "Rust ownership model and memory safety",
             [0.92, 0.10, 0.08, 0.15],
         ),
-        ("Introduction to graph databases", [0.10, 0.95, 0.15, 0.12]),
-        ("Sentence embeddings with BERT", [0.12, 0.18, 0.96, 0.10]),
+        (
+            "Introduction to graph databases",
+            [0.10, 0.95, 0.15, 0.12],
+        ),
+        (
+            "Sentence embeddings with BERT",
+            [0.12, 0.18, 0.96, 0.10],
+        ),
         (
             "Apache Arrow: zero-copy columnar memory",
             [0.70, 0.25, 0.22, 0.94],
@@ -144,12 +150,14 @@ mod example {
         let mut results: Vec<(f32, String)> = Vec::new();
 
         for (node_id, title) in candidates {
-            if let Ok(emb) = graph.get_node_embedding(*node_id, "mock-model-v1").await {
-                let score = query.cosine_similarity(&emb);
-                results.push((score, title.to_string()));
+            match graph.get_node_embedding(*node_id, "mock-model-v1").await {
+                Ok(emb) => {
+                    let score = query.cosine_similarity(&emb);
+                    results.push((score, title.to_string()));
+                }
+                Err(_) => {} // node has no embedding for this model — skip
             }
         }
-
 
         results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         Ok(results)

@@ -3,7 +3,7 @@
 // Sistema de Recomendaciones usando Collaborative Filtering
 // Dataset: MovieLens-style (Users → Movies → Genres)
 
-use nopaldb::{Direction, Edge, Graph, Node, PropertyValue};
+use nopaldb::{Graph, Node, Edge, PropertyValue, Direction};
 use std::collections::{HashMap, HashSet};
 
 #[tokio::main]
@@ -17,11 +17,7 @@ async fn main() -> nopaldb::Result<()> {
     // 1. Crear dataset
     println!("📊 Creando dataset...");
     let (users, movies) = create_movie_dataset(&graph).await?;
-    println!(
-        "   ✓ {} usuarios, {} películas\n",
-        users.len(),
-        movies.len()
-    );
+    println!("   ✓ {} usuarios, {} películas\n", users.len(), movies.len());
 
     // 2. Recomendar para Bob
     let bob_id = users[1];
@@ -41,118 +37,69 @@ async fn main() -> nopaldb::Result<()> {
 }
 
 /// Crea dataset de películas
-async fn create_movie_dataset(
-    graph: &Graph,
-) -> nopaldb::Result<(Vec<uuid::Uuid>, Vec<uuid::Uuid>)> {
+async fn create_movie_dataset(graph: &Graph) -> nopaldb::Result<(Vec<uuid::Uuid>, Vec<uuid::Uuid>)> {
     // Usuarios
-    let alice = graph
-        .add_node(Node::new("User").with_property("name", PropertyValue::String("Alice".into())))
-        .await?;
-    let bob = graph
-        .add_node(Node::new("User").with_property("name", PropertyValue::String("Bob".into())))
-        .await?;
-    let charlie = graph
-        .add_node(Node::new("User").with_property("name", PropertyValue::String("Charlie".into())))
-        .await?;
-    let diana = graph
-        .add_node(Node::new("User").with_property("name", PropertyValue::String("Diana".into())))
-        .await?;
+    let alice = graph.add_node(Node::new("User")
+        .with_property("name", PropertyValue::String("Alice".into()))).await?;
+    let bob = graph.add_node(Node::new("User")
+        .with_property("name", PropertyValue::String("Bob".into()))).await?;
+    let charlie = graph.add_node(Node::new("User")
+        .with_property("name", PropertyValue::String("Charlie".into()))).await?;
+    let diana = graph.add_node(Node::new("User")
+        .with_property("name", PropertyValue::String("Diana".into()))).await?;
 
     // Películas
-    let inception = graph
-        .add_node(
-            Node::new("Movie")
-                .with_property("title", PropertyValue::String("Inception".into()))
-                .with_property("genre", PropertyValue::String("Sci-Fi".into())),
-        )
-        .await?;
+    let inception = graph.add_node(Node::new("Movie")
+        .with_property("title", PropertyValue::String("Inception".into()))
+        .with_property("genre", PropertyValue::String("Sci-Fi".into()))).await?;
 
-    let matrix = graph
-        .add_node(
-            Node::new("Movie")
-                .with_property("title", PropertyValue::String("The Matrix".into()))
-                .with_property("genre", PropertyValue::String("Sci-Fi".into())),
-        )
-        .await?;
+    let matrix = graph.add_node(Node::new("Movie")
+        .with_property("title", PropertyValue::String("The Matrix".into()))
+        .with_property("genre", PropertyValue::String("Sci-Fi".into()))).await?;
 
-    let interstellar = graph
-        .add_node(
-            Node::new("Movie")
-                .with_property("title", PropertyValue::String("Interstellar".into()))
-                .with_property("genre", PropertyValue::String("Sci-Fi".into())),
-        )
-        .await?;
+    let interstellar = graph.add_node(Node::new("Movie")
+        .with_property("title", PropertyValue::String("Interstellar".into()))
+        .with_property("genre", PropertyValue::String("Sci-Fi".into()))).await?;
 
-    let titanic = graph
-        .add_node(
-            Node::new("Movie")
-                .with_property("title", PropertyValue::String("Titanic".into()))
-                .with_property("genre", PropertyValue::String("Romance".into())),
-        )
-        .await?;
+    let titanic = graph.add_node(Node::new("Movie")
+        .with_property("title", PropertyValue::String("Titanic".into()))
+        .with_property("genre", PropertyValue::String("Romance".into()))).await?;
 
-    let notebook = graph
-        .add_node(
-            Node::new("Movie")
-                .with_property("title", PropertyValue::String("The Notebook".into()))
-                .with_property("genre", PropertyValue::String("Romance".into())),
-        )
-        .await?;
+    let notebook = graph.add_node(Node::new("Movie")
+        .with_property("title", PropertyValue::String("The Notebook".into()))
+        .with_property("genre", PropertyValue::String("Romance".into()))).await?;
 
     // Ratings: Alice le gustan Sci-Fi
-    graph
-        .add_edge(
-            Edge::new(alice, inception, "RATED").with_property("rating", PropertyValue::Int(5)),
-        )
-        .await?;
-    graph
-        .add_edge(Edge::new(alice, matrix, "RATED").with_property("rating", PropertyValue::Int(5)))
-        .await?;
+    graph.add_edge(Edge::new(alice, inception, "RATED")
+        .with_property("rating", PropertyValue::Int(5))).await?;
+    graph.add_edge(Edge::new(alice, matrix, "RATED")
+        .with_property("rating", PropertyValue::Int(5))).await?;
 
     // Bob también Sci-Fi + Interstellar
-    graph
-        .add_edge(Edge::new(bob, inception, "RATED").with_property("rating", PropertyValue::Int(5)))
-        .await?;
-    graph
-        .add_edge(Edge::new(bob, matrix, "RATED").with_property("rating", PropertyValue::Int(4)))
-        .await?;
-    graph
-        .add_edge(
-            Edge::new(bob, interstellar, "RATED").with_property("rating", PropertyValue::Int(5)),
-        )
-        .await?;
+    graph.add_edge(Edge::new(bob, inception, "RATED")
+        .with_property("rating", PropertyValue::Int(5))).await?;
+    graph.add_edge(Edge::new(bob, matrix, "RATED")
+        .with_property("rating", PropertyValue::Int(4))).await?;
+    graph.add_edge(Edge::new(bob, interstellar, "RATED")
+        .with_property("rating", PropertyValue::Int(5))).await?;
 
     // Charlie: Sci-Fi + Romance
-    graph
-        .add_edge(
-            Edge::new(charlie, matrix, "RATED").with_property("rating", PropertyValue::Int(5)),
-        )
-        .await?;
-    graph
-        .add_edge(
-            Edge::new(charlie, interstellar, "RATED")
-                .with_property("rating", PropertyValue::Int(4)),
-        )
-        .await?;
-    graph
-        .add_edge(
-            Edge::new(charlie, titanic, "RATED").with_property("rating", PropertyValue::Int(3)),
-        )
-        .await?;
+    graph.add_edge(Edge::new(charlie, matrix, "RATED")
+        .with_property("rating", PropertyValue::Int(5))).await?;
+    graph.add_edge(Edge::new(charlie, interstellar, "RATED")
+        .with_property("rating", PropertyValue::Int(4))).await?;
+    graph.add_edge(Edge::new(charlie, titanic, "RATED")
+        .with_property("rating", PropertyValue::Int(3))).await?;
 
     // Diana: Romance
-    graph
-        .add_edge(Edge::new(diana, titanic, "RATED").with_property("rating", PropertyValue::Int(5)))
-        .await?;
-    graph
-        .add_edge(
-            Edge::new(diana, notebook, "RATED").with_property("rating", PropertyValue::Int(5)),
-        )
-        .await?;
+    graph.add_edge(Edge::new(diana, titanic, "RATED")
+        .with_property("rating", PropertyValue::Int(5))).await?;
+    graph.add_edge(Edge::new(diana, notebook, "RATED")
+        .with_property("rating", PropertyValue::Int(5))).await?;
 
     Ok((
         vec![alice, bob, charlie, diana],
-        vec![inception, matrix, interstellar, titanic, notebook],
+        vec![inception, matrix, interstellar, titanic, notebook]
     ))
 }
 
@@ -196,8 +143,7 @@ async fn get_watched_movies(
 ) -> nopaldb::Result<HashSet<uuid::Uuid>> {
     let edges = graph.edges_of(user_id, Direction::Outgoing).await?;
 
-    let movie_ids: HashSet<_> = edges
-        .iter()
+    let movie_ids: HashSet<_> = edges.iter()
         .filter(|e| e.edge_type == "RATED")
         .map(|e| e.target)
         .collect();

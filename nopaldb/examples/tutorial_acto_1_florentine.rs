@@ -19,13 +19,18 @@ use std::error::Error;
 
 const ACTO_DIR: &str = "../docs/tutorial/acto_1_florentine/queries";
 
-const Q_MODELO: &str = include_str!("../../docs/tutorial/acto_1_florentine/queries/01_modelo.nql");
-const Q_PATTERN: &str =
-    include_str!("../../docs/tutorial/acto_1_florentine/queries/02_pattern_matching.nql");
-const Q_CENTRALIDAD: &str =
-    include_str!("../../docs/tutorial/acto_1_florentine/queries/03_centralidad.nql");
-const Q_COMMUNITIES: &str =
-    include_str!("../../docs/tutorial/acto_1_florentine/queries/04_communities.nql");
+const Q_MODELO: &str = include_str!(
+    "../../docs/tutorial/acto_1_florentine/queries/01_modelo.nql"
+);
+const Q_PATTERN: &str = include_str!(
+    "../../docs/tutorial/acto_1_florentine/queries/02_pattern_matching.nql"
+);
+const Q_CENTRALIDAD: &str = include_str!(
+    "../../docs/tutorial/acto_1_florentine/queries/03_centralidad.nql"
+);
+const Q_COMMUNITIES: &str = include_str!(
+    "../../docs/tutorial/acto_1_florentine/queries/04_communities.nql"
+);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -95,10 +100,7 @@ async fn paso_2_pattern_matching(graph: &Graph) -> Result<(), Box<dyn Error>> {
 async fn paso_3_centralidad(graph: &Graph) -> Result<Vec<String>, Box<dyn Error>> {
     println!("--- Paso 3: centralidad (4 métricas) ---");
     let result = graph.execute_nql(Q_CENTRALIDAD).await?;
-    println!(
-        "{:>4}  {:<14} {:>10} {:>10} {:>10} {:>10}",
-        "#", "familia", "pagerank", "btw", "cc", "deg"
-    );
+    println!("{:>4}  {:<14} {:>10} {:>10} {:>10} {:>10}", "#", "familia", "pagerank", "btw", "cc", "deg");
     let mut top3: Vec<String> = Vec::new();
     for (i, row) in result.rows.iter().enumerate() {
         let name = row
@@ -139,8 +141,16 @@ async fn paso_4_communities(graph: &Graph) -> Result<(), Box<dyn Error>> {
             .get("f.name")
             .map(prop_to_string)
             .unwrap_or_default();
-        let l = row.values.get("louvain").map(prop_to_i64).unwrap_or(-1);
-        let le = row.values.get("leiden").map(prop_to_i64).unwrap_or(-1);
+        let l = row
+            .values
+            .get("louvain")
+            .map(prop_to_i64)
+            .unwrap_or(-1);
+        let le = row
+            .values
+            .get("leiden")
+            .map(prop_to_i64)
+            .unwrap_or(-1);
         louvain.entry(l).or_default().push(name.clone());
         leiden.entry(le).or_default().push(name);
     }

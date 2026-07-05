@@ -3,9 +3,9 @@
 // Link Prediction usando Graph Embeddings
 // Combina Random Walks + Embeddings + Similarity Scoring
 
-use nopaldb::{Direction, Edge, Graph, Node, PropertyValue};
-use rand::Rng;
+use nopaldb::{Graph, Node, Edge, PropertyValue, Direction};
 use std::collections::HashMap;
+use rand::Rng;
 
 #[tokio::main]
 async fn main() -> nopaldb::Result<()> {
@@ -28,10 +28,7 @@ async fn main() -> nopaldb::Result<()> {
 
     println!("\n🧠 Learning embeddings...");
     let embeddings = learn_embeddings_from_walks(&all_walks, &papers);
-    println!(
-        "   ✓ Learned {}-dimensional embeddings",
-        embeddings.values().next().unwrap().len()
-    );
+    println!("   ✓ Learned {}-dimensional embeddings", embeddings.values().next().unwrap().len());
 
     // 3. Predict links for target paper
     let target_paper = papers[0]; // Paper A
@@ -62,7 +59,12 @@ async fn main() -> nopaldb::Result<()> {
         }
 
         // Compute link prediction score
-        let score = link_prediction_score(&graph, &embeddings, target_paper, candidate_id).await?;
+        let score = link_prediction_score(
+            &graph,
+            &embeddings,
+            target_paper,
+            candidate_id,
+        ).await?;
 
         predictions.push((candidate_id, score));
     }
@@ -84,53 +86,27 @@ async fn main() -> nopaldb::Result<()> {
 /// Create citation network
 async fn create_citation_network(graph: &Graph) -> nopaldb::Result<Vec<uuid::Uuid>> {
     // Paper A - starting point
-    let paper_a = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property(
-                    "title",
-                    PropertyValue::String("Graph Databases Survey".into()),
-                )
-                .with_property("topic", PropertyValue::String("Databases".into())),
-        )
-        .await?;
+    let paper_a = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("Graph Databases Survey".into()))
+        .with_property("topic", PropertyValue::String("Databases".into()))).await?;
 
     // Papers B, C - already cited by A
-    let paper_b = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property("title", PropertyValue::String("NoSQL Systems".into()))
-                .with_property("topic", PropertyValue::String("Databases".into())),
-        )
-        .await?;
+    let paper_b = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("NoSQL Systems".into()))
+        .with_property("topic", PropertyValue::String("Databases".into()))).await?;
 
-    let paper_c = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property("title", PropertyValue::String("Graph Algorithms".into()))
-                .with_property("topic", PropertyValue::String("Algorithms".into())),
-        )
-        .await?;
+    let paper_c = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("Graph Algorithms".into()))
+        .with_property("topic", PropertyValue::String("Algorithms".into()))).await?;
 
     // Papers D, E - candidates for prediction
-    let paper_d = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property("title", PropertyValue::String("Network Analysis".into()))
-                .with_property("topic", PropertyValue::String("Networks".into())),
-        )
-        .await?;
+    let paper_d = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("Network Analysis".into()))
+        .with_property("topic", PropertyValue::String("Networks".into()))).await?;
 
-    let paper_e = graph
-        .add_node(
-            Node::new("Paper")
-                .with_property(
-                    "title",
-                    PropertyValue::String("Machine Learning on Graphs".into()),
-                )
-                .with_property("topic", PropertyValue::String("ML".into())),
-        )
-        .await?;
+    let paper_e = graph.add_node(Node::new("Paper")
+        .with_property("title", PropertyValue::String("Machine Learning on Graphs".into()))
+        .with_property("topic", PropertyValue::String("ML".into()))).await?;
 
     // Existing citations from A
     graph.add_edge(Edge::new(paper_a, paper_b, "CITES")).await?;
@@ -248,19 +224,18 @@ fn learn_embeddings_from_walks(
                 let start = i.saturating_sub(window_size);
                 let end = (i + window_size + 1).min(walk.len());
 
-                for (j, &context) in walk.iter().enumerate().take(end).skip(start){
+                for j in start..end {
                     if i == j {
                         continue;
                     }
 
-                    //let context = walk[j];
+                    let context = walk[j];
 
                     // Positive pair
                     let center_emb = embeddings.get(&center).unwrap().clone();
                     let context_emb = embeddings.get(&context).unwrap().clone();
 
-                    let dot: f64 = center_emb
-                        .iter()
+                    let dot: f64 = center_emb.iter()
                         .zip(context_emb.iter())
                         .map(|(a, b)| a * b)
                         .sum();
@@ -279,8 +254,7 @@ fn learn_embeddings_from_walks(
                         let neg_node = nodes[neg_idx];
 
                         let neg_emb = embeddings.get(&neg_node).unwrap();
-                        let neg_dot: f64 = new_center
-                            .iter()
+                        let neg_dot: f64 = new_center.iter()
                             .zip(neg_emb.iter())
                             .map(|(a, b)| a * b)
                             .sum();
@@ -393,15 +367,8 @@ async fn get_neighbors(
 ) -> nopaldb::Result<std::collections::HashSet<uuid::Uuid>> {
     let edges = graph.edges_of(node_id, Direction::Both).await?;
 
-    let neighbors = edges
-        .iter()
-        .map(|e| {
-            if e.source == node_id {
-                e.target
-            } else {
-                e.source
-            }
-        })
+    let neighbors = edges.iter()
+        .map(|e| if e.source == node_id { e.target } else { e.source })
         .collect();
 
     Ok(neighbors)

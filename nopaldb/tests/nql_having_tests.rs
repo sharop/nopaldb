@@ -2,8 +2,8 @@
 //
 // Tests for HAVING clause parsing
 
-use nopaldb::query::nql::parser::ast::Statement;
 use nopaldb::query::nql::parser::parse;
+use nopaldb::query::nql::parser::ast::Statement;
 
 #[test]
 fn test_having_with_count() {
@@ -15,11 +15,7 @@ fn test_having_with_count() {
     "#;
 
     let result = parse(query);
-    assert!(
-        result.is_ok(),
-        "Failed to parse HAVING with count(*): {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "Failed to parse HAVING with count(*): {:?}", result.err());
 
     if let Statement::Query(parsed) = result.unwrap() {
         assert!(parsed.having.is_some(), "HAVING clause not parsed");
@@ -40,10 +36,7 @@ fn test_having_without_group_by_should_fail_validation() {
     "#;
 
     let result = parse(query);
-    assert!(
-        result.is_ok(),
-        "Parser should accept HAVING without GROUP BY"
-    );
+    assert!(result.is_ok(), "Parser should accept HAVING without GROUP BY");
 
     // TODO: Test validation separately
     // use nopaldb::query::nql::validator::SemanticValidator;
@@ -62,11 +55,7 @@ fn test_having_with_multiple_conditions() {
     "#;
 
     let result = parse(query);
-    assert!(
-        result.is_ok(),
-        "Failed to parse HAVING with multiple conditions: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "Failed to parse HAVING with multiple conditions: {:?}", result.err());
 
     if let Statement::Query(parsed) = result.unwrap() {
         assert!(parsed.having.is_some());
@@ -87,17 +76,10 @@ fn test_query_without_having() {
     "#;
 
     let result = parse(query);
-    assert!(
-        result.is_ok(),
-        "Failed to parse query with ORDER BY: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "Failed to parse query with ORDER BY: {:?}", result.err());
 
     if let Statement::Query(parsed) = result.unwrap() {
-        assert!(
-            parsed.having.is_none(),
-            "HAVING should be None when not specified"
-        );
+        assert!(parsed.having.is_none(), "HAVING should be None when not specified");
     } else {
         panic!("Expected Query statement");
     }
