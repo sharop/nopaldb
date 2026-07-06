@@ -1923,10 +1923,23 @@ impl Graph {
                 }
 
                 WalRecord::InsertEdge { edge, .. } => {
-                    // Solo insertar si no existe
+                    // Solo insertar si no existe. El redo debe tolerar estado
+                    // posterior que NO pasó por el WAL: un delete directo pudo
+                    // eliminar los endpoints después del commit registrado —
+                    // en ese caso la arista quedó superseded y se omite (si
+                    // fallara, la base no abriría).
                     if !self.storage.edge_exists(edge.id).await? {
-                        self.add_edge(edge).await?;
-                        replayed += 1;
+                        let endpoints_exist = self.storage.node_exists(edge.source).await?
+                            && self.storage.node_exists(edge.target).await?;
+                        if endpoints_exist {
+                            self.add_edge(edge).await?;
+                            replayed += 1;
+                        } else {
+                            log::debug!(
+                                "WAL replay: skipping edge {} — endpoint(s) removed by later non-WAL writes",
+                                edge.id
+                            );
+                        }
                     }
                 }
 

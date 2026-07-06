@@ -18,7 +18,15 @@ use std::time::Duration;
 use uuid::Uuid;
 
 const ENV_DB_DIR: &str = "NOPAL_CRASH_DB_DIR";
-const ROUNDS: usize = 20;
+
+/// Rondas de kill por corrida: 20 por default; el job nightly sube el número
+/// vía NOPAL_CRASH_ROUNDS.
+fn rounds() -> usize {
+    std::env::var("NOPAL_CRASH_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20)
+}
 
 /// Hijo: commitea transacciones en bucle infinito hasta que lo maten.
 /// Ignorado en corridas normales; solo corre cuando el padre lo relanza.
@@ -144,7 +152,7 @@ async fn commit_crash_recovery_survives_sigkill_rounds() -> nopaldb::Result<()> 
     let dir = tempfile::tempdir().unwrap();
     let exe = std::env::current_exe().expect("current_exe");
 
-    for round in 0..ROUNDS {
+    for round in 0..rounds() {
         let mut child = Command::new(&exe)
             .args(["crash_child_writer", "--ignored", "--exact", "--nocapture"])
             .env(ENV_DB_DIR, dir.path())
