@@ -730,6 +730,26 @@ impl Transaction {
             return Err(NopalError::TransactionNotActive);
         }
 
+        let result = self.commit_inner().await;
+
+        if result.is_err() {
+            // Un commit fallido NO debe dejar residuos: sin esto, los locks de
+            // una tx en conflicto quedaban tomados hasta el timeout (5s) y
+            // bloqueaban a todos los escritores siguientes sobre esos nodos.
+            #[cfg(feature = "full-isolation")]
+            {
+                self.graph.lock_manager().release_locks(self.id).await;
+            }
+            self.graph.deregister_tx_timestamp_sync(self.id);
+            self.state = TransactionState::Aborted;
+        }
+
+        result
+    }
+
+    /// Cuerpo del commit. Los paths de error los limpia el wrapper `commit()`.
+    async fn commit_inner(&mut self) -> Result<()> {
+
         log::info!("Committing transaction {} (isolation: {:?}",
             self.id,
             self.get_isolation_level_name());
@@ -999,6 +1019,13 @@ impl Transaction {
         self.deleted_edges.clear();
 
         self.state = TransactionState::Aborted;
+
+        // Liberar locks adquiridos (Serializable): un rollback sin release
+        // dejaba los nodos bloqueados hasta el timeout para otros escritores.
+        #[cfg(feature = "full-isolation")]
+        {
+            self.graph.lock_manager().release_locks(self.id).await;
+        }
 
         // Persistir relojes: el tx id abortado quedó en el WAL, así que un
         // reopen no debe reutilizarlo. Best-effort, como el Abort de arriba.

@@ -58,7 +58,7 @@ fn draw_main_view(f: &mut Frame, app: &App) {
             Constraint::Length(timeline_height), // Timeline area
             Constraint::Length(1),      // Status bar
         ])
-        .split(f.size());
+        .split(f.area());
 
     // Header
     draw_header(f, outer[0], app);
@@ -162,7 +162,7 @@ fn draw_history_view(f: &mut Frame, app: &App) {
             Constraint::Min(0),         // History content
             Constraint::Length(1),      // Status bar
         ])
-        .split(f.size());
+        .split(f.area());
 
     draw_header(f, chunks[0], app);
     history::draw(f, chunks[1], app);
@@ -177,7 +177,7 @@ fn draw_session_browser_view(f: &mut Frame, app: &App) {
             Constraint::Min(0),
             Constraint::Length(1),
         ])
-        .split(f.size());
+        .split(f.area());
 
     draw_header(f, chunks[0], app);
     session_browser::draw(f, chunks[1], app);

@@ -1,0 +1,55 @@
+name: Nightly Hardening
+
+on:
+  schedule:
+    - cron: "0 7 * * *" # 07:00 UTC diario
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  crash-hardening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Crash harness — commit-focused (100 SIGKILL rounds)
+        env:
+          NOPAL_CRASH_ROUNDS: "100"
+        run: cargo test -p nopaldb --test crash_commit_test -- --nocapture
+
+      - name: Crash harness — mixed load (100 SIGKILL rounds)
+        env:
+          NOPAL_CRASH_ROUNDS: "100"
+        run: cargo test -p nopaldb --test crash_mixed_load_test -- --nocapture
+
+  property-hardening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Property tests (200 cases per property)
+        env:
+          PROPTEST_CASES: "200"
+        run: cargo test -p nopaldb --test property_model_test -- --nocapture
+
+      - name: Concurrency and isolation suites (full features)
+        run: >
+          cargo test -p nopaldb --features full
+          --test concurrent_writers_test
+          --test p1_isolation_concurrent_test
+          --test clock_persistence_test
+          --test adjacency_update_regression_test

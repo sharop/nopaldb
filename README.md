@@ -225,6 +225,7 @@ See `examples/`:
 
 #### Architecture
 - **[Architecture Overview](docs/ARCHITECTURE.md)** - System design
+- **[Durability Guarantees](docs/DURABILITY.md)** - Crash-safety model and what survives SIGKILL
 - **[Arrow Integration](docs/arrow/01-OVERVIEW.md)** - Arrow/ML pipeline docs
 - **[Graph Algorithms](docs/ALGORITHMS.md)** - Algorithm reference
 

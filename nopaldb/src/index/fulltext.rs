@@ -126,7 +126,7 @@ impl Index for FullTextIndex {
             .map_err(|e| NopalError::index_error(format!("Failed to parse query: {}", e)))?;
 
         // Search
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(1000))
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(1000).order_by_score())
             .map_err(|e| NopalError::index_error(format!("Search failed: {}", e)))?;
 
         // Extract node IDs

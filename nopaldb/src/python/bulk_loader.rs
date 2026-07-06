@@ -21,7 +21,6 @@ use uuid::Uuid;
 #[pyclass(name = "BulkLoader")]
 pub struct PyBulkLoader {
     inner: Option<RustBulkLoader>,
-    rt: tokio::runtime::Runtime,
 }
 
 #[pymethods]
@@ -66,7 +65,7 @@ impl PyBulkLoader {
         let node_id = node.id;
 
         // Add to buffer (async)
-        let result = self.rt.block_on(async {
+        let result = crate::python::runtime::block_on(py, async {
             loader.add_node(node).await
         });
 
@@ -87,6 +86,7 @@ impl PyBulkLoader {
     ///     >>> loader.add_edge(alice_id, bob_id, "KNOWS")
     fn add_edge(
         &mut self,
+        py: Python<'_>,
         source_id: &str,
         target_id: &str,
         label: &str,
@@ -112,7 +112,7 @@ impl PyBulkLoader {
         let edge = Edge::new(source, target, label);
 
         // Add to buffer
-        let result = self.rt.block_on(async {
+        let result = crate::python::runtime::block_on(py, async {
             loader.add_edge(edge).await
         });
 
@@ -135,7 +135,7 @@ impl PyBulkLoader {
         })?;
 
         // Finish bulk load
-        let stats = self.rt.block_on(async {
+        let stats = crate::python::runtime::block_on(py, async {
             loader.finish().await
         });
 
@@ -183,14 +183,8 @@ impl PyBulkLoader {
 impl PyBulkLoader {
     /// Create from Rust BulkLoader
     pub(crate) fn new(loader: RustBulkLoader) -> PyResult<Self> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create runtime: {}", e)
-            ))?;
-
         Ok(PyBulkLoader {
             inner: Some(loader),
-            rt,
         })
     }
 }

@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::ui::{ACCENT, BG, FG};
 
 pub fn draw(f: &mut Frame, app: &App) {
-    let area = centered_rect(78, 72, f.size());
+    let area = centered_rect(78, 72, f.area());
     f.render_widget(Clear, area);
 
     let title = format!(" Palette (Ctrl+k / Esc) • query: {} ", app.palette_query());

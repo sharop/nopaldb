@@ -6,6 +6,7 @@ use crate::error::Result as NopalResult;
 use crate::types::PropertyValue;
 
 mod graph;
+mod runtime;
 mod query;
 mod transaction;
 mod arrow;

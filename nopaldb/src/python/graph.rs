@@ -59,13 +59,8 @@ impl PyGraph {
 impl PyGraph {
     /// Open a graph database
     #[staticmethod]
-    fn open(path: &str) -> PyResult<Self> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let graph = rt.block_on(async {
+    fn open(py: Python<'_>, path: &str) -> PyResult<Self> {
+        let graph = crate::python::runtime::block_on(py, async {
             RustGraph::open(path).await
         });
 
@@ -79,14 +74,9 @@ impl PyGraph {
     /// profile: "default" | "mobile" | "server"
     #[staticmethod]
     #[pyo3(signature = (path, profile="default"))]
-    fn open_with_profile(path: &str, profile: &str) -> PyResult<Self> {
+    fn open_with_profile(py: Python<'_>, path: &str, profile: &str) -> PyResult<Self> {
         let profile = parse_profile(profile)?;
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let graph = rt.block_on(async { RustGraph::open_with_profile(path, profile).await });
+        let graph = crate::python::runtime::block_on(py, async { RustGraph::open_with_profile(path, profile).await });
         to_py_result(graph).map(|g| PyGraph {
             inner: Mutex::new(Some(Arc::new(g))),
         })
@@ -98,17 +88,12 @@ impl PyGraph {
     /// profile: "default" | "mobile" | "server"
     #[staticmethod]
     #[pyo3(signature = (path, engine="sled", profile="default"))]
-    fn open_with_options(path: &str, engine: &str, profile: &str) -> PyResult<Self> {
+    fn open_with_options(py: Python<'_>, path: &str, engine: &str, profile: &str) -> PyResult<Self> {
         let engine = parse_engine(engine)?;
         let profile = parse_profile(profile)?;
         let options = StorageOptions { engine, profile };
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let graph = rt.block_on(async { RustGraph::open_with_options(path, options).await });
+        let graph = crate::python::runtime::block_on(py, async { RustGraph::open_with_options(path, options).await });
         to_py_result(graph).map(|g| PyGraph {
             inner: Mutex::new(Some(Arc::new(g))),
         })
@@ -116,13 +101,8 @@ impl PyGraph {
 
     /// Create in-memory graph
     #[staticmethod]
-    fn in_memory() -> PyResult<Self> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let graph = rt.block_on(async {
+    fn in_memory(py: Python<'_>, ) -> PyResult<Self> {
+        let graph = crate::python::runtime::block_on(py, async {
             RustGraph::in_memory().await
         });
 
@@ -136,14 +116,9 @@ impl PyGraph {
     /// profile: "default" | "mobile" | "server"
     #[staticmethod]
     #[pyo3(signature = (profile="default"))]
-    fn in_memory_with_profile(profile: &str) -> PyResult<Self> {
+    fn in_memory_with_profile(py: Python<'_>, profile: &str) -> PyResult<Self> {
         let profile = parse_profile(profile)?;
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let graph = rt.block_on(async { RustGraph::in_memory_with_profile(profile).await });
+        let graph = crate::python::runtime::block_on(py, async { RustGraph::in_memory_with_profile(profile).await });
         to_py_result(graph).map(|g| PyGraph {
             inner: Mutex::new(Some(Arc::new(g))),
         })
@@ -155,30 +130,24 @@ impl PyGraph {
     /// profile: "default" | "mobile" | "server"
     #[staticmethod]
     #[pyo3(signature = (engine="sled", profile="default"))]
-    fn in_memory_with_options(engine: &str, profile: &str) -> PyResult<Self> {
+    fn in_memory_with_options(py: Python<'_>, engine: &str, profile: &str) -> PyResult<Self> {
         let engine = parse_engine(engine)?;
         let profile = parse_profile(profile)?;
         let options = StorageOptions { engine, profile };
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let graph = rt.block_on(async { RustGraph::in_memory_with_options(options).await });
+        let graph = crate::python::runtime::block_on(py, async { RustGraph::in_memory_with_options(options).await });
         to_py_result(graph).map(|g| PyGraph {
             inner: Mutex::new(Some(Arc::new(g))),
         })
     }
 
     /// Execute any NQL statement and return a unified result.
-    fn execute_nql(&self, query: &str) -> PyResult<PyNqlResult> {
+    fn execute_nql(&self, py: Python<'_>, query: &str) -> PyResult<PyNqlResult> {
         let graph = self.graph()?;
         let query_str = query.to_string();
 
-        let rt = tokio::runtime::Runtime::new()?;
 
-        let result = rt.block_on(async move { graph.execute_statement(&query_str).await });
+        let result = crate::python::runtime::block_on(py, async move { graph.execute_statement(&query_str).await });
 
         to_py_result(result).map(PyNqlResult::new)
     }
@@ -192,31 +161,58 @@ impl PyGraph {
     ///     >>> tx = graph.begin_transaction()
     ///     >>> node_id = tx.add_node("Person", {"name": "Alice"})
     ///     >>> tx.commit()
-    fn begin_transaction(&self) -> PyResult<PyTransaction> {
+    /// Begin a transaction.
+    ///
+    /// isolation: None (default ReadCommitted) | "read_uncommitted" |
+    ///            "read_committed" | "repeatable_read" | "serializable"
+    ///            (requires the `full-isolation` feature)
+    #[pyo3(signature = (isolation=None))]
+    fn begin_transaction(&self, py: Python<'_>, isolation: Option<&str>) -> PyResult<PyTransaction> {
         let graph = self.graph()?;
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let tx = rt.block_on(async move {
+        let tx = crate::python::runtime::block_on(py, async move {
             graph.begin_transaction().await
         });
+        let tx = to_py_result(tx)?;
 
-        to_py_result(tx).map(PyTransaction::new)
+        let tx = match isolation {
+            None => tx,
+            Some(level) => {
+                #[cfg(feature = "full-isolation")]
+                {
+                    use crate::transaction::IsolationLevel;
+                    let level = match level.to_ascii_lowercase().as_str() {
+                        "read_uncommitted" => IsolationLevel::ReadUncommitted,
+                        "read_committed" => IsolationLevel::ReadCommitted,
+                        "repeatable_read" => IsolationLevel::RepeatableRead,
+                        "serializable" => IsolationLevel::Serializable,
+                        other => {
+                            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                                "Invalid isolation level '{}'. Use 'read_uncommitted' | 'read_committed' | 'repeatable_read' | 'serializable'",
+                                other
+                            )))
+                        }
+                    };
+                    tx.with_isolation(level)
+                }
+                #[cfg(not(feature = "full-isolation"))]
+                {
+                    let _ = level;
+                    return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                        "Isolation levels require building with the 'full-isolation' feature",
+                    ));
+                }
+            }
+        };
+
+        Ok(PyTransaction::new(tx))
     }
 
     /// Get node count
-    fn node_count(&self) -> PyResult<usize> {
+    fn node_count(&self, py: Python<'_>) -> PyResult<usize> {
         let graph = self.graph()?;
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let result = rt.block_on(async move {
+        let result = crate::python::runtime::block_on(py, async move {
             graph.get_all_nodes().await
         });
 
@@ -291,15 +287,10 @@ impl PyGraph {
     ///     >>> labels = graph.get_labels()
     ///     >>> print(labels)
     ///     ['Person', 'Entity', 'Address']
-    fn get_labels(&self) -> PyResult<Vec<String>> {
+    fn get_labels(&self, py: Python<'_>) -> PyResult<Vec<String>> {
         let graph = self.graph()?;
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let result = rt.block_on(async move {
+        let result = crate::python::runtime::block_on(py, async move {
             graph.get_labels().await
         });
 
@@ -315,15 +306,10 @@ impl PyGraph {
     ///     >>> types = graph.get_edge_types()
     ///     >>> print(types)
     ///     ['KNOWS', 'OFFICER_OF']
-    fn get_edge_types(&self) -> PyResult<Vec<String>> {
+    fn get_edge_types(&self, py: Python<'_>) -> PyResult<Vec<String>> {
         let graph = self.graph()?;
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let result = rt.block_on(async move {
+        let result = crate::python::runtime::block_on(py, async move {
             graph.get_edge_types().await
         });
 
@@ -344,12 +330,7 @@ impl PyGraph {
     fn get_schema(&self, py: Python) -> PyResult<Py<pyo3::types::PyDict>> {
         let graph = self.graph()?;
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let schema = rt.block_on(async move {
+        let schema = crate::python::runtime::block_on(py, async move {
             graph.get_schema().await
         });
 
@@ -395,16 +376,11 @@ impl PyGraph {
     ///     >>> print(props)
     ///     ['name', 'age', 'email']
     #[pyo3(signature = (label))]
-    fn get_label_properties(&self, label: &str) -> PyResult<Vec<String>> {
+    fn get_label_properties(&self, py: Python<'_>, label: &str) -> PyResult<Vec<String>> {
         let graph = self.graph()?;
         let label_str = label.to_string();
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let result = rt.block_on(async move {
+        let result = crate::python::runtime::block_on(py, async move {
             graph.get_label_properties(&label_str).await
         });
 
@@ -424,16 +400,11 @@ impl PyGraph {
     ///     >>> print(f"Total Person nodes: {count}")
     ///     Total Person nodes: 100
     #[pyo3(signature = (label))]
-    fn get_label_count(&self, label: &str) -> PyResult<usize> {
+    fn get_label_count(&self, py: Python<'_>, label: &str) -> PyResult<usize> {
         let graph = self.graph()?;
         let label_str = label.to_string();
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let result = rt.block_on(async move {
+        let result = crate::python::runtime::block_on(py, async move {
             graph.get_label_count(&label_str).await
         });
 
@@ -453,16 +424,11 @@ impl PyGraph {
     ///     >>> print(props)
     ///     ['since', 'strength']
     #[pyo3(signature = (edge_type))]
-    fn get_edge_type_properties(&self, edge_type: &str) -> PyResult<Vec<String>> {
+    fn get_edge_type_properties(&self, py: Python<'_>, edge_type: &str) -> PyResult<Vec<String>> {
         let graph = self.graph()?;
         let type_str = edge_type.to_string();
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let result = rt.block_on(async move {
+        let result = crate::python::runtime::block_on(py, async move {
             graph.get_edge_type_properties(&type_str).await
         });
 
@@ -482,16 +448,11 @@ impl PyGraph {
     ///     >>> print(f"Total KNOWS edges: {count}")
     ///     Total KNOWS edges: 42
     #[pyo3(signature = (edge_type))]
-    fn get_edge_type_count(&self, edge_type: &str) -> PyResult<usize> {
+    fn get_edge_type_count(&self, py: Python<'_>, edge_type: &str) -> PyResult<usize> {
         let graph = self.graph()?;
         let type_str = edge_type.to_string();
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let result = rt.block_on(async move {
+        let result = crate::python::runtime::block_on(py, async move {
             graph.get_edge_type_count(&type_str).await
         });
 
@@ -504,15 +465,10 @@ impl PyGraph {
     ///
     /// Example:
     ///     >>> graph.rebuild_schema()
-    fn rebuild_schema(&self) -> PyResult<()> {
+    fn rebuild_schema(&self, py: Python<'_>) -> PyResult<()> {
         let graph = self.graph()?;
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let result = rt.block_on(async move {
+        let result = crate::python::runtime::block_on(py, async move {
             graph.rebuild_schema().await
         });
 
@@ -537,6 +493,7 @@ impl PyGraph {
     #[pyo3(signature = (label, property, index_type="hash"))]
     fn create_index(
         &self,
+        py: Python<'_>,
         label: String,
         property: String,
         index_type: &str,
@@ -553,12 +510,7 @@ impl PyGraph {
             )),
         };
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let result = rt.block_on(async move {
+        let result = crate::python::runtime::block_on(py, async move {
             graph.create_index(&label, &property, idx_type).await
         });
 
@@ -573,15 +525,10 @@ impl PyGraph {
     /// Example:
     ///     >>> graph.drop_index("Person_name")
     #[pyo3(signature = (index_name))]
-    fn drop_index(&self, index_name: String) -> PyResult<()> {
+    fn drop_index(&self, py: Python<'_>, index_name: String) -> PyResult<()> {
         let graph = self.graph()?;
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let result = rt.block_on(async move {
+        let result = crate::python::runtime::block_on(py, async move {
             graph.drop_index(&index_name).await
         });
 
@@ -599,15 +546,10 @@ impl PyGraph {
     ///     ...     print(f"{name}: {label}.{prop} [{type}]")
     ///     Person_name: Person.name [Hash]
     ///     Person_age: Person.age [BTree]
-    fn list_indexes(&self) -> PyResult<Vec<(String, String, String, String)>> {
+    fn list_indexes(&self, py: Python<'_>) -> PyResult<Vec<(String, String, String, String)>> {
         let graph = self.graph()?;
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let indexes = rt.block_on(async move {
+        let indexes = crate::python::runtime::block_on(py, async move {
             graph.list_indexes().await
         });
 
@@ -636,15 +578,10 @@ impl PyGraph {
     ///     >>> stats = graph.get_stats()
     ///     >>> print(f"Total nodes: {stats['total_nodes']}")
     ///     >>> print(f"Avg degree: {stats['avg_degree']}")
-    fn get_stats(&self) -> PyResult<std::collections::HashMap<String, String>> {
+    fn get_stats(&self, py: Python<'_>) -> PyResult<std::collections::HashMap<String, String>> {
         let graph = self.graph()?;
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create tokio runtime: {}", e)
-            ))?;
-
-        let stats = rt.block_on(async move {
+        let stats = crate::python::runtime::block_on(py, async move {
             graph.get_stats().await
         });
 
@@ -668,7 +605,7 @@ impl PyGraph {
     ///     >>> graph = nopaldb.Graph.open("my.db")
     ///     >>> # ... use graph ...
     ///     >>> graph.close()
-    fn close(&self) -> PyResult<()> {
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
         let arc = self.inner
             .lock()
             .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
@@ -677,13 +614,9 @@ impl PyGraph {
             .take(); // extrae el Arc<RustGraph>, deja None en su lugar
 
         if let Some(graph) = arc {
-            let rt = tokio::runtime::Runtime::new()
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                    format!("Failed to create tokio runtime: {}", e)
-                ))?;
             // graph se mueve al bloque — cuando termine, el Arc se suelta aquí.
             // Si este era el último clone, Sled libera el lock en este punto.
-            let result = rt.block_on(async move { graph.close().await });
+            let result = crate::python::runtime::block_on(py, async move { graph.close().await });
             to_py_result(result)
         } else {
             Ok(()) // ya cerrado — idempotente
@@ -703,7 +636,7 @@ impl PyGraph {
         _exc_value: Option<&Bound<'py, PyAny>>,
         _traceback: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<bool> {
-        self.close()?;
+        self.close(_py)?;
         Ok(false)
     }
 
@@ -723,15 +656,14 @@ impl PyGraph {
     /// Example:
     ///     >>> graph.add_node_embedding(node_id, [0.1, 0.2, 0.3], "minilm")
     #[cfg(feature = "embeddings")]
-    fn add_node_embedding(&self, node_id: &str, vector: Vec<f32>, model: &str) -> PyResult<()> {
+    fn add_node_embedding(&self, py: Python<'_>, node_id: &str, vector: Vec<f32>, model: &str) -> PyResult<()> {
         let graph = self.graph()?;
         let model = model.to_string();
         let node_id: uuid::Uuid = node_id.parse().map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid node_id UUID: {}", e))
         })?;
 
-        let rt = tokio::runtime::Runtime::new()?;
-        to_py_result(rt.block_on(async move {
+        to_py_result(crate::python::runtime::block_on(py, async move {
             graph.add_node_embedding(node_id, vector, &model).await
         }))
     }
@@ -746,15 +678,14 @@ impl PyGraph {
     /// Example:
     ///     >>> graph.add_edge_embedding(edge_id, [0.1, 0.2, 0.3], "relbert")
     #[cfg(feature = "embeddings")]
-    fn add_edge_embedding(&self, edge_id: &str, vector: Vec<f32>, model: &str) -> PyResult<()> {
+    fn add_edge_embedding(&self, py: Python<'_>, edge_id: &str, vector: Vec<f32>, model: &str) -> PyResult<()> {
         let graph = self.graph()?;
         let model = model.to_string();
         let edge_id: uuid::Uuid = edge_id.parse().map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid edge_id UUID: {}", e))
         })?;
 
-        let rt = tokio::runtime::Runtime::new()?;
-        to_py_result(rt.block_on(async move {
+        to_py_result(crate::python::runtime::block_on(py, async move {
             graph.add_edge_embedding(edge_id, vector, &model).await
         }))
     }
@@ -776,6 +707,7 @@ impl PyGraph {
     #[cfg(feature = "embeddings")]
     fn add_path_reference_embedding(
         &self,
+        py: Python<'_>,
         name: &str,
         node_model: &str,
         edge_model: &str,
@@ -786,8 +718,7 @@ impl PyGraph {
         let node_model = node_model.to_string();
         let edge_model = edge_model.to_string();
 
-        let rt = tokio::runtime::Runtime::new()?;
-        to_py_result(rt.block_on(async move {
+        to_py_result(crate::python::runtime::block_on(py, async move {
             graph.add_path_reference_embedding(name, node_model, edge_model, vector).await
         }))
     }
@@ -804,15 +735,14 @@ impl PyGraph {
     /// Example:
     ///     >>> vec = graph.get_node_embedding(node_id, "minilm")
     #[cfg(feature = "embeddings")]
-    fn get_node_embedding(&self, node_id: &str, model: &str) -> PyResult<Vec<f32>> {
+    fn get_node_embedding(&self, py: Python<'_>, node_id: &str, model: &str) -> PyResult<Vec<f32>> {
         let graph = self.graph()?;
         let model = model.to_string();
         let node_id: uuid::Uuid = node_id.parse().map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid node_id UUID: {}", e))
         })?;
 
-        let rt = tokio::runtime::Runtime::new()?;
-        to_py_result(rt.block_on(async move {
+        to_py_result(crate::python::runtime::block_on(py, async move {
             graph.get_node_embedding(node_id, &model).await
         })).map(|emb| emb.vector)
     }
@@ -835,12 +765,11 @@ impl PyGraph {
     ///     >>> for node_id, dist in results:
     ///     ...     print(node_id, dist)
     #[cfg(feature = "embeddings-index")]
-    fn knn_nodes(&self, query_vector: Vec<f32>, k: usize, model: &str) -> PyResult<Vec<(String, f32)>> {
+    fn knn_nodes(&self, py: Python<'_>, query_vector: Vec<f32>, k: usize, model: &str) -> PyResult<Vec<(String, f32)>> {
         let graph = self.graph()?;
         let model = model.to_string();
 
-        let rt = tokio::runtime::Runtime::new()?;
-        let idx = to_py_result(rt.block_on(async move {
+        let idx = to_py_result(crate::python::runtime::block_on(py, async move {
             graph.build_embedding_index(&model).await
         }))?;
 
@@ -866,9 +795,8 @@ impl PyGraph {
     fn import_turtle(&self, py: Python<'_>, ttl_source: &str) -> PyResult<Py<pyo3::types::PyDict>> {
         let graph = self.graph()?;
         let source = ttl_source.to_string();
-        let rt = tokio::runtime::Runtime::new()?;
         let report = to_py_result(
-            rt.block_on(async move { graph.import_turtle(&source).await })
+            crate::python::runtime::block_on(py, async move { graph.import_turtle(&source).await })
         )?;
         let dict = pyo3::types::PyDict::new(py);
         dict.set_item("classes_added",        report.classes_added)?;

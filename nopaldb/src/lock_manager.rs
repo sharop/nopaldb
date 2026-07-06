@@ -292,7 +292,9 @@ impl LockManager {
         loop {
             // Timeout global
             if start.elapsed() > self.lock_timeout {
-                return Err(NopalError::Custom(format!(
+                // Error semántico (no Custom): permite a los callers
+                // distinguir contención de locks y reintentar la transacción.
+                return Err(NopalError::ConcurrencyError(format!(
                     "Lock timeout: tx{} waiting for {:?} lock on node {} (waited {}s)",
                     tx_id, lock_type, node_id, self.lock_timeout.as_secs()
                 )));

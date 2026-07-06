@@ -189,7 +189,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         let cursor_y = inner.y + cursor_line as u16;
         
         if cursor_x < inner.right() && cursor_y < inner.bottom() {
-            f.set_cursor(cursor_x, cursor_y);
+            f.set_cursor_position((cursor_x, cursor_y));
         }
     }
 }

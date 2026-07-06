@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.29] - 2026-07-05
+
+### ✨ Highlights
+- **Python isolation levels**: `graph.begin_transaction(isolation="serializable" | "repeatable_read" | "read_committed" | "read_uncommitted")` (requires the `full-isolation` feature).
+- **Shared runtime + GIL release**: the Python bindings use one process-wide Tokio runtime and release the GIL during every DB call — measured ~3× read throughput with 4 threads (was serialized).
+- **Isolation ↔ GC integration**: version GC runs under the single-writer gate (closing the GC-vs-version-list race), and direct writes are visible to Serializable conflict validation.
+
+### Fixed
+- **Lock leak**: failed commits (conflict/deadlock) and rollbacks did not release their locks, blocking subsequent writers on those nodes until the lock timeout; the commit path now cleans up on every error.
+- Lock timeouts surface as `ConcurrencyError` instead of an opaque `Custom` error.
+- WAL replay of committed edge inserts no longer crashes `Graph::open` when a later non-transactional delete removed the endpoints.
+
+### Added
+- Mixed-load SIGKILL crash harness and proptest model-based suite (random op sequences must match a reference model, including after reopen).
+- Nightly hardening workflow (100 kill rounds + 200 proptest cases).
+- `docs/DURABILITY.md`: the crash-safety contract, including the weaker durability of direct (non-transactional) writes.
+
+### Security
+- `arrow`/`parquet` 57 → 59: drops the transitive `thrift` dependency (RUSTSEC memory-allocation advisory).
+- `tantivy` 0.25 → 0.26 and `ratatui`/`crossterm` 0.26/0.27 → 0.30/0.29: pull `lru` ≥ 0.16.4 (RUSTSEC `IterMut` soundness advisory); no more `lru` 0.12.x in the tree.
+
+---
+
 ## [0.4.28] - 2026-07-04
 
 Consolidated entry for the 0.4.x series.
