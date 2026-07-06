@@ -41,8 +41,8 @@ thiserror = "2.0"                # Error handling (highly recommended)
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
 uuid = { version = "1.2.2", default-features = false, features = ["std", "v4", "serde"] }
 futures = "0.3"
-arrow= { version="57", optional = true }
-parquet= { version="57", optional = true }
+arrow= { version="59", optional = true }
+parquet= { version="59", optional = true }
 # Query Language (NQL)
 pest = "2"
 pest_derive = "2"
@@ -51,7 +51,7 @@ rmp-serde = "1.3"
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py310"], optional = true}
 rayon = "1.11.0"
 bytemuck = { version = "1", features = [] }
-tantivy = { version = "0.25", optional = true }  # Full-text search engine
+tantivy = { version = "0.26", optional = true }  # Full-text search engine
 bincode = "1.3.3"                    # Fast binary serialization
 chrono = { version = "0.4", features = ["serde"] }
 hnsw_rs = { version = "0.3", optional = true }  # HNSW ANN index (incremental, persistent, SIMD optional)

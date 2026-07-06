@@ -138,7 +138,10 @@ fn print_usage_and_exit(code: i32) -> ! {
 fn open_app_with_loading<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     db_path: &str,
-) -> Result<App> {
+) -> Result<App>
+where
+    B::Error: Send + Sync + 'static,
+{
     let (tx, rx) = mpsc::channel();
     let db_path_owned = db_path.to_string();
 
@@ -166,7 +169,7 @@ fn open_app_with_loading<B: ratatui::backend::Backend>(
 }
 
 fn draw_loading_screen(f: &mut Frame, db_path: &str, elapsed: Duration, tick: usize) {
-    let area = f.size();
+    let area = f.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -340,7 +343,10 @@ fn animated_brand_line(tick: usize) -> Line<'static> {
 fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
-) -> Result<()> {
+) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
     loop {
         if app.quit_requested() {
             break;

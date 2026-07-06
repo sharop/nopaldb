@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::ui::{ACCENT, BG, FG};
 
 pub fn draw(f: &mut Frame, app: &App) {
-    let area = centered_rect(84, 84, f.size());
+    let area = centered_rect(84, 84, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()

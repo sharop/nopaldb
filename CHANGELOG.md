@@ -34,6 +34,10 @@ Consolidated entry for the 0.4.x series.
 - Version alignment across workspace, crate and Python package (0.4.28).
 - Dependency updates including security bumps (`lz4_flex`, `time`, `tokio`, `rand`, `bytes`).
 
+### Security
+- `arrow`/`parquet` 57 → 59: drops the transitive `thrift` dependency (RUSTSEC memory-allocation advisory).
+- `tantivy` 0.25 → 0.26 and `ratatui`/`crossterm` 0.26/0.27 → 0.30/0.29: pull `lru` ≥ 0.16.4 (RUSTSEC `IterMut` soundness advisory); no more `lru` 0.12.x in the tree.
+
 ### Removed
 - Orphan/dead modules (`nopaldb/src/isolation.rs` legacy stub, unused NDBStudio scaffolding).
 
