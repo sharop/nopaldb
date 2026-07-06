@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "nopaldb"
-version = "0.4.28"
+version = "0.4.29"
 description = "Graph database with MVCC and NQL query language"
 authors = [{name = "NopalDB Contributors"}]
 requires-python = ">=3.10"
