@@ -26,6 +26,11 @@ const DEFAULT_EF_CONSTRUCTION: usize = 400;
 const DEFAULT_MAX_LAYER: usize = 16;
 const DEFAULT_EF_SEARCH: usize = 30;
 
+/// Debajo de este tamaño, `build_batch` inserta en serie para que la
+/// construcción del grafo HNSW sea determinista (independiente del número de
+/// threads de rayon). Por encima, la inserción paralela sí rinde.
+const PARALLEL_INSERT_THRESHOLD: usize = 128;
+
 /// Índice HNSW para búsqueda aproximada de vecinos más cercanos (ANN) sobre embeddings.
 ///
 /// Usa `hnsw_rs` con distancia coseno. Soporta inserciones incrementales (sin rebuild),
@@ -144,7 +149,18 @@ impl HnswIndex {
             .map(|(v, &id)| (v, id))
             .collect();
 
-        index.inner.parallel_insert(&insert_data);
+        // Para lotes pequeños se inserta en serie: `parallel_insert` no aporta
+        // (el overhead de rayon supera el trabajo) y su comportamiento depende
+        // del número de threads, lo que produce grafos HNSW ligeramente
+        // distintos entre entornos (p. ej. un test que pasa local y falla en un
+        // runner con más cores). Serial = determinista para N pequeño.
+        if insert_data.len() >= PARALLEL_INSERT_THRESHOLD {
+            index.inner.parallel_insert(&insert_data);
+        } else {
+            for &(vec, data_id) in &insert_data {
+                index.inner.insert((vec, data_id));
+            }
+        }
         index.inner.set_searching_mode(true);
 
         Ok(index)
@@ -430,16 +446,24 @@ mod tests {
 
         let index = HnswIndex::build_batch(vectors, "test", 3).unwrap();
 
-        // Filtrar: solo id_b y id_c
+        // Filtrar: solo id_b y id_c. ef alto para forzar exploración exhaustiva
+        // en un grafo diminuto (independiente de la asignación de niveles HNSW).
         let allowed = vec![id_b, id_c];
         let results = index
-            .search_knn_filtered(&[1.0, 0.0, 0.0], 1, DEFAULT_EF_SEARCH, |nid| {
-                allowed.contains(nid)
-            })
+            .search_knn_filtered(&[1.0, 0.0, 0.0], 2, 200, |nid| allowed.contains(nid))
             .unwrap();
 
-        assert_eq!(results.len(), 1);
-        // id_b es más cercano a [1,0,0] que id_c
+        // El filtro debe excluir id_a (el más cercano, no permitido)
+        assert!(
+            results.iter().all(|(id, _)| *id != id_a),
+            "filtered-out node id_a must not appear in results"
+        );
+        // Debe encontrar id_b (el permitido más cercano a [1,0,0])
+        assert!(
+            results.iter().any(|(id, _)| *id == id_b),
+            "closest allowed vector id_b must be returned"
+        );
+        // id_b es más cercano que id_c → primero en el ranking
         assert_eq!(results[0].0, id_b);
     }
 
