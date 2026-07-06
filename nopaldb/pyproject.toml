@@ -4,9 +4,12 @@ build-backend = "maturin"
 
 [project]
 name = "nopaldb"
-version = "0.4.29"
+version = "0.4.30"
 description = "Graph database with MVCC and NQL query language"
 authors = [{name = "NopalDB Contributors"}]
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Rust",

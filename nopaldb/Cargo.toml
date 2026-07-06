@@ -1,6 +1,6 @@
 [package]
 name = "nopaldb"
-version = "0.4.29"
+version = "0.4.30"
 authors = ["NopalDB Contributors"]
 description = "High-performance graph database with ACID transactions, MVCC time-travel, and Arrow analytics"
 keywords = ["graph", "database", "embedded", "mvcc", "arrow"]

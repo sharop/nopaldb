@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.30] - 2026-07-06
+
+### Fixed
+- PyPI packaging: the sdist declared `License-File: LICENSE` but shipped the file nested under the crate subdirectory, so PyPI rejected the upload (400). The license (and README, for the project page) are now declared in `pyproject.toml` and land at the sdist root.
+
+---
+
 ## [0.4.29] - 2026-07-05
 
 ### ✨ Highlights
