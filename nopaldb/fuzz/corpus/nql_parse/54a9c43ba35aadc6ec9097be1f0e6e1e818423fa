@@ -1,0 +1,4 @@
+find b.namth
+        from (a:Person {name: "Alice"})-[:KNOWS]->{1,2}(b:Person)
+        where path.dep        order by p
+     order bathc

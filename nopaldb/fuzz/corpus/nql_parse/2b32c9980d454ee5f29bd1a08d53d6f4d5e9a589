@@ -1,0 +1,4 @@
+find o.name, count(*) as num_entities
+        from (o:Officer)-[:OFFICER_OF]->(e:Entity)
+        group by o.name
+        order by o.name asc

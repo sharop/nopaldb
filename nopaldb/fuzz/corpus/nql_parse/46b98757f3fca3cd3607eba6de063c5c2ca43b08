@@ -1,0 +1,1 @@
+find pa from (a:Accnt {name: "A"})-[:TX]->(b:Accnt)-[:TX]->(c:Account {name: "C"})

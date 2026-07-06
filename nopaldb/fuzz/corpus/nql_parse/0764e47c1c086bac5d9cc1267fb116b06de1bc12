@@ -1,0 +1,1 @@
+find a.name from ( {nam: "Alice"}) -[r:TRANSFERS {amount: 5800}]-> (b:Person)

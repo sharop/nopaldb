@@ -1,0 +1,4 @@
+sketch sser =
+     find p.nam%e
+        from (p:Person)
+        where p.city = 'CDMX' //      true

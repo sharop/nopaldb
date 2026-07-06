@@ -1,0 +1,1 @@
+find b.name   from (a:n) -[:KNOWS]->{0,3} (b:Person)

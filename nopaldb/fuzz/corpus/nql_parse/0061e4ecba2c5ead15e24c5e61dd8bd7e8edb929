@@ -1,0 +1,2 @@
+find page
+        from (p:Peison)  export csv with path="{}", h________Xer=true, :.om by conexionesc

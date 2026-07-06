@@ -1,0 +1,4 @@
+find a.name.name as c
+        from (a:Family)-[:MARRIAGE]->(b:Family),
+             (b:Fily)-[:MARRIAGE]->(c:Family)
+ , b,  (b:Family)-[:MARRIAGE]->(

@@ -1,0 +1,2 @@
+find bson   from (a:Person) -[r:KNO]->{2
+        f)

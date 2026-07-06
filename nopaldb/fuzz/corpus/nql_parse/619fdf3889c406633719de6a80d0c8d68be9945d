@@ -1,0 +1,2 @@
+find n.ag    from (n:Nmber)
+        limit 5 offset 57890

@@ -1,0 +1,2 @@
+find p.name, c.n  from (p:Person), (c:Comp)
+    where p.d = c.id

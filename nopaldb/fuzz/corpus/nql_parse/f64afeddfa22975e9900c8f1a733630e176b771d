@@ -1,0 +1,1 @@
+profile find b.a from (a:Pson {name: "Alice"})-[:KNOWS]->{rs)

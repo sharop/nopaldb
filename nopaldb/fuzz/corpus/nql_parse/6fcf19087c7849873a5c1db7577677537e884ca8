@@ -1,0 +1,1 @@
+find p.na    from (r:Rot) -[:HAS]-> (a:Pn) -[:KNOWS]->{1,2} (n)

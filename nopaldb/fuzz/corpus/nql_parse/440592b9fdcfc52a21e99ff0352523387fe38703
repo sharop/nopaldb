@@ -1,0 +1,2 @@
+find b.name,um      from (a:N {name: "7"}) -[:E]-> (B:N)
+     order by  t(_husmunt")

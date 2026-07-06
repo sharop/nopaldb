@@ -1,0 +1,3 @@
+find e.nam  from (p:Person)
+        export csv with p =
+  0467440737095.000

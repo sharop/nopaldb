@@ -1,0 +1,9 @@
+find x.name as bridge,
+             a.name as albizzi_family,
+             m.name as medici_family
+        from (a:Family)-[:MARRIAGE]->(x:Familyamily)
+        where a.faction = "Albizzi"
+          and m.faction = "Medici"
+          and x.name != a.name
+          and x.name != m.name
+        order by bridge

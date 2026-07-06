@@ -1,0 +1,2 @@
+find p.n      from (n)
+        export csv with path="'{}", header=true

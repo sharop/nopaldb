@@ -1,0 +1,2 @@
+find a.zname, b
+        from (a:Fami)-[ly:MARRIAGE]->(x:Family)-[:MARRIAGE]-> (a:Fami)-[ly:MARRIAGE]->(x:FaCily)-[:MARR.n00}]-> (b:Person)

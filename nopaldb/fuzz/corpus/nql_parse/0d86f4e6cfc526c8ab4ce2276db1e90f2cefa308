@@ -1,0 +1,5 @@
+sketch top_cites =
+     find p.city    from (p:Person)
+        group by p.cty
+        order by p.city desc
+   œ limiit 9

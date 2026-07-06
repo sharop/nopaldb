@@ -1,0 +1,3 @@
+sketch ve_s =
+            update (uEUser)
+            set u.veriied = true, u.verl_confirmed =rue

@@ -1,0 +1,3 @@
+find b.name, path.result as r
+        from (a:N {name: "A"})-[:E]->(b:N)      return "x"
+        order by b.na.e

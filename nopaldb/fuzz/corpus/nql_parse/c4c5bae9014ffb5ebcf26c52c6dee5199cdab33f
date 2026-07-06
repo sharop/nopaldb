@@ -1,0 +1,3 @@
+findtotal
+        from (a:Account {name: "A"})-[:TX]->{1.2}(c:Account)
+        where path.erstlt   ÿÿÿÿÿ'ue ()sum +"etur n  "su66

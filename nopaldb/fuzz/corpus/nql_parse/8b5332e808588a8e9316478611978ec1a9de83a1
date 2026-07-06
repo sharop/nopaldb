@@ -1,0 +1,4 @@
+find e.namey, legree(e) as con       from (e:lCompan) -[:REGDSTEINE_RD]-> (j:Jujisdiction)
+      where j.name = ""
+        group by e.name, e.i.name, eñindns oxiones
+      ½“  ŞÔ’ (exionj:Jdesc

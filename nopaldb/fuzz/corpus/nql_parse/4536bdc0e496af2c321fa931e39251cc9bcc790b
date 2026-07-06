@@ -1,0 +1,3 @@
+find a.name
+        from (s:R {name: "Src"}) -[:PIPE]->{1,1} (b:R)
+        where"SX

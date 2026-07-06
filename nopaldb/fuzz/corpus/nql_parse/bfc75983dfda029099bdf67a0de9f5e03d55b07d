@@ -1,0 +1,2 @@
+find e,pth
+        from (a:Pon {name: "Ale"})-[:KNWS]->{98,2}(b:Peson) where esc

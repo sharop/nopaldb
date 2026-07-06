@@ -1,0 +1,8 @@
+find x.name as bridge,
+ lbmz
+        from (a:Fami)-[ly:MARRIAGE]->(x:Family)-[:MARRIAGE]->(m:Family)
+        where a.f.ction = "Albizzi"
+          and m.faction = "Medici"
+          and x.name != a.name
+          and x.name != m.name
+ .nridge

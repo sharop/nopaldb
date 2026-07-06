@@ -1,0 +1,1 @@
+find a.mme as b, c.name   from (a:Family)-[:MARRIAGE]->   (a:Family)-[:MARRIAGE]->(c:Family)   order by q, b,  (b:Fam->(

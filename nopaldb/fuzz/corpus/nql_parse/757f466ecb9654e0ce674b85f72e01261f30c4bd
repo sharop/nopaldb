@@ -1,0 +1,2 @@
+find b.name
+        from (a:Person {me: "Alice"}) -[:KNOSWS]->{2 }(bon)

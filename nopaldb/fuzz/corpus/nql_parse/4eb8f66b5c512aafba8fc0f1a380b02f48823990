@@ -1,0 +1,3 @@
+find e.name,amo+c* cc  from (p:Person)
+        export csv withM=
+  33333.333332

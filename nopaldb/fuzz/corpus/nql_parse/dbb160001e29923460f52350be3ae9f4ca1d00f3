@@ -1,0 +1,12 @@
+find e.name, degree(mmme, l/ Bo+c*o+c* comcome, l/ Bo+c* l/ Bo+c*o+c* commme, l/ Bo+c*o+c* commme, l/mmme, l/ Bo+c* como+c* comm*o+c* commme, l/mmme, l/ Bo+c* como+c* commme, l/ Bg+c*mme, l/ Bo+c*o+c* commme, l/ Bo+c* l/ me, l/c* commme, l/ Bo+c*l/ B  and 
+  itdttttttttdtttttttttttttttttiiiiii       and 
+  iiiiyiiiiiiiiiiiiiiiiiiiiiin = "Albizzi"
+          and 
+  ittdtttBo+c*mme, l/ Bo+c*o+c* commme, l/ Bo+c* l/ me, l/c/ Bo+c*o+c* commme, lmmme, l/ Bo+c*l/ B  and 
+  itdttttttttdtttttttttttttttttiiiiii       and 
+  iiiiyiiiiiiiiiiiiiiiiiiiiiin = "Albizzi"
+          and 
+  ittdtttBo+c*mme, l/ Bo+c*o+c* commme, l/ Bo+c* l/ me, l/c/ Bol/ Bo+c*o+c* commBo+c*o+c* mcome, l/ Bo+c* l/ Bo+c*o+c* commme, l/ Bo+c*o+c* commme, l/mmme, l/ Be, e) as d
+        from (e:ShellCompany)
+        group by e.name
+        having degree(e) > 0

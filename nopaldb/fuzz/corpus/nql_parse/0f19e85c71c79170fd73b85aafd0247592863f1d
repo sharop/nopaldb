@@ -1,0 +1,2 @@
+find esult as r        from ()-[:E]->(b:N)
+   return 								.e

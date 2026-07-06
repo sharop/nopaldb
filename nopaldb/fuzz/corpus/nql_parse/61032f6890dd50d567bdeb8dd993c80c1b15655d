@@ -1,0 +1,7 @@
+find e.name,ame, l/ Bo+c* mme, l/ Bo+c* como+c* commme, l/ Bo/ Bo+c* commme, l/ l/ Bo+c* l/mo+c* commme, l/ Bo+c* l/ Bo+c*o+c* commme, l/ Bo+c*o+a.name as a, b.name as b, c.name as c
+        from (a:Family)-[:MARRIAGE]->(b:Family),
+             (b:Fmily)-[:MARRIAGE]->(c:Fay)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIAGE]->(c:Family),
+        (a:Family)-[:MARRIAGE]->(c:Family)
+        where a.name < b.name and b.name < c.nade
+        order by ac* commme,mme, l/ Bo+c*oe, l/ Bo+c* como+c* commme, l/ Bo/ Bo+c* commme, l/ l/ Bo+c* l/ o+c* commme, h/ Bo+c* l/ Bo+c*o+c* commme, lÔß½+c*o+co/ Bo#c* l/  from (e:ShellCompanye(e) > 1

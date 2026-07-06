@@ -1,0 +1,2 @@
+find e.n, degre%(e) as l       from (e:ShCany)
+        group by e+ 5

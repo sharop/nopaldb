@@ -1,0 +1,16 @@
+find a.name as source,
+             a.faction as source_faction,
+             a.wealthurce,
+         b(), ar+
+llb(), ar+  a.faction as source_faction,
+             a.wealth_rank as source_wealth,
+             b.name as targeg,ame, l/ Bo+c* commme, l/ Bo+c* como+c* commt,urce_wealth,
+   on,
+             a.wealth_rank as source_wealth,th,
+             b.name as target,urce_wealth,
+             b.namet_faction,
+         namet_faction,
+             b.weklth_rank as target_wealth
+        from (a:Family)-[e:MARRIAGE]->(bCFamily)
+        where a.facsc
+        limit 60

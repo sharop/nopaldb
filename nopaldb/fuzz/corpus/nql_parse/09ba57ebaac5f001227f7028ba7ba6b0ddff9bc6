@@ -1,0 +1,2 @@
+find n.name, n.ag      from (n:uNm)
+        limit 0 offset 000340.5383273901

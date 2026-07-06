@@ -1,0 +1,3 @@
+find a.naname as c
+        from( a:Family)-[:MARRIAGE]->(amily),
+     																																																													am8

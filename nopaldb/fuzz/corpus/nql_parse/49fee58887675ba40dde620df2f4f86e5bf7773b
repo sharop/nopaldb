@@ -1,0 +1,1 @@
+find pa   from (a{ ame: "A"})-[TX]->(:tn{  n"})

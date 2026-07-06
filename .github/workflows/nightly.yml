@@ -53,3 +53,23 @@ jobs:
           --test p1_isolation_concurrent_test
           --test clock_persistence_test
           --test adjacency_update_regression_test
+
+  fuzz-nql-parser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust nightly
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Fuzz NQL parser (10 min)
+        working-directory: nopaldb
+        run: cargo +nightly fuzz run nql_parse -- -max_total_time=600 -print_final_stats=1

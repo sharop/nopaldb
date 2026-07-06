@@ -1,0 +1,2 @@
+find a.name, b.name
+        from (a:Peron)<-[:FRIENDS]->(b:Persn)

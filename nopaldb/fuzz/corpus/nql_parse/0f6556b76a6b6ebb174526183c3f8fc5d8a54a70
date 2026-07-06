@@ -1,0 +1,1 @@
+FIND n.name FROM (:Person {dept: "mng"})

@@ -1,0 +1,3 @@
+sketch cleanup =
+            delete (u:User)
+           where u000000>00009715827639137792

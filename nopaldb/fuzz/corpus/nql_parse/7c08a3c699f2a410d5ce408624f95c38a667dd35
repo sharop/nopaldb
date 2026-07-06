@@ -1,0 +1,3 @@
+find a.name
+           from (a:Ant)-[:tX]->(bzAccount)
+     order bye("nm", "em") desc

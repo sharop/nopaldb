@@ -1,0 +1,1 @@
+find p  from (o) -[:KNOP]->{9999999991,2} (pon)

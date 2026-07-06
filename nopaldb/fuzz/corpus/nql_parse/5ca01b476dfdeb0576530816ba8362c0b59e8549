@@ -1,0 +1,6 @@
+find x.name as bdge,
+             a.na
+   from (a:amilmily)
+  where a.faction = "Albizzi"
+          and m.factiona.name
+          and p.name != mdge

@@ -1,0 +1,3 @@
+find e.name, e.industry, degree(e) as conexiones
+        from (e:ShellCompny) -[:REGISTERED_IN]-> (j:Jurisdicwion)
+        where j.naÿ      ordesc

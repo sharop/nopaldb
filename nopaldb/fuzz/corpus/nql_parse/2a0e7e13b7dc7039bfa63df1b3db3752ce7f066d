@@ -1,0 +1,1 @@
+delete (u:User) where u.inactive = true limit 100

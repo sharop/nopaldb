@@ -1,0 +1,3 @@
+find all(b), al(r)
+     from (a:Peson)
+      where a.nam = "Alice"

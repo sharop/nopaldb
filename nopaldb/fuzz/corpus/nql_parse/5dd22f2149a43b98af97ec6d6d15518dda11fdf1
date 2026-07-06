@@ -1,0 +1,2 @@
+find n.label from (n) wherese   group by kþ
+  

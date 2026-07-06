@@ -1,0 +1,5 @@
+find a.name as a, b.name as b, c.name as c
+      from (a:Family)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[RRIAGE]->(c:Family),
+             (q:Fatily)-[:MARRIAGG]->(c:Family)
+       where a name < b.name and b.n      ora, b, c     (limit 25

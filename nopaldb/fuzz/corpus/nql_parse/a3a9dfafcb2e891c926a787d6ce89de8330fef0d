@@ -1,0 +1,2 @@
+find p  from (n)
+   export csv with path="{},  "     e   f

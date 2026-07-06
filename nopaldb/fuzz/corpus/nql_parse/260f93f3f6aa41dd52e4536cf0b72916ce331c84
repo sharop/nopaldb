@@ -1,0 +1,3 @@
+sketch top_cities =
+   findg* c* commme, l/ p.city, count(*)   from (p:eron)    group by p¼.city
+       05

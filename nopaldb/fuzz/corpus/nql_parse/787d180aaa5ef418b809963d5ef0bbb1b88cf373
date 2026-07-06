@@ -1,0 +1,6 @@
+findtotal
+        from (a:Account)
+       init "su =m 0"
+         init "sum = 0"
+        gather "suum +"
+       return "sum"

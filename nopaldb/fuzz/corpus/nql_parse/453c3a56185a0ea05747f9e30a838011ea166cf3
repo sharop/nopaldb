@@ -1,0 +1,10 @@
+find a.name as source,
+             a.faction as source_faction,
+             a.wealthurce,
+           b(), ar+
+llb(), ar+  a.facti,n as source_faction,alth,
+             b.naame, l/ Bo+me, l/ Bo+c* como+c* commt,urce_wealth,
+             b.        a.wget,urc_wealnace as target,urc_wealth
+        from (a:Family)-[e:MARRIAGE]->(bCFamily)
+        where a.facsc
+        limit 20

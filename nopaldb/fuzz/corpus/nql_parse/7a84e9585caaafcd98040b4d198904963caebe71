@@ -1,0 +1,2 @@
+find n.na    from (a:Node {name: ""}) -[:LINK]->{0,
+2     "+

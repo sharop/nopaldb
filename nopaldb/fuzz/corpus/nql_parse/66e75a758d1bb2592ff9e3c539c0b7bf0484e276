@@ -1,0 +1,2 @@
+findnam from (n)
+  limit 20 offset 10

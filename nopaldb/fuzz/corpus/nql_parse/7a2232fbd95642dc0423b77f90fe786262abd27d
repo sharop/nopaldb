@@ -1,0 +1,2 @@
+find t.a from (t:Te)
+   where t.vu.e >0

@@ -1,0 +1,8 @@
+find n.name
+      from (a:Nde)
+     where t    gather 
+
+
+
+
+fu"

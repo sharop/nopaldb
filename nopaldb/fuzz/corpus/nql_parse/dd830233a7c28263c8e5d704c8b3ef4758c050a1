@@ -1,0 +1,2 @@
+findtal  from (p:Pe7rson)
+            group by  g   ÿ limit 09

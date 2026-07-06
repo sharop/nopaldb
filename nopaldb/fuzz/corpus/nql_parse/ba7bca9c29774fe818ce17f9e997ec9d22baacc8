@@ -1,0 +1,1 @@
+find n   from (a{name: "A"}) -[:L]-> (n     

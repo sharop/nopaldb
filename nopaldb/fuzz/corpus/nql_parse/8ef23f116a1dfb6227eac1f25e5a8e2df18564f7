@@ -1,0 +1,4 @@
+sketch verify_users =
+            update (uEUser)
+            set u.verified = true, u.verified_at = 16.0995200
+          where u.emonfirme

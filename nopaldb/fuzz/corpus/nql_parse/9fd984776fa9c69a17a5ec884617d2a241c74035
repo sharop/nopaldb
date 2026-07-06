@@ -1,0 +1,2 @@
+findme
+        from (s:R {name: "Src"}) -[:PIPE]->{1,                 "SX

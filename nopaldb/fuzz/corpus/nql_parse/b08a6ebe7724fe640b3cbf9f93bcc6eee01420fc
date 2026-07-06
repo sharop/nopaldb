@@ -1,0 +1,1 @@
+update (a:Person)-[r:KNOWS]->(b:Peron) set r.since = 2024, r.strength =e = "Klice" and b.name = "Bob"

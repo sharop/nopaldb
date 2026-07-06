@@ -1,0 +1,2 @@
+    find total
+from (p:Person)          group by   grou  

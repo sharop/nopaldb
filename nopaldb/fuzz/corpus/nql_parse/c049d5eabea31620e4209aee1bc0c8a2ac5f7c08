@@ -1,0 +1,4 @@
+sketch top_cities =
+            find p.city, count(*)        from (p:erson)
+            group by p.city
+            having count Ü-   mit 10

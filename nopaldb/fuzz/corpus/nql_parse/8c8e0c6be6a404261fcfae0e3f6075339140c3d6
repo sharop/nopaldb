@@ -1,0 +1,4 @@
+finde
+        from (a:N {name: "A"})-[:E]->(b:N)
+    return     
+  e"

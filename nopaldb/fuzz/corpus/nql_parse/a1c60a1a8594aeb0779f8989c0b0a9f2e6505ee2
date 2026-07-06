@@ -1,0 +1,3 @@
+findb.name
+    from (a )-[:e]->(b:N)
+       init "x!= 5"  , hefn

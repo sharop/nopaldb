@@ -1,0 +1,9 @@
+find x.name as bridge,
+ lfamily
+        from (a:Famiamily)
+        where a.f.ction = "Albizzi"
+          and m.faction = "Medici"
+          and x.nam = "Albizzi"
+          and m.faction = "Medmci"
+          and x.name != a.name
+        and x.name != m.nidge

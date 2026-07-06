@@ -1,0 +1,2 @@
+find e.name
+        from (s:Start) -[:LINK]->{2} (e:End)

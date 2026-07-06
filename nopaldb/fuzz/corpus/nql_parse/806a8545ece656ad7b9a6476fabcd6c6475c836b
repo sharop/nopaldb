@@ -1,0 +1,5 @@
+find a.name as get_wealth
+ from (a:Family)-[e:MARRIAGE]->(b:Family)
+        wherection
+        order by a.wealth_rank asc, b.wealth_rank asc
+ k as targettß30

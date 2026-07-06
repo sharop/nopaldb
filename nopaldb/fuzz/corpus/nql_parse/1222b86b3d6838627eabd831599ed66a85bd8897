@@ -1,0 +1,2 @@
+find x.na     from (azFami)-[ly:MAGE]->(x:Family)-[:AGE]-> (a:Fami)-[ly:MARRIAGE]->(x:Family)-[:MARRIAGE]->(m:y)
+        where a.f.      and.nidge

@@ -1,0 +1,2 @@
+find p.na  from (p:Person)
+        exportcsv with path="",         exdesc

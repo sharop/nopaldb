@@ -1,0 +1,2 @@
+find path_knn_references("nm", "em", 2, 0.0) as refs
+                from (a:Account {name: "Root"})-[:TX]->(b:Account {name: "B"})

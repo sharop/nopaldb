@@ -1,0 +1,1 @@
+profile find B.na-e   from (r:Acu{me: "Root"})-[n:o)

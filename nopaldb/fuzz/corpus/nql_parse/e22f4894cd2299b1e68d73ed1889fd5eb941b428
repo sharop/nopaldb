@@ -1,0 +1,5 @@
+find n.name
+        from (a:Node {name: "A"})-[:EDGE]->(n:Node)
+        where path.result = true
+        init "safe = true"
+      Ùß˜ž‹—safe a.ok = tF

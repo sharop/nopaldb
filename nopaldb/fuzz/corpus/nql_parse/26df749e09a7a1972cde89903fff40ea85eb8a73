@@ -1,0 +1,2 @@
+find p.namsve
+    from (p:Person)      export csv with     ex  eue

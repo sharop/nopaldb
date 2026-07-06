@@ -1,0 +1,1 @@
+find b.mel  from (a2A {name: "Hb"}) -[:FLOW]->{  21,   2} 

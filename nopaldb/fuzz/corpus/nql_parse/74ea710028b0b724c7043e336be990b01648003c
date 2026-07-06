@@ -1,0 +1,2 @@
+find b  from ({name: "A"})-[zE]->(b:N)
+      r)"ate"

@@ -1,0 +1,1 @@
+findb    from (on) -[:KNOWS]->{1,}(rson)

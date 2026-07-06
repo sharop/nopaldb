@@ -1,0 +1,7 @@
+find a.name as so,  b(), ar+
+l,b(), ar+  source,
+                   b(), ar+
+l,b(),     b.weklth_raet_wealth
+        from (a:Family)-[e:MAE]->(bCFamily)
+        where a.facsc
+  limit 40

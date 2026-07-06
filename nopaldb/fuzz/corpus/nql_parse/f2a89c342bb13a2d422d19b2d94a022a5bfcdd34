@@ -1,0 +1,4 @@
+findb.namalth
+        from (a:Family)-[e:MARRIAGE]->(b:Family)
+        where afaction
+        order by a.wealth_rame, lc,mo+cnde,ommme,nde,l/ Bo+c* c,mmme, l/ BBo+c* c,mo+cmme, l/Bo+c* coommme, l/ Bo+c*m 

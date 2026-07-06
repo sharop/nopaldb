@@ -1,0 +1,3 @@
+find a.mme as b, c.name as c
+        from (a:Family)        where a.name < b.name and b.name < c.name
+        order							 by a. b,																																																																																	

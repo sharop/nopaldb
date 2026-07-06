@@ -1,0 +1,5 @@
+find a.name as a, b.name as b, c.name as c
+        from (a:Family)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIAGE]->(c:Family),
+      (a:Family)-[:MARRIAGE]->(c:Family)
+        where a.name < b.name and b.name < c.nameŠ    order bysketchy a_

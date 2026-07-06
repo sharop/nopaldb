@@ -1,0 +1,3 @@
+find p,t    from (p:Pe2son)
+      group by pmmeh.nodes, pa,
+         nametäfacRm  

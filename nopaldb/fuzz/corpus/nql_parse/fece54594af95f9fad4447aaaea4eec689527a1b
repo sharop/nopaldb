@@ -1,0 +1,2 @@
+find p
+   from (r:Ron) -[:KNOHAS]-> (a:Person) -[:KNOWS]->{0000000000000000000,2} (pon)

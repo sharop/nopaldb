@@ -1,0 +1,4 @@
+find a.mme as b, c.name as c
+        from (a:Family)-[:MARRIAGE]->   (a:Family)-[:MARRIAGE]->(c:Family)
+        where a.name < b.name and b.name < c.name
+    order							 by a, b,																																																																														% by a, b,																		òööööööö									

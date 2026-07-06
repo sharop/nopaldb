@@ -1,0 +1,1 @@
+FIND ae FROM (a:Person {dept: "s&ales"}) -> [:WORKS_AT] -> (b:Company {sefffffffffffffft: "sales"}) -> [:WORKS_AT] -> (by {sefffsfpt: "s&ales"}) -> [:WORKS_AT] -> (b:Company {sefffffffffffffft: "sales"}) -> [:WORKS_AT] -> (b:Company {seffffffffffffffffffffffffffDDDDDDDDDDDDDDDfctor: "tech"})

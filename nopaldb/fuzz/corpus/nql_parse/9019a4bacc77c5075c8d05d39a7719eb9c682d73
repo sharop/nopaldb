@@ -1,0 +1,3 @@
+find x.name as bridge,
+ lfaly
+        from (a:Fami)-[ly:MARRIAGE]->(x:ly)-[:MARRIAGE]-> (a:Fami)-[ly:MARRIAGE]->(x:Famil

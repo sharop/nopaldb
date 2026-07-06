@@ -1,0 +1,4 @@
+find pl
+    from (n)
+        group by p.icty
+    ,  age1    

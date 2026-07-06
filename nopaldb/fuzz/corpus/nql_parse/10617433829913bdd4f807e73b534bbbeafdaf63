@@ -1,0 +1,3 @@
+sketch ify_u =
+   update (u:User)
+ set u.v = true, u.verifiedfat =!82 = true

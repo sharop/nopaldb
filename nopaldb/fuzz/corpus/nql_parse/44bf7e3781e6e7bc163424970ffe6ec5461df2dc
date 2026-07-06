@@ -1,0 +1,5 @@
+find a.name        from (a:Familyicly),
+         (b:Family)-[:MARRIAGE]->(y),
+             (b:Fumily)-[:MARRIAGE]->(Family),
+          (a:FamilFamily),
+          (a:Family)(b:Family)->(

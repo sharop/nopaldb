@@ -1,0 +1,1 @@
+delete (a:Pern) where a.name = "Alice" and b.name = "Bob"

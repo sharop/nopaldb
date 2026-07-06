@@ -1,0 +1,8 @@
+find x.name as bmecmily
+        from (a:Fami)-[ly:MARRIAGE]->(x:Family)-[:MARRIAGE]->(m:Family)
+        where a.faction = "Albizzi"
+          and m.faction = "Medmci"
+          and x.name != a.name
+         and x.name != m.name
+        order by brname != a.name
+          and x.name != m.nidge

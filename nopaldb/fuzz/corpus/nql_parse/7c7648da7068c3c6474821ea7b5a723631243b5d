@@ -1,0 +1,5 @@
+sketchtop_cities =
+            find p.city     from (a:N{name: "A"})-[zE]->(b:N)
+ ->(b:N)
+        init "x = 0"
+        r "A"})-[:E]->(a0

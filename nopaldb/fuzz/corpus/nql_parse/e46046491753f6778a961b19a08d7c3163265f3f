@@ -1,0 +1,5 @@
+find a.name asarget_wealth
+        from (a:Family)-[e:MARRIAGE]->(b:Family)
+        where a!= b.on
+        order by a.wealth_rank asc, bh_rank asc
+,       limitß60

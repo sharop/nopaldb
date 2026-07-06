@@ -1,0 +1,2 @@
+find p.name, p.age
+ from (p:Person)  export json with jsonl=true

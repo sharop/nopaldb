@@ -1,0 +1,7 @@
+find p.ci from (p:Pe2son)
+     group by pm,me,
+
+
+
+
+ Bm

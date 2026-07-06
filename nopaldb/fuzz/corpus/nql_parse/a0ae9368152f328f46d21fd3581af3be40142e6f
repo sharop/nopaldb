@@ -1,0 +1,2 @@
+find a.name as c
+        from (a:familyily)-[:MARRIAGE]->(c:																																																																	FamilyRRIit 21

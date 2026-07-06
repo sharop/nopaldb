@@ -1,0 +1,2 @@
+find page
+        from (p:Persn)        export csv with									r=t ue

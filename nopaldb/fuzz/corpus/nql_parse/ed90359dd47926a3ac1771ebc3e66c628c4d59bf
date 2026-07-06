@@ -1,0 +1,8 @@
+find a.nrce,
+             a.facti as source,
+             a.faction as source_n,
+             a.wealth_rank as source_wealth,
+             et,
+             b.faction as target_fact,
+             b. from (aay b.wealth_rank asc
+        limitﬂ20

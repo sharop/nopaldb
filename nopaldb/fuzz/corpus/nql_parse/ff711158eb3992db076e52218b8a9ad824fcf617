@@ -1,0 +1,2 @@
+find e>name from (e:SSSSSSSSSSSpany)
+        where degmee(e) > 4

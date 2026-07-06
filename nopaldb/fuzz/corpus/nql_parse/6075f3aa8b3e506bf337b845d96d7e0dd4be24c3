@@ -1,0 +1,2 @@
+finde
+ from (p:Person)  export json with jsonl=true

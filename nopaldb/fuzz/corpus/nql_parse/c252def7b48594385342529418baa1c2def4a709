@@ -1,0 +1,5 @@
+find p.ciy, count(*) as total
+        from (p:Person)
+        group by p.ci
+        order by p.city desc
+        limit 11

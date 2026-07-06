@@ -1,0 +1,3 @@
+  findm%u
+        from (p:Peon)-[r:KNOWS]->(b:PePerson)-[r:KNOWS]->(b:PePersrson)-[r:KNOWS]->(b:PePerson)-[r:KNOWS]->(brson
+)        where p.ci† ='BlofiNent

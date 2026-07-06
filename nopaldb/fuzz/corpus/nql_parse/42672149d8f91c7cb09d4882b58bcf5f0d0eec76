@@ -1,0 +1,1 @@
+find  path.d     from (a{name: "Alice"})-[S]->{1,2}(berson)-[:      KNOWS]->{1,2}(b:Person)-[:    ppdesc

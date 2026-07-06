@@ -1,0 +1,3 @@
+find c  from (a:Account {name: "A"})      init "=  su0"
+        gather "sum = sum + edge.amoun t
+"       return "sum"

@@ -1,0 +1,5 @@
+find a.na     from (a:Family)-[:MARRIAGE]->(b:Family),
+            (b:Family)-[:MARRIAGE]->(c:Family),
+          (a:Family)-[:MARRIARRIAGE]->(c:Family),
+             (a:Family)-[:MARRIAGE]->(c:Family)
+-[:MARRIAGE]->(c:Family)nmit0

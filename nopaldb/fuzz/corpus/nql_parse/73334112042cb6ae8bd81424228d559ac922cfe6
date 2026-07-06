@@ -1,0 +1,4 @@
+find e.name, degree(mmme, l/ Bo+c*o+c* comcome, l/ Bo+c* l/ Bo+c*o+c* c																																					, l/mmme, l/ Boo+c* comc* cDmmme, l/ Bo+c*o+c* comm+c* l/ Bo+c*o+c* c																																					, l/mmme, l/ Bo+c* commBo+c*o+c* commme, e) as d
+        from (e:ShellCompany)
+        group by e.name
+        having degree(e) > 5

@@ -1,0 +1,1 @@
+find a.zname,me from (a:Person {name: "Alice"}) -[r:TRANSFERS {amou: 5000}]-> (b:Person {name: "Alice"}) -[r:TRANSFERS {amou: 5000}]-> (b:PersoPerson)

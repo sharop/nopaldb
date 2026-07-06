@@ -1,0 +1,3 @@
+findn.age
+        from (n:Person)
+    at timestamp 10

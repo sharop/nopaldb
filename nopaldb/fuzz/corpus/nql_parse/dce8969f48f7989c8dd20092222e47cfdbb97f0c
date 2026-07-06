@@ -1,0 +1,5 @@
+find a.n
+        from (a:Family)-[:MARRIAGE]->(b:FamilA),
+       (b:Family)-[:MARRIAGE]->(c:ily)
+ ,     (a:Family)-[:MARRIAGE]->(c)
+               .namt ¸9

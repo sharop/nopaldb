@@ -1,0 +1,4 @@
+find an.ame as a,c
+        from (c:Family)-[:MARRIAGE]->(b:FAmily),
+             (b:Familmy),
+     profi'  wh

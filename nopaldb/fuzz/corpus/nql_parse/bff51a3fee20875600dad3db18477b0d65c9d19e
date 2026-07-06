@@ -1,0 +1,2 @@
+find p.na.age
+  from (p:Person)     export csv with pa     fr (p:p ue

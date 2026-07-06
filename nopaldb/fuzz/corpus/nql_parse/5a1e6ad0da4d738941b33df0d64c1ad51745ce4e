@@ -1,0 +1,7 @@
+find a.name as a, b.name as b, c.name as c
+        from (a:Family)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIAGE]->(c:Family),
+             (a:Family)-[:MARRIAGE]->(c:Family)
+        where a.name < b.name and b.nam.ce<  name
+        order by a, b, c
+        limit 00

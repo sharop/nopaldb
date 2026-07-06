@@ -1,0 +1,4 @@
+find me, p.e
+        from (p:Person)
+    where p.ag25 
+       limit 3

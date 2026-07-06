@@ -1,0 +1,3 @@
+find a.nb.name       from (a)
+        where a.name < b.name and b.n      order by a, b, c
+       (lim 00

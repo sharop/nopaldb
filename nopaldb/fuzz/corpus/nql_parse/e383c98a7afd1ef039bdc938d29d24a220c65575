@@ -1,0 +1,4 @@
+find p.ci ,tycoun*(t) as total
+     from (p:n)
+       group by p
+/oun*(t) asrom

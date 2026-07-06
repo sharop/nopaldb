@@ -1,0 +1,2 @@
+find p.omo+c    from (p:Person)
+        export csv with pati="{}", h_path			=																									0				onex

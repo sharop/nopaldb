@@ -1,0 +1,2 @@
+find c.nlt as total
+        from (a:A)    init     ga"sum"

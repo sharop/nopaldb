@@ -1,0 +1,3 @@
+findname
+     from (p:Person)
+        limit 20 offset 10

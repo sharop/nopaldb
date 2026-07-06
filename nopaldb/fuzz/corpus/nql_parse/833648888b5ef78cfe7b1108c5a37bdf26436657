@@ -1,0 +1,2 @@
+find p
+   from (r:Rootson) -[:KNOPS]->{9999991,2} (pon)

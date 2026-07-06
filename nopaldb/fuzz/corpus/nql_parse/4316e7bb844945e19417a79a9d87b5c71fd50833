@@ -1,0 +1,3 @@
+find b.na/find
+ *X       from (p:P)
+     export csvO

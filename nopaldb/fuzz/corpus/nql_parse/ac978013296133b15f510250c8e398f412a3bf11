@@ -1,0 +1,3 @@
+find distinctnk
+        from (mily {name: "M"})-[:MRIAGE]->(:Family)-[:MARR]->(:Family)
+ þ

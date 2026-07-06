@@ -1,0 +1,3 @@
+sketchtops =
+     find p.omo+c    from (p:P)
+        export csv with"pat="  ÿ0
