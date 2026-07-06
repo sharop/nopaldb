@@ -1,7 +1,7 @@
 // src/graph/mod.rs
 
 pub mod view;
-mod applier;
+pub(crate) mod applier;
 pub use view::{GraphView, Subgraph};
 
 use std::collections::{HashMap, BinaryHeap, VecDeque, HashSet};
@@ -69,11 +69,12 @@ pub struct Graph {
 
     /// Mutex de serialización para la fase de commit de transacciones.
     /// Previene condiciones de carrera en índices de adyacencia y lost updates MVCC.
-    commit_lock: Arc<tokio::sync::Mutex<()>>,
     /// Write-gate del single-writer apply: serializa TODA aplicación física
     /// de escrituras (directas y de commit) para eliminar races RMW en
     /// adyacencia, índice de propiedades y versiones. Ver `graph/applier.rs`.
     write_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Canal hacia la task del applier (group commit + orden FIFO de applies).
+    applier_tx: tokio::sync::mpsc::Sender<applier::ApplierMsg>,
 
     /// Mapa de transacciones activas: tx_id → timestamp de inicio.
     /// Usado por el GC para calcular el horizonte seguro de purga.
@@ -288,8 +289,8 @@ impl Graph {
             auto_gc_task: Arc::new(Mutex::new(None)),
             auto_gc_stop_tx: Arc::new(Mutex::new(None)),
             auto_gc_config: Arc::new(RwLock::new(None)),
-            commit_lock: Arc::new(tokio::sync::Mutex::new(())),
             write_gate: Arc::new(tokio::sync::Mutex::new(())),
+            applier_tx: applier::spawn_applier(),
 
             active_tx_timestamps: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             topology_version: Arc::new(AtomicU64::new(1)),
@@ -452,13 +453,6 @@ impl Graph {
     }
 
     /// Indexa las propiedades de un nodo (uso interno)
-    /// Indexa las propiedades de un nodo (vía single-writer apply: las listas
-    /// bajo `idx:prop:` se actualizan read-modify-write).
-    pub(crate) async fn index_node_properties(&self, node: &Node) -> Result<()> {
-        self.submit_write(applier::WriteOp::IndexNodeProperties { node: node.clone() })
-            .await
-    }
-
     /// Aplicación física de la indexación. Solo el single-writer apply debe llamarla.
     async fn apply_index_node_properties(&self, node: &Node) -> Result<()> {
         for (key, value) in &node.properties {
@@ -533,8 +527,8 @@ impl Graph {
             auto_gc_task: Arc::new(Mutex::new(None)),
             auto_gc_stop_tx: Arc::new(Mutex::new(None)),
             auto_gc_config: Arc::new(RwLock::new(None)),
-            commit_lock: Arc::new(tokio::sync::Mutex::new(())),
             write_gate: Arc::new(tokio::sync::Mutex::new(())),
+            applier_tx: applier::spawn_applier(),
 
             active_tx_timestamps: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             topology_version: Arc::new(AtomicU64::new(1)),
@@ -558,9 +552,9 @@ impl Graph {
         Arc::clone(&self.lock_manager)
     }
 
-    /// Mutex de serialización para la fase de commit.
-    pub(crate) fn commit_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
-        Arc::clone(&self.commit_lock)
+    /// Write-gate del single-writer apply (lo toma la task del applier por lote).
+    pub(crate) fn write_gate(&self) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(&self.write_gate)
     }
 
 
@@ -618,10 +612,53 @@ impl Graph {
     // storage + índices) se aplica sin interleaving con otros escritores.
     // Las LECTURAS nunca pasan por aquí. Ver `graph/applier.rs`.
 
-    /// Aplica una operación de escritura bajo el write-gate (serializado).
+    /// Encola una operación de escritura en la task del applier (orden FIFO,
+    /// serializada bajo el write-gate). Si la task murió (el runtime que abrió
+    /// el Graph fue destruido), aplica inline bajo el gate — misma semántica,
+    /// sin agrupamiento.
     pub(crate) async fn submit_write(&self, op: applier::WriteOp) -> Result<()> {
-        let _gate = self.write_gate.lock().await;
-        self.apply_write_op(op).await
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        let msg = applier::ApplierMsg {
+            graph: self.clone(),
+            work: applier::Work::Op(op),
+            ack: ack_tx,
+        };
+        match self.applier_tx.send(msg).await {
+            Ok(()) => ack_rx.await.map_err(|_| {
+                NopalError::ConcurrencyError("write applier dropped the operation".into())
+            })?,
+            Err(tokio::sync::mpsc::error::SendError(msg)) => {
+                let applier::Work::Op(op) = msg.work else { unreachable!() };
+                let _gate = self.write_gate.lock().await;
+                self.apply_write_op(op).await
+            }
+        }
+    }
+
+    /// Encola el write-set de un commit. El applier asigna el timestamp de
+    /// commit en orden de cola, agrupa el fsync del WAL con otros commits en
+    /// vuelo (group commit) y aplica en orden FIFO. Fallback inline si la
+    /// task murió: un fsync propio + apply bajo el gate (semántica de hoy).
+    pub(crate) async fn submit_commit(&self, set: applier::CommitSet) -> Result<()> {
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        let msg = applier::ApplierMsg {
+            graph: self.clone(),
+            work: applier::Work::Commit(set),
+            ack: ack_tx,
+        };
+        match self.applier_tx.send(msg).await {
+            Ok(()) => ack_rx.await.map_err(|_| {
+                NopalError::ConcurrencyError("write applier dropped the commit".into())
+            })?,
+            Err(tokio::sync::mpsc::error::SendError(msg)) => {
+                let applier::Work::Commit(set) = msg.work else { unreachable!() };
+                let _gate = self.write_gate.lock().await;
+                let commit_timestamp = self.next_logical_timestamp();
+                self.wal().append_batch(&set.wal_records(commit_timestamp)).await?;
+                self.apply_commit_set(&set, commit_timestamp).await?;
+                self.persist_clocks().await
+            }
+        }
     }
 
     /// Despacho de operaciones físicas. SOLO debe llamarse con el write-gate
@@ -639,9 +676,6 @@ impl Graph {
             WriteOp::DeleteNode { id } => self.apply_delete_node(id).await,
             WriteOp::DeleteEdgeAt { id, timestamp } => {
                 self.apply_delete_edge_at(id, timestamp).await
-            }
-            WriteOp::IndexNodeProperties { node } => {
-                self.apply_index_node_properties(&node).await
             }
             WriteOp::AddPropertyIndexEntry { property, value, node_id } => {
                 self.storage.save_property_index(&property, &value, node_id).await
@@ -2427,6 +2461,71 @@ impl Graph {
             self.storage.save_adjacency_in(*node_id, edge_ids).await?;
         }
         self.bump_topology_version();
+        Ok(())
+    }
+
+    /// Aplica el write-set COMPLETO de un commit transaccional. SOLO debe
+    /// llamarse con el write-gate tomado (task del applier o fallback inline):
+    /// usa exclusivamente cuerpos `apply_*` y storage directo — nada que
+    /// re-entre al canal ni al gate.
+    pub(crate) async fn apply_commit_set(
+        &self,
+        set: &applier::CommitSet,
+        commit_timestamp: u64,
+    ) -> Result<()> {
+        // 1. Borrados de nodos
+        for (node_id, _node) in &set.deleted_nodes {
+            self.apply_delete_node(*node_id).await?;
+            #[cfg(feature = "full-isolation")]
+            self.mark_modified(*node_id, commit_timestamp).await?;
+        }
+
+        // 1b. Borrados de aristas (cualquier fallo aborta: el WAL ya tiene el
+        //     registro y el redo del próximo open reintenta).
+        for edge_id in &set.deleted_edges {
+            self.apply_delete_edge_at(*edge_id, commit_timestamp).await?;
+        }
+
+        // 2. Upserts de nodos: cadena MVCC en un batch atómico de storage
+        for node in &set.pending_nodes {
+            let is_update = self.storage.node_exists(node.id).await?;
+            if is_update {
+                let current_version_num = self.storage.get_current_version(node.id).await?;
+                let current_version = self
+                    .storage
+                    .get_node_version(node.id, current_version_num)
+                    .await?;
+                let mut invalidated_prev = current_version.clone();
+                invalidated_prev.invalidate(commit_timestamp);
+                let new_version =
+                    VersionedNode::new_version(&current_version, node.clone(), commit_timestamp);
+                self.storage
+                    .commit_node_version_atomic(node, Some(&invalidated_prev), &new_version)
+                    .await?;
+            } else {
+                let first_version = VersionedNode::new(node.clone(), commit_timestamp);
+                self.storage
+                    .commit_node_version_atomic(node, None, &first_version)
+                    .await?;
+            }
+
+            // Registro legacy + inicialización de adyacencia (sin indexar aquí)
+            self.apply_add_node(node.clone(), true).await?;
+
+            #[cfg(feature = "full-isolation")]
+            self.mark_modified(node.id, commit_timestamp).await?;
+        }
+
+        // 3. Aristas con el timestamp MVCC del commit
+        for edge in &set.pending_edges {
+            self.apply_add_edge_at(edge.clone(), commit_timestamp).await?;
+        }
+
+        // 4. Indexación de propiedades (una sola vez)
+        for node in &set.pending_nodes {
+            self.apply_index_node_properties(node).await?;
+        }
+
         Ok(())
     }
 
