@@ -8,7 +8,13 @@
 
 ### Installation
 
-#### From Source
+#### From PyPI
+```bash
+pip install nopaldb
+```
+Prebuilt wheels for Linux, macOS and Windows (CPython 3.10+).
+
+#### From Source (development)
 ```bash
 # Clone repository
 git clone https://github.com/sharop/nopaldb
@@ -25,10 +31,7 @@ pip install maturin
 maturin develop --features python,analytics
 ```
 
-#### From PyPI (Coming Soon)
-```bash
-pip install nopaldb
-```
+
 
 ---
 
@@ -860,7 +863,7 @@ except Exception as e:
 
 ### Mejores Prácticas
 
-1. ✅ **Usar context managers** (próximamente)
+1. ✅ **Usar context managers** (`with nopaldb.Graph.open(...) as graph:`)
 2. ✅ **Siempre confirmar o revertir transacciones**
 3. ✅ **Usar exportación Arrow para datasets grandes**
 4. ✅ **Agrupar operaciones en transacciones**

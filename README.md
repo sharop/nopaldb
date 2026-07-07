@@ -172,16 +172,12 @@ nopaldb = { version = "0.4", features = ["full"] }         # complete feature se
 
 #### Python
 ```bash
-# From source
-git clone https://github.com/sharop/nopaldb
-cd nopaldb
-pip install maturin
-make build-wheel
-
-# Local development install
-cd nopaldb
-maturin develop --release --features python-full
+pip install nopaldb
 ```
+
+Prebuilt wheels for Linux, macOS and Windows (CPython 3.10+). To build from
+source instead: `pip install maturin && maturin develop --release --features python-full`
+(from the `nopaldb/` directory).
 
 `cargo build -p nopaldb --features full` builds the Rust library only. The Python wrapper is built with `maturin` because PyO3 needs Python-specific linker configuration.
 
@@ -224,6 +220,7 @@ See `examples/`:
 - **[NDBStudio Web Quickstart](docs/ndbstudio/web_quickstart.md)** - Launch the local web workbench for graph and session analysis
 
 #### Architecture
+- **[Adoption Guide](docs/ADOPTION.md)** - Fastest path in for Rust, Python, MCP and Studio users
 - **[Architecture Overview](docs/ARCHITECTURE.md)** - System design
 - **[Durability Guarantees](docs/DURABILITY.md)** - Crash-safety model and what survives SIGKILL
 - **[Arrow Integration](docs/arrow/01-OVERVIEW.md)** - Arrow/ML pipeline docs
@@ -486,19 +483,12 @@ nopaldb = { version = "0.4", features = ["full"] }         # conjunto completo (
 
 #### Python
 ```bash
-# Desde código fuente
-git clone https://github.com/sharop/nopaldb
-cd nopaldb
-pip install maturin
-make build-wheel
-
-# Instalación local para desarrollo
-cd nopaldb
-maturin develop --release --features python-full
-
-# Desde PyPI (próximamente)
 pip install nopaldb
 ```
+
+Wheels preconstruidas para Linux, macOS y Windows (CPython 3.10+). Para compilar
+desde fuente: `pip install maturin && maturin develop --release --features python-full`
+(desde el directorio `nopaldb/`).
 
 `cargo build -p nopaldb --features full` solo compila la librería Rust. El wrapper Python se compila con `maturin`, porque PyO3 necesita configuración de linker específica de Python.
 
@@ -516,6 +506,7 @@ Ver **[Guía de Feature Tiers](docs/FEATURE_TIERS.md)** para opciones de compila
 
 #### Documentación API
 - **[Índice de Documentación (Español)](docs/es/README.md)** - Guía central de docs y runbooks
+- **[Guía de Adopción](docs/ADOPTION.md)** - La ruta rápida para Rust, Python, MCP y Studio
 - **[Guía API Python](python/README.md)** - Bindings Python
 
 #### Versionado (SemVer)
