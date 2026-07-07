@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.31] - 2026-07-06
+
+### ✨ Highlights
+- **Cross-transaction WAL group commit**: concurrent commits queued at the single-writer applier share one fsync and apply in FIFO order. 8 concurrent committers: 98.3ms → 29.3ms (3.35×); single-commit latency unchanged.
+- **`NqlResult` is iterable**: `for row in graph.execute_nql(...)` works as documented (delegates to the query result; write/index results iterate empty — use `.write`/`.summary`).
+- **Adoption guide** ([docs/ADOPTION.md](docs/ADOPTION.md)): the fastest path in for Rust, Python, MCP and Studio users, plus the operational rules.
+
+### Added
+- NQL parser fuzzing (cargo-fuzz target, seeded corpus, nightly job — 5.26M executions, zero panics in the seed session).
+- Dedicated PyPI project description (`pip install nopaldb` and Python quickstart instead of the crate README).
+
+### Changed
+- Python is now installable from PyPI; READMEs updated accordingly.
+
+---
+
 ## [0.4.30] - 2026-07-06
 
 ### Fixed

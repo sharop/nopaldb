@@ -2242,7 +2242,7 @@ checksum = "2195bf6aa996a481483b29d62a7663eed3fe39600c460e323f8ff41e90bdd89b"
 
 [[package]]
 name = "ndbstudio"
-version = "0.4.30"
+version = "0.4.31"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -2296,7 +2296,7 @@ dependencies = [
 
 [[package]]
 name = "nopaldb"
-version = "0.4.30"
+version = "0.4.31"
 dependencies = [
  "anyhow",
  "arrow",
@@ -2334,7 +2334,7 @@ dependencies = [
 
 [[package]]
 name = "nopaldb-mcp"
-version = "0.4.30"
+version = "0.4.31"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
