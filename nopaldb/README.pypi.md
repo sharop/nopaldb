@@ -1,4 +1,12 @@
+<img width="140" alt="NopalDB logo" src="https://raw.githubusercontent.com/sharop/nopaldb/main/assets/nopaldb_logo.png" />
+
 # NopalDB 🌵
+
+[![PyPI](https://img.shields.io/pypi/v/nopaldb.svg)](https://pypi.org/project/nopaldb/)
+[![Python](https://img.shields.io/pypi/pyversions/nopaldb.svg)](https://pypi.org/project/nopaldb/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/nopaldb.svg)](https://pypi.org/project/nopaldb/)
+[![CI](https://github.com/sharop/nopaldb/actions/workflows/community-ci.yml/badge.svg)](https://github.com/sharop/nopaldb/actions/workflows/community-ci.yml)
+[![License](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](https://github.com/sharop/nopaldb/blob/main/LICENSE)
 
 High-performance embedded **graph database** for Python, written in Rust:
 ACID transactions, MVCC time-travel, a Cypher-like query language (NQL),
