@@ -28,7 +28,7 @@ impl PyQueryResult {
 
     fn __iter__(slf: PyRef<Self>) -> PyResult<PyResultIterator> {
         Ok(PyResultIterator {
-            inner: slf.inner.clone(),
+            inner: Some(slf.inner.clone()),
             index: 0,
         })
     }
@@ -135,6 +135,41 @@ impl PyNqlResult {
         format!("<NqlResult: {}>", self.kind())
     }
 
+    /// Itera las filas del resultado de lectura (como documenta el README:
+    /// `for row in graph.execute_nql(...)`). Para resultados sin filas
+    /// (write/index/message/export) itera vacío — usar `.write`/`.summary`.
+    fn __iter__(slf: PyRef<Self>) -> PyResult<PyResultIterator> {
+        let inner = match &slf.inner {
+            RustNqlResult::Query(result) => Some(result.clone()),
+            _ => None,
+        };
+        Ok(PyResultIterator { inner, index: 0 })
+    }
+
+    fn __len__(&self) -> usize {
+        match &self.inner {
+            RustNqlResult::Query(result) => result.len(),
+            _ => 0,
+        }
+    }
+
+    fn __getitem__<'py>(&self, py: Python<'py>, index: usize) -> PyResult<Bound<'py, PyDict>> {
+        match &self.inner {
+            RustNqlResult::Query(result) => {
+                if index >= result.len() {
+                    return Err(PyErr::new::<pyo3::exceptions::PyIndexError, _>(
+                        "Index out of range",
+                    ));
+                }
+                row_to_pydict(py, result, index)
+            }
+            _ => Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
+                "NqlResult of kind '{}' has no rows — use .write / .summary",
+                self.kind()
+            ))),
+        }
+    }
+
     #[getter]
     fn kind(&self) -> String {
         match &self.inner {
@@ -200,7 +235,8 @@ impl PyNqlResult {
 
 #[pyclass]
 struct PyResultIterator {
-    inner: RustQueryResult,
+    /// None = resultado sin filas (writes, index, message…): iterador vacío.
+    inner: Option<RustQueryResult>,
     index: usize,
 }
 
@@ -214,11 +250,14 @@ impl PyResultIterator {
         mut slf: PyRefMut<'py, Self>,
         py: Python<'py>
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
-        if slf.index >= slf.inner.len() {
+        let Some(inner) = &slf.inner else {
+            return Ok(None);
+        };
+        if slf.index >= inner.len() {
             return Ok(None);
         }
 
-        let dict = row_to_pydict(py, &slf.inner, slf.index)?;
+        let dict = row_to_pydict(py, inner, slf.index)?;
         slf.index += 1;
         Ok(Some(dict))
     }
