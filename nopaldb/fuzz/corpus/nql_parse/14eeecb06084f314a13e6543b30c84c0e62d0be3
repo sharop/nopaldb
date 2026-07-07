@@ -1,0 +1,3 @@
+find e      from (i)
+  group by
+    d

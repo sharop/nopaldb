@@ -1,0 +1,1 @@
+find ac.na     from (a:Family)-[:MARRIAGE]->(bC:y)-[:MARRIAGE]->(a:milyn)-[:MARit 50

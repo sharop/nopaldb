@@ -1,0 +1,4 @@
+find x.nfam   from (a:Family)-[:MAGE]->(xamily)
+        where a.facon = "Albizzi"
+          and m.faction  and[x.e
+    e

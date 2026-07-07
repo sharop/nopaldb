@@ -1,0 +1,4 @@
+/* Block comment should be ignored */
+        find p.name
+        from (p:Person)
+        where p.city = 'CDMX' // inline comment

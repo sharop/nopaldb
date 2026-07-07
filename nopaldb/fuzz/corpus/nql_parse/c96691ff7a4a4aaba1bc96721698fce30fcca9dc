@@ -1,0 +1,3 @@
+find b.name
+        from (s:R {name: "Src"}) -[:PIPE]->{1,1} (b:R)
+        where ph_min("cap") >= 10

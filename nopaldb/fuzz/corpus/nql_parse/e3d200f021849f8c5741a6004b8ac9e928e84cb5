@@ -1,0 +1,4 @@
+find exiones
+        from (e:Shmiction)
+       group by
+        order bysc

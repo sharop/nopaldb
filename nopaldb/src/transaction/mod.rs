@@ -11,7 +11,6 @@ use crate::types::{Node, Edge, NodeId, EdgeId, PropertyValue};
 use crate::graph::Graph;
 use crate::wal::WalRecord;
 
-use crate::mvcc::VersionedNode;
 
 /// ID único de transacción
 pub type TransactionId = u64;
@@ -770,178 +769,30 @@ impl Transaction {
             }
         }
 
-        // ── Serialización de Commit (Prevención de Race Conditions) ──────────
-        // Adquirir lock exclusivo para la fase de commit. Esto previene:
-        // 1. Corrupción de índices de adyacencia en Sled (write-after-write race)
-        // 2. Lost Updates en MVCC cuando dos tx actualizan el mismo nodo
-        // El lock se libera automáticamente al salir del scope de commit.
-        let commit_lock = self.graph.commit_lock();
-        let _commit_guard = commit_lock.lock().await;
+        // ── Write-set al applier ─────────────────────────────────────────────
+        // El commit ya no toma un lock global: construye su write-set completo
+        // y lo encola en la task del applier, que (a) asigna el timestamp de
+        // commit en orden FIFO, (b) agrupa los registros WAL de TODOS los
+        // commits en vuelo en UN solo fsync (group commit entre transacciones)
+        // y (c) aplica cada write-set en orden de cola bajo el write-gate —
+        // preservando orden-de-log == orden-de-apply, la invariante del redo.
 
-        // Timestamp lógico monotónico para mantener consistencia con snapshot_timestamp.
-        let commit_timestamp = self.graph.next_logical_timestamp();
-
-
-        // P1. Escribir en el WAL antes de modificar el storage.
-        // Todo el write-set va en UN lote con UN solo fsync (group commit a
-        // nivel de transacción): antes eran N+2 fsyncs por commit.
-        let wal = self.graph.wal();
-
-        let mut wal_records = Vec::with_capacity(
-            2 + self.deleted_nodes.len() + self.pending_nodes.len() + self.pending_edges.len(),
-        );
-
-        wal_records.push(WalRecord::Begin {
-            tx_id: self.id,
-            timestamp: self.timestamp,
-        });
-
+        // Prefetch de nodos borrados: el registro WAL DeleteNode lleva el nodo.
+        let mut deleted_nodes = Vec::with_capacity(self.deleted_nodes.len());
         for node_id in &self.deleted_nodes {
-            let node = self.graph.get_node(*node_id).await?;
-            wal_records.push(WalRecord::DeleteNode {
-                tx_id: self.id,
-                node_id: *node_id,
-                node,
-            });
+            deleted_nodes.push((*node_id, self.graph.get_node(*node_id).await?));
         }
 
-        for node in self.pending_nodes.values() {
-            wal_records.push(WalRecord::InsertNode {
-                tx_id: self.id,
-                node: node.clone(),
-            });
-        }
-
-        for edge in self.pending_edges.values() {
-            wal_records.push(WalRecord::InsertEdge {
-                tx_id: self.id,
-                edge: edge.clone(),
-            });
-        }
-
-        wal_records.push(WalRecord::Commit {
+        let set = crate::graph::applier::CommitSet {
             tx_id: self.id,
-            timestamp: commit_timestamp,
-        });
+            begin_timestamp: self.timestamp,
+            deleted_nodes,
+            deleted_edges: self.deleted_edges.iter().cloned().collect(),
+            pending_nodes: self.pending_nodes.values().cloned().collect(),
+            pending_edges: self.pending_edges.values().cloned().collect(),
+        };
 
-        wal.append_batch(&wal_records).await?;
-
-        log::info!(
-            "Transaction {} written to WAL ({} records, 1 fsync)",
-            self.id,
-            wal_records.len()
-        );
-
-
-        //P2. Aplicar cambios al storage con MVCC
-
-        // 1. Aplicar borrados
-        for node_id in &self.deleted_nodes {
-            self.graph.delete_node(*node_id).await?;
-
-            #[cfg(feature = "full-isolation")]
-            {
-                self.graph.mark_modified(*node_id, commit_timestamp).await?;
-            }
-        }
-
-        for edge_id in &self.deleted_edges {
-            // Cualquier fallo aborta el commit: un delete a medias dejaría el
-            // grafo inconsistente en silencio. El WAL ya tiene el registro,
-            // así que el redo del próximo open reintenta la operación.
-            self.graph.delete_edge_at(*edge_id, commit_timestamp).await?;
-        }
-
-        // 2. Aplicar inserts/updates de nodos SIN indexar
-        for (node_id, node) in &self.pending_nodes {
-
-            let is_update = self.graph.node_exists(*node_id).await?;
-
-            if is_update {
-                // ═════════════════════════════════════════════════════
-                // UPDATE: Crear nueva versión
-                // ═════════════════════════════════════════════════════
-
-                // 1. Obtener versión actual
-                let current_version_num = self.graph
-                    .get_current_version(*node_id)
-                    .await?;
-
-                let current_version = self.graph
-                    .get_node_version(*node_id, current_version_num)
-                    .await?;
-
-                // 2. Preparar versión anterior invalidada (en memoria)
-                let mut invalidated_prev = current_version.clone();
-                invalidated_prev.invalidate(commit_timestamp);
-
-                // 3. Crear nueva versión
-                let new_version = VersionedNode::new_version(
-                    &current_version,
-                    node.clone(),
-                    commit_timestamp,
-                );
-
-                // 4. Aplicar TODO el write-set del nodo en un solo batch
-                //    atómico (invalidación + versión + current + listas +
-                //    registro legacy): un crash a la mitad ya no puede dejar
-                //    al nodo sin versión current ni la cadena rota.
-                self.graph
-                    .commit_node_atomic(node, Some(&invalidated_prev), &new_version)
-                    .await?;
-
-                log::debug!(
-                    "Updated node {} (v{} -> v{})",
-                    node_id,
-                    current_version.version,
-                    new_version.version
-                );
-
-            } else {
-                // ═════════════════════════════════════════════════════
-                // INSERT: Primera versión
-                // ═════════════════════════════════════════════════════
-
-                let first_version = VersionedNode::new(
-                    node.clone(),
-                    commit_timestamp,
-                );
-
-                self.graph
-                    .commit_node_atomic(node, None, &first_version)
-                    .await?;
-
-                log::debug!("Inserted node {} (v1)", node_id);
-            }
-
-            // Mantener compatibilidad: actualizar storage tradicional
-            self.graph.add_node_internal(node.clone(), true).await?;
-
-            #[cfg(feature = "full-isolation")]
-            {
-                self.graph.mark_modified(node.id, commit_timestamp).await?;
-            }
-        }
-
-        // 3. Aplicar aristas (con timestamp MVCC del commit para consistencia)
-        for edge in self.pending_edges.values() {
-            self.graph.add_edge_at(edge.clone(), commit_timestamp).await?;
-        }
-
-        // 4. Indexar propiedades (UNA SOLA VEZ)
-        for node in self.pending_nodes.values() {
-            self.graph.index_node_properties(node).await?;
-        }
-
-        // 5. (eliminado) El flush completo de adyacencia era redundante y
-        //    O(nodos totales) por commit: cada operación del single-writer
-        //    apply ya persiste sus listas de adyacencia afectadas, y el
-        //    crash recovery reconstruye desde las aristas. El flush global
-        //    queda solo en checkpoint() y en las cargas bulk.
-
-        // 5b. Persistir relojes lógicos: garantiza que un reopen posterior
-        //     retome timestamps/tx ids por encima de lo commiteado.
-        self.graph.persist_clocks().await?;
+        self.graph.submit_commit(set).await?;
 
         // 6. Liberar locks antes de marcar como committed
         #[cfg(feature = "full-isolation")]

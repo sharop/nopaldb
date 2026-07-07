@@ -1,0 +1,3 @@
+find e.nm from (p:Peron)
+        export csv with p_t2iesM=
+2

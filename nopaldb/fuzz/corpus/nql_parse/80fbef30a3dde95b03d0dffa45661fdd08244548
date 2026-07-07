@@ -1,0 +1,1 @@
+update  (a:Person)-[r:KNOWS]->(b:PePersrson)-[r:KNOWS]->(b:PePerson)-[r:KNOWS]->(b:PePersrson)-[rNOWS]->(b:PePerson)-[r:KNOWS]-KN

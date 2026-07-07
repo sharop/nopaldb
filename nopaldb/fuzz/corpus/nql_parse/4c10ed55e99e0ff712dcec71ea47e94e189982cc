@@ -1,0 +1,5 @@
+find a.name,
+             a.wealth_rank as source_wealth,
+             b.n   from (a:Family)-[e:MARRIAGE]->(b:Family)
+        where faction
+        order by a.wealth_rank asc, b.wealth_ 

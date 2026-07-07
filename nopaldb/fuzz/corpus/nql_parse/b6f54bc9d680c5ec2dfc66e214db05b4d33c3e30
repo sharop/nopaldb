@@ -1,0 +1,6 @@
+find b.name, path.lt as r
+        from (a:N {name: "A"})-[:E]->(b:N)
+     init "x = 0"
+        gather "x = edge.v"
+        
+        from (e

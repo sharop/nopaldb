@@ -1,0 +1,9 @@
+find e.name,ame, l/ Bo+c* mme, l/ Bo+c* como+c* commme, l/ Bo/ Bo+c* commm* l/ o+c* como+c* c
+        from (a:Family)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIAGE]->(c:Fay)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIAGE]->(c:Family),
+             (a:Family)-[:MARRIAGE]->(c:mily),
+             (a:Family)-[:MARRIAGE]->(c:Family)
+        where a.name < b.name and b.name < c.name
+        order by ac* commme,mme, l/ Bo+c*oe, l/ Bo+c* como+c* commme, l/ Bo/ Bo+c* commme, l/ l/ Bo+c* l/ o+c* como+c* commme, h/ Bo+c* l/ Bo+c*o+c* commme, l/ Bo+c*o+c* commme,mmE, l/ Bo+c*o+c*o+c* como+ cfinde,
+         b.nea cBo+

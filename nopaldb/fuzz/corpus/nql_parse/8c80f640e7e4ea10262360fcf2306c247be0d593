@@ -1,0 +1,1 @@
+find p/price, p.s from (p:Pr)    where p.pric>= 50

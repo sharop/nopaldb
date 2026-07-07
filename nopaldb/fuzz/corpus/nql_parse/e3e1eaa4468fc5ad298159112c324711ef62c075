@@ -1,0 +1,1 @@
+find b   from (a:Pern {me: "Alice"}) -[OSaS]->{		4} (bern {me: "Alice"}) -[:KNOSaS]->{		} (bon)

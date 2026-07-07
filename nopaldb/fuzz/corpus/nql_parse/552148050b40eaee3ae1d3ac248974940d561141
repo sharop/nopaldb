@@ -1,0 +1,1 @@
+delete (:Pn)-[:KNOW]->(bon)  (

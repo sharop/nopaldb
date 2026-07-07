@@ -1,0 +1,1 @@
+delete (a:Person)-[:KWS]->(b:Pon) where e.ame = "Alie" and b.na= "Bob"

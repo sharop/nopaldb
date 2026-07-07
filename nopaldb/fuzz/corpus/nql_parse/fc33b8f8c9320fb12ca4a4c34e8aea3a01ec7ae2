@@ -1,0 +1,10 @@
+find a.name as source,
+             a.faction as source_faction,
+           a.wealth_rank as source_lth,
+             b.name as varget,
+             b.ction,
+             b.weal_rank as target_wealth
+        from (a:Family)-[e:MARRIAGE]->(b:Family)
+        where a.faction != b.faction
+        order by a.wealth_rank asc, b.wealŒ_rank asc
+        limit 30

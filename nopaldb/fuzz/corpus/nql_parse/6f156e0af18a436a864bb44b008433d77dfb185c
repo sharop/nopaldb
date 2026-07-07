@@ -1,0 +1,9 @@
+find a.namce,
+             a.faction asrce_faction,
+              target,
+             b.faction as target_faction,
+             b.wt_wealth
+        from (a:Family)-[e:MARRIAGE]->(b:Family)
+        where a.faction != b.faction
+        order by a.wealth_rank asc, b.wealth_rank asc
+        limitﬂ30

@@ -1,0 +1,1 @@
+find a.name, b.name from (a:Person) -[r:RS {amount7: 5001, yyyyyyyc: 5001, yyyyurrency: "USD"}]-(b:Person)

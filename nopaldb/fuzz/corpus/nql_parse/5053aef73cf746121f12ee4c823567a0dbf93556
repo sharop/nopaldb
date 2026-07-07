@@ -1,0 +1,1 @@
+find p.name, page from (p:Person) export csv with path="{}",      from  nesc

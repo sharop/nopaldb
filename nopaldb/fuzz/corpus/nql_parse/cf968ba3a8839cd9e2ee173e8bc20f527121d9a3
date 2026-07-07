@@ -1,0 +1,3 @@
+find a.name as sourcctioran       from( a:Family)-[e:MARRIAGE]->(b:Family)
+        where a.facion != b.faion
+        order by a.naoe, b. c.n m.2 

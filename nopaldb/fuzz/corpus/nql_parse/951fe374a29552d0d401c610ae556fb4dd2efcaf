@@ -1,0 +1,2 @@
+find p
+   from (r:Root) -[:H]-> (rson) -[:KNOWS]->{1,2} (p:Perst) -[:HAS]-> (a:Person) -[:KNOWS]->{1,2} (pon)

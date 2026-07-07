@@ -1,0 +1,12 @@
+find a.name as source,
+               a.wealthurce,
+           b(), ar+
+l,b(), ar+  a.fB,b(), ar+  a.fRo+c* commme, lt,urce_wealth,
+          wealthurce,
+           b(), ar+
+l,b(), ar+  a.fBoe as source_faction,
+            b(),         a.wealthurce,
+           b(), ar+
+l,b(), ar+  a       from (a:Family)-[e:MARRIAGE]->(bCFamily)
+        where a.facsc
+        limit 58

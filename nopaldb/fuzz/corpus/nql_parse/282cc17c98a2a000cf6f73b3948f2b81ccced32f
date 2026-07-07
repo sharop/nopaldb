@@ -1,0 +1,2 @@
+find p. l/ B    from (pon)
+        export csv with pat="{}", h_ir=true,:.Csc

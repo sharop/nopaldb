@@ -1,0 +1,2 @@
+find b from (a:A {name: "Hub"}) -[:FLOW]->{1,2} (b:A)
+     where m("amount") > 100000

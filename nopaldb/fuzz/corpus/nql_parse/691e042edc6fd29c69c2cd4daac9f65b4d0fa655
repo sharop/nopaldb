@@ -1,0 +1,4 @@
+find b.name
+        from (a {name: "A"})-[:E]->(b:N)
+    init "x = 0"
+      gatherer Î"x     g

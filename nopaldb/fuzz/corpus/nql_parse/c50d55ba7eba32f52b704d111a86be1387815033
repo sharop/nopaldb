@@ -1,0 +1,53 @@
+find a.name as source,
+               a.wealthurce,
+           b(), ar+
+l,b(), ar+  a.fBoe as source,
+             a.faction as source_faction,
+          ar+
+l,b(), ar+  a.fBo+c* commme, lt,urce_wealth,
+             b>namet_faction,on,
+             a.wealthurce,
+           b(), ar+
+l,b(), ar+  a.fBoe as source_faction,
+            Boe as source,
+             a.faction as source_faction,
+          ar+
+l,b(), ar+  a.fBo+c* commme, lt,urce_wealth,
+             b>namet_faction,on,
+             a.wealthurce,
+           b(), ar+
+l,b(), ar+  a.fBoe as source_faction,
+             a.wealthurce,
+           b(), ae,
+             a.faction as source_faction,
+             a.wealthurce,
+           b(), ar+
+l,b(), ar+  a.fBoe as source,
+             a.faction as source_faction,
+             a.wealthurce,
+           b(), ar+   b>namet_faction,on,
+             a.wealthurce,
+           b(), ar+
+l,b(), ar+  a.fBoe as source_faction,
+             a.wealthurce,
+           b(), ae,
+             a.faction as source_faction,
+             a.wealthurce,
+           b(), ar+
+l,b(), ar+  a.
+l,b(), b(), ar+
+l,b(), ar+  a.fBoe as source,
+             a.faction as source_faction,
+             a.wealthurce,
+           b(), ar+   b>namet_faealth,
+             b.namet_faction,on,
+             urce_faction,
+             a.wealthurce,
+           b(), ar+
+l,b(), ar+  a.fBoe as source,
+             a.faction as source_faction,
+             a.wealthurce,
+           b(), ar+
+l,b(), ar+  a       from (a:Family)-[e:MARRIAGE]->(bCFamily)
+        where a.facsc
+        limit 74

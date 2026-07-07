@@ -1,0 +1,1 @@
+find eme   from (s) -[:LINK]->{r} (:

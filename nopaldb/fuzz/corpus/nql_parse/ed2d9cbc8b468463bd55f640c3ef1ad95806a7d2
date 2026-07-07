@@ -1,0 +1,5 @@
+sketch cleanup =
+       find e.name, degree(e) as d
+        from (e:ShmllCany)
+      group by e+name
+ avÿÿ

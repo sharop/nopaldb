@@ -1,0 +1,2 @@
+FIND nname fROM (n:Person {dept: "e"        
+        or})

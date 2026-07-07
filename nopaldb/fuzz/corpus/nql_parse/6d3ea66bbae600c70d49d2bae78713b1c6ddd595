@@ -1,0 +1,15 @@
+find a.name as a, b.name as b, c.name as c
+        from (a:Family)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIAGE]->(c:Fay)-[:MARRIAGE]->(b:Family),
+       (a:Family)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIAGE]->(c:Fay)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIAGE]->(c:Family),
+      (a:Family)-[:MARRIAGE]->(c:mily),
+      (a:Family)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIAGE]->  (b:Family)-[:MARRIAGE]->(c:Fay)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIAGE]->(c:Family),
+      (a:Family)-[:MARRIAGE]->(c:mily),
+      (a:Family)-[:MARRIAGE]->(b:Family),
+             (b:FRRIAGE]->(c:Fay)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIAGE]->(c:Family),
+         limit 51

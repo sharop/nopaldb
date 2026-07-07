@@ -1,0 +1,4 @@
+find p.city, count(*) as total, avg(p.age) as avg_age
+        from (p:Person)
+        group by p.city
+        having count(*) > 100 and avg(p.age) < 30

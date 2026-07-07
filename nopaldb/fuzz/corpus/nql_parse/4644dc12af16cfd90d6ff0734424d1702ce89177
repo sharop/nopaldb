@@ -1,0 +1,6 @@
+find a.name as a, b.name as b, c.name as c
+        from (a:Family)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARIAGE]->(c:Family),
+             (a:Family)-[:MARRIARRIAGE]->(c:Family),
+ (a:Family)-[:MARRIAGE]->(c:l)
+   name < b.name anmit 50

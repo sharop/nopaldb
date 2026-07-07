@@ -1,0 +1,1 @@
+find n.label from (n) where instanceOf(n, "Person")

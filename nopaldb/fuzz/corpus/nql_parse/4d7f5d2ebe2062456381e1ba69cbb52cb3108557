@@ -1,0 +1,4 @@
+sketch ify_u =
+   update (u:User)
+       set u.verified = true, u.veified= tri,
+ ÜÜÜmeşlÿ

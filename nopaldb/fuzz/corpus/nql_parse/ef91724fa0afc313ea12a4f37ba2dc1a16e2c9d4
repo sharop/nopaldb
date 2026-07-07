@@ -1,0 +1,1 @@
+update (u:Use) set u.veified = true where u.email_conf= true

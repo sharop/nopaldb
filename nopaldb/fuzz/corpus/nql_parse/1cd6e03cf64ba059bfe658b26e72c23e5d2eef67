@@ -1,0 +1,5 @@
+find degree(e) as d
+
+        from (e:ShellCompany)
+        group by e+name
+        having degree(e) > 0

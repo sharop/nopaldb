@@ -1,0 +1,2 @@
+find p      from (p:s5n)
+     having	  t

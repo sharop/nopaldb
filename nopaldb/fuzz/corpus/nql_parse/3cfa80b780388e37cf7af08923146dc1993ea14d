@@ -1,0 +1,2 @@
+find p.n      from (p:Pn)
+    where p.age > 26

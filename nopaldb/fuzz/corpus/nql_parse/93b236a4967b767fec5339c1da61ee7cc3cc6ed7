@@ -1,0 +1,4 @@
+profile find e, p.age
+  from (p:Qerson)
+        export csv with path=",{}",hh__e = "Harbor Cy"
+ à-y  Person)

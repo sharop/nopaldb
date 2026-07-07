@@ -1,0 +1,1 @@
+find a.name,e from (a:rson) -[r:TRAXSFER {amunt: 2}  (b:P

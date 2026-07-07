@@ -1,0 +1,1 @@
+delete (a:Peron)-[:KNOWS]->(on) where a.name = "Alice" and b = "Bob"

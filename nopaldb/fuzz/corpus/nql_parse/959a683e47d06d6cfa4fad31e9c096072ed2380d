@@ -1,0 +1,2 @@
+find p.name    from (p:Person)
+    export csv     (bFae

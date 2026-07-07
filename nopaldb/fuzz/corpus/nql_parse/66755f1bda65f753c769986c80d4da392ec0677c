@@ -1,0 +1,4 @@
+find p.city, count(*) as total
+        from (p:Person)
+        group by p.city
+        having count(*) > 1000

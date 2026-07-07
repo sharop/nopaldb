@@ -1,0 +1,6 @@
+find a.name as a, b.name as b, c.name as c
+        from (a:Family)-[:MARRIAGE]->(b:Family),
+        (b:Family)-[:MARRIAGE]->(:Fay)-[:MARRI]->(b:Family),
+             (b:Family)-[:MARRIAGE]->(c:Family),
+             (a:Family)-[:MARRIAGE]->(c:mily),(b:Family),
+             (b:Family)-[:MARRIAGE]->(c:Fay)-[:MARRIAGE]->(b:Family),#       order0

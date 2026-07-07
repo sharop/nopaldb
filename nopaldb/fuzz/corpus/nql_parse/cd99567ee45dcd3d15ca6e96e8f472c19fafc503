@@ -1,0 +1,2 @@
+find path_s
+                from (a:Account {vame: "A"})-[:TX]->(b:Account {name: "B"})

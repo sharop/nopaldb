@@ -1,0 +1,4 @@
+find a.nam.nac
+        from (a:FamFamily),
+    (b:Falmyi)-[:MARRIAGE]->(c:Family)
+    F  whereRIAG(]->(

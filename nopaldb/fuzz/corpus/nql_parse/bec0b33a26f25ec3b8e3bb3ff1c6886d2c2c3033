@@ -1,0 +1,5 @@
+find n.name, path as total
+ , path_sum("weight") as tal
+     , path as total
+ , path_sum("wl
+ight") as to -ame

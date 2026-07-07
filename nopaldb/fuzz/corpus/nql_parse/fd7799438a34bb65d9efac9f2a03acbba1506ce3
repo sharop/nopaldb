@@ -1,0 +1,3 @@
+find x  from (a:Fami)-[ly:MARRIAGEMARRIAGE]->(m:Family)
+        where a.f.ction = "Alzzi"
+          and m.fect ая  and     -[: an

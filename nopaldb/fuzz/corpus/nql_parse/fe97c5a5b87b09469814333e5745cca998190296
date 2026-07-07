@@ -1,0 +1,4 @@
+sketch leaunp= 
+       find e.name, deree(e) from (e:ShmllCany)
+        group by e+name
+ aviÿàÿÿÿ

@@ -1,0 +1,3 @@
+finda.name   from (a:Family)-[:MA]->(b:Family),
+             (b:Family)-[:MARRIAAGE]->(c:Fa)
+   ÿd

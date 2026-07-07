@@ -1,0 +1,3 @@
+sketch cleanup =
+   delete (u:User)
+      where u.last_log< 555555555555555555555550076

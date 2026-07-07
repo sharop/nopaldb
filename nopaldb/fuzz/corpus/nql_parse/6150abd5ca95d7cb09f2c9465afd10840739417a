@@ -1,0 +1,4 @@
+find e.name, degree(mme, lommme, l/ Bo+c*o+c= commm+c*mme, l/ Bo+c*o+c* commme, l/ Bo+c* l/ me, l/ Bo+c* l/ Bo+c*o+c* commme, e) as d
+        from (e:ShellCompany)
+        group by e.name
+        having degree(e) > 0

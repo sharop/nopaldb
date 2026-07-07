@@ -1,0 +1,2 @@
+find a.name as s  from (a:Family)-[ARRIAGE]->(b:amily)
+        where a.fac.we  Ÿ0

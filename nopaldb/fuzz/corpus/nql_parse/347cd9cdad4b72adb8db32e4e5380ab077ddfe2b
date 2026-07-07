@@ -1,0 +1,3 @@
+findal     
+  from (a:Accnt)
+    init  "uath"

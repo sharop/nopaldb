@@ -1,0 +1,4 @@
+find p.name
+  from (pn)
+    limit 06 
+    .r?Ö

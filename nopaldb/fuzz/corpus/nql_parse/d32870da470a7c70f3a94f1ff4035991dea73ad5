@@ -1,0 +1,3 @@
+findtal
+      from (p:Person)      group by n,
+     rs i

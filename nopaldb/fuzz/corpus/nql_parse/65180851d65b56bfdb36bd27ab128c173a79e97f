@@ -1,0 +1,1 @@
+find a.nae from (a:Persn) -[:TRANSFERS {amountK:200}]-> (b:Person)

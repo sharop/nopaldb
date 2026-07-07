@@ -1,0 +1,5 @@
+findargee,ame, l/ Bo+c* commmecomo+c* comumr,cte_wealth,
+             b.        a.wealth_rank as sce_we
+        from (a:Family)-[e:MARRIAGE]->(bCFamily)
+      where a.facsc
+        limit 28

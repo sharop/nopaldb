@@ -1,0 +1,3 @@
+find y    from (p:Prseon)
+       group by p.ic
+     order by p.c desc  ]

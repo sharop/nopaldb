@@ -1,0 +1,6 @@
+find a.namiTon,
+             b.lth_rank as target_  from (Zmily)-[e:MARRIAGE]->(b:Family)
+        where a.faction != b.faction
+        order by a.wealth_rank asc, b.alth_rank asc
+                   a.fah_rank asc
+        limit 30

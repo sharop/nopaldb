@@ -1,0 +1,3 @@
+sketch urs =
+        update (u:User)
+       set u.veiidmrf = true, u.verifie= true

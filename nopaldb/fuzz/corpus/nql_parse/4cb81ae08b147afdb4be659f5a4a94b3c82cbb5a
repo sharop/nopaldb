@@ -1,0 +1,2 @@
+find n.n  from (n:uNmber)
+        limit 5 offset 5699999999999893879

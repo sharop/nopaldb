@@ -1,0 +1,1 @@
+delete (p:Product) where p.stock <= 0

@@ -1,0 +1,2 @@
+find a.name        from (a:Family)-[:MARRIAGE]->             (b:F4amnly)-[:MARRIAGE]->(Family)-[:MARRIAGE]->(c:Fn) -[nS]->
+:KNO]->(

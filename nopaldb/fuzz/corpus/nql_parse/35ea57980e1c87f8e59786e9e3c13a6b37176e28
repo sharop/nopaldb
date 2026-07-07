@@ -1,0 +1,3 @@
+find b.name
+        from (a:N {name: "A"}) init "x = 0"
+ init "x ="

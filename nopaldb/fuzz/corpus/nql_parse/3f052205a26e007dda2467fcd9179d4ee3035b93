@@ -1,0 +1,1 @@
+update (a:Person)-[r:K]->(b:Person) set r.since = 2024, r.rength = "high" where a.name = "Alice" and b.name = "Bob"

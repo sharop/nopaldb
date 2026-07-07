@@ -1,0 +1,11 @@
+find a1name as source,
+          a.faction as source_wealth,
+             b.name as target,urce_wealth,
+     source_faction,
+             a.wealth_rank as source_wealth,
+             b.name as target,urce_wealth,
+             b.namet_faction,
+             b.we_rank as target_wealth
+        from (a:Family)-[e:MARRIAGE]->(b:Family)
+        where a.faction != b.faction
+  à×ordera.wt 29

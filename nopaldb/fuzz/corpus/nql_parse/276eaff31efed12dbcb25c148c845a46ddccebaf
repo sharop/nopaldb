@@ -1,0 +1,3 @@
+sketch top_cities =
+            find p.city, coun        from (p:erson)
+            group by                        mit 10

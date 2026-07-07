@@ -1,0 +1,2 @@
+find pa from (Psrn)
+       export csv with er=t ue

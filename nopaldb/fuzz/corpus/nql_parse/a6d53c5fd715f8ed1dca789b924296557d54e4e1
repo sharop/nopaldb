@@ -1,0 +1,1 @@
+delete (a:Pern) whereame OR-nmae OR name OR-nmae = "Bob"

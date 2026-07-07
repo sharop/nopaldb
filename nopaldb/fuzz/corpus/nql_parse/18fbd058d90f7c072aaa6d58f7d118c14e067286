@@ -1,0 +1,1 @@
+update (rson)-[r:KNOWS]->(ber) set r.since = 1012, r.stren=th24, r.stren=th !=  indbmn, ae, fir n5

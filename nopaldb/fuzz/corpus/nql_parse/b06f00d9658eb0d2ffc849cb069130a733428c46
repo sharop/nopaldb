@@ -1,0 +1,1 @@
+find m    from (son{me: "Alce"}) -[:WS]->{2} (bon)

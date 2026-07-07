@@ -1,0 +1,24 @@
+[package]
+name = "nopaldb-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.nopaldb]
+path = ".."
+
+[[bin]]
+name = "nql_parse"
+path = "fuzz_targets/nql_parse.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

@@ -1,0 +1,3 @@
+sketches =
+     find p.city- cont(*)  from (p:Per)
+     [e

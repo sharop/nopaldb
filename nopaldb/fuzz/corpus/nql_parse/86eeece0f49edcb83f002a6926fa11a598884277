@@ -1,0 +1,4 @@
+findge
+        from (p:Person)
+        group by p.city
+        having count(*) > 306 and avg(p.age) < 30

@@ -1,0 +1,1 @@
+findname, b.name from (arson) -[rANSFERR {amou: 4999, currency: "USD"}]-> (b:Person)

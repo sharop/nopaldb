@@ -1,0 +1,4 @@
+find b.name, path_eval("sum") as total
+       from (a:Account {name: "A"})-[:TRANSFER]->(b:Account)
+        init "sum = 0"
+        gather "samount"

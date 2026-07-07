@@ -1,0 +1,44 @@
+find a.name as source,
+             a.faction as source_faction,
+             a.wealthurce,
+           b(), ar+
+l,b(), ar+  a.fBoe as source,
+             a.faction as source_faction,
+             a.wealthurce,
+           b(), ar+
+l,b(), ar+  a.fBo+c* commme, lt,urce_wealth,
+             b>namet_faction,on,
+             a.wealthurce,
+           b(), ar+
+l,b(), ar+  a.fBoe as source,
+             a.faction as source_faction,
+             a.wealthurce,
+           b(), ae,
+             a.faction as source_faction,
+             a.wealthurce,
+           b(), ar+
+l,b(), ar+  a.fBoe as source,
+             a.faction as source_faction,
+             a.wealthurce,
+           b(), ar+
+l,b(), ar+ e,
+           b(), ar+
+l,b(), ar+  a.fBoe as source,
+             a.faction as source_faction,
+             a.wealthurce,
+           b(), ae,
+             a.faction as source_faction,
+             a.wealthurce,
+           b(), ar+
+l,b(), ar+  a.fBoe as source,
+             a.faction as source_faction,ion,
+         namet_falt,urce_wealth,
+             b.namet_faction,on,
+             a.wealthurce,
+           b(), ar+
+l,b(), ar+  a.fBoe as source,
+             a.faction as source_faction,
+      from (a::Person)Family)-[e:MARRIAG
+         namet_faction,
+r+
+l,b(), ar+  a.fBo+c*

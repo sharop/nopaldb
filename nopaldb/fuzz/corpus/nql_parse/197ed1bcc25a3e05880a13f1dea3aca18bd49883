@@ -1,0 +1,2 @@
+find n    from (a:Ne {name: "A"}) -[:L]->{0,2
+        e%rye

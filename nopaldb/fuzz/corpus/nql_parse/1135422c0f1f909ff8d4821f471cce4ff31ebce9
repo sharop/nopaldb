@@ -1,0 +1,3 @@
+find b.name,pt     from (a:Person {name: "Alice"})-[:KNOWS]->{1,2}(b:Person)
+        where path.depth >= 1
+        order by path.depth.desc

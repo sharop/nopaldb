@@ -1,0 +1,4 @@
+sketch verify_users =
+        update (ur)
+         set u.veed = true, u.verifiet = 164099, p.age
+    irmed = true

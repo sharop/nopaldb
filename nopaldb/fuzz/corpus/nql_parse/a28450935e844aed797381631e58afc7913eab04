@@ -1,0 +1,9 @@
+find a.name as a, b.name as b, c.name as c
+        from (a:Family)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIAGE]->(c:Family),
+             (a:Family)-[:MARRIARRIAGE]->(c:Family),
+             (a:Family)-[:MARRIAGE]->(c:		y),
+             (b:Family)-[:MARRIAGE]->(c:Family),
+             (a:Family)-[:MARRIAGE]->(c:Family),
+             (a:Family)-[:MARRIARRIAGE]->(c:Family),
+             (a:Family)-X[:MARRIAG 25

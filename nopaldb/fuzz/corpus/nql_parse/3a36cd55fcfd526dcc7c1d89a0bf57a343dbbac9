@@ -1,0 +1,1 @@
+FIND a.name FROM (a:Person {dept: ""}) -> [:WKRKS_AT] -> (b:Company {sefffffffffffffft: "sales"}) -> [:WORsalesT] -> (b:Company {sffffffft: "sales"}) -> [:WORKS_AT] -> (b:Comy {r:/")

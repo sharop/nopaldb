@@ -1,0 +1,2 @@
+find p.n      from (p:Person)
+        export csv with path="'{}", header=true

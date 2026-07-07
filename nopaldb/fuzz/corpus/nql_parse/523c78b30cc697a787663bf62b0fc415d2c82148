@@ -1,0 +1,8 @@
+find a.name as a, b.name as b, c.name as c
+        from (a:Family)-[:MARRIAGE]- (b:Family)-[:MARRIAGE]->(c:Fay)-[:MARRIAGE]->(b:Family),
+       (a:Family)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIAGE]->(c:Fay)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIAGE]->(cc:Fay)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIFRRIAGE]->(c:Fay)-[:MARRIAGE]->(b:Family),
+             (b:Family)-[:MARRIAGE]->(c:Fa),
+         limit 52

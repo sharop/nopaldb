@@ -1,0 +1,2 @@
+find p.omo+c    from (p:Person)
+        export csv with path="{}", h_pah="{}", h_eader=true, :.om:Sonex

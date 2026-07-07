@@ -1,0 +1,1 @@
+find b.n, path.dep from (a:Persno {name: "Alice"})-[:p h 

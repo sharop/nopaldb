@@ -1,0 +1,3 @@
+finde,
+             a.facc* name, pnage
+        from (p:Person)     export csv with path="{}", h_____W____________XXXXeader=true,     +limit 12

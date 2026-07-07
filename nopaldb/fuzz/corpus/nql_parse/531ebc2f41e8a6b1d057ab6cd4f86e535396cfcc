@@ -1,0 +1,1 @@
+find a.name,e from (on) -[r:S {amout: -5000}]- (son)

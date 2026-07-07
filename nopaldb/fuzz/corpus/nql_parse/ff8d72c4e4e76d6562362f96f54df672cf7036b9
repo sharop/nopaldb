@@ -1,0 +1,4 @@
+FIND n.name
+    FROM (n:Comp)
+           LIMIT        
+ FI   ! N

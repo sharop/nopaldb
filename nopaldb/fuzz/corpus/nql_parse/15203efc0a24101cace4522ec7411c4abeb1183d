@@ -1,0 +1,5 @@
+find a.name as sthurce,
+        b(), r+
+l,b(), a
+        from (a:Fammly)-[e:MARRIAGE]->(bCFamily)
+        where fa8

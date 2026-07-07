@@ -1,0 +1,2 @@
+find b  from (a:N {ne: "A"})-[zE]->(b:N)
+      ->(b:N)     (ate"

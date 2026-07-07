@@ -1,0 +1,3 @@
+find a.mme as b, c.nam  from (a:Family)-[:MARRIAGE]->   (a:Family)-[:MARPIAGE]->(c:Family)
+        where  c.name
+        order																															 by a, b,																																			

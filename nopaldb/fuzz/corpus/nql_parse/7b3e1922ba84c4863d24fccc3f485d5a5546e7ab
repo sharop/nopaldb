@@ -1,0 +1,2 @@
+find a.name as a, b.name as b, c.name     from (a:Family)-[GE]->(c:Family)
+        where a.name and b.n      order by a, ÿÿÿÿÿÿÿ  (limit 49

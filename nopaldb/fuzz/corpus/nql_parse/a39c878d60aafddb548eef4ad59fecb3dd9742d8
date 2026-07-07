@@ -1,0 +1,4 @@
+sketchtop_cities =
+        find p.c    from ({ame: "A"})-[zE]->(b:N)
+init "x =  "
+           imit 20

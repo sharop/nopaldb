@@ -1,0 +1,2 @@
+find a.nae, b.name
+from (a:ern)-[]->(b)

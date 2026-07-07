@@ -1,0 +1,3 @@
+find a.name.nam    
+     from (a:Family)-[:MARRIAGE]->(bly)
+  where a.e < b.name andAb.name < c.nameŠ a

@@ -1,0 +1,1 @@
+find b from (a:Person {e: "Alice"})-[]->{1,2  edesc

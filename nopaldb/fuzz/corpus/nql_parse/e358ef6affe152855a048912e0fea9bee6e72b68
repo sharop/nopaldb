@@ -1,0 +1,2 @@
+find p.na  from (p:P)
+        export csv with path="{}",  desc

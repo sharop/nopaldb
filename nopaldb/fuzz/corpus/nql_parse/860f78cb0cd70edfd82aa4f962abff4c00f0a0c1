@@ -1,0 +1,4 @@
+find a.id, b.id
+        from (a:Account)-[:TRANSFER]->(b:Account), (c:Account)-[:TRANSFER]->(d:Account)
+        init "sum = 0"
+        gather "sum = sum +ount"

@@ -1,0 +1,4 @@
+find j.ame
+        from (:Node)
+  gather "safe.ok = true"
+  :    return "safe"

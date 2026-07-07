@@ -1,0 +1,2 @@
+find  n from (n:Person)
+        at																			

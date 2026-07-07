@@ -1,0 +1,2 @@
+find n.name, n    from( n:Person)
+        at timestamp 1234567890

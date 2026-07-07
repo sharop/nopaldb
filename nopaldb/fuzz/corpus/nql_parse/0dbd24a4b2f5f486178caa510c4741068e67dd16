@@ -1,0 +1,9 @@
+find a.name as source,
+             a.facti as source,
+            ealth_rank as source_wealth,
+             b.name as target,
+             b.faction as target_faction,
+          i as source,
+            ealth_r as source_wealth,
+     b.name as target,
+             b.faction!= b.factﬂ30

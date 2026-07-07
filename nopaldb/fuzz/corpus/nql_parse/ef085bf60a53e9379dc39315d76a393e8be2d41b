@@ -1,0 +1,4 @@
+sketchp =
+       find e from (e:ShellCany)
+        group by e+name
+ having d

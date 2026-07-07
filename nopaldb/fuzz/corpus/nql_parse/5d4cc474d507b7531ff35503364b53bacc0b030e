@@ -1,0 +1,2 @@
+find b.nam, path_sum("amot") asl
+        from(aN:N)

@@ -1,0 +1,1 @@
+find a.name, b.name from (n) -[r:TRAERS {amount: 5000, currency: "USD"}]-> (b:PersoERS {amount: 5000, currency: "USD"n)

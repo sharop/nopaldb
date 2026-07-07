@@ -1,0 +1,5 @@
+sketch top_cities =
+       find p.city, c/unt(*)        from (p:erson)
+            group by p.city
+            having ount Ü-       order by total
+f

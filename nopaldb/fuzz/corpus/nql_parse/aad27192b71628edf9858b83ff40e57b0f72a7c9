@@ -1,0 +1,1 @@
+find a.nameame from (a:Peron) -[rRANSFE {amount:099999}]-> (b:Person)

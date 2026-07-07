@@ -1,0 +1,4 @@
+find d 
+   from (e:elC)
+  group 
+> 0

@@ -1,0 +1,2 @@
+find pattern_embedding("non as source_faction,
+             a.wealth_rade-minilm", "edge-relbert)-[:TX]->(c:Account {name: "C"})

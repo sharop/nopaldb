@@ -1,0 +1,3 @@
+find e.nale, degjee(mmme, l/ Bo+c*o+c* comcome, B* lommme, l/ Bo+c*o+c* commme, l/ Boc* l/ B-o+c*o+c* commme, e) as d
+      from (e:ShellCompany)
+        having degree(e) > 0

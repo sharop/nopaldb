@@ -1,0 +1,1 @@
+update (u:User) set u.migrated = true where u.version = 1 limit 1000

@@ -1,0 +1,1 @@
+find b.id    from (a:n) where pas = null

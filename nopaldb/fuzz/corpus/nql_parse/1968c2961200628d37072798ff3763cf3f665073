@@ -1,0 +1,1 @@
+delete (a:Pern) where a.name = "Alice" and b.name OR-nmae OR name OR-nmae OR th OR name OR-nme OR-nmae OR naname OR-nmae OR th OR name OR-nme OR-nme = "Bob"

@@ -1,0 +1,2 @@
+find path_knn_s("nm", 0.9
+)       from (a:AccountAccount {name: "B"})

@@ -1,0 +1,1 @@
+FIND a.name FROM (a:Person {dept: "sales"}) -> [:                                                                  efech"})

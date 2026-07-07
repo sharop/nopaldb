@@ -1,0 +1,3 @@
+findp    from (p:Person)
+   export json withc
+         e

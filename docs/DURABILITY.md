@@ -6,7 +6,7 @@ What NopalDB guarantees when the process dies at an arbitrary point (e.g. `SIGKI
 
 A `Transaction::commit()` that **returned `Ok`** is durable:
 
-1. The whole write-set (Begin + operations + Commit) is written to the WAL as **one batch with one fsync** before any storage mutation. If the fsync did not complete, `commit()` never returned.
+1. The whole write-set (Begin + operations + Commit) is written to the WAL **before any storage mutation**, with one fsync per commit *group*: concurrent commits queued at the single-writer applier share a single fsync (group commit), and no write-set in a group is applied until the group's records are durable. If the fsync did not complete, `commit()` never returned.
 2. Storage application happens after WAL durability. If the process dies mid-application, the next `Graph::open()` **replays** the committed operations from the WAL (redo), rebuilding MVCC version chains with their original commit timestamps.
 3. The per-node version write-set (previous-version invalidation, new version, current pointer, version lists, current record) applies as a **single atomic storage batch** — a crash cannot leave a node without a current version.
 

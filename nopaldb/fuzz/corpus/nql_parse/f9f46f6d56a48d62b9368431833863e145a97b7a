@@ -1,0 +1,1 @@
+find a.name, me from (a:Person) -[:RS {amount7: 5001, currency: "USD"}]-(b:Person)

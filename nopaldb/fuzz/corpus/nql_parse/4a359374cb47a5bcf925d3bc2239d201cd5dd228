@@ -1,0 +1,2 @@
+FIND n.na FROM (n:Cony)
+        WHERE sko(n,     %IM9

@@ -1,0 +1,3 @@
+find *
+      from (p:Per1on)
+        export csv with pa    ue

@@ -1,0 +1,1 @@
+find  pat      from (a:Person {name: "Alice"})-[:KNOWS]->{0,2}(b:Person)-[:      KNOWS]->{1,2}(b:Person)-[:     OWS]->{1,}(b:Person)-[sc
