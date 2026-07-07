@@ -1,7 +1,18 @@
 
-<img width="200" height="200" alt="image" src="https://github.com/user-attachments/assets/b14a929e-c5a6-4d2b-bd46-fd2f1faa474d" />
+<img width="200" height="200" alt="NopalDB logo" src="https://raw.githubusercontent.com/sharop/nopaldb/main/assets/nopaldb_logo.png" />
 
 # NopalDB™ 🌵
+
+[![Crates.io](https://img.shields.io/crates/v/nopaldb.svg)](https://crates.io/crates/nopaldb)
+[![PyPI](https://img.shields.io/pypi/v/nopaldb.svg)](https://pypi.org/project/nopaldb/)
+[![Python](https://img.shields.io/pypi/pyversions/nopaldb.svg)](https://pypi.org/project/nopaldb/)
+[![docs.rs](https://docs.rs/nopaldb/badge.svg)](https://docs.rs/nopaldb)
+[![CI](https://github.com/sharop/nopaldb/actions/workflows/community-ci.yml/badge.svg)](https://github.com/sharop/nopaldb/actions/workflows/community-ci.yml)
+[![Nightly](https://github.com/sharop/nopaldb/actions/workflows/nightly.yml/badge.svg)](https://github.com/sharop/nopaldb/actions/workflows/nightly.yml)
+[![Crates.io downloads](https://img.shields.io/crates/d/nopaldb.svg)](https://crates.io/crates/nopaldb)
+[![PyPI downloads](https://img.shields.io/pypi/dm/nopaldb.svg)](https://pypi.org/project/nopaldb/)
+[![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
+
 A high-performance embedded graph database written in Rust with **MVCC**, **ACID transactions**, **Apache Arrow integration**, and **Python bindings**.
 
 **[English](#english) | [Español](#español)**
