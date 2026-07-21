@@ -103,6 +103,9 @@ pub enum NopalError {
     #[error("Index error: {0}")]
     IndexError(String),
 
+    #[error("Ambiguous upsert key: {0}")]
+    AmbiguousUpsertKey(String),
+
     // ═══════════════════════════════════════════════════════════════
     // ERRORES GENÉRICOS
     // ═══════════════════════════════════════════════════════════════

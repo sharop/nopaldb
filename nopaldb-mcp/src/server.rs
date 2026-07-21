@@ -20,11 +20,39 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use crate::tools::{
-    is_write_statement, nql_result_to_tool, query_result_to_value, tool_error, readonly_error,
+    is_write_statement, json_to_pv, nql_result_to_tool, query_result_to_value, tool_error,
+    readonly_error,
 };
 
 const MAX_ROWS: usize = 1000;
 const DEFAULT_ROWS: u32 = 100;
+
+/// Parse a link JSON object into a `LinkSpec` for the upsert tool.
+fn parse_link_json(v: &serde_json::Value) -> Result<nopaldb::LinkSpec, String> {
+    let obj = v.as_object().ok_or("each link must be a JSON object")?;
+    let s = |name: &str| -> Result<String, String> {
+        obj.get(name)
+            .and_then(|x| x.as_str())
+            .map(|x| x.to_string())
+            .ok_or_else(|| format!("link missing string '{name}'"))
+    };
+    let target_key_value = obj
+        .get("target_key_value")
+        .ok_or("link missing 'target_key_value'")?;
+    let props = obj
+        .get("props")
+        .and_then(|p| p.as_object())
+        .map(|m| m.iter().map(|(k, v)| (k.clone(), json_to_pv(v))).collect())
+        .unwrap_or_default();
+    Ok(nopaldb::LinkSpec {
+        edge_type: s("type")?,
+        target_label: s("target_label")?,
+        target_key: s("target_key")?,
+        target_key_value: json_to_pv(target_key_value),
+        props,
+        create_target_stub: obj.get("stub").and_then(|b| b.as_bool()).unwrap_or(false),
+    })
+}
 
 // ─── Input types ───────────────────────────────────────────────────────────
 
@@ -34,6 +62,23 @@ pub struct GraphQueryInput {
     pub query: String,
     /// Maximum rows to return (default 100, max 1000)
     pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UpsertNodeInput {
+    /// Node label.
+    pub label: String,
+    /// Name of the identity property (must be present in `props`).
+    pub key: String,
+    /// Full desired property map as a JSON object (includes the key property).
+    pub props: serde_json::Map<String, serde_json::Value>,
+    /// Optional embedding vector (requires `model`).
+    pub vector: Option<Vec<f32>>,
+    /// Optional embedding model name (requires `vector`).
+    pub model: Option<String>,
+    /// Optional outgoing links to reconcile. Each: {type, target_label,
+    /// target_key, target_key_value, props?, stub?}.
+    pub links: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -372,6 +417,53 @@ impl NopalMcpServer {
             Ok(r) => nql_result_to_tool(r, limit),
             Err(e) => tool_error(e),
         })
+    }
+
+    #[tool(description = "Idempotently upsert a node keyed by (label, key): create if absent, \
+        update if changed, no-op if identical. `props` is the full desired property map (a JSON \
+        object including the key property). Optional `vector`+`model` attach an embedding; optional \
+        `links` reconcile outgoing edges. Requires --no-readonly. Returns {outcome, node_id} where \
+        outcome is created|updated|unchanged.")]
+    async fn upsert_node(
+        &self,
+        Parameters(UpsertNodeInput { label, key, props, vector, model, links }): Parameters<
+            UpsertNodeInput,
+        >,
+    ) -> Result<CallToolResult, McpError> {
+        if self.readonly {
+            return Ok(readonly_error());
+        }
+        // Build the request from JSON.
+        let props: std::collections::HashMap<String, nopaldb::types::PropertyValue> = props
+            .iter()
+            .map(|(k, v)| (k.clone(), json_to_pv(v)))
+            .collect();
+        let embedding = match (vector, model) {
+            (Some(v), Some(m)) => Some((v, m)),
+            (None, None) => None,
+            _ => return Ok(tool_error("provide both 'vector' and 'model', or neither")),
+        };
+        let mut link_specs = Vec::new();
+        for l in links.unwrap_or_default() {
+            match parse_link_json(&l) {
+                Ok(spec) => link_specs.push(spec),
+                Err(e) => return Ok(tool_error(e)),
+            }
+        }
+        let req = nopaldb::UpsertRequest {
+            label,
+            key,
+            props,
+            embedding,
+            links: link_specs,
+        };
+        match self.graph.upsert_node(req).await {
+            Ok((outcome, id)) => Ok(CallToolResult::structured(json!({
+                "outcome": outcome.as_str(),
+                "node_id": id.to_string(),
+            }))),
+            Err(e) => Ok(tool_error(e)),
+        }
     }
 
     #[tool(description = "Return the graph schema: labels, edge types, node count, edge count. \

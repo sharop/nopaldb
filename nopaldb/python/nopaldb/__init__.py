@@ -111,7 +111,15 @@ Ejemplos
     examples/test_all_algorithms.py      — algoritmos de grafo
 """
 
-from .nopaldb import Graph, QueryResult, Transaction, __version__
+from .nopaldb import (
+    BulkLoader,
+    Graph,
+    NqlResult,
+    ProfileResult,
+    QueryResult,
+    Transaction,
+    __version__,
+)
 
 try:
     from .nopaldb import ELReasoner, Inference
@@ -122,8 +130,11 @@ except ImportError:
 
 __all__ = [
     "Graph",
-    "QueryResult",
     "Transaction",
+    "QueryResult",
+    "NqlResult",
+    "ProfileResult",
+    "BulkLoader",
     "ELReasoner",
     "Inference",
     "__version__",

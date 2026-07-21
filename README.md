@@ -144,6 +144,41 @@ for row in result:
 
 ---
 
+### Incremental ingestion — idempotent `upsert` 🔁
+
+For pipelines that re-run over changing sources (RAG indexers, second-brain
+ingestion, CocoIndex-style flows), `upsert` writes the *desired state* of a node
+keyed by a business key. Re-running over unchanged data performs **zero writes**.
+
+```python
+graph = nopaldb.Graph.in_memory()
+
+# create → update → no-op, all under a stable NodeId
+graph.upsert("Chunk", "key", {"key": "note:intro", "path": "a.md"})   # ('created',   <id>)
+graph.upsert("Chunk", "key", {"key": "note:intro", "path": "b.md"})   # ('updated',   <id>)  (same id)
+graph.upsert("Chunk", "key", {"key": "note:intro", "path": "b.md"})   # ('unchanged', <id>)  (no writes)
+
+# attach an embedding and wikilink-style edges (stub targets are created if absent)
+graph.upsert(
+    "Note", "key", {"key": "note:intro", "title": "Intro"},
+    vector=[...], model="e5-large",
+    links=[{"type": "MENTIONS", "target_label": "Note",
+            "target_key": "key", "target_key_value": "note:zettelkasten", "stub": True}],
+)
+
+# batch form
+graph.upsert_many([
+    {"label": "Note", "key": "key", "props": {"key": "note:a"}},
+    {"label": "Note", "key": "key", "props": {"key": "note:b"}},
+])
+```
+
+The same operation is available in Rust (`Graph::upsert_node`) and as the
+`upsert_node` MCP tool. See [docs/UPSERT.md](docs/UPSERT.md) for semantics,
+concurrency guarantees, and current limits.
+
+---
+
 ### NQL Export (CSV/JSON)
 
 ```nql

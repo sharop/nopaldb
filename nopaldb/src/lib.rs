@@ -58,7 +58,7 @@ pub use error::{NopalError, Result};
 pub use types::{Node, Edge, NodeId, EdgeId, PropertyValue, Properties};
 pub use storage::Storage;
 pub use storage::{StorageBackend, StorageEngine, StorageOptions, StorageProfile, StorageTuning};
-pub use graph::{Graph, Direction, BulkLoader, BulkLoadStats, AutoGcConfig, AutoGcStatus, GraphView, Subgraph};
+pub use graph::{Graph, Direction, BulkLoader, BulkLoadStats, AutoGcConfig, AutoGcStatus, GraphView, Subgraph, LinkSpec, UpsertOutcome, UpsertRequest};
 pub use traversal::{TraversalResult, TraversalConfig, NodeFilter};
 pub use query::TraverseBuilder;
 pub use transaction::Transaction;

@@ -20,6 +20,26 @@ pub fn pv_to_json(pv: &PropertyValue) -> Value {
     }
 }
 
+/// Convert a serde_json Value to a PropertyValue (inverse of `pv_to_json`).
+pub fn json_to_pv(v: &Value) -> PropertyValue {
+    match v {
+        Value::Null => PropertyValue::Null,
+        Value::Bool(b) => PropertyValue::Bool(*b),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                PropertyValue::Int(i)
+            } else {
+                PropertyValue::Float(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        Value::String(s) => PropertyValue::String(s.clone()),
+        Value::Array(a) => PropertyValue::List(a.iter().map(json_to_pv).collect()),
+        Value::Object(m) => {
+            PropertyValue::Object(m.iter().map(|(k, v)| (k.clone(), json_to_pv(v))).collect())
+        }
+    }
+}
+
 // ─── QueryResult → JSON ────────────────────────────────────────────────────
 
 /// Convert a QueryResult to a JSON Value (array of row objects).

@@ -48,3 +48,24 @@ jobs:
 
       - name: Test crash recovery (SIGKILL harness)
         run: cargo test -p nopaldb --test crash_commit_test
+
+      - name: Test idempotent upsert (M1-4)
+        run: cargo test -p nopaldb --features core --test upsert_test
+
+  python-stubs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Build extension + check stubs (guard against .pyi drift)
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install --quiet maturin mypy
+          maturin develop -m nopaldb/Cargo.toml
+          python nopaldb/python/scripts/check_stubs.py
+          mypy --strict nopaldb/python/scripts/typecheck_sample.py

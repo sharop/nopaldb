@@ -25,3 +25,5 @@ features = ["python-full"]
 python-source = "python"
 module-name = "nopaldb.nopaldb"
 python-packages = ["nopaldb"]
+# Ship the type stubs + PEP 561 marker (maturin copies only .py by default).
+include = ["python/nopaldb/nopaldb.pyi", "python/nopaldb/py.typed"]

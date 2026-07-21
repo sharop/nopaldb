@@ -1,10 +1,12 @@
 // src/python/graph.rs
 
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyDict, PyList};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use crate::Graph as RustGraph;
-use crate::{StorageEngine, StorageOptions, StorageProfile};
+use crate::types::PropertyValue;
+use crate::{LinkSpec, StorageEngine, StorageOptions, StorageProfile, UpsertRequest};
 use super::{PyNqlResult, PyTransaction, to_py_result};
 use super::PyBulkLoader;
 
@@ -818,5 +820,221 @@ impl PyGraph {
         }
     }
 
+    /// Idempotently write the desired state of a node keyed by `(label, key)`.
+    ///
+    /// Re-running the same upsert over unchanged data performs no writes.
+    ///
+    /// Args:
+    ///     label (str): node label.
+    ///     key (str): name of the identity property (must be present in `props`).
+    ///     props (dict): full desired property map (includes the key property).
+    ///     vector (list[float], optional): embedding vector (requires `model`).
+    ///     model (str, optional): embedding model name (requires `vector`).
+    ///     links (list[dict], optional): outgoing edges to reconcile. Each dict:
+    ///         {"type": str, "target_label": str, "target_key": str,
+    ///          "target_key_value": Any, "props": dict?, "stub": bool?}.
+    ///
+    /// Returns:
+    ///     tuple[str, str]: (outcome, node_id) where outcome is
+    ///     "created" | "updated" | "unchanged".
+    ///
+    /// Example:
+    ///     >>> graph.upsert("Chunk", "key", {"key": "note:a", "path": "a.md"})
+    ///     ('created', '…uuid…')
+    #[pyo3(signature = (label, key, props, vector=None, model=None, links=None))]
+    fn upsert(
+        &self,
+        py: Python<'_>,
+        label: &str,
+        key: &str,
+        props: &Bound<'_, PyDict>,
+        vector: Option<Vec<f32>>,
+        model: Option<String>,
+        links: Option<&Bound<'_, PyList>>,
+    ) -> PyResult<(String, String)> {
+        let graph = self.graph()?;
+        let req = build_upsert_request(label, key, props, vector, model, links)?;
+        let (outcome, id) = to_py_result(crate::python::runtime::block_on(py, async move {
+            graph.upsert_node(req).await
+        }))?;
+        Ok((outcome.as_str().to_string(), id.to_string()))
+    }
 
+    /// Upsert many nodes. Each item is a dict with the same fields as `upsert`:
+    /// {"label", "key", "props", "vector"?, "model"?, "links"?}.
+    ///
+    /// Returns:
+    ///     list[tuple[str, str]]: (outcome, node_id) per item, in order.
+    fn upsert_many(
+        &self,
+        py: Python<'_>,
+        requests: &Bound<'_, PyList>,
+    ) -> PyResult<Vec<(String, String)>> {
+        let graph = self.graph()?;
+        let mut reqs = Vec::with_capacity(requests.len());
+        for item in requests.iter() {
+            let dict = item.cast::<PyDict>().map_err(|_| {
+                PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    "upsert_many: each request must be a dict",
+                )
+            })?;
+            reqs.push(build_upsert_request_from_dict(dict)?);
+        }
+        let out = to_py_result(crate::python::runtime::block_on(py, async move {
+            graph.upsert_batch(reqs).await
+        }))?;
+        Ok(out
+            .into_iter()
+            .map(|(o, id)| (o.as_str().to_string(), id.to_string()))
+            .collect())
+    }
+}
+
+// ─── Conversión Python → tipos de upsert ────────────────────────────────────
+
+/// Convierte un valor Python a `PropertyValue` (bool antes que int: en Python
+/// `bool` es subtipo de `int` y se extraería como 0/1 si se probara int primero).
+fn pyany_to_property(value: &Bound<'_, PyAny>) -> PyResult<PropertyValue> {
+    if value.is_none() {
+        Ok(PropertyValue::Null)
+    } else if let Ok(b) = value.extract::<bool>() {
+        Ok(PropertyValue::Bool(b))
+    } else if let Ok(i) = value.extract::<i64>() {
+        Ok(PropertyValue::Int(i))
+    } else if let Ok(f) = value.extract::<f64>() {
+        Ok(PropertyValue::Float(f))
+    } else if let Ok(s) = value.extract::<String>() {
+        Ok(PropertyValue::String(s))
+    } else if let Ok(bytes) = value.extract::<Vec<u8>>() {
+        Ok(PropertyValue::Bytes(bytes))
+    } else {
+        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+            "unsupported property value type (use str/int/float/bool/bytes/None)",
+        ))
+    }
+}
+
+fn pydict_to_props(dict: &Bound<'_, PyDict>) -> PyResult<HashMap<String, PropertyValue>> {
+    let mut props = HashMap::new();
+    for (k, v) in dict.iter() {
+        let key: String = k.extract()?;
+        props.insert(key, pyany_to_property(&v)?);
+    }
+    Ok(props)
+}
+
+fn build_link(dict: &Bound<'_, PyDict>) -> PyResult<LinkSpec> {
+    let get_str = |name: &str| -> PyResult<String> {
+        dict.get_item(name)?
+            .ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyKeyError, _>(format!("link missing '{name}'"))
+            })?
+            .extract::<String>()
+    };
+    let edge_type = get_str("type")?;
+    let target_label = get_str("target_label")?;
+    let target_key = get_str("target_key")?;
+    let target_key_value = pyany_to_property(&dict.get_item("target_key_value")?.ok_or_else(
+        || PyErr::new::<pyo3::exceptions::PyKeyError, _>("link missing 'target_key_value'"),
+    )?)?;
+    let props = match dict.get_item("props")? {
+        Some(p) => pydict_to_props(p.cast::<PyDict>().map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyTypeError, _>("link 'props' must be a dict")
+        })?)?,
+        None => HashMap::new(),
+    };
+    let create_target_stub = match dict.get_item("stub")? {
+        Some(b) => b.extract::<bool>().unwrap_or(false),
+        None => false,
+    };
+    Ok(LinkSpec {
+        edge_type,
+        target_label,
+        target_key,
+        target_key_value,
+        props,
+        create_target_stub,
+    })
+}
+
+fn build_embedding(
+    vector: Option<Vec<f32>>,
+    model: Option<String>,
+) -> PyResult<Option<(Vec<f32>, String)>> {
+    match (vector, model) {
+        (Some(v), Some(m)) => Ok(Some((v, m))),
+        (None, None) => Ok(None),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "upsert: provide both 'vector' and 'model', or neither",
+        )),
+    }
+}
+
+fn build_links(links: Option<&Bound<'_, PyList>>) -> PyResult<Vec<LinkSpec>> {
+    let mut out = Vec::new();
+    if let Some(list) = links {
+        for item in list.iter() {
+            let dict = item.cast::<PyDict>().map_err(|_| {
+                PyErr::new::<pyo3::exceptions::PyTypeError, _>("each link must be a dict")
+            })?;
+            out.push(build_link(dict)?);
+        }
+    }
+    Ok(out)
+}
+
+fn build_upsert_request(
+    label: &str,
+    key: &str,
+    props: &Bound<'_, PyDict>,
+    vector: Option<Vec<f32>>,
+    model: Option<String>,
+    links: Option<&Bound<'_, PyList>>,
+) -> PyResult<UpsertRequest> {
+    Ok(UpsertRequest {
+        label: label.to_string(),
+        key: key.to_string(),
+        props: pydict_to_props(props)?,
+        embedding: build_embedding(vector, model)?,
+        links: build_links(links)?,
+    })
+}
+
+/// Parse a full request dict for `upsert_many`.
+fn build_upsert_request_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<UpsertRequest> {
+    let label: String = dict
+        .get_item("label")?
+        .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("request missing 'label'"))?
+        .extract()?;
+    let key: String = dict
+        .get_item("key")?
+        .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("request missing 'key'"))?
+        .extract()?;
+    let props_item = dict
+        .get_item("props")?
+        .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("request missing 'props'"))?;
+    let props = pydict_to_props(props_item.cast::<PyDict>().map_err(|_| {
+        PyErr::new::<pyo3::exceptions::PyTypeError, _>("'props' must be a dict")
+    })?)?;
+    let vector: Option<Vec<f32>> = match dict.get_item("vector")? {
+        Some(v) if !v.is_none() => Some(v.extract()?),
+        _ => None,
+    };
+    let model: Option<String> = match dict.get_item("model")? {
+        Some(m) if !m.is_none() => Some(m.extract()?),
+        _ => None,
+    };
+    let links = match dict.get_item("links")? {
+        Some(l) if !l.is_none() => build_links(Some(l.cast::<PyList>().map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyTypeError, _>("'links' must be a list")
+        })?))?,
+        _ => Vec::new(),
+    };
+    Ok(UpsertRequest {
+        label,
+        key,
+        props,
+        embedding: build_embedding(vector, model)?,
+        links,
+    })
 }

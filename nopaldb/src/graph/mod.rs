@@ -1,8 +1,10 @@
 // src/graph/mod.rs
 
 pub mod view;
+pub mod upsert;
 pub(crate) mod applier;
 pub use view::{GraphView, Subgraph};
+pub use upsert::{LinkSpec, UpsertOutcome, UpsertRequest};
 
 use std::collections::{HashMap, BinaryHeap, VecDeque, HashSet};
 use std::cmp::Ordering;
