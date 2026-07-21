@@ -157,3 +157,30 @@ Los embeddings deben almacenarse antes de usar `similar_nodes`. Ejecuta el Paso 
 ```bash
 RUST_LOG=debug nopaldb-mcp --db mi.db --log-queries 2>mcp_debug.log
 ```
+
+---
+
+## Transporte de red (SSE) y seguridad
+
+El transporte por defecto es `stdio` (lo que usa Claude Desktop/Code) y **no requiere configuración de red ni autenticación** — el proceso solo habla con el cliente que lo lanzó.
+
+El transporte `--transport sse` expone el servidor por HTTP. Sus valores por defecto son seguros: escucha **solo en loopback** (`127.0.0.1`) y no acepta orígenes CORS externos. Para exponerlo a la red hay que autenticarlo explícitamente.
+
+### Matriz de arranque
+
+| Comando | Escucha en | Auth | Resultado |
+|---|---|---|---|
+| `--transport sse` | `127.0.0.1` | — | ✅ Solo tu máquina. Sin auth (loopback es seguro). |
+| `--transport sse --host 0.0.0.0` | toda la red | — | ⛔ **Se niega a arrancar** (fail-closed). |
+| `--transport sse --host 0.0.0.0 --auth-token <T>` | toda la red | Bearer `<T>` | ✅ Requiere `Authorization: Bearer <T>`; sin él → `401`. |
+| `... --host 0.0.0.0 --insecure-no-auth` | toda la red | — | ⚠️ Arranca SIN auth (solo para labs; expone la base). |
+
+El token también se puede pasar por variable de entorno (recomendado, no queda en el historial del shell):
+
+```bash
+NOPALDB_MCP_TOKEN=$(openssl rand -hex 32) nopaldb-mcp --db mi.db --transport sse --host 0.0.0.0
+```
+
+- `--cors-origin <origin>` (repetible) restringe CORS a orígenes concretos; sin el flag no se habilita CORS (solo mismo origen); `--cors-origin '*'` permite cualquiera (no recomendado).
+- La comparación del token es de tiempo constante (no filtra el token por temporización de respuesta).
+- Para TLS y rate-limiting, poné un reverse proxy (nginx/caddy) delante — el servidor no los implementa.
