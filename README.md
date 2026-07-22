@@ -12,7 +12,7 @@
 [![Crates.io downloads](https://img.shields.io/crates/d/nopaldb.svg)](https://crates.io/crates/nopaldb)
 [![PyPI downloads](https://img.shields.io/pypi/dm/nopaldb.svg)](https://pypi.org/project/nopaldb/)
 [![Library: MPL-2.0](https://img.shields.io/badge/library-MPL--2.0-brightgreen.svg)](nopaldb/LICENSE)
-[![Apps: AGPL-3.0-only](https://img.shields.io/badge/apps-AGPL--3.0--only-blue.svg)](LICENSE)
+[![Apps: AGPL-3.0-only](https://img.shields.io/badge/apps-AGPL--3.0--only-blue.svg)](nopaldb-mcp/LICENSE)
 
 A high-performance embedded graph database written in Rust with **MVCC**, **ACID transactions**, **Apache Arrow integration**, and **Python bindings**.
 
@@ -407,10 +407,10 @@ NopalDB is licensed **per component** (effective v0.4.32; releases ≤ 0.4.31 re
 | Component | Crate / package | License |
 |-----------|-----------------|---------|
 | **Library** (embeddable engine + Python bindings) | `nopaldb` (crates.io + PyPI) | **MPL-2.0** ([nopaldb/LICENSE](./nopaldb/LICENSE)) |
-| **MCP server** (application) | `nopaldb-mcp` | AGPL-3.0-only ([LICENSE](./LICENSE)) |
-| **NDStudio TUI** (application) | `ndbstudio` | AGPL-3.0-only ([LICENSE](./LICENSE)) |
+| **MCP server** (application) | `nopaldb-mcp` | AGPL-3.0-only ([LICENSE](./nopaldb-mcp/LICENSE)) |
+| **NDStudio TUI** (application) | `ndbstudio` | AGPL-3.0-only ([LICENSE](./ndbstudio/LICENSE)) |
 
-The library is **MPL-2.0** — file-level copyleft — so it can be embedded in projects under any license (including MIT/Apache and proprietary), while improvements to NopalDB's own files stay open. The applications you *run* (`nopaldb-mcp`, `ndbstudio`) remain **AGPL-3.0-only**.
+The library is **MPL-2.0** — file-level copyleft — so it can be embedded in projects under any license (including MIT/Apache and proprietary), while improvements to NopalDB's own files stay open. The applications you *run* (`nopaldb-mcp`, `ndbstudio`) remain **AGPL-3.0-only**. The repository's top-level `LICENSE` is MPL-2.0 (the library is the primary artifact); each application carries its own AGPL-3.0 `LICENSE` file.
 
 NopalDB™ is a trademark of Sergio Haro Pérez.
 
@@ -627,10 +627,10 @@ NopalDB tiene licencia **por componente** (a partir de v0.4.32; las versiones �
 | Componente | Crate / paquete | Licencia |
 |------------|-----------------|----------|
 | **Librería** (motor embebible + bindings Python) | `nopaldb` (crates.io + PyPI) | **MPL-2.0** ([nopaldb/LICENSE](./nopaldb/LICENSE)) |
-| **Servidor MCP** (aplicación) | `nopaldb-mcp` | AGPL-3.0-only ([LICENSE](./LICENSE)) |
-| **TUI NDStudio** (aplicación) | `ndbstudio` | AGPL-3.0-only ([LICENSE](./LICENSE)) |
+| **Servidor MCP** (aplicación) | `nopaldb-mcp` | AGPL-3.0-only ([LICENSE](./nopaldb-mcp/LICENSE)) |
+| **TUI NDStudio** (aplicación) | `ndbstudio` | AGPL-3.0-only ([LICENSE](./ndbstudio/LICENSE)) |
 
-La librería es **MPL-2.0** —copyleft por archivo— así que puede embeberse en proyectos con cualquier licencia (incluidas MIT/Apache y propietarias), mientras que las mejoras a los archivos propios de NopalDB siguen abiertas. Las aplicaciones que *ejecutas* (`nopaldb-mcp`, `ndbstudio`) siguen siendo **AGPL-3.0-only**.
+La librería es **MPL-2.0** —copyleft por archivo— así que puede embeberse en proyectos con cualquier licencia (incluidas MIT/Apache y propietarias), mientras que las mejoras a los archivos propios de NopalDB siguen abiertas. Las aplicaciones que *ejecutas* (`nopaldb-mcp`, `ndbstudio`) siguen siendo **AGPL-3.0-only**. El `LICENSE` de la raíz del repositorio es MPL-2.0 (la librería es el artefacto principal); cada aplicación lleva su propio archivo `LICENSE` AGPL-3.0.
 
 NopalDB™ es una marca de Sergio Haro Pérez.
 

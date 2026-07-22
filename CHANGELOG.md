@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (MIT/Apache/proprietary) while changes to NopalDB's own files stay open. This
   unblocks adoption by permissively-licensed projects.
 - The applications you *run* — **`nopaldb-mcp`** (MCP server) and **`ndbstudio`**
-  (TUI) — remain **AGPL-3.0-only**.
+  (TUI) — remain **AGPL-3.0-only**, each with its own `LICENSE` file. The
+  repository's top-level `LICENSE` is MPL-2.0 (the library is the primary
+  artifact), so the repository's headline license reflects the library.
 - Releases **≤ 0.4.31 remain AGPL-3.0-only** (published versions are immutable);
   this change applies from 0.4.32 onward.
 
