@@ -147,8 +147,8 @@ for row in result:
 ### Incremental ingestion — idempotent `upsert` 🔁
 
 For pipelines that re-run over changing sources (RAG indexers, second-brain
-ingestion, CocoIndex-style flows), `upsert` writes the *desired state* of a node
-keyed by a business key. Re-running over unchanged data performs **zero writes**.
+ingestion, incremental data pipelines), `upsert` writes the *desired state* of a
+node keyed by a business key. Re-running over unchanged data performs **zero writes**.
 
 ```python
 graph = nopaldb.Graph.in_memory()

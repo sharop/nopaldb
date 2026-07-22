@@ -3,8 +3,8 @@
 `upsert_node` writes the desired state of a node identified by a business key
 `(label, key_property, value)` — create if absent, update if changed, no-op if
 identical. Re-running the same upsert over unchanged data costs **zero writes**,
-which is what incremental pipelines (RAG indexers, CocoIndex flows, second-brain
-ingestion) need.
+which is what incremental pipelines (RAG indexers, incremental indexers,
+second-brain ingestion) need.
 
 ## API
 
