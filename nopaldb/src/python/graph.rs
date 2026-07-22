@@ -962,6 +962,32 @@ impl PyGraph {
             })
             .collect()
     }
+
+    /// Delete the node identified by a business key `(label, key, value)` — the
+    /// counterpart of `upsert` for incremental reconciliation.
+    ///
+    /// Returns the deleted node id, or None if no node matched (idempotent).
+    /// Raises if more than one node matches the key.
+    ///
+    /// Example:
+    ///     >>> graph.delete("Note", "key", "note:intro")
+    ///     '…uuid…'
+    fn delete(
+        &self,
+        py: Python<'_>,
+        label: &str,
+        key: &str,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<Option<String>> {
+        let graph = self.graph()?;
+        let value = pyany_to_property(value)?;
+        let label = label.to_string();
+        let key = key.to_string();
+        let id = to_py_result(crate::python::runtime::block_on(py, async move {
+            graph.delete_node_by_key(&label, &key, &value).await
+        }))?;
+        Ok(id.map(|i| i.to_string()))
+    }
 }
 
 // ─── Conversión Python → tipos de upsert ────────────────────────────────────

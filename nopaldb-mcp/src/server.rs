@@ -82,6 +82,16 @@ pub struct UpsertNodeInput {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeleteNodeInput {
+    /// Node label.
+    pub label: String,
+    /// Name of the identity property.
+    pub key: String,
+    /// Value of the identity property to delete.
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchHybridInput {
     /// Full-text query (needs a fulltext index). Provide text and/or vector.
     pub text: Option<String>,
@@ -481,6 +491,26 @@ impl NopalMcpServer {
             Ok((outcome, id)) => Ok(CallToolResult::structured(json!({
                 "outcome": outcome.as_str(),
                 "node_id": id.to_string(),
+            }))),
+            Err(e) => Ok(tool_error(e)),
+        }
+    }
+
+    #[tool(description = "Delete the node identified by a business key (label, key, value) — the \
+        counterpart of upsert_node for incremental reconciliation. Idempotent: deleting a missing \
+        key is a no-op. Requires --no-readonly. Returns {deleted, node_id}.")]
+    async fn delete_node(
+        &self,
+        Parameters(DeleteNodeInput { label, key, value }): Parameters<DeleteNodeInput>,
+    ) -> Result<CallToolResult, McpError> {
+        if self.readonly {
+            return Ok(readonly_error());
+        }
+        let value = json_to_pv(&value);
+        match self.graph.delete_node_by_key(&label, &key, &value).await {
+            Ok(id) => Ok(CallToolResult::structured(json!({
+                "deleted": id.is_some(),
+                "node_id": id.map(|i| i.to_string()),
             }))),
             Err(e) => Ok(tool_error(e)),
         }
