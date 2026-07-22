@@ -48,3 +48,16 @@ make nbexec-all       # ejecuta todos los notebooks headless (gate de CI)
 ```
 
 Consulta todos los targets con `make help`.
+
+## Ejemplo: second brain en ~20 líneas
+
+Un ejemplo mínimo y autónomo (no notebook) que ingesta una carpeta de markdown
+estilo Obsidian a NopalDB y la consulta con búsqueda híbrida + el grafo de
+wikilinks. Corre offline (embeddings deterministas de fallback):
+
+```bash
+python second_brain/ingest.py --db ../test_dbs/second_brain.db --reset
+python second_brain/query.py  --db ../test_dbs/second_brain.db
+```
+
+Ver [`second_brain/README.md`](second_brain/README.md).
