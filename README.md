@@ -387,6 +387,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ### Use Cases 💡
 
+- **AI second brain** - Ingest a markdown vault, query it with hybrid search + the wikilink graph ([20-line example](tutorials/second_brain/README.md))
 - **Social Networks** - Friends, followers, recommendations
 - **Knowledge Graphs** - Entities, relationships, reasoning
 - **Fraud Detection** - Transaction networks (Synthetic Offshore Network demo)

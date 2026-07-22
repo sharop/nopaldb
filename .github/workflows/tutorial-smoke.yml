@@ -91,6 +91,11 @@ jobs:
             --features core \
             -- test_dbs/synthetic_fraud.db
 
+      - name: Second brain example (M1-7)
+        run: |
+          python tutorials/second_brain/ingest.py --db test_dbs/second_brain.db --reset
+          python tutorials/second_brain/query.py  --db test_dbs/second_brain.db --check
+
       - name: Execute tutorial notebooks
         run: make -C tutorials nbexec-ci NBEXEC_OUT=/tmp/tutorial-nbexec
 
