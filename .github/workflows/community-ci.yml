@@ -52,6 +52,9 @@ jobs:
       - name: Test idempotent upsert (M1-4)
         run: cargo test -p nopaldb --features core --test upsert_test
 
+      - name: Test hybrid search (M1-5)
+        run: cargo test -p nopaldb --features core --test hybrid_test
+
   python-stubs:
     runs-on: ubuntu-latest
     timeout-minutes: 30

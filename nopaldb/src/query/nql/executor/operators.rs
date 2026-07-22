@@ -616,6 +616,10 @@ pub fn eval_condition_with_graph(
         // The node already passed the set-membership filter, so return true here.
         #[cfg(feature = "embeddings")]
         Expression::FunctionCall { name, .. } if name.to_lowercase() == "similar_to" => Ok(true),
+        // hybrid() is pre-computed via RRF in the executor (precompute_hybrid).
+        // The node already passed the set-membership filter, so return true here.
+        #[cfg(feature = "hybrid")]
+        Expression::FunctionCall { name, .. } if name.to_lowercase() == "hybrid" => Ok(true),
         // instanceOf(var, "ClassName") / subClassOf(var, "ClassName") — requieren taxonomía
         #[cfg(feature = "reasoner")]
         Expression::FunctionCall { name, args }

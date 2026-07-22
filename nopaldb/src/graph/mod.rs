@@ -2,9 +2,13 @@
 
 pub mod view;
 pub mod upsert;
+#[cfg(feature = "hybrid")]
+pub mod hybrid;
 pub(crate) mod applier;
 pub use view::{GraphView, Subgraph};
 pub use upsert::{LinkSpec, UpsertOutcome, UpsertRequest};
+#[cfg(feature = "hybrid")]
+pub use hybrid::{HybridFilter, HybridHit, HybridQuery};
 
 use std::collections::{HashMap, BinaryHeap, VecDeque, HashSet};
 use std::cmp::Ordering;
