@@ -93,4 +93,4 @@ result = graph.execute_nql("""
 
 **Version:** 0.2.0
 **Last Updated:** January 2026
-**License:** AGPL-3.0
+**License:** MPL-2.0 (the `nopaldb` library; releases ≤ 0.4.31 were AGPL-3.0-only)

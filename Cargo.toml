@@ -10,9 +10,11 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.31"
+version = "0.4.32"
 edition = "2024"
 authors = ["Sharop <sharop@gmail.com>"]
+# Default for workspace members. The `nopaldb` library overrides this to
+# MPL-2.0; the applications (nopaldb-mcp, ndbstudio) stay AGPL-3.0-only.
 license = "AGPL-3.0-only"
 repository = "https://github.com/sharop/nopaldb"
 

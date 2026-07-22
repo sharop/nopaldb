@@ -6,7 +6,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/nopaldb.svg)](https://pypi.org/project/nopaldb/)
 [![PyPI downloads](https://img.shields.io/pypi/dm/nopaldb.svg)](https://pypi.org/project/nopaldb/)
 [![CI](https://github.com/sharop/nopaldb/actions/workflows/community-ci.yml/badge.svg)](https://github.com/sharop/nopaldb/actions/workflows/community-ci.yml)
-[![License](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](https://github.com/sharop/nopaldb/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-MPL--2.0-brightgreen.svg)](https://github.com/sharop/nopaldb/blob/main/nopaldb/LICENSE)
 
 High-performance embedded **graph database** for Python, written in Rust:
 ACID transactions, MVCC time-travel, a Cypher-like query language (NQL),
@@ -85,4 +85,4 @@ df = batch.to_pandas()   # zero-copy into Pandas / Polars / PyTorch pipelines
 - **NQL reference:** <https://github.com/sharop/nopaldb/blob/main/docs/en/NQL_REFERENCE.md>
 - **Rust crate:** <https://crates.io/crates/nopaldb>
 
-License: AGPL-3.0-only. NopalDB™ is a trademark of Sergio Haro Pérez.
+License: MPL-2.0 (the `nopaldb` library). The companion `nopaldb-mcp` server and `ndbstudio` TUI are AGPL-3.0-only. Releases ≤ 0.4.31 were AGPL-3.0-only. NopalDB™ is a trademark of Sergio Haro Pérez.
