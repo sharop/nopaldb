@@ -364,7 +364,7 @@ Integrates with:
 
 ### Project Status 🗺️
 
-NopalDB Community includes the graph storage layer, MVCC transactions, isolation levels with deadlock detection (`full-isolation`), WAL crash recovery, NQL query execution, full-text search, Arrow export, Python bindings, graph algorithms, OWL-EL reasoning, Turtle import/export, SHACL validation, and feature tiers for compiling only the capabilities you need.
+NopalDB includes the graph storage layer, MVCC transactions, isolation levels with deadlock detection (`full-isolation`), WAL crash recovery, NQL query execution, full-text search, Arrow export, Python bindings, graph algorithms, OWL-EL reasoning, Turtle import/export, SHACL validation, and feature tiers for compiling only the capabilities you need.
 
 The current public Rust tiers are `default`, `core`, `semantic`, and `full`. Python wheels use the separate `python-full` feature through `maturin`. See **[Feature Tiers Guide](docs/FEATURE_TIERS.md)** for build recipes.
 
