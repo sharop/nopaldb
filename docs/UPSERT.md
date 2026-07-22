@@ -48,3 +48,8 @@ index (rebuilt on demand).
   are no longer in `links` (tracked follow-up).
 - **Batch** currently loops `upsert_node`; a batched fast path (one tx per batch,
   HNSW batch build) is a tracked follow-up.
+
+## See also
+
+For the delete counterpart and the full-sync reconcile pattern, see
+[docs/INCREMENTAL_INGESTION.md](INCREMENTAL_INGESTION.md).

@@ -223,6 +223,41 @@ impl Graph {
         Ok(out)
     }
 
+    /// Delete the node identified by a business key `(label, key, value)` — the
+    /// counterpart of `upsert_node` for incremental reconciliation (drop nodes
+    /// whose source record disappeared). Returns the deleted `NodeId`, or `None`
+    /// if no node matched (idempotent). Errors with `AmbiguousUpsertKey` if more
+    /// than one node matches. Edges and index entries of the node are cleaned up
+    /// by the underlying `delete_node`.
+    pub async fn delete_node_by_key(
+        &self,
+        label: &str,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Result<Option<NodeId>> {
+        // Same per-key lock as upsert, so a delete cannot race a concurrent
+        // upsert of the same business key.
+        let lock = key_lock_for(label, key, value);
+        let _guard = lock.lock().await;
+
+        let tx = self.begin_transaction().await?;
+        let existing = tx.get_nodes_by_label_and_property(label, key, value).await?;
+        // Read-only lookup; drop the transaction without committing.
+        let id = match existing.len() {
+            0 => return Ok(None),
+            1 => existing[0].id,
+            n => {
+                return Err(NopalError::AmbiguousUpsertKey(format!(
+                    "{n} nodes match {label}.{key}={value:?}; deduplicate before deleting"
+                )));
+            }
+        };
+        tx.rollback_async().await?;
+
+        self.delete_node(id).await?;
+        Ok(Some(id))
+    }
+
     /// Resolve a link target by its business key, creating a stub node when
     /// absent and requested.
     async fn resolve_or_stub_target(
