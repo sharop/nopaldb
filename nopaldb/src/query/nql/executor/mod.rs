@@ -588,6 +588,14 @@ impl<'a> Executor<'a> {
             None
         };
 
+        // Same for hybrid(n, "text", "ref", "model") → RRF fusion → allowed set.
+        #[cfg(feature = "hybrid")]
+        let hybrid_set: Option<HashSet<crate::types::NodeId>> = if let Some(filter) = &query.filter {
+            self.precompute_hybrid(&filter.condition, &query).await?
+        } else {
+            None
+        };
+
         // Step 2: Apply WHERE filter (streaming - full).
         // When the `embeddings` feature is active we use a graph-aware variant that can
         // resolve `has_embedding(n, model)` predicates via synchronous storage access.
@@ -596,6 +604,17 @@ impl<'a> Executor<'a> {
         // If similar_to pre-computed a candidate set, inject a set-membership filter first.
         #[cfg(feature = "embeddings-index")]
         if let Some(ref allowed_set) = similar_to_set {
+            let set = allowed_set.clone();
+            final_node_stream = Box::new(operators::FilterNodesStream::new(
+                final_node_stream,
+                move |node| Ok(set.contains(&node.id)),
+            ));
+        }
+
+        // Same injection for the hybrid candidate set (two membership filters
+        // compose as an intersection when both similar_to and hybrid are present).
+        #[cfg(feature = "hybrid")]
+        if let Some(ref allowed_set) = hybrid_set {
             let set = allowed_set.clone();
             final_node_stream = Box::new(operators::FilterNodesStream::new(
                 final_node_stream,
@@ -5242,6 +5261,59 @@ impl<'a> Executor<'a> {
         let node_ids: HashSet<crate::types::NodeId> = results.into_iter().map(|(id, _)| id).collect();
         Ok(Some(node_ids))
     }
+
+    /// Pre-compute `hybrid(n, "text", "ref_name", "model")` in WHERE into an
+    /// allowed NodeId set (RRF fusion of full-text + vector). The vector is the
+    /// embedding of the reference node resolved by `name`, mirroring
+    /// `precompute_similar_to`. The FROM pattern's own label filter narrows the
+    /// results downstream, so no filter is passed here.
+    #[cfg(feature = "hybrid")]
+    async fn precompute_hybrid(
+        &self,
+        condition: &Expression,
+        query: &Query,
+    ) -> Result<Option<HashSet<crate::types::NodeId>>> {
+        let (_variable, text, ref_name, model) = match extract_hybrid_params(condition) {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        let k = query.limit.as_ref().map(|l| l.limit).unwrap_or(10);
+
+        let ref_node = self
+            .graph
+            .get_node_by_property("name", &ref_name)
+            .await
+            .map_err(|_| {
+                NopalError::QueryExecutionError(format!(
+                    "hybrid: reference node '{}' not found",
+                    ref_name
+                ))
+            })?;
+        let ref_embedding = self
+            .graph
+            .get_node_embedding(ref_node.id, &model)
+            .await
+            .map_err(|_| {
+                NopalError::QueryExecutionError(format!(
+                    "hybrid: reference node '{}' has no embedding for model '{}'",
+                    ref_name, model
+                ))
+            })?;
+
+        let hq = crate::graph::HybridQuery {
+            text: Some(text),
+            text_index: None,
+            vector: Some((ref_embedding.vector, model.clone())),
+            k,
+            ef_search: None,
+            rrf_k: 60.0,
+            overfetch: 4,
+            filter: None,
+        };
+        let hits = self.graph.search_hybrid(hq).await?;
+        Ok(Some(hits.into_iter().map(|h| h.node_id).collect()))
+    }
 }
 
 /// Extrae los parámetros de similar_to(variable, "ref_name", "model") de un árbol de expresiones.
@@ -5278,6 +5350,33 @@ fn extract_similar_to_params(expr: &Expression) -> Option<(String, String, Strin
         Expression::BinaryOp { left, op: BinaryOperator::And, right }
         | Expression::BinaryOp { left, op: BinaryOperator::Or, right } => {
             extract_similar_to_params(left).or_else(|| extract_similar_to_params(right))
+        }
+        _ => None,
+    }
+}
+
+/// Extrae `hybrid(variable, "text", "ref_name", "model")` de un árbol de
+/// expresiones (recursivo sobre AND/OR). Los 4 args son requeridos.
+#[cfg(feature = "hybrid")]
+fn extract_hybrid_params(expr: &Expression) -> Option<(String, String, String, String)> {
+    match expr {
+        Expression::FunctionCall { name, args } if name.to_lowercase() == "hybrid" => {
+            if args.len() != 4 {
+                return None;
+            }
+            let variable = match &args[0] {
+                Expression::Property { variable, .. } => variable.clone(),
+                _ => "n".to_string(),
+            };
+            let as_str = |a: &Expression| match a {
+                Expression::Literal(PropertyValue::String(s)) => Some(s.clone()),
+                _ => None,
+            };
+            Some((variable, as_str(&args[1])?, as_str(&args[2])?, as_str(&args[3])?))
+        }
+        Expression::BinaryOp { left, op: BinaryOperator::And, right }
+        | Expression::BinaryOp { left, op: BinaryOperator::Or, right } => {
+            extract_hybrid_params(left).or_else(|| extract_hybrid_params(right))
         }
         _ => None,
     }

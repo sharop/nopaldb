@@ -31,13 +31,18 @@ impl FullTextIndex {
 
         let schema = schema_builder.build();
 
-        // Create index
+        // Create or open the index. `create_in_dir` fails if a tantivy index
+        // already exists on disk, which broke reopening a persisted database
+        // (the index is rebuilt from metadata on every open). `open_or_create`
+        // opens the existing index when present and creates it otherwise.
         let index = if let Some(path) = path {
             let path = PathBuf::from(path);
             std::fs::create_dir_all(&path)
                 .map_err(|e| NopalError::index_error(format!("Failed to create index directory: {}", e)))?;
-            tantivy::Index::create_in_dir(&path, schema.clone())
-                .map_err(|e| NopalError::index_error(format!("Failed to create index: {}", e)))?
+            let dir = tantivy::directory::MmapDirectory::open(&path)
+                .map_err(|e| NopalError::index_error(format!("Failed to open index directory: {}", e)))?;
+            tantivy::Index::open_or_create(dir, schema.clone())
+                .map_err(|e| NopalError::index_error(format!("Failed to open or create index: {}", e)))?
         } else {
             tantivy::Index::create_in_ram(schema.clone())
         };

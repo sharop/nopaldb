@@ -12,7 +12,7 @@ name = "nopaldb-mcp"
 path = "src/main.rs"
 
 [dependencies]
-nopaldb   = { path = "../nopaldb", features = ["storage-sled", "algorithms", "embeddings-index", "reasoner"] }
+nopaldb   = { path = "../nopaldb", features = ["storage-sled", "algorithms", "embeddings-index", "reasoner", "fulltext", "hybrid"] }
 rmcp      = { version = "1.5", features = ["transport-io", "transport-streamable-http-server"] }
 axum      = "0.7"
 tower     = "0.5"

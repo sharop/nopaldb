@@ -82,6 +82,26 @@ pub struct UpsertNodeInput {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SearchHybridInput {
+    /// Full-text query (needs a fulltext index). Provide text and/or vector.
+    pub text: Option<String>,
+    /// Query vector for the HNSW path (requires `model`).
+    pub vector: Option<Vec<f32>>,
+    /// Embedding model name (requires `vector`).
+    pub model: Option<String>,
+    /// Number of fused results to return (default 10).
+    pub k: Option<usize>,
+    /// HNSW ef_search (default 30).
+    pub ef: Option<usize>,
+    /// Restrict to this node label.
+    pub label: Option<String>,
+    /// Restrict to these property equalities (JSON object, AND).
+    pub props: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Fulltext index name; auto-discovered if omitted.
+    pub text_index: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetNodeInput {
     /// Node ID (UUID string). Provide either id or name.
     pub id: Option<String>,
@@ -462,6 +482,61 @@ impl NopalMcpServer {
                 "outcome": outcome.as_str(),
                 "node_id": id.to_string(),
             }))),
+            Err(e) => Ok(tool_error(e)),
+        }
+    }
+
+    #[tool(description = "Hybrid search: Reciprocal Rank Fusion of full-text (tantivy) and vector \
+        (HNSW) retrieval, with an optional label/property filter. Provide `text` and/or \
+        `vector`+`model`. Returns ranked hits {node_id, score, text_rank, vector_rank}. \
+        Full-text needs an index created via `create index on <Label>(<prop>) type fulltext`.")]
+    async fn search_hybrid(
+        &self,
+        Parameters(SearchHybridInput { text, vector, model, k, ef, label, props, text_index }): Parameters<
+            SearchHybridInput,
+        >,
+    ) -> Result<CallToolResult, McpError> {
+        let embedding = match (vector, model) {
+            (Some(v), Some(m)) => Some((v, m)),
+            (None, None) => None,
+            _ => return Ok(tool_error("provide both 'vector' and 'model', or neither")),
+        };
+        let filter = if label.is_some() || props.as_ref().is_some_and(|m| !m.is_empty()) {
+            let mut f = nopaldb::HybridFilter { label, props: Vec::new() };
+            if let Some(p) = props {
+                for (key, value) in p.iter() {
+                    f.props.push((key.clone(), json_to_pv(value)));
+                }
+            }
+            Some(f)
+        } else {
+            None
+        };
+        let q = nopaldb::HybridQuery {
+            text,
+            text_index,
+            vector: embedding,
+            k: k.unwrap_or(10),
+            ef_search: ef,
+            rrf_k: 60.0,
+            overfetch: 4,
+            filter,
+        };
+        match self.graph.search_hybrid(q).await {
+            Ok(hits) => {
+                let arr: Vec<_> = hits
+                    .iter()
+                    .map(|h| {
+                        json!({
+                            "node_id": h.node_id.to_string(),
+                            "score": h.score,
+                            "text_rank": h.text_rank,
+                            "vector_rank": h.vector_rank,
+                        })
+                    })
+                    .collect();
+                Ok(CallToolResult::structured(json!({ "hits": arr })))
+            }
             Err(e) => Ok(tool_error(e)),
         }
     }

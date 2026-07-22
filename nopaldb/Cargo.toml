@@ -84,6 +84,7 @@ reasoner = []
 owl-import = ["reasoner"]
 shacl = ["regex"]
 fulltext = ["tantivy"]
+hybrid = ["fulltext", "embeddings-index"]   # RRF hybrid search (full-text + vector)
 full-isolation = []              # Isolation levels + lock manager + deadlock detection
 
 # Python compound features
@@ -92,7 +93,7 @@ python-owl = ["python", "owl-import"]
 python-full = ["python", "python-reasoner", "python-owl", "full"]
 
 # --- Tier meta-features ---
-core       = ["storage-sled", "analytics", "algorithms", "ml", "hypergraph", "embeddings", "embeddings-index", "fulltext"]
+core       = ["storage-sled", "analytics", "algorithms", "ml", "hypergraph", "embeddings", "embeddings-index", "fulltext", "hybrid"]
 semantic   = ["core", "reasoner", "owl-import", "shacl"]
 full       = ["semantic", "full-isolation"]
 

@@ -179,6 +179,34 @@ concurrency guarantees, and current limits.
 
 ---
 
+### Hybrid search — full-text + vector (RRF) 🔎
+
+`search_hybrid` fuses full-text (tantivy) and vector (HNSW) retrieval with
+Reciprocal Rank Fusion, with an optional label/property filter — how you query a
+second brain written with `upsert`.
+
+```python
+# needs a fulltext index: create index on Chunk(body) type fulltext
+hits = graph.search_hybrid(
+    text="graph memory", vector=[...], model="e5-large",
+    k=10, label="Chunk", props={"kind": "book"},
+)
+# hits: [{"node_id", "score", "text_rank", "vector_rank"}, ...] best first
+```
+
+Also available in Rust (`Graph::search_hybrid`), as the `search_hybrid` MCP tool,
+and inside NQL:
+
+```nql
+find n.name from (n:Chunk)
+where hybrid(n, "graph memory", "current_query", "e5-large")
+limit 10
+```
+
+See [docs/HYBRID_SEARCH.md](docs/HYBRID_SEARCH.md) for RRF details, the filter, and limits.
+
+---
+
 ### NQL Export (CSV/JSON)
 
 ```nql

@@ -888,6 +888,80 @@ impl PyGraph {
             .map(|(o, id)| (o.as_str().to_string(), id.to_string()))
             .collect())
     }
+
+    /// Hybrid search: Reciprocal Rank Fusion of full-text (tantivy) and vector
+    /// (HNSW) retrieval, with an optional label/property filter.
+    ///
+    /// Args:
+    ///     text (str, optional): full-text query (needs a fulltext index).
+    ///     vector (list[float], optional): query vector (requires `model`).
+    ///     model (str, optional): embedding model name (requires `vector`).
+    ///     k (int): number of fused results (default 10).
+    ///     ef (int, optional): HNSW ef_search (default 30).
+    ///     label (str, optional): restrict to this node label.
+    ///     props (dict, optional): restrict to these property equalities (AND).
+    ///     text_index (str, optional): fulltext index name; auto-discovered if omitted.
+    ///     rrf_k (float): RRF constant (default 60.0).
+    ///
+    /// Returns:
+    ///     list[dict]: {node_id, score, text_rank, vector_rank}, best first.
+    #[cfg(feature = "hybrid")]
+    #[pyo3(signature = (text=None, vector=None, model=None, k=10, ef=None, label=None, props=None, text_index=None, rrf_k=60.0))]
+    #[allow(clippy::too_many_arguments)]
+    fn search_hybrid(
+        &self,
+        py: Python<'_>,
+        text: Option<String>,
+        vector: Option<Vec<f32>>,
+        model: Option<String>,
+        k: usize,
+        ef: Option<usize>,
+        label: Option<String>,
+        props: Option<&Bound<'_, PyDict>>,
+        text_index: Option<String>,
+        rrf_k: f32,
+    ) -> PyResult<Vec<Py<PyDict>>> {
+        let graph = self.graph()?;
+
+        let embedding = build_embedding(vector, model)?;
+        let filter = if label.is_some() || props.is_some() {
+            let mut f = crate::HybridFilter { label, props: Vec::new() };
+            if let Some(p) = props {
+                for (key, value) in p.iter() {
+                    f.props.push((key.extract()?, pyany_to_property(&value)?));
+                }
+            }
+            Some(f)
+        } else {
+            None
+        };
+
+        let hq = crate::HybridQuery {
+            text,
+            text_index,
+            vector: embedding,
+            k,
+            ef_search: ef,
+            rrf_k,
+            overfetch: 4,
+            filter,
+        };
+
+        let hits = to_py_result(crate::python::runtime::block_on(py, async move {
+            graph.search_hybrid(hq).await
+        }))?;
+
+        hits.into_iter()
+            .map(|h| {
+                let d = PyDict::new(py);
+                d.set_item("node_id", h.node_id.to_string())?;
+                d.set_item("score", h.score)?;
+                d.set_item("text_rank", h.text_rank)?;
+                d.set_item("vector_rank", h.vector_rank)?;
+                Ok(d.unbind())
+            })
+            .collect()
+    }
 }
 
 // ─── Conversión Python → tipos de upsert ────────────────────────────────────

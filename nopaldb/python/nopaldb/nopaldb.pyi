@@ -39,6 +39,18 @@ class Graph:
         links: Optional[list[dict[str, Any]]] = None,
     ) -> tuple[str, str]: ...
     def upsert_many(self, requests: list[dict[str, Any]]) -> list[tuple[str, str]]: ...
+    def search_hybrid(
+        self,
+        text: Optional[str] = None,
+        vector: Optional[list[float]] = None,
+        model: Optional[str] = None,
+        k: int = 10,
+        ef: Optional[int] = None,
+        label: Optional[str] = None,
+        props: Optional[Props] = None,
+        text_index: Optional[str] = None,
+        rrf_k: float = 60.0,
+    ) -> list[dict[str, Any]]: ...
 
     # ── Schema & stats ──────────────────────────────────────────────
     def node_count(self) -> int: ...
