@@ -123,4 +123,8 @@ found a security vulnerability, please report it privately rather than opening a
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the GNU Affero General Public License v3.0 (AGPL-3.0), same as the project.
+NopalDB is licensed per component. By contributing, you agree that your
+contribution is licensed under the license of the component it touches:
+
+- the **`nopaldb` library** (crate + Python bindings) → **MPL-2.0**;
+- the **`nopaldb-mcp`** and **`ndbstudio`** applications → **AGPL-3.0-only**.

@@ -1,13 +1,13 @@
 [package]
 name = "nopaldb"
-version = "0.4.31"
+version = "0.4.32"
 authors = ["NopalDB Contributors"]
 description = "High-performance graph database with ACID transactions, MVCC time-travel, and Arrow analytics"
 keywords = ["graph", "database", "embedded", "mvcc", "arrow"]
 categories = ["database", "database-implementations", "data-structures", "algorithms"]
 edition = "2024"
 repository = "https://github.com/sharop/nopaldb"
-license = "AGPL-3.0-only"
+license = "MPL-2.0"
 readme = "README.md"
 exclude = [
     "bench*",

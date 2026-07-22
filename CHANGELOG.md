@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.32] - 2026-07-22
+
+### ⚖️ Licensing
+
+- **Relicensed the `nopaldb` library to MPL-2.0.** The embeddable engine and its
+  Python bindings (crates.io + PyPI) are now **Mozilla Public License 2.0** —
+  file-level copyleft — so they can be embedded in projects under any license
+  (MIT/Apache/proprietary) while changes to NopalDB's own files stay open. This
+  unblocks adoption by permissively-licensed projects.
+- The applications you *run* — **`nopaldb-mcp`** (MCP server) and **`ndbstudio`**
+  (TUI) — remain **AGPL-3.0-only**.
+- Releases **≤ 0.4.31 remain AGPL-3.0-only** (published versions are immutable);
+  this change applies from 0.4.32 onward.
+
+---
+
 ## [0.4.31] - 2026-07-06
 
 ### ✨ Highlights

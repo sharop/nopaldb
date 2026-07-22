@@ -11,7 +11,8 @@
 [![Nightly](https://github.com/sharop/nopaldb/actions/workflows/nightly.yml/badge.svg)](https://github.com/sharop/nopaldb/actions/workflows/nightly.yml)
 [![Crates.io downloads](https://img.shields.io/crates/d/nopaldb.svg)](https://crates.io/crates/nopaldb)
 [![PyPI downloads](https://img.shields.io/pypi/dm/nopaldb.svg)](https://pypi.org/project/nopaldb/)
-[![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
+[![Library: MPL-2.0](https://img.shields.io/badge/library-MPL--2.0-brightgreen.svg)](nopaldb/LICENSE)
+[![Apps: AGPL-3.0-only](https://img.shields.io/badge/apps-AGPL--3.0--only-blue.svg)](LICENSE)
 
 A high-performance embedded graph database written in Rust with **MVCC**, **ACID transactions**, **Apache Arrow integration**, and **Python bindings**.
 
@@ -401,15 +402,21 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Copyright © 2026 Sergio Haro Pérez (Sharop).
 
-NopalDB Community is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+NopalDB is licensed **per component** (effective v0.4.32; releases ≤ 0.4.31 remain AGPL-3.0-only):
+
+| Component | Crate / package | License |
+|-----------|-----------------|---------|
+| **Library** (embeddable engine + Python bindings) | `nopaldb` (crates.io + PyPI) | **MPL-2.0** ([nopaldb/LICENSE](./nopaldb/LICENSE)) |
+| **MCP server** (application) | `nopaldb-mcp` | AGPL-3.0-only ([LICENSE](./LICENSE)) |
+| **NDStudio TUI** (application) | `ndbstudio` | AGPL-3.0-only ([LICENSE](./LICENSE)) |
+
+The library is **MPL-2.0** — file-level copyleft — so it can be embedded in projects under any license (including MIT/Apache and proprietary), while improvements to NopalDB's own files stay open. The applications you *run* (`nopaldb-mcp`, `ndbstudio`) remain **AGPL-3.0-only**.
 
 NopalDB™ is a trademark of Sergio Haro Pérez.
 
-The AGPL license grants rights to the source code only. No rights are granted to use the NopalDB name, logos, branding, or trademarks.
+The license grants rights to the source code only. No rights are granted to use the NopalDB name, logos, branding, or trademarks.
 
 All other product names, logos, and brands referenced in this project (e.g. Apache Arrow, PyTorch, SNOMED CT, and any other third-party names) are the property of their respective owners and are used here for identification and educational purposes only. Such use does not imply any affiliation with or endorsement by the trademark holders.
-
-See [LICENSE](./LICENSE).
 
 ---
 
@@ -615,15 +622,21 @@ Ver **[Guía de Feature Tiers](docs/FEATURE_TIERS.md)** para opciones de compila
 
 Copyright © 2026 Sergio Haro Pérez (Sharop).
 
-NopalDB Community está licenciado bajo GNU Affero General Public License v3.0 (AGPL-3.0).
+NopalDB tiene licencia **por componente** (a partir de v0.4.32; las versiones ≤ 0.4.31 permanecen AGPL-3.0-only):
+
+| Componente | Crate / paquete | Licencia |
+|------------|-----------------|----------|
+| **Librería** (motor embebible + bindings Python) | `nopaldb` (crates.io + PyPI) | **MPL-2.0** ([nopaldb/LICENSE](./nopaldb/LICENSE)) |
+| **Servidor MCP** (aplicación) | `nopaldb-mcp` | AGPL-3.0-only ([LICENSE](./LICENSE)) |
+| **TUI NDStudio** (aplicación) | `ndbstudio` | AGPL-3.0-only ([LICENSE](./LICENSE)) |
+
+La librería es **MPL-2.0** —copyleft por archivo— así que puede embeberse en proyectos con cualquier licencia (incluidas MIT/Apache y propietarias), mientras que las mejoras a los archivos propios de NopalDB siguen abiertas. Las aplicaciones que *ejecutas* (`nopaldb-mcp`, `ndbstudio`) siguen siendo **AGPL-3.0-only**.
 
 NopalDB™ es una marca de Sergio Haro Pérez.
 
-La licencia AGPL concede derechos únicamente sobre el código fuente. No concede derechos para usar el nombre NopalDB, logotipos, identidad visual, branding o marcas.
+La licencia concede derechos únicamente sobre el código fuente. No concede derechos para usar el nombre NopalDB, logotipos, identidad visual, branding o marcas.
 
 Todos los demás nombres de productos, logotipos y marcas mencionados en este proyecto (p. ej. Apache Arrow, PyTorch, SNOMED CT y cualquier otro nombre de terceros) son propiedad de sus respectivos dueños y se usan aquí únicamente con fines de identificación y educativos. Dicho uso no implica afiliación ni respaldo por parte de los titulares de las marcas.
-
-Ver [LICENSE](./LICENSE).
 
 ---
 
