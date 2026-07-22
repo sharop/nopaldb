@@ -4,7 +4,7 @@ version.workspace = true
 edition = "2024"
 authors.workspace = true
 description = "MCP server for NopalDB — exposes graph queries, traversal, and algorithms as MCP tools"
-license.workspace = true
+license = "AGPL-3.0-only"  # application: stricter than the MPL-2.0 library
 repository.workspace = true
 
 [[bin]]
