@@ -147,8 +147,8 @@ for row in result:
 ### Incremental ingestion — idempotent `upsert` 🔁
 
 For pipelines that re-run over changing sources (RAG indexers, second-brain
-ingestion, CocoIndex-style flows), `upsert` writes the *desired state* of a node
-keyed by a business key. Re-running over unchanged data performs **zero writes**.
+ingestion, incremental data pipelines), `upsert` writes the *desired state* of a
+node keyed by a business key. Re-running over unchanged data performs **zero writes**.
 
 ```python
 graph = nopaldb.Graph.in_memory()
@@ -387,6 +387,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ### Use Cases 💡
 
+- **AI second brain** - Ingest a markdown vault, query it with hybrid search + the wikilink graph ([20-line example](tutorials/second_brain/README.md))
 - **Social Networks** - Friends, followers, recommendations
 - **Knowledge Graphs** - Entities, relationships, reasoning
 - **Fraud Detection** - Transaction networks (Synthetic Offshore Network demo)
