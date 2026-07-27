@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.34] - 2026-07-27
+
+### ✨ Highlights
+
+- **`SackItem` ahora enlaza padre-hijo**: el resultado del sack traversal ya
+  no es una lista plana irreconstruible. Cada ítem trae `parent`
+  (índice del ítem padre en `items` — unívoco incluso cuando el mismo nodo
+  aparece varias veces por caminos distintos) y `via_edge` (la arista por la
+  que se llegó, que desambigua aristas paralelas y da acceso a sus
+  propiedades). Con eso, un árbol anidado — p. ej. el BOM para una UI — se
+  reconstruye en un solo paso O(n); el snippet está en el doc del módulo y
+  en el ejemplo `bom_costing`, que ahora imprime el árbol indentado.
+
+### Added
+
+- `SackItem::parent: Option<usize>` — índice del ancestro emitido más
+  cercano (`None` = hijo directo de un nodo de inicio). Con bloques de un
+  salto, `items[parent].depth == depth - 1`; en `emit_leaves()` es siempre
+  `None` (reporte plano, documentado).
+- `SackItem::via_edge: Option<EdgeId>` — id de la arista seguida para
+  llegar al nodo.
+
+### Changed
+
+- Nada rompe: `SackItem` es `#[non_exhaustive]` desde 0.4.33, así que los
+  campos nuevos son aditivos para todo el código existente.
+
+---
+
 ## [0.4.33] - 2026-07-26
 
 ### ✨ Highlights
