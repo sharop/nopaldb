@@ -14,6 +14,9 @@ pub struct TraversalResult {
     pub distances: Option<Vec<usize>>,
     /// Camino específico (si se buscaba uno)
     pub path: Option<Vec<NodeId>>,
+    /// `true` si el recorrido terminó; `false` si se detuvo por
+    /// `max_depth`/`max_nodes` y el resultado es parcial
+    pub completed: bool,
 }
 
 /// Condición para filtrar nodos durante el traversal
@@ -132,13 +135,45 @@ mod tests {
     #[tokio::test]
     async fn test_bfs_with_max_depth() {
         let (graph, start) = create_test_graph().await;
-        
+
         let result = graph.bfs(
             start,
             TraversalConfig::new().max_depth(1)
         ).await.unwrap();
-        
+
         // Solo debe visitar A, B, D (profundidad 0 y 1)
         assert!(result.nodes.len() <= 3);
+        // Quedaron nodos sin visitar más allá del tope
+        assert!(!result.completed);
+    }
+
+    #[tokio::test]
+    async fn test_bfs_completed_flag() {
+        let (graph, start) = create_test_graph().await;
+
+        let full = graph.bfs(start, TraversalConfig::new()).await.unwrap();
+        assert!(full.completed);
+
+        let truncated = graph.bfs(
+            start,
+            TraversalConfig::new().max_nodes(2)
+        ).await.unwrap();
+        assert_eq!(truncated.nodes.len(), 2);
+        assert!(!truncated.completed);
+    }
+
+    #[tokio::test]
+    async fn test_dfs_completed_flag() {
+        let (graph, start) = create_test_graph().await;
+
+        let full = graph.dfs(start, TraversalConfig::new()).await.unwrap();
+        assert!(full.completed);
+
+        let truncated = graph.dfs(
+            start,
+            TraversalConfig::new().max_nodes(2)
+        ).await.unwrap();
+        assert_eq!(truncated.nodes.len(), 2);
+        assert!(!truncated.completed);
     }
 }

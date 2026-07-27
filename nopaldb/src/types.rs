@@ -47,6 +47,15 @@ impl PropertyValue {
         }
     }
 
+    /// Valor numérico como f64, coercionando `Int` (a diferencia de `as_f64`).
+    pub fn as_number(&self) -> Option<f64> {
+        match self {
+            PropertyValue::Float(f) => Some(*f),
+            PropertyValue::Int(i) => Some(*i as f64),
+            _ => None,
+        }
+    }
+
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             PropertyValue::Bool(b) => Some(*b),
@@ -312,6 +321,14 @@ mod tests {
         assert!(PropertyValue::Int(1) < PropertyValue::Int(2));
         assert!(PropertyValue::Float(1.5) < PropertyValue::Float(2.5));
         assert!(PropertyValue::String("a".to_string()) < PropertyValue::String("b".to_string()));
+    }
+
+    #[test]
+    fn test_property_value_as_number() {
+        assert_eq!(PropertyValue::Int(18).as_number(), Some(18.0));
+        assert_eq!(PropertyValue::Float(2.5).as_number(), Some(2.5));
+        assert_eq!(PropertyValue::String("18".into()).as_number(), None);
+        assert_eq!(PropertyValue::Null.as_number(), None);
     }
 
     #[test]
