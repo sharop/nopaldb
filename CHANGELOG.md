@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.33] - 2026-07-26
+
+### ✨ Highlights
+
+- **Acumulador por traverser en el traversal fluido** (estilo `sack()` de
+  Gremlin). Cada traverser acarrea un valor que se pliega con la arista en
+  cada paso — la pieza que faltaba para cálculos como la explosión de
+  materiales de un BOM, cadenas multiplicativas de probabilidad o conversión
+  de unidades encadenada:
+
+  ```rust
+  let r = graph.traverse(raiz)
+      .sack(10.0)
+      .repeat(|b| b.out_e("ContieneComponente").sack_mul_by("cantidad"))
+      .emit()
+      .await?;   // (nodo, cantidad acumulada) por cada camino
+  ```
+
+- **Acceso a la arista durante el recorrido**: `sack_by`/`try_sack_by`
+  reciben `&Edge`, y `filter_edge` filtra por propiedades de arista (antes
+  solo se podía seleccionar por tipo).
+- **Multiplicidad por camino**: sin deduplicación por nodo — el mismo nodo
+  alcanzado por dos ramas aparece dos veces, cada una con su acumulador.
+- **Truncamiento explícito**: `SackResult::truncated` distingue «terminé» de
+  «me detuve por `max_depth`/`max_nodes`», y `TraversalResult.completed` hace
+  lo mismo para `bfs`/`dfs`. Los ciclos dentro de `repeat` se manejan con
+  `on_cycle(CycleMode::Error | Skip)` (default `Error`, con el camino del
+  ciclo en el mensaje).
+
+### Added
+
+- `TraverseBuilder::sack(init)` → `SackBuilder<T>` genérico con
+  `out/out_e/in_/in_e/both/filter/filter_edge`, pliegues `sack_by`,
+  `try_sack_by`, conveniencias numéricas `sack_mul_by`/`sack_sum_by`
+  (con coerción `Int`→`f64`; propiedad faltante o no numérica es error duro),
+  `repeat(...)` acotado por `max_depth` (default 32, obligatorio) y
+  `max_nodes` (default 10 000), y terminales `emit()` / `emit_leaves()`.
+- Tipos nuevos exportados: `SackBuilder`, `SackBlock`, `SackResult`,
+  `SackItem`, `CycleMode`, `Truncation`.
+- `PropertyValue::as_number()` — valor numérico como `f64` coercionando
+  `Int` (a diferencia de `as_f64`).
+- Ejemplo `bom_costing` (`cargo run -p nopaldb --example bom_costing`).
+
+### Changed
+
+- **Minor breaking**: `TraversalResult` tiene un campo nuevo
+  `completed: bool` (`false` si `bfs`/`dfs` se detuvieron por
+  `max_depth`/`max_nodes`). Solo afecta a código que construya o destructure
+  el struct literalmente; la lectura de campos no cambia.
+- El manejo de ciclos (`on_cycle`) vive en el motor sack; en `bfs`/`dfs` la
+  deduplicación por nodo ya garantiza terminación, así que `TraversalConfig`
+  no cambia.
+
+---
+
 ## [0.4.32] - 2026-07-22
 
 ### ⚖️ Licensing

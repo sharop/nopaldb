@@ -62,7 +62,7 @@ pub use graph::{Graph, Direction, BulkLoader, BulkLoadStats, AutoGcConfig, AutoG
 #[cfg(feature = "hybrid")]
 pub use graph::{HybridFilter, HybridHit, HybridQuery};
 pub use traversal::{TraversalResult, TraversalConfig, NodeFilter};
-pub use query::TraverseBuilder;
+pub use query::{TraverseBuilder, SackBuilder, SackBlock, SackResult, SackItem, CycleMode, Truncation};
 pub use transaction::Transaction;
 
 #[cfg(feature = "full-isolation")]

@@ -1705,6 +1705,7 @@ impl Graph {
         let mut queue = VecDeque::new();
         let mut result_nodes = Vec::new();
         let mut distances = Vec::new();
+        let mut truncated = false;
 
         queue.push_back((start, 0));
         visited.insert(start);
@@ -1712,11 +1713,13 @@ impl Graph {
         while let Some((current_id, depth)) = queue.pop_front() {
             if let Some(max_depth) = config.max_depth
                 && depth > max_depth {
+                truncated = true;
                 continue;
             }
 
             if let Some(max_nodes) = config.max_nodes
                 && result_nodes.len() >= max_nodes {
+                truncated = true;
                 break;
             }
 
@@ -1744,6 +1747,7 @@ impl Graph {
             nodes: result_nodes,
             distances: Some(distances),
             path: None,
+            completed: !truncated,
         })
     }
 
@@ -1755,6 +1759,7 @@ impl Graph {
     ) -> Result<TraversalResult> {
         let mut visited = HashSet::new();
         let mut result_nodes = Vec::new();
+        let mut truncated = false;
 
         self.dfs_recursive(
             start,
@@ -1762,12 +1767,14 @@ impl Graph {
             &config,
             &mut visited,
             &mut result_nodes,
+            &mut truncated,
         ).await?;
 
         Ok(TraversalResult {
             nodes: result_nodes,
             distances: None,
             path: None,
+            completed: !truncated,
         })
     }
 
@@ -1780,14 +1787,17 @@ impl Graph {
         config: &TraversalConfig,
         visited: &mut HashSet<NodeId>,
         result: &mut Vec<NodeId>,
+        truncated: &mut bool,
     ) -> Result<()> {
         if let Some(max_depth) = config.max_depth
             && depth > max_depth {
+            *truncated = true;
             return Ok(());
         }
 
         if let Some(max_nodes) = config.max_nodes
             && result.len() >= max_nodes {
+            *truncated = true;
             return Ok(());
         }
 
@@ -1814,6 +1824,7 @@ impl Graph {
                     config,
                     visited,
                     result,
+                    truncated,
                 ).await?;
             }
         }
@@ -1854,6 +1865,7 @@ impl Graph {
                     nodes: path.clone(),
                     distances: None,
                     path: Some(path),
+                    completed: true,
                 }));
             }
 

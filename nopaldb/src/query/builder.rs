@@ -118,6 +118,22 @@ impl TraverseBuilder {
         self
     }
     
+    /// Convierte el traversal en uno con acumulador por traverser ("sack").
+    ///
+    /// Los pasos ya grabados corren como prefijo; a partir de aquí el
+    /// recorrido acarrea `init` y puede plegarlo con cada arista
+    /// (`sack_by`, `sack_mul_by`, …) y descender con `repeat`. Ver
+    /// [`SackBuilder`](crate::query::sack::SackBuilder).
+    pub fn sack<T: Clone + Send + Sync + 'static>(self, init: T) -> crate::query::sack::SackBuilder<T> {
+        crate::query::sack::SackBuilder::from_traverse(
+            self.graph,
+            self.state.current_nodes,
+            init,
+            self.steps,
+            self.predicates,
+        )
+    }
+
     /// Ejecuta el traversal y retorna los nodos
     pub async fn execute(self) -> Result<Vec<NodeId>> {
         let mut current_nodes = self.state.current_nodes.clone();
