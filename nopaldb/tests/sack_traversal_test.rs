@@ -310,6 +310,74 @@ async fn test_generic_sack_type() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_parent_links_rebuild_tree() -> Result<()> {
+    let f = bom_fixture().await?;
+
+    let r = f.graph
+        .traverse(f.mesa)
+        .sack(10.0)
+        .repeat(|b| b.out_e("ContieneComponente").sack_mul_by("cantidad"))
+        .emit()
+        .await?;
+
+    // Reconstrucción del árbol por índices (el snippet del doc del módulo)
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); r.items.len()];
+    let mut roots = Vec::new();
+    for (i, item) in r.items.iter().enumerate() {
+        match item.parent {
+            Some(p) => children[p].push(i),
+            None => roots.push(i),
+        }
+    }
+
+    // Raíces = hijos directos de Mesa: Tornillo×2, Barniz, Pata
+    assert_eq!(roots.len(), 4);
+    let pata_idx = r.items.iter().position(|i| i.node == f.pata).unwrap();
+    let regaton_idx = r.items.iter().position(|i| i.node == f.regaton).unwrap();
+
+    // Regatón cuelga exactamente del ítem Pata, no de un NodeId ambiguo
+    assert_eq!(r.items[regaton_idx].parent, Some(pata_idx));
+    assert_eq!(children[pata_idx], vec![regaton_idx]);
+
+    // Invariante con bloques de un salto: el padre está un nivel arriba
+    for item in &r.items {
+        if let Some(p) = item.parent {
+            assert_eq!(r.items[p].depth, item.depth - 1);
+        }
+    }
+
+    // via_edge distingue las dos aristas paralelas Mesa→Tornillo
+    let mut cantidades = Vec::new();
+    for item in r.items.iter().filter(|i| i.node == f.tornillo) {
+        let edge = f.graph.get_edge(item.via_edge.unwrap()).await?;
+        cantidades.push(edge.properties.get("cantidad").and_then(|v| v.as_number()).unwrap());
+    }
+    cantidades.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(cantidades, vec![2.0, 8.0]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_emit_leaves_parent_is_none() -> Result<()> {
+    let f = bom_fixture().await?;
+
+    let r = f.graph
+        .traverse(f.mesa)
+        .sack(10.0)
+        .repeat(|b| b.out_e("ContieneComponente").sack_mul_by("cantidad"))
+        .emit_leaves()
+        .await?;
+
+    // Reporte plano: ningún intermedio se emite, así que no hay padres
+    assert!(r.items.iter().all(|i| i.parent.is_none()));
+    // Pero via_edge sí identifica por dónde llegó cada hoja
+    assert!(r.items.iter().all(|i| i.via_edge.is_some()));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_edge_property_filter() -> Result<()> {
     // filter_edge permite seleccionar por propiedad de arista, no solo tipo
     let f = bom_fixture().await?;

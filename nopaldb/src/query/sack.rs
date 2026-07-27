@@ -35,6 +35,24 @@
 //! traverser (un diamante no es un ciclo) y el truncamiento por
 //! `max_depth`/`max_nodes` se reporta en [`SackResult::truncated`] en vez de
 //! cortar en silencio.
+//!
+//! Cada [`SackItem`] enlaza a su padre por índice ([`SackItem::parent`]), así
+//! que el árbol anidado se reconstruye en un solo paso — el `NodeId` del
+//! padre no bastaría, porque bajo multiplicidad el mismo nodo puede aparecer
+//! varias veces:
+//!
+//! ```no_run
+//! # fn demo(r: nopaldb::SackResult<f64>) {
+//! let mut children: Vec<Vec<usize>> = vec![Vec::new(); r.items.len()];
+//! let mut roots = Vec::new();
+//! for (i, item) in r.items.iter().enumerate() {
+//!     match item.parent {
+//!         Some(p) => children[p].push(i),
+//!         None => roots.push(i), // hijos directos del nodo de inicio
+//!     }
+//! }
+//! # }
+//! ```
 
 use std::fmt;
 use std::sync::Arc;
@@ -43,7 +61,7 @@ use crate::error::{NopalError, Result};
 use crate::graph::{Direction, Graph};
 use crate::query::filter::NodePredicate;
 use crate::query::step::TraversalStep;
-use crate::types::{Edge, Node, NodeId};
+use crate::types::{Edge, EdgeId, Node, NodeId};
 
 /// Pliegue del acumulador: recibe la arista recién seguida y el valor actual.
 pub type SackFold<T> = Arc<dyn Fn(&Edge, &T) -> Result<T> + Send + Sync>;
@@ -77,6 +95,15 @@ pub struct SackItem<T> {
     pub node: NodeId,
     pub sack: T,
     pub depth: usize,
+    /// Índice en [`SackResult::items`] del ítem padre (el ancestro emitido
+    /// más cercano). `None` = hijo directo de un nodo de inicio. Bajo
+    /// multiplicidad por camino el `NodeId` del padre sería ambiguo; el
+    /// índice identifica al traverser exacto y permite reconstruir el árbol
+    /// en un solo paso (ver el ejemplo del módulo).
+    pub parent: Option<usize>,
+    /// Arista por la que se llegó a este nodo. Desambigua aristas paralelas
+    /// y da acceso a sus propiedades vía [`Graph::get_edge`](crate::Graph::get_edge).
+    pub via_edge: Option<EdgeId>,
 }
 
 /// Resultado de un traversal con acumulador.
@@ -141,6 +168,9 @@ struct Traverser<T> {
     depth: usize,
     last_edge: Option<Arc<Edge>>,
     path: Arc<PathLink>,
+    /// Índice en `items` del ancestro emitido más cercano (incluido este
+    /// mismo traverser una vez emitido); lo heredan sus hijos.
+    last_emitted_ancestor: Option<usize>,
 }
 
 impl<T: Clone> Clone for Traverser<T> {
@@ -151,6 +181,7 @@ impl<T: Clone> Clone for Traverser<T> {
             depth: self.depth,
             last_edge: self.last_edge.clone(),
             path: self.path.clone(),
+            last_emitted_ancestor: self.last_emitted_ancestor,
         }
     }
 }
@@ -443,12 +474,22 @@ impl<T: Clone + Send + Sync + 'static> SackBuilder<T> {
     /// Ejecuta y emite cada nodo alcanzado al cierre de cada bloque: el
     /// frontier tras el prefijo y el de cada iteración de `repeat`. Los
     /// nodos de inicio no se emiten (nada se ha plegado aún).
+    ///
+    /// [`SackItem::parent`] enlaza cada ítem con el ancestro emitido más
+    /// cercano. Con bloques de un salto (el caso típico) eso es el padre
+    /// directo (`items[parent].depth == depth - 1`); con bloques multi-salto,
+    /// es el nodo del cierre de bloque anterior — los saltos intermedios no
+    /// se emiten.
     pub async fn emit(self) -> Result<SackResult<T>> {
         self.run(false).await
     }
 
     /// Ejecuta y emite solo las hojas: traversers que no producen sucesores
     /// en una iteración de `repeat` (o el frontier final si no hay `repeat`).
+    ///
+    /// Es un reporte plano, no un árbol: como ningún intermedio se emite,
+    /// [`SackItem::parent`] es siempre `None` aquí. Para reconstruir el
+    /// árbol usar [`Self::emit`].
     pub async fn emit_leaves(self) -> Result<SackResult<T>> {
         self.run(true).await
     }
@@ -478,6 +519,7 @@ impl<T: Clone + Send + Sync + 'static> SackBuilder<T> {
                 depth: 0,
                 last_edge: None,
                 path: Arc::new(PathLink { node, parent: None }),
+                last_emitted_ancestor: None,
             })
             .collect();
 
@@ -487,7 +529,7 @@ impl<T: Clone + Send + Sync + 'static> SackBuilder<T> {
         frontier = apply_block(&self.graph, &self.prefix, frontier, &mut ctx, false).await?;
 
         if !leaves_only {
-            emit_frontier(&frontier, &mut items);
+            emit_frontier(&mut frontier, &mut items);
         }
 
         match self.repeat_block {
@@ -498,6 +540,8 @@ impl<T: Clone + Send + Sync + 'static> SackBuilder<T> {
                             node: t.node,
                             sack: t.sack.clone(),
                             depth: t.depth,
+                            parent: t.last_emitted_ancestor,
+                            via_edge: t.last_edge.as_ref().map(|e| e.id),
                         });
                     }
                 }
@@ -517,12 +561,14 @@ impl<T: Clone + Send + Sync + 'static> SackBuilder<T> {
                                 node: t.node,
                                 sack: t.sack,
                                 depth: t.depth,
+                                parent: t.last_emitted_ancestor,
+                                via_edge: t.last_edge.as_ref().map(|e| e.id),
                             });
                         }
                         next.extend(children);
                     }
                     if !leaves_only {
-                        emit_frontier(&next, &mut items);
+                        emit_frontier(&mut next, &mut items);
                     }
                     frontier = next;
                 }
@@ -551,14 +597,19 @@ struct RunCtx {
     stop: bool,
 }
 
-fn emit_frontier<T: Clone>(frontier: &[Traverser<T>], items: &mut Vec<SackItem<T>>) {
-    for t in frontier {
+fn emit_frontier<T: Clone>(frontier: &mut [Traverser<T>], items: &mut Vec<SackItem<T>>) {
+    for t in frontier.iter_mut() {
         if t.depth > 0 {
+            let idx = items.len();
             items.push(SackItem {
                 node: t.node,
                 sack: t.sack.clone(),
                 depth: t.depth,
+                // El valor heredado ANTES de estamparse a sí mismo: el padre.
+                parent: t.last_emitted_ancestor,
+                via_edge: t.last_edge.as_ref().map(|e| e.id),
             });
+            t.last_emitted_ancestor = Some(idx);
         }
     }
 }
@@ -632,6 +683,7 @@ async fn apply_block<T: Clone + Send + Sync + 'static>(
                                 node: target,
                                 parent: Some(t.path.clone()),
                             }),
+                            last_emitted_ancestor: t.last_emitted_ancestor,
                         });
                     }
                 }
@@ -763,6 +815,11 @@ mod tests {
         assert_eq!(r.items[0].node, b);
         assert_eq!(r.items[0].sack, 180.0);
         assert_eq!(r.items[0].depth, 1);
+        // Hijo directo del nodo de inicio, llegado por la arista seguida
+        assert_eq!(r.items[0].parent, None);
+        let edge_id = r.items[0].via_edge.expect("via_edge debe estar presente");
+        let edge = graph.get_edge(edge_id).await.unwrap();
+        assert_eq!(edge.edge_type, "ContieneComponente");
         assert!(r.is_complete());
         assert_eq!(r.cycles_skipped, 0);
     }

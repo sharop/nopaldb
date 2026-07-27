@@ -41,15 +41,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .emit()
         .await?;
 
+    // Cada ítem enlaza a su padre por índice (`item.parent`), así que el
+    // árbol anidado se reconstruye en un solo paso — aun cuando el mismo
+    // material aparece varias veces por caminos distintos.
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); r.items.len()];
+    let mut roots = Vec::new();
+    for (i, item) in r.items.iter().enumerate() {
+        match item.parent {
+            Some(p) => children[p].push(i),
+            None => roots.push(i),
+        }
+    }
+
     println!("Materiales para un lote de {lote} mesas:\n");
-    for item in &r.items {
+    println!("Mesa × {lote}");
+    let mut stack: Vec<(usize, usize)> = roots.iter().rev().map(|&i| (i, 1)).collect();
+    while let Some((i, level)) = stack.pop() {
+        let item = &r.items[i];
         let material = graph.get_node(item.node).await?;
         let name = material
             .properties
             .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("<sin nombre>");
-        println!("  {:<10} {:>8}", name, item.sack);
+        println!("{}└─ {:<10} {:>6}", "   ".repeat(level), name, item.sack);
+        for &c in children[i].iter().rev() {
+            stack.push((c, level + 1));
+        }
     }
 
     // El recorrido distingue «terminé» de «me detuve por un tope»:
