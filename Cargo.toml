@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.34"
+version = "0.4.35"
 edition = "2024"
 authors = ["Sharop <sharop@gmail.com>"]
 # Default for workspace members, matching the flagship library and the

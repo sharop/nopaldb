@@ -2310,7 +2310,7 @@ impl<'a> Executor<'a> {
                     let left_val = self.evaluate_linear_pattern_expression(binding, left);
                     let right_val = self.evaluate_linear_pattern_expression(binding, right);
                     match (left_val, right_val) {
-                        (Some(l), Some(r)) => self.compare_values(&l, op, &r),
+                        (Some(l), Some(r)) => operators::compare_values(&l, op, &r),
                         _ => false,
                     }
                 }
@@ -3414,9 +3414,9 @@ impl<'a> Executor<'a> {
                             None => best = Some(v),
                             Some(curr) => {
                                 let is_better = if name.eq_ignore_ascii_case("min") {
-                                    self.compare_values(&v, &BinaryOperator::Lt, curr)
+                                    operators::compare_values(&v, &BinaryOperator::Lt, curr)
                                 } else {
-                                    self.compare_values(&v, &BinaryOperator::Gt, curr)
+                                    operators::compare_values(&v, &BinaryOperator::Gt, curr)
                                 };
                                 if is_better {
                                     best = Some(v);
@@ -3486,7 +3486,7 @@ impl<'a> Executor<'a> {
                         )?;
 
                         match (left_val, right_val) {
-                            (Some(l), Some(r)) => Ok(self.compare_values(&l, op, &r)),
+                            (Some(l), Some(r)) => Ok(operators::compare_values(&l, op, &r)),
                             _ => Ok(false),
                         }
                     }
@@ -3607,7 +3607,7 @@ impl<'a> Executor<'a> {
                         let left_val = self.evaluate_expression(node, left, variable);
                         let right_val = self.evaluate_expression(node, right, variable);
                         match (left_val, right_val) {
-                            (Some(l), Some(r)) => Ok(self.compare_values(&l, op, &r)),
+                            (Some(l), Some(r)) => Ok(operators::compare_values(&l, op, &r)),
                             _ => Ok(false),
                         }
                     }
@@ -4335,19 +4335,6 @@ impl<'a> Executor<'a> {
                 node.properties.get(property).cloned()
             }
             _ => None,
-        }
-    }
-
-    /// Compare two values
-    fn compare_values(&self, left: &PropertyValue, op: &BinaryOperator, right: &PropertyValue) -> bool {
-        match op {
-            BinaryOperator::Eq => left == right,
-            BinaryOperator::NotEq => left != right,
-            BinaryOperator::Gt => left > right,
-            BinaryOperator::Lt => left < right,
-            BinaryOperator::GtEq => left >= right,
-            BinaryOperator::LtEq => left <= right,
-            _ => false,
         }
     }
 

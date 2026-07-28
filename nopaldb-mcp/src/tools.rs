@@ -5,39 +5,18 @@ use rmcp::model::{CallToolResult, Content};
 use serde_json::{Value, json};
 
 // ─── PropertyValue serialization ───────────────────────────────────────────
+// Wrappers delgados sobre el puente canónico de nopaldb (types.rs), que usa
+// matches exhaustivos: una variante nueva de PropertyValue rompe compilación
+// en el core en vez de serializar null en silencio (el match local anterior
+// tenía `_ => Value::Null` y colapsaba Null Y Bytes).
 
 pub fn pv_to_json(pv: &PropertyValue) -> Value {
-    match pv {
-        PropertyValue::String(s)  => Value::String(s.clone()),
-        PropertyValue::Int(n)     => json!(n),
-        PropertyValue::Float(f)   => json!(f),
-        PropertyValue::Bool(b)    => json!(b),
-        PropertyValue::List(vs)   => Value::Array(vs.iter().map(pv_to_json).collect()),
-        PropertyValue::Object(m)  => Value::Object(
-            m.iter().map(|(k, v)| (k.clone(), pv_to_json(v))).collect(),
-        ),
-        _ => Value::Null,
-    }
+    Value::from(pv)
 }
 
 /// Convert a serde_json Value to a PropertyValue (inverse of `pv_to_json`).
 pub fn json_to_pv(v: &Value) -> PropertyValue {
-    match v {
-        Value::Null => PropertyValue::Null,
-        Value::Bool(b) => PropertyValue::Bool(*b),
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                PropertyValue::Int(i)
-            } else {
-                PropertyValue::Float(n.as_f64().unwrap_or(0.0))
-            }
-        }
-        Value::String(s) => PropertyValue::String(s.clone()),
-        Value::Array(a) => PropertyValue::List(a.iter().map(json_to_pv).collect()),
-        Value::Object(m) => {
-            PropertyValue::Object(m.iter().map(|(k, v)| (k.clone(), json_to_pv(v))).collect())
-        }
-    }
+    PropertyValue::from(v)
 }
 
 // ─── QueryResult → JSON ────────────────────────────────────────────────────
@@ -132,4 +111,41 @@ pub fn readonly_error() -> CallToolResult {
 pub fn is_write_statement(nql: &str) -> bool {
     let first = nql.split_whitespace().next().unwrap_or("").to_lowercase();
     matches!(first.as_str(), "add" | "update" | "delete" | "create" | "drop")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pv_json_roundtrip_all_variants() {
+        // Escalares y estructuras roundtripean tipo-exacto
+        for pv in [
+            PropertyValue::Null,
+            PropertyValue::Bool(true),
+            PropertyValue::Int(-7),
+            PropertyValue::Float(2.5),
+            PropertyValue::String("a".into()),
+            PropertyValue::List(vec![PropertyValue::Int(1), PropertyValue::Bool(false)]),
+            PropertyValue::Object(vec![("k".to_string(), PropertyValue::String("v".into()))]),
+        ] {
+            assert_eq!(json_to_pv(&pv_to_json(&pv)), pv, "roundtrip de {pv:?}");
+        }
+    }
+
+    #[test]
+    fn bytes_now_serialize_as_array_not_null() {
+        // Bugfix pinneado: el match local anterior colapsaba Bytes en null.
+        let pv = PropertyValue::Bytes(vec![1, 2, 3]);
+        assert_eq!(pv_to_json(&pv), serde_json::json!([1, 2, 3]));
+        // Lossiness documentada del puente: regresa como List(Int)
+        assert_eq!(
+            json_to_pv(&pv_to_json(&pv)),
+            PropertyValue::List(vec![
+                PropertyValue::Int(1),
+                PropertyValue::Int(2),
+                PropertyValue::Int(3)
+            ])
+        );
+    }
 }

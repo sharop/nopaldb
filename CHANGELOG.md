@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.35] - 2026-07-27
+
+### ✨ Highlights
+
+- **API de conversión unificada en `PropertyValue`.** El tipo-contrato del
+  motor ahora tiene su conversión canónica en el propio enum, y
+  `with_property` acepta literales directamente:
+
+  ```rust
+  let n = Node::new("Person")
+      .with_property("name", "Alice")   // &str → String
+      .with_property("age", 30)         // i32  → Int
+      .with_property("active", true);   // bool → Bool
+  ```
+
+- **Fixed (Python): `True` ya no se convierte en `1`.** Los conversores
+  inline de `Transaction.add_node`/`add_edge` probaban `int` antes que
+  `bool` (subtipo en Python). La frontera Python↔Rust usa ahora un conversor
+  único, que además acepta `list`/`tuple`/`dict` anidados como propiedades.
+
+### Added
+
+- `From<bool/i64/i32/u32/f64/f32/&str/String/Vec<u8>/Vec<PropertyValue>/
+  Vec<(String, PropertyValue)>/Option<T>>` para `PropertyValue`; exclusiones
+  (`u64`/`usize`, `Vec<T>` genérico) razonadas en el rustdoc del enum.
+- `PropertyValue::to_display_string()` + `impl Display` — render humano
+  recursivo. Documentado: NO estable; jamás para claves de índice ni
+  formatos persistidos.
+- Puente `serde_json::Value` ↔ `PropertyValue` en ambas direcciones con
+  matches exhaustivos (una variante futura rompe compilación, no serializa
+  mal en silencio). Lossiness documentada: `Bytes` roundtripea como
+  `List(Int)`; `NaN`→`null`.
+- Doc del enum con el bloque «Restricciones de evolución»: agregar una
+  variante es semver-major (sin `#[non_exhaustive]`), y el orden de
+  declaración es load-bearing para `serde(untagged)` — pinneado en tests.
+- Propiedades `list`/`tuple`/`dict` en los bindings Python (antes solo
+  escalares y bytes), con guardia de roundtrip tipo-exacto en CI.
+
+### Changed
+
+- `Node::with_property`/`Edge::with_property` se generalizan a
+  `impl Into<PropertyValue>`. Compatible con todo código que pasa un
+  `PropertyValue` explícito; si un consumidor pasaba `x.into()` desnudo,
+  la inferencia ahora es ambigua — usar `x` directamente o
+  `PropertyValue::from(x)`.
+- ndbstudio muestra floats no finitos como `null` de forma consistente en
+  todas las vistas (una tenía drift a `NaN`/`inf`).
+- Tutoriales: los helpers `prop_to_*` copiados 4 veces se sustituyen por el
+  API del enum (`to_display_string`, `as_number`).
+
+### Fixed
+
+- Python: `bool` → `Int(1)` al escribir vía transacción (dos sitios).
+- MCP: `Bytes` se serializaba como `null` por un wildcard `_ =>`; ahora sale
+  como arreglo de números y el wildcard desapareció (matches exhaustivos en
+  el core).
+
+---
+
 ## [0.4.34] - 2026-07-27
 
 ### ✨ Highlights

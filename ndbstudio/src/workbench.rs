@@ -1199,26 +1199,11 @@ fn node_properties_snapshot(node: &nopaldb::Node) -> Vec<GraphNodePropertySnapsh
     properties
 }
 
+/// Delegado al render canónico del core. Drift corregido a propósito: los
+/// floats no finitos ahora se muestran como "null" (antes "NaN"/"inf"),
+/// alineando esta vista con engine/mapper.rs.
 fn property_value_to_display(value: &PropertyValue) -> String {
-    match value {
-        PropertyValue::Null => "null".to_string(),
-        PropertyValue::Bool(value) => value.to_string(),
-        PropertyValue::Int(value) => value.to_string(),
-        PropertyValue::Float(value) => value.to_string(),
-        PropertyValue::String(value) => value.clone(),
-        PropertyValue::Bytes(value) => format!("<{} bytes>", value.len()),
-        PropertyValue::List(items) => {
-            let inner: Vec<String> = items.iter().map(property_value_to_display).collect();
-            format!("[{}]", inner.join(", "))
-        }
-        PropertyValue::Object(fields) => {
-            let inner: Vec<String> = fields
-                .iter()
-                .map(|(k, v)| format!("{}: {}", k, property_value_to_display(v)))
-                .collect();
-            format!("{{{}}}", inner.join(", "))
-        }
-    }
+    value.to_display_string()
 }
 
 fn property_value_as_string_for_display(value: &PropertyValue) -> Option<String> {

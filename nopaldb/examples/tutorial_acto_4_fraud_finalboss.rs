@@ -17,7 +17,7 @@
 //   cargo run --example tutorial_acto_4_fraud_finalboss \
 //     -- test_dbs/synthetic_fraud.db
 
-use nopaldb::Graph;
+use nopaldb::{Graph, PropertyValue};
 use std::error::Error;
 
 const Q_TOPOLOGY: &str = include_str!(
@@ -62,8 +62,8 @@ async fn paso_1_topology(graph: &Graph) -> Result<(), Box<dyn Error>> {
     println!("--- Paso 1: schema (counts por label) ---");
     let result = graph.execute_nql(Q_TOPOLOGY).await?;
     for row in result.rows() {
-        let label = row.get("etiqueta").map(prop_to_string).unwrap_or_default();
-        let total = row.get("total").map(prop_to_i64).unwrap_or(-1);
+        let label = row.get("etiqueta").map(PropertyValue::to_display_string).unwrap_or_default();
+        let total = row.get("total").map(|p| p.as_number().map(|f| f as i64).unwrap_or(-1)).unwrap_or(-1);
         if !label.is_empty() {
             println!("  {:<18} {}", label, total);
         }
@@ -78,8 +78,8 @@ async fn paso_2_top_inbound(graph: &Graph) -> Result<i64, Box<dyn Error>> {
     let result = graph.execute_nql(Q_TOP_INBOUND).await?;
     let mut min_inbound: i64 = i64::MAX;
     for row in result.rows().iter().take(5) {
-        let id = row.get("b.id").map(prop_to_string).unwrap_or_default();
-        let n = row.get("inbound").map(prop_to_i64).unwrap_or(0);
+        let id = row.get("b.id").map(PropertyValue::to_display_string).unwrap_or_default();
+        let n = row.get("inbound").map(|p| p.as_number().map(|f| f as i64).unwrap_or(-1)).unwrap_or(0);
         println!("  {}  {}", &id[..8.min(id.len())], n);
         if n < min_inbound {
             min_inbound = n;
@@ -93,7 +93,7 @@ async fn paso_3_ring_transfers(graph: &Graph) -> Result<(), Box<dyn Error>> {
     println!("--- Paso 3: transfers de alto monto (>900k) ---");
     let result = graph.execute_nql(Q_RING_TRANSFERS).await?;
     let amounts: Vec<f64> = result.rows().iter()
-        .filter_map(|r| r.get("e.amount").map(prop_to_f64))
+        .filter_map(|r| r.get("e.amount").map(|p| p.as_number().unwrap_or(0.0)))
         .collect();
     println!("transfers > 900k: {}", amounts.len());
     if !amounts.is_empty() {
@@ -111,8 +111,8 @@ async fn paso_5_path_chains(graph: &Graph) -> Result<(), Box<dyn Error>> {
     let result = graph.execute_nql(Q_PATHS).await?;
     println!("paths encontrados: {}", result.len());
     for row in result.rows().iter().take(3) {
-        let hops = row.get("hops").map(prop_to_i64).unwrap_or(-1);
-        let flujo = row.get("flujo").map(prop_to_f64).unwrap_or(0.0);
+        let hops = row.get("hops").map(|p| p.as_number().map(|f| f as i64).unwrap_or(-1)).unwrap_or(-1);
+        let flujo = row.get("flujo").map(|p| p.as_number().unwrap_or(0.0)).unwrap_or(0.0);
         println!("  hops={} flujo={:.0}", hops, flujo);
     }
     println!();
@@ -133,31 +133,3 @@ fn gate(min_inbound: i64) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn prop_to_string(p: &nopaldb::types::PropertyValue) -> String {
-    use nopaldb::types::PropertyValue::*;
-    match p {
-        String(s) => s.clone(),
-        Int(n) => n.to_string(),
-        Float(f) => f.to_string(),
-        Bool(b) => b.to_string(),
-        _ => format!("{:?}", p),
-    }
-}
-
-fn prop_to_f64(p: &nopaldb::types::PropertyValue) -> f64 {
-    use nopaldb::types::PropertyValue::*;
-    match p {
-        Float(f) => *f,
-        Int(n) => *n as f64,
-        _ => 0.0,
-    }
-}
-
-fn prop_to_i64(p: &nopaldb::types::PropertyValue) -> i64 {
-    use nopaldb::types::PropertyValue::*;
-    match p {
-        Int(n) => *n,
-        Float(f) => *f as i64,
-        _ => -1,
-    }
-}

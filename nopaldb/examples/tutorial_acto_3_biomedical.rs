@@ -15,7 +15,7 @@
 //     --features storage-sled,reasoner,owl-import,algorithms,analytics,hypergraph,ml \
 //     -- test_dbs/biomedical.db tutorials/data/biomedical.ttl
 
-use nopaldb::Graph;
+use nopaldb::{Graph, PropertyValue};
 use std::error::Error;
 use std::fs;
 
@@ -79,7 +79,7 @@ async fn paso_1_classes(graph: &Graph) -> Result<(), Box<dyn Error>> {
     let mut seen = std::collections::BTreeSet::new();
     for row in result.rows() {
         if let Some(c) = row.get("clase") {
-            seen.insert(prop_to_string(c));
+            seen.insert(c.to_display_string());
         }
     }
     println!("clases unicas: {}", seen.len());
@@ -94,8 +94,8 @@ async fn paso_2_instances(graph: &Graph) -> Result<(), Box<dyn Error>> {
     println!("--- Paso 2: instancias por clase directa (con count) ---");
     let result = graph.execute_nql(Q_INSTANCES).await?;
     for row in result.rows() {
-        let clase = row.get("clase").map(prop_to_string).unwrap_or_default();
-        let total = row.get("total").map(prop_to_i64).unwrap_or(-1);
+        let clase = row.get("clase").map(PropertyValue::to_display_string).unwrap_or_default();
+        let total = row.get("total").map(|p| p.as_number().map(|f| f as i64).unwrap_or(-1)).unwrap_or(-1);
         println!("  {:<22} {}", clase, total);
     }
     println!();
@@ -106,8 +106,8 @@ async fn paso_3_subclass_edges(graph: &Graph) -> Result<(), Box<dyn Error>> {
     println!("--- Paso 3: edges subClassOf (jerarquia explicita) ---");
     let result = graph.execute_nql(Q_SUBCLASS_EDGES).await?;
     for row in result.rows() {
-        let sub = row.get("subclase").map(prop_to_string).unwrap_or_default();
-        let sup = row.get("superclase").map(prop_to_string).unwrap_or_default();
+        let sub = row.get("subclase").map(PropertyValue::to_display_string).unwrap_or_default();
+        let sup = row.get("superclase").map(PropertyValue::to_display_string).unwrap_or_default();
         println!("  {:<22} subClassOf {}", sub, sup);
     }
     println!();
@@ -143,8 +143,8 @@ async fn paso_5_instanceof_nql(graph: &Graph) -> Result<usize, Box<dyn Error>> {
     let result = graph.execute_nql(Q_INSTANCEOF_NQL).await?;
     let count = result.len();
     for row in result.rows() {
-        let clase = row.get("clase").map(prop_to_string).unwrap_or_default();
-        let nombre = row.get("nombre").map(prop_to_string).unwrap_or_default();
+        let clase = row.get("clase").map(PropertyValue::to_display_string).unwrap_or_default();
+        let nombre = row.get("nombre").map(PropertyValue::to_display_string).unwrap_or_default();
         println!("  {:<22} {}", clase, nombre);
     }
     println!("total: {} individuos", count);
@@ -173,22 +173,3 @@ fn gate(
     Ok(())
 }
 
-fn prop_to_string(p: &nopaldb::types::PropertyValue) -> String {
-    use nopaldb::types::PropertyValue::*;
-    match p {
-        String(s) => s.clone(),
-        Int(n) => n.to_string(),
-        Float(f) => f.to_string(),
-        Bool(b) => b.to_string(),
-        _ => format!("{:?}", p),
-    }
-}
-
-fn prop_to_i64(p: &nopaldb::types::PropertyValue) -> i64 {
-    use nopaldb::types::PropertyValue::*;
-    match p {
-        Int(n) => *n,
-        Float(f) => *f as i64,
-        _ => -1,
-    }
-}
