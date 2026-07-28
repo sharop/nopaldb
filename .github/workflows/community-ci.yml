@@ -61,6 +61,9 @@ jobs:
       - name: Test sack traversal (accumulator)
         run: cargo test -p nopaldb --features core --test sack_traversal_test
 
+      - name: Test PropertyValue conversion API
+        run: cargo test -p nopaldb --features core --test property_value_conversion_test --test export_test
+
   python-stubs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
