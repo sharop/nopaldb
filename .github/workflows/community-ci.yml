@@ -77,4 +77,5 @@ jobs:
           pip install --quiet maturin mypy
           maturin develop -m nopaldb/Cargo.toml
           python nopaldb/python/scripts/check_stubs.py
+          python nopaldb/python/scripts/roundtrip_sample.py
           mypy --strict nopaldb/python/scripts/typecheck_sample.py

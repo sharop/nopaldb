@@ -5,7 +5,6 @@ use pyo3::types::{PyBytes, PyDict, PyList};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use crate::Graph as RustGraph;
-use crate::types::PropertyValue;
 use crate::{LinkSpec, StorageEngine, StorageOptions, StorageProfile, UpsertRequest};
 use super::{PyNqlResult, PyTransaction, to_py_result};
 use super::PyBulkLoader;
@@ -991,37 +990,10 @@ impl PyGraph {
 }
 
 // ─── Conversión Python → tipos de upsert ────────────────────────────────────
+// Conversor único en super:: (python/mod.rs) — ver su doc para el orden de
+// despacho (bool antes que int, PyBytes por downcast).
 
-/// Convierte un valor Python a `PropertyValue` (bool antes que int: en Python
-/// `bool` es subtipo de `int` y se extraería como 0/1 si se probara int primero).
-fn pyany_to_property(value: &Bound<'_, PyAny>) -> PyResult<PropertyValue> {
-    if value.is_none() {
-        Ok(PropertyValue::Null)
-    } else if let Ok(b) = value.extract::<bool>() {
-        Ok(PropertyValue::Bool(b))
-    } else if let Ok(i) = value.extract::<i64>() {
-        Ok(PropertyValue::Int(i))
-    } else if let Ok(f) = value.extract::<f64>() {
-        Ok(PropertyValue::Float(f))
-    } else if let Ok(s) = value.extract::<String>() {
-        Ok(PropertyValue::String(s))
-    } else if let Ok(bytes) = value.extract::<Vec<u8>>() {
-        Ok(PropertyValue::Bytes(bytes))
-    } else {
-        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "unsupported property value type (use str/int/float/bool/bytes/None)",
-        ))
-    }
-}
-
-fn pydict_to_props(dict: &Bound<'_, PyDict>) -> PyResult<HashMap<String, PropertyValue>> {
-    let mut props = HashMap::new();
-    for (k, v) in dict.iter() {
-        let key: String = k.extract()?;
-        props.insert(key, pyany_to_property(&v)?);
-    }
-    Ok(props)
-}
+use super::{pyany_to_property, pydict_to_props};
 
 fn build_link(dict: &Bound<'_, PyDict>) -> PyResult<LinkSpec> {
     let get_str = |name: &str| -> PyResult<String> {

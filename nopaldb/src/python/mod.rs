@@ -95,3 +95,67 @@ pub(crate) fn to_py_result<T>(result: NopalResult<T>) -> PyResult<T> {
         PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e))
     })
 }
+
+/// Convierte un valor Python a `PropertyValue`.
+///
+/// Orden de despacho deliberado: `bool` va ANTES que `int` porque en Python
+/// `bool` es subtipo de `int` y `extract::<i64>()` aceptaría `True` como `1`.
+/// `bytes` se detecta por downcast explícito de `PyBytes` y no vía
+/// `extract::<Vec<u8>>()`, porque ese `FromPyObject` también acepta una lista
+/// de enteros y la convertiría en `Bytes` en vez de `List`.
+///
+/// Es el conversor único de la frontera Python→Rust: `graph.rs` (upsert,
+/// links, delete-by-key) y `transaction.rs` (add_node/add_edge) deben usarlo
+/// en vez de reimplementar el match — las copias inline anteriores tenían el
+/// bug bool→Int(1).
+pub(crate) fn pyany_to_property(value: &Bound<'_, PyAny>) -> PyResult<PropertyValue> {
+    use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
+
+    if value.is_none() {
+        Ok(PropertyValue::Null)
+    } else if let Ok(b) = value.extract::<bool>() {
+        Ok(PropertyValue::Bool(b))
+    } else if let Ok(i) = value.extract::<i64>() {
+        Ok(PropertyValue::Int(i))
+    } else if let Ok(f) = value.extract::<f64>() {
+        Ok(PropertyValue::Float(f))
+    } else if let Ok(s) = value.extract::<String>() {
+        Ok(PropertyValue::String(s))
+    } else if let Ok(bytes) = value.cast::<PyBytes>() {
+        Ok(PropertyValue::Bytes(bytes.as_bytes().to_vec()))
+    } else if let Ok(list) = value.cast::<PyList>() {
+        let items = list
+            .iter()
+            .map(|v| pyany_to_property(&v))
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(PropertyValue::List(items))
+    } else if let Ok(tuple) = value.cast::<PyTuple>() {
+        let items = tuple
+            .iter()
+            .map(|v| pyany_to_property(&v))
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(PropertyValue::List(items))
+    } else if let Ok(dict) = value.cast::<PyDict>() {
+        let mut fields = Vec::with_capacity(dict.len());
+        for (k, v) in dict.iter() {
+            fields.push((k.extract::<String>()?, pyany_to_property(&v)?));
+        }
+        Ok(PropertyValue::Object(fields))
+    } else {
+        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+            "unsupported property value type (use str/int/float/bool/bytes/None/list/tuple/dict)",
+        ))
+    }
+}
+
+/// Convierte un `dict` Python completo a propiedades de nodo/arista.
+pub(crate) fn pydict_to_props(
+    dict: &Bound<'_, pyo3::types::PyDict>,
+) -> PyResult<std::collections::HashMap<String, PropertyValue>> {
+    let mut props = std::collections::HashMap::new();
+    for (k, v) in dict.iter() {
+        let key: String = k.extract()?;
+        props.insert(key, pyany_to_property(&v)?);
+    }
+    Ok(props)
+}
