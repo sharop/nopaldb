@@ -81,30 +81,8 @@ pub fn to_tabular_result(result: NqlResult) -> TabularResult {
     }
 }
 
+/// Delegado al render canónico del core (esta implementación fue el donante
+/// de la semántica de `PropertyValue::to_display_string` en 0.4.35).
 pub fn property_value_to_string(value: &PropertyValue) -> String {
-    match value {
-        PropertyValue::Null => "null".to_string(),
-        PropertyValue::Bool(v) => v.to_string(),
-        PropertyValue::Int(v) => v.to_string(),
-        PropertyValue::Float(v) => {
-            if v.is_finite() {
-                v.to_string()
-            } else {
-                "null".to_string()
-            }
-        }
-        PropertyValue::String(v) => v.clone(),
-        PropertyValue::Bytes(v) => format!("<{} bytes>", v.len()),
-        PropertyValue::List(items) => {
-            let inner: Vec<String> = items.iter().map(property_value_to_string).collect();
-            format!("[{}]", inner.join(", "))
-        }
-        PropertyValue::Object(fields) => {
-            let inner: Vec<String> = fields
-                .iter()
-                .map(|(k, v)| format!("{}: {}", k, property_value_to_string(v)))
-                .collect();
-            format!("{{{}}}", inner.join(", "))
-        }
-    }
+    value.to_display_string()
 }

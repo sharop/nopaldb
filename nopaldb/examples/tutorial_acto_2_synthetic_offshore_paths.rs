@@ -20,7 +20,7 @@
 // Gate: top-1 de path_sum debe ser "Pinnacle International #038" (cadena
 // de 3 hops desde el flagship con flujo agregado de ~11.48M).
 
-use nopaldb::Graph;
+use nopaldb::{Graph, PropertyValue};
 use std::error::Error;
 
 const Q_SCHEMA: &str =
@@ -63,9 +63,9 @@ async fn paso_1_schema(graph: &Graph) -> Result<(), Box<dyn Error>> {
         let label = row
             .values
             .get("n.label")
-            .map(prop_to_string)
+            .map(PropertyValue::to_display_string)
             .unwrap_or_default();
-        let total = row.values.get("total").map(prop_to_i64).unwrap_or(-1);
+        let total = row.values.get("total").map(|p| p.as_number().map(|f| f as i64).unwrap_or(-1)).unwrap_or(-1);
         println!("  {:<18} {}", label, total);
     }
     println!();
@@ -80,17 +80,17 @@ async fn paso_2_indice(graph: &Graph) -> Result<(), Box<dyn Error>> {
         let name = row
             .values
             .get("e.name")
-            .map(prop_to_string)
+            .map(PropertyValue::to_display_string)
             .unwrap_or_default();
         let industry = row
             .values
             .get("e.industry")
-            .map(prop_to_string)
+            .map(PropertyValue::to_display_string)
             .unwrap_or_default();
         let inc = row
             .values
             .get("e.incorporated")
-            .map(prop_to_string)
+            .map(PropertyValue::to_display_string)
             .unwrap_or_default();
         println!("  {} ({}, incorporated {})", name, industry, inc);
     }
@@ -104,7 +104,7 @@ async fn paso_4_paths(graph: &Graph) -> Result<(), Box<dyn Error>> {
     println!("paths encontrados: {}", result.len());
     let mut by_depth: std::collections::BTreeMap<i64, usize> = Default::default();
     for row in &result.rows {
-        let depth = row.values.get("hops").map(prop_to_i64).unwrap_or(-1);
+        let depth = row.values.get("hops").map(|p| p.as_number().map(|f| f as i64).unwrap_or(-1)).unwrap_or(-1);
         *by_depth.entry(depth).or_insert(0) += 1;
     }
     for (d, c) in by_depth {
@@ -125,13 +125,13 @@ async fn paso_5_path_sum(graph: &Graph) -> Result<String, Box<dyn Error>> {
         let destino = row
             .values
             .get("destino")
-            .map(prop_to_string)
+            .map(PropertyValue::to_display_string)
             .unwrap_or_default();
-        let hops = row.values.get("hops").map(prop_to_i64).unwrap_or(-1);
+        let hops = row.values.get("hops").map(|p| p.as_number().map(|f| f as i64).unwrap_or(-1)).unwrap_or(-1);
         let flujo = row
             .values
             .get("flujo_total")
-            .map(prop_to_f64)
+            .map(|p| p.as_number().unwrap_or(0.0))
             .unwrap_or(0.0);
         println!(
             "  {} {}  ({} hops, flujo {:.2})",
@@ -163,31 +163,3 @@ fn gate(top1_destino: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn prop_to_string(p: &nopaldb::types::PropertyValue) -> String {
-    use nopaldb::types::PropertyValue::*;
-    match p {
-        String(s) => s.clone(),
-        Int(n) => n.to_string(),
-        Float(f) => f.to_string(),
-        Bool(b) => b.to_string(),
-        _ => format!("{:?}", p),
-    }
-}
-
-fn prop_to_f64(p: &nopaldb::types::PropertyValue) -> f64 {
-    use nopaldb::types::PropertyValue::*;
-    match p {
-        Float(f) => *f,
-        Int(n) => *n as f64,
-        _ => 0.0,
-    }
-}
-
-fn prop_to_i64(p: &nopaldb::types::PropertyValue) -> i64 {
-    use nopaldb::types::PropertyValue::*;
-    match p {
-        Int(n) => *n,
-        Float(f) => *f as i64,
-        _ => -1,
-    }
-}

@@ -4,9 +4,8 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use std::collections::HashMap;
 use crate::Transaction as RustTransaction;
-use crate::types::{Node, Edge, PropertyValue};
+use crate::types::{Node, Edge};
 use uuid::Uuid;
 use super::to_py_result;
 
@@ -60,33 +59,9 @@ impl PyTransaction {
     ) -> PyResult<String> {
         let tx = self.get_inner_mut()?;
 
-        // Convert Python dict to HashMap<String, PropertyValue>
-        let mut props = HashMap::new();
-
-        for (key, value) in properties.iter() {
-            let key_str: String = key.extract()?;
-
-            // Convert Python value to PropertyValue
-            let prop_value = if let Ok(s) = value.extract::<String>() {
-                PropertyValue::String(s)
-            } else if let Ok(i) = value.extract::<i64>() {
-                PropertyValue::Int(i)
-            } else if let Ok(f) = value.extract::<f64>() {
-                PropertyValue::Float(f)
-            } else if let Ok(b) = value.extract::<bool>() {
-                PropertyValue::Bool(b)
-            } else if value.is_none() {
-                PropertyValue::Null
-            } else if let Ok(bytes) = value.extract::<Vec<u8>>() {
-                PropertyValue::Bytes(bytes)
-            } else {
-                return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                    format!("Unsupported property type for key '{}'", key_str)
-                ));
-            };
-
-            props.insert(key_str, prop_value);
-        }
+        // Conversor compartido de la frontera (bool antes que int — las copias
+        // inline anteriores convertían True en Int(1)).
+        let props = super::pydict_to_props(properties)?;
 
         // Create node
         let mut node = Node::new(label);
@@ -142,32 +117,9 @@ impl PyTransaction {
         // Create edge
         let mut edge = Edge::new(source_id, target_id, edge_type);
 
-        // Add properties if provided
+        // Add properties if provided (conversor compartido de la frontera)
         if let Some(props_dict) = properties {
-            for (key, value) in props_dict.iter() {
-                let key_str: String = key.extract()?;
-
-                // Convert Python value to PropertyValue
-                let prop_value = if let Ok(s) = value.extract::<String>() {
-                    PropertyValue::String(s)
-                } else if let Ok(i) = value.extract::<i64>() {
-                    PropertyValue::Int(i)
-                } else if let Ok(f) = value.extract::<f64>() {
-                    PropertyValue::Float(f)
-                } else if let Ok(b) = value.extract::<bool>() {
-                    PropertyValue::Bool(b)
-                } else if value.is_none() {
-                    PropertyValue::Null
-                } else if let Ok(bytes) = value.extract::<Vec<u8>>() {
-                    PropertyValue::Bytes(bytes)
-                } else {
-                    return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                        format!("Unsupported property type for key '{}'", key_str)
-                    ));
-                };
-
-                edge.properties.insert(key_str, prop_value);
-            }
+            edge.properties.extend(super::pydict_to_props(props_dict)?);
         }
 
         let edge_id = edge.id;

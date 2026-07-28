@@ -169,6 +169,9 @@ pub fn query_result_to_json(result: &QueryResult, pretty: bool) -> String {
 // HELPERS
 // ═══════════════════════════════════════════════════════════
 
+// ⚠️ Formato user-facing del EXPORT, congelado por goldens en
+// tests/export_test.rs. NO delegar en Display/to_display_string ni en el
+// puente serde_json (escapes y semántica de NaN propios).
 fn property_to_string(val: &PropertyValue) -> String {
     match val {
         PropertyValue::String(s) => s.clone(),

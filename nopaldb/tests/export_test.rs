@@ -243,3 +243,55 @@ async fn test_export_csv_with_order_and_limit() -> Result<()> {
 
     Ok(())
 }
+// ═══════════════════════════════════════════════════════════
+// GOLDEN: formato de export congelado para valores exóticos
+// ═══════════════════════════════════════════════════════════
+// property_to_string / property_to_json (export.rs) son formato user-facing
+// y NO deben delegar en Display/to_display_string ni en el puente serde_json
+// (escapes y semántica propios). Estos goldens congelan la salida para que
+// cualquier "unificación" accidental falle aquí.
+
+#[tokio::test]
+async fn test_export_golden_exotic_values() -> Result<()> {
+    let graph = Graph::in_memory().await?;
+    let mut tx = graph.begin_transaction().await?;
+    tx.add_node(
+        Node::new("Exotic")
+            .with_property("nan", PropertyValue::Float(f64::NAN))
+            .with_property("bin", PropertyValue::Bytes(vec![1, 2, 3]))
+            .with_property("lst", PropertyValue::List(vec![
+                PropertyValue::Int(1),
+                PropertyValue::Object(vec![("k".to_string(), PropertyValue::String("v".into()))]),
+            ])),
+    ).await?;
+    tx.commit().await?;
+
+    // JSON: NaN → null; Bytes → "<N bytes>"; anidados en JSON recursivo
+    let result = graph
+        .execute_statement("find e.nan, e.bin, e.lst from (e:Exotic) export json")
+        .await?;
+    match &result {
+        NqlResult::Export { data, .. } => {
+            assert!(data.contains("\"e.nan\":null"), "NaN debe exportar como null JSON: {data}");
+            assert!(data.contains("\"e.bin\":\"<3 bytes>\""), "Bytes golden: {data}");
+            assert!(data.contains("\"e.lst\":[1,{\"k\":\"v\"}]"), "anidados golden: {data}");
+        }
+        other => panic!("Expected Export, got: {}", other.summary()),
+    }
+
+    // CSV: NaN vía property_to_string (crudo), List/Object delegan a JSON
+    let result = graph
+        .execute_statement("find e.nan, e.bin from (e:Exotic) export csv")
+        .await?;
+    match &result {
+        NqlResult::Export { data, .. } => {
+            let lines: Vec<&str> = data.trim().lines().collect();
+            assert_eq!(lines[0], "e.nan,e.bin");
+            assert!(lines[1].contains("NaN"), "CSV conserva NaN crudo (formato congelado): {data}");
+            assert!(lines[1].contains("<3 bytes>"), "CSV Bytes golden: {data}");
+        }
+        other => panic!("Expected Export, got: {}", other.summary()),
+    }
+
+    Ok(())
+}

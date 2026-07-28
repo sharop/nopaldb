@@ -14,7 +14,7 @@
 //   python nopaldb/examples/florentine_families_dataset.py \
 //     --db test_dbs/florentine_families.db --reset
 
-use nopaldb::Graph;
+use nopaldb::{Graph, PropertyValue};
 use std::error::Error;
 
 const ACTO_DIR: &str = "../docs/tutorial/acto_1_florentine/queries";
@@ -106,12 +106,12 @@ async fn paso_3_centralidad(graph: &Graph) -> Result<Vec<String>, Box<dyn Error>
         let name = row
             .values
             .get("f.name")
-            .map(prop_to_string)
+            .map(PropertyValue::to_display_string)
             .unwrap_or_default();
-        let pr = row.values.get("pr").map(prop_to_f64).unwrap_or(0.0);
-        let btw = row.values.get("btw").map(prop_to_f64).unwrap_or(0.0);
-        let cc = row.values.get("cc").map(prop_to_f64).unwrap_or(0.0);
-        let deg = row.values.get("deg").map(prop_to_f64).unwrap_or(0.0);
+        let pr = row.values.get("pr").map(|p| p.as_number().unwrap_or(0.0)).unwrap_or(0.0);
+        let btw = row.values.get("btw").map(|p| p.as_number().unwrap_or(0.0)).unwrap_or(0.0);
+        let cc = row.values.get("cc").map(|p| p.as_number().unwrap_or(0.0)).unwrap_or(0.0);
+        let deg = row.values.get("deg").map(|p| p.as_number().unwrap_or(0.0)).unwrap_or(0.0);
         println!(
             "{:>4}  {:<14} {:>10.4} {:>10.4} {:>10.4} {:>10.4}",
             i + 1,
@@ -139,17 +139,17 @@ async fn paso_4_communities(graph: &Graph) -> Result<(), Box<dyn Error>> {
         let name = row
             .values
             .get("f.name")
-            .map(prop_to_string)
+            .map(PropertyValue::to_display_string)
             .unwrap_or_default();
         let l = row
             .values
             .get("louvain")
-            .map(prop_to_i64)
+            .map(|p| p.as_number().map(|f| f as i64).unwrap_or(-1))
             .unwrap_or(-1);
         let le = row
             .values
             .get("leiden")
-            .map(prop_to_i64)
+            .map(|p| p.as_number().map(|f| f as i64).unwrap_or(-1))
             .unwrap_or(-1);
         louvain.entry(l).or_default().push(name.clone());
         leiden.entry(le).or_default().push(name);
@@ -185,33 +185,3 @@ fn gate(top3: &[String]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-// --- helpers para extraer PropertyValue como tipos Rust ---
-
-fn prop_to_string(p: &nopaldb::types::PropertyValue) -> String {
-    use nopaldb::types::PropertyValue::*;
-    match p {
-        String(s) => s.clone(),
-        Int(n) => n.to_string(),
-        Float(f) => f.to_string(),
-        Bool(b) => b.to_string(),
-        _ => format!("{:?}", p),
-    }
-}
-
-fn prop_to_f64(p: &nopaldb::types::PropertyValue) -> f64 {
-    use nopaldb::types::PropertyValue::*;
-    match p {
-        Float(f) => *f,
-        Int(n) => *n as f64,
-        _ => 0.0,
-    }
-}
-
-fn prop_to_i64(p: &nopaldb::types::PropertyValue) -> i64 {
-    use nopaldb::types::PropertyValue::*;
-    match p {
-        Int(n) => *n,
-        Float(f) => *f as i64,
-        _ => -1,
-    }
-}

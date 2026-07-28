@@ -217,6 +217,10 @@ pub fn edges_to_arrow(edges: &[Edge]) -> Result<RecordBatch> {
 }
 
 /// Helper: Convert PropertyValue to string representation
+///
+/// Formato PROPIO del export Arrow (`<bytes:N>`, `<complex>`, Float crudo) —
+/// NO delegar en `Display`/`to_display_string`: cambiaría columnas que los
+/// consumidores de RecordBatch/Parquet ya esperan.
 fn property_value_to_string(value: &PropertyValue) -> String {
     match value {
         PropertyValue::String(s) => s.clone(),
@@ -421,15 +425,9 @@ impl PropertyBuilder {
     fn append_value(&mut self, value: &PropertyValue) {
         match self {
             PropertyBuilder::String(b) => {
-                match value {
-                    PropertyValue::String(s) => b.append_value(s),
-                    PropertyValue::Int(i) => b.append_value(i.to_string()),
-                    PropertyValue::Float(f) => b.append_value(f.to_string()),
-                    PropertyValue::Bool(v) => b.append_value(v.to_string()),
-                    PropertyValue::Null => b.append_value("null"),
-                    PropertyValue::Bytes(bytes) => b.append_value(format!("<bytes:{}>", bytes.len())),
-                    PropertyValue::Object(_) | PropertyValue::List(_) => b.append_value("<complex>"),
-                }
+                // Mismo formato que property_value_to_string (dedup interno,
+                // salida idéntica).
+                b.append_value(property_value_to_string(value));
             }
             PropertyBuilder::Int(b) => {
                 match value {

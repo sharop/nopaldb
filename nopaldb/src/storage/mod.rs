@@ -478,6 +478,14 @@ impl Storage {
         Ok((adjacency_out, adjacency_in))
     }
     /// Guarda un índice de propiedad: clave -> valor -> lista de nodos
+    ///
+    /// ⚠️ FORMATO DE CLAVE EN DISCO. Esta stringificación (y sus copias en
+    /// `remove_from_property_index`/`get_nodes_by_property`) define las
+    /// claves persistidas `idx:prop:{name}:{value}` — NO reemplazar con
+    /// `Display`/`to_display_string` (semántica deliberadamente distinta,
+    /// p. ej. NaN): cambiar la salida corrompe los índices de bases
+    /// existentes. El rediseño del formato (tags de tipo, migración) está
+    /// planeado como cambio versionado aparte.
     pub async fn save_property_index(&self, property: &str, value: &PropertyValue, node_id: NodeId) -> Result<()> {
         let value_str = match value {
             PropertyValue::String(s) => s.clone(),
@@ -512,6 +520,9 @@ impl Storage {
     }
 
     /// Remueve un NodeId de un índice de propiedad
+    ///
+    /// ⚠️ FORMATO DE CLAVE EN DISCO — ver la advertencia en
+    /// `save_property_index`; el match debe permanecer idéntico al de allá.
     pub async fn remove_from_property_index(
         &self,
         property: &str,
@@ -547,6 +558,9 @@ impl Storage {
     }
 
     /// Obtiene lista de nodos que tienen una propiedad con cierto valor
+    ///
+    /// ⚠️ FORMATO DE CLAVE EN DISCO — ver la advertencia en
+    /// `save_property_index`; el match debe permanecer idéntico al de allá.
     pub async fn get_nodes_by_property(&self, property: &str, value: &PropertyValue) -> Result<Vec<NodeId>> {
         let value_str = match value {
             PropertyValue::String(s) => s.clone(),
