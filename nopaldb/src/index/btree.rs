@@ -6,8 +6,20 @@ use crate::error::Result;
 use crate::types::{NodeId, PropertyValue};
 use crate::index::{Index, IndexQuery};
 use std::collections::BTreeMap;
+use std::ops::Bound;
 
-/// B-Tree index - O(log N) range queries
+/// B-Tree index - O(log N + k) range queries
+///
+/// ⚠️ Hazard conocido con claves numéricas heterogéneas: el `Ord` de
+/// `PropertyValue` coerciona `Int`↔`Float` (`Int(1).cmp(&Float(1.0)) ==
+/// Equal`) pero su `PartialEq` derivado NO (`Int(1) != Float(1.0)`), y
+/// `BTreeMap` exige `Ord` consistente con `Eq`. Consecuencia: si una misma
+/// propiedad mezcla `Int(1)` y `Float(1.0)`, ambas caen en el bucket del
+/// primero que se insertó (comportamiento pinneado en
+/// `test_heterogeneous_numeric_keys_merge_pinned`). El fix real —
+/// normalización canónica de claves numéricas al insertar — es un cambio
+/// de comportamiento registrado como ítem aparte en el roadmap; mientras
+/// tanto, no mezclar tipos numéricos en una propiedad indexada con BTree.
 pub struct BTreeIndex {
     /// Ordered map from property value to list of node IDs
     map: BTreeMap<PropertyValue, Vec<NodeId>>,
@@ -26,14 +38,16 @@ impl BTreeIndex {
         self.map.get(value)
     }
 
-    /// Range query helper
-    fn range_query<F>(&self, predicate: F) -> Vec<NodeId>
-    where
-        F: Fn(&PropertyValue) -> bool,
-    {
+    /// Range seek real sobre el BTreeMap: O(log N + k) en vez del filter
+    /// O(N) anterior (que descartaba la ventaja del árbol). Mismo `Ord`,
+    /// misma semántica de resultados.
+    fn range_query(
+        &self,
+        start: Bound<&PropertyValue>,
+        end: Bound<&PropertyValue>,
+    ) -> Vec<NodeId> {
         self.map
-            .iter()
-            .filter(|(k, _)| predicate(k))
+            .range((start, end))
             .flat_map(|(_, nodes)| nodes.iter().copied())
             .collect()
     }
@@ -67,23 +81,29 @@ impl Index for BTreeIndex {
             }
 
             IndexQuery::GreaterThan(value) => {
-                Ok(self.range_query(|k| k > value))
+                Ok(self.range_query(Bound::Excluded(value), Bound::Unbounded))
             }
 
             IndexQuery::GreaterThanOrEqual(value) => {
-                Ok(self.range_query(|k| k >= value))
+                Ok(self.range_query(Bound::Included(value), Bound::Unbounded))
             }
 
             IndexQuery::LessThan(value) => {
-                Ok(self.range_query(|k| k < value))
+                Ok(self.range_query(Bound::Unbounded, Bound::Excluded(value)))
             }
 
             IndexQuery::LessThanOrEqual(value) => {
-                Ok(self.range_query(|k| k <= value))
+                Ok(self.range_query(Bound::Unbounded, Bound::Included(value)))
             }
 
             IndexQuery::Between(min, max) => {
-                Ok(self.range_query(|k| k >= min && k <= max))
+                // Inclusivo en ambos extremos (semántica de siempre). Guardia:
+                // BTreeMap::range panica con start > end; el filter anterior
+                // regresaba vacío — conservamos ese contrato.
+                if min > max {
+                    return Ok(Vec::new());
+                }
+                Ok(self.range_query(Bound::Included(min), Bound::Included(max)))
             }
 
             IndexQuery::FullText(_) => {
@@ -198,6 +218,38 @@ mod tests {
             PropertyValue::String("C".to_string())
         )).unwrap();
         assert_eq!(result.len(), 2); // Alice, Bob
+    }
+
+    #[test]
+    fn test_btree_between_inverted_returns_empty() {
+        // Contrato conservado del filter anterior: min > max → vacío
+        // (BTreeMap::range panicaría sin la guardia).
+        let mut index = BTreeIndex::new();
+        index.insert(PropertyValue::Int(5), uuid::Uuid::new_v4()).unwrap();
+        let result = index
+            .query(&IndexQuery::Between(PropertyValue::Int(10), PropertyValue::Int(1)))
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_heterogeneous_numeric_keys_merge_pinned() {
+        // Pin del hazard documentado en el struct: Ord coerciona Int↔Float
+        // pero Eq no; BTreeMap fusiona Int(1) y Float(1.0) en el bucket del
+        // primero insertado. Si este test cambia, el fix de normalización
+        // canónica llegó — actualizar el doc del struct y el roadmap.
+        let mut index = BTreeIndex::new();
+        let a = uuid::Uuid::new_v4();
+        let b = uuid::Uuid::new_v4();
+        index.insert(PropertyValue::Int(1), a).unwrap();
+        index.insert(PropertyValue::Float(1.0), b).unwrap();
+
+        // Un solo bucket (bajo la clave Int(1) que llegó primero)…
+        assert_eq!(index.size(), 1);
+        // …y la búsqueda por CUALQUIERA de las dos formas regresa ambos.
+        let by_float = index.query(&IndexQuery::Equals(PropertyValue::Float(1.0))).unwrap();
+        assert_eq!(by_float.len(), 2);
+        assert!(by_float.contains(&a) && by_float.contains(&b));
     }
 
     #[test]
