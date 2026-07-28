@@ -35,6 +35,41 @@ fn deserialize<'a, T: serde::de::Deserialize<'a>>(bytes: &'a [u8]) -> Result<T> 
         .map_err(|e| NopalError::SerializationError(format!("MessagePack deserialize error: {}", e)))
 }
 
+// ─── Predicados estructurales del namespace `node:` ─────────────────────────
+// El namespace tiene exactamente cuatro formas: `node:{uuid}` (base),
+// `node:{uuid}:v{n}` (versión MVCC), `node:{uuid}:current` y
+// `node:{uuid}:versions`. Los filtros de scan clasifican por ESTRUCTURA
+// (prefijo + UUID parseado + sufijo exacto) y no por substring: una blacklist
+// tipo `contains(":v")` funciona hoy por accidente (un UUID no contiene `:`)
+// pero se rompe en silencio el día que se agregue un sufijo nuevo.
+
+/// Clave de nodo base: `node:{uuid}` exacto.
+fn is_base_node_key(key: &[u8]) -> bool {
+    match std::str::from_utf8(key) {
+        Ok(s) => s
+            .strip_prefix("node:")
+            .is_some_and(|rest| uuid::Uuid::parse_str(rest).is_ok()),
+        Err(_) => false,
+    }
+}
+
+/// Clave de versión MVCC: `node:{uuid}:v{n}` exacto (n = dígitos).
+fn is_version_node_key(key: &[u8]) -> bool {
+    let Ok(s) = std::str::from_utf8(key) else {
+        return false;
+    };
+    let Some(rest) = s.strip_prefix("node:") else {
+        return false;
+    };
+    let Some((uuid_part, suffix)) = rest.split_once(':') else {
+        return false;
+    };
+    uuid::Uuid::parse_str(uuid_part).is_ok()
+        && suffix
+            .strip_prefix('v')
+            .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+}
+
 impl Storage {
     #[cfg(feature = "embeddings")]
     fn open_embeddings_tree_sync(&self) -> Result<sled::Tree> {
@@ -1211,12 +1246,11 @@ impl Storage {
 
         for item in self.db.scan_prefix(b"node:") {
             let (key, value) = item?;
-            let key_str = String::from_utf8_lossy(&key);
 
-            // Skip version and metadata keys
-            if key_str.contains(":v")
-                || key_str.contains(":current")
-                || key_str.contains(":versions") {
+            // Predicado estructural (no blacklist por substring): solo claves
+            // base `node:{uuid}` exactas. No se rompe si aparece un sufijo
+            // nuevo en el namespace.
+            if !is_base_node_key(&key) {
                 continue;
             }
 
@@ -1268,10 +1302,11 @@ impl Storage {
                     continue;
             }
 
-            // Skip version and metadata keys
-            if key_str.contains(":v")
-                || key_str.contains(":current")
-                || key_str.contains(":versions") {
+            // Solo claves base `node:{uuid}` (predicado estructural, ver
+            // is_base_node_key). Nota de semántica del cursor: el loop corre
+            // hasta juntar `limit` MATCHES o agotar el namespace de nodos;
+            // `next_cursor == None` significa scan completo, nunca corte.
+            if !is_base_node_key(&key) {
                 continue;
             }
 
@@ -1304,10 +1339,12 @@ impl Storage {
 
         for item in self.db.scan_prefix(b"node:") {
             let (key, value) = item?;
-            let key_str = String::from_utf8_lossy(&key);
 
-            // Only process version keys (e.g., "node:uuid:v1")
-            if key_str.contains(":v") && !key_str.contains(":versions") {
+            // Solo claves de versión `node:{uuid}:v{n}` exactas. La whitelist
+            // anterior (`contains(":v") && !contains(":versions")`) aceptaría
+            // cualquier sufijo futuro que empiece con `v` y reventaría el
+            // export completo con SerializationError.
+            if is_version_node_key(&key) {
                 let versioned: crate::mvcc::VersionedNode = deserialize(&value)?;
 
                 versioned_nodes.push(versioned);
@@ -1436,6 +1473,65 @@ mod tests {
     use super::*;
     use crate::types::PropertyValue;
     use crate::mvcc::VersionedNode;
+
+    #[test]
+    fn test_node_key_predicates() {
+        let uuid = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
+
+        assert!(is_base_node_key(format!("node:{uuid}").as_bytes()));
+        assert!(!is_base_node_key(format!("node:{uuid}:v1").as_bytes()));
+        assert!(!is_base_node_key(format!("node:{uuid}:current").as_bytes()));
+        assert!(!is_base_node_key(format!("node:{uuid}:versions").as_bytes()));
+        assert!(!is_base_node_key(b"node:not-a-uuid"));
+        assert!(!is_base_node_key(b"edge:whatever"));
+        // Un sufijo futuro no clasifica como base (la blacklist vieja lo
+        // habría dejado pasar o no según sus letras)
+        assert!(!is_base_node_key(format!("node:{uuid}:vector").as_bytes()));
+
+        assert!(is_version_node_key(format!("node:{uuid}:v1").as_bytes()));
+        assert!(is_version_node_key(format!("node:{uuid}:v42").as_bytes()));
+        assert!(!is_version_node_key(format!("node:{uuid}").as_bytes()));
+        assert!(!is_version_node_key(format!("node:{uuid}:versions").as_bytes()));
+        assert!(!is_version_node_key(format!("node:{uuid}:current").as_bytes()));
+        // El caso que la whitelist vieja aceptaba y reventaba el export:
+        assert!(!is_version_node_key(format!("node:{uuid}:vector").as_bytes()));
+        assert!(!is_version_node_key(format!("node:{uuid}:v").as_bytes()));
+    }
+
+    #[tokio::test]
+    async fn test_scan_nodes_batch_sparse_label_loses_nothing() {
+        // Regresión: un label esparcido entre muchos nodos de otro label
+        // debe recuperarse COMPLETO paginando con el cursor (next_cursor ==
+        // None significa scan terminado, nunca corte).
+        let storage = Storage::in_memory().await.unwrap();
+
+        let mut raros = 0;
+        for i in 0..500 {
+            let label = if i % 100 == 0 { "Raro" } else { "Comun" };
+            if label == "Raro" {
+                raros += 1;
+            }
+            storage
+                .insert_node(&Node::new(label).with_property("i", PropertyValue::Int(i)))
+                .await
+                .unwrap();
+        }
+
+        let mut found = 0;
+        let mut cursor: Option<String> = None;
+        loop {
+            let (batch, next) = storage
+                .scan_nodes_batch(Some("Raro"), cursor.as_deref(), 2)
+                .await
+                .unwrap();
+            found += batch.len();
+            match next {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        assert_eq!(found, raros);
+    }
 
     #[tokio::test]
     async fn test_insert_and_get_node() {
