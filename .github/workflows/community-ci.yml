@@ -64,6 +64,9 @@ jobs:
       - name: Test PropertyValue conversion API
         run: cargo test -p nopaldb --features core --test property_value_conversion_test --test export_test
 
+      - name: Test EXPLAIN honesty (plan == execution)
+        run: cargo test -p nopaldb --features core --test nql_explain_honesty_test
+
   python-stubs:
     runs-on: ubuntu-latest
     timeout-minutes: 30

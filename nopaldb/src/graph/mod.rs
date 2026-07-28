@@ -3031,6 +3031,25 @@ impl Graph {
     pub async fn list_indexes(&self) -> Vec<crate::index::IndexMetadata> {
         self.index_manager.list_indexes().await
     }
+
+    /// Presencia y tipo del índice que la EJECUCIÓN usaría para una igualdad
+    /// `{label}.{property}`. Consulta el mapa REAL de índices (`find_index`),
+    /// no solo la metadata — son mapas distintos y pueden divergir (p. ej.
+    /// `set_taxonomy` puebla índices sin metadata) — para que lo que EXPLAIN
+    /// reporta salga de la misma fuente que `find_nodes_indexed`.
+    pub(crate) async fn equality_index_info(
+        &self,
+        label: &str,
+        property: &str,
+    ) -> Option<(String, Option<crate::index::IndexType>)> {
+        let name = self.index_manager.find_index(label, property).await?;
+        let ty = self
+            .index_manager
+            .get_metadata(&name)
+            .await
+            .map(|m| m.index_type);
+        Some((name, ty))
+    }
     /// Find nodes by property using index (if available)
     pub async fn find_nodes_indexed(
         &self,
