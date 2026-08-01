@@ -322,6 +322,10 @@ impl Graph {
             }
         }
 
+        // Migración del índice de propiedades a formato v2 (claves tipadas).
+        // Después del WAL replay a propósito — ver el doc de la fn.
+        graph.migrate_property_index_if_needed().await?;
+
         // Rebuild TaxonomyIndex from Class nodes + subClassOf edges (if any).
         // Needed when a DB was populated via import_turtle in a previous session.
         #[cfg(feature = "reasoner")]
@@ -464,6 +468,78 @@ impl Graph {
         for (key, value) in &node.properties {
             self.storage.save_property_index(key, value, node.id).await?;
         }
+        Ok(())
+    }
+
+    /// Reconstruye el índice de propiedades COMPLETO desde los nodos (fuente
+    /// de verdad), en chunks de memoria acotada. Devuelve nodos procesados.
+    ///
+    /// Sirve para: (1) la migración v1→v2 al abrir; (2) reparar un índice
+    /// desactualizado (p. ej. tras sobreescrituras con `insert_node`, que es
+    /// index-blind — el gap conocido M1-9); (3) base de un futuro `REINDEX`.
+    pub async fn rebuild_property_index(&self) -> Result<usize> {
+        self.storage.clear_property_index_v2().await?;
+
+        let mut processed = 0usize;
+        let mut cursor: Option<String> = None;
+        loop {
+            let (nodes, next) = self
+                .storage
+                .scan_nodes_batch(None, cursor.as_deref(), 1000)
+                .await?;
+            for node in &nodes {
+                self.apply_index_node_properties(node).await?;
+            }
+            processed += nodes.len();
+            match next {
+                Some(c) => {
+                    log::info!("rebuild_property_index: {} nodos procesados…", processed);
+                    cursor = Some(c);
+                }
+                None => break,
+            }
+        }
+        log::info!("rebuild_property_index: completado ({} nodos)", processed);
+        Ok(processed)
+    }
+
+    /// Migración del índice de propiedades al formato v2 (claves tipadas).
+    ///
+    /// Idempotente y crash-safe: el sentinel `meta:prop_idx_format` se
+    /// escribe AL FINAL, así que un crash a mitad de migración simplemente
+    /// la repite en el próximo open (borrado y rebuild son idempotentes; los
+    /// índices de propiedades son datos DERIVADOS — los nodos jamás se
+    /// tocan). DEBE correr después del WAL replay: el replay reindexa vía
+    /// `apply_index_node_properties` y escribiría formato nuevo de todas
+    /// formas; migrar antes dejaría un índice mixto.
+    async fn migrate_property_index_if_needed(&self) -> Result<()> {
+        let current = self
+            .storage
+            .get_meta_u64(crate::storage::META_PROP_IDX_FORMAT)
+            .await?
+            .unwrap_or(1);
+        if current >= crate::storage::PROP_IDX_FORMAT_CURRENT {
+            return Ok(());
+        }
+
+        log::info!(
+            "Migrando índice de propiedades v{} → v{} (claves tipadas)…",
+            current,
+            crate::storage::PROP_IDX_FORMAT_CURRENT
+        );
+        let removed = self.storage.clear_legacy_property_index().await?;
+        let rebuilt = self.rebuild_property_index().await?;
+        self.storage
+            .put_meta_u64_max(
+                crate::storage::META_PROP_IDX_FORMAT,
+                crate::storage::PROP_IDX_FORMAT_CURRENT,
+            )
+            .await?;
+        log::info!(
+            "Índice de propiedades migrado: {} claves legadas eliminadas, {} nodos reindexados",
+            removed,
+            rebuilt
+        );
         Ok(())
     }
 

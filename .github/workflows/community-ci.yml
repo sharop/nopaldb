@@ -67,6 +67,9 @@ jobs:
       - name: Test EXPLAIN honesty (plan == execution)
         run: cargo test -p nopaldb --features core --test nql_explain_honesty_test
 
+      - name: Test property index v2 (typed keys + migration)
+        run: cargo test -p nopaldb --features core --test prop_index_v2_test
+
   python-stubs:
     runs-on: ubuntu-latest
     timeout-minutes: 30

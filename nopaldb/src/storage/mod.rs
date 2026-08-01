@@ -13,6 +13,18 @@ pub use backend::{StorageBackend, StorageEngine, StorageOptions, StorageProfile,
 
 /// Key meta con la cota superior persistida del reloj lógico de timestamps.
 pub const META_NEXT_TIMESTAMP: &str = "meta:next_timestamp";
+
+/// Versión del formato del índice de propiedades en disco. Ausente = formato
+/// legado v1 (`idx:prop:{name}:{value_str}` en el tree default); `2` = claves
+/// tipadas order-preserving en el tree `prop_idx_v2`. La migración corre en
+/// `Graph::open_with_options` (ver `migrate_property_index_if_needed`).
+pub const META_PROP_IDX_FORMAT: &str = "meta:prop_idx_format";
+
+/// Valor actual de `META_PROP_IDX_FORMAT`.
+pub const PROP_IDX_FORMAT_CURRENT: u64 = 2;
+
+/// Nombre del sled tree del índice de propiedades v2.
+const PROP_IDX_TREE: &str = "prop_idx_v2";
 /// Key meta con la cota superior persistida del contador de transaction ids.
 pub const META_NEXT_TX_ID: &str = "meta:next_tx_id";
 
@@ -33,6 +45,74 @@ fn serialize<T: serde::Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
 fn deserialize<'a, T: serde::de::Deserialize<'a>>(bytes: &'a [u8]) -> Result<T> {
     rmp_serde::from_slice(bytes)
         .map_err(|e| NopalError::SerializationError(format!("MessagePack deserialize error: {}", e)))
+}
+
+// ─── Codificación de claves del índice de propiedades (formato v2) ──────────
+//
+// ⚠️ FORMATO EN DISCO — cambiarlo requiere bump de PROP_IDX_FORMAT_CURRENT y
+// lógica de migración. Única fn de encode (el v1 tenía el match triplicado
+// con drift entre las tres copias).
+//
+// Layout: [len(prop): u16 BE][prop utf8][type_tag: u8][valor canónico]
+// - El length-prefix elimina la inyección de separador del v1 (prop `a` +
+//   valor `b:c` colisionaba con prop `a:b` + valor `c`).
+// - El type tag elimina las colisiones de tipo del v1 (Int(1), Float(1.0) y
+//   String("1") compartían clave).
+// - El valor se codifica order-preserving (orden numérico == orden de bytes),
+//   dejando listos los range scans en disco sin costo extra hoy.
+
+const TAG_NULL: u8 = 0x00;
+const TAG_BOOL: u8 = 0x01;
+const TAG_INT: u8 = 0x02;
+const TAG_FLOAT: u8 = 0x03;
+const TAG_STRING: u8 = 0x04;
+
+/// Clave v2 para `(property, value)`, o `None` si la variante no se indexa
+/// (Bytes/List/Object — decisión F2 conservada) o el nombre excede u16.
+pub(crate) fn encode_property_index_key(property: &str, value: &PropertyValue) -> Option<Vec<u8>> {
+    let prop_bytes = property.as_bytes();
+    let prop_len = u16::try_from(prop_bytes.len()).ok()?;
+
+    let mut key = Vec::with_capacity(2 + prop_bytes.len() + 1 + 8);
+    key.extend_from_slice(&prop_len.to_be_bytes());
+    key.extend_from_slice(prop_bytes);
+
+    match value {
+        PropertyValue::Null => key.push(TAG_NULL),
+        PropertyValue::Bool(b) => {
+            key.push(TAG_BOOL);
+            key.push(u8::from(*b));
+        }
+        PropertyValue::Int(i) => {
+            // BE con el bit de signo invertido: los negativos ordenan antes.
+            key.push(TAG_INT);
+            key.extend_from_slice(&((*i as u64) ^ (1u64 << 63)).to_be_bytes());
+        }
+        PropertyValue::Float(f) => {
+            // Canonicalización: -0.0 == 0.0 y todo NaN colapsa a uno solo.
+            let f = if *f == 0.0 {
+                0.0
+            } else if f.is_nan() {
+                f64::NAN
+            } else {
+                *f
+            };
+            // Transform IEEE754 total-order: orden numérico == orden de bytes.
+            let bits = f.to_bits();
+            let ordered = if bits >> 63 == 1 { !bits } else { bits | (1u64 << 63) };
+            key.push(TAG_FLOAT);
+            key.extend_from_slice(&ordered.to_be_bytes());
+        }
+        PropertyValue::String(s) => {
+            key.push(TAG_STRING);
+            key.extend_from_slice(s.as_bytes());
+        }
+        PropertyValue::Bytes(_) | PropertyValue::List(_) | PropertyValue::Object(_) => {
+            return None;
+        }
+    }
+
+    Some(key)
 }
 
 // ─── Predicados estructurales del namespace `node:` ─────────────────────────
@@ -512,70 +592,48 @@ impl Storage {
 
         Ok((adjacency_out, adjacency_in))
     }
+    /// Tree del índice de propiedades v2 (claves tipadas order-preserving).
+    fn prop_idx_tree(&self) -> Result<sled::Tree> {
+        Ok(self.db.open_tree(PROP_IDX_TREE)?)
+    }
+
     /// Guarda un índice de propiedad: clave -> valor -> lista de nodos
     ///
-    /// ⚠️ FORMATO DE CLAVE EN DISCO. Esta stringificación (y sus copias en
-    /// `remove_from_property_index`/`get_nodes_by_property`) define las
-    /// claves persistidas `idx:prop:{name}:{value}` — NO reemplazar con
-    /// `Display`/`to_display_string` (semántica deliberadamente distinta,
-    /// p. ej. NaN): cambiar la salida corrompe los índices de bases
-    /// existentes. El rediseño del formato (tags de tipo, migración) está
-    /// planeado como cambio versionado aparte.
+    /// ⚠️ FORMATO EN DISCO: la clave la define `encode_property_index_key`
+    /// (v2, tipada). NO usar `Display`/`to_display_string` aquí.
     pub async fn save_property_index(&self, property: &str, value: &PropertyValue, node_id: NodeId) -> Result<()> {
-        let value_str = match value {
-            PropertyValue::String(s) => s.clone(),
-            PropertyValue::Int(i) => i.to_string(),
-            PropertyValue::Float(f) => f.to_string(),
-            PropertyValue::Bool(b) => b.to_string(),
-            PropertyValue::Null => "null".to_string(),
-            PropertyValue::Bytes(_) | PropertyValue::List(_) | PropertyValue::Object(_) => {
-                return Ok(());
-            } // No indexamos valores estructurados/binarios en F2
+        let Some(key) = encode_property_index_key(property, value) else {
+            return Ok(()); // Variante no indexable (Bytes/List/Object, F2)
         };
+        let tree = self.prop_idx_tree()?;
 
-        // Clave del índice: idx:prop:{prop_name}:{prop_value}
-        let key = format!("idx:prop:{}:{}", property, value_str);
-
-        // 1. Leer lista actual de nodos para este valor
-        let mut nodes: Vec<NodeId> = match self.db.get(key.as_bytes())? {
+        // RMW bajo el single-writer applier (igual que el v1)
+        let mut nodes: Vec<NodeId> = match tree.get(&key)? {
             Some(v) => deserialize(&v)?,
             None => Vec::new(),
         };
 
-        // 2. Agregar ID si no existe
         if !nodes.contains(&node_id) {
             nodes.push(node_id);
-
-            // 3. Guardar lista actualizada
-            let value_bytes = serialize(&nodes)?;
-            self.db.insert(key.as_bytes(), value_bytes)?;
+            tree.insert(&key, serialize(&nodes)?)?;
         }
 
         Ok(())
     }
 
     /// Remueve un NodeId de un índice de propiedad
-    ///
-    /// ⚠️ FORMATO DE CLAVE EN DISCO — ver la advertencia en
-    /// `save_property_index`; el match debe permanecer idéntico al de allá.
     pub async fn remove_from_property_index(
         &self,
         property: &str,
         value: &PropertyValue,
         node_id: NodeId,
     ) -> Result<()> {
-        let value_str = match value {
-            PropertyValue::String(s) => s.clone(),
-            PropertyValue::Int(i) => i.to_string(),
-            PropertyValue::Float(f) => f.to_string(),
-            PropertyValue::Bool(b) => b.to_string(),
-            PropertyValue::Null => "null".to_string(),
-            PropertyValue::Bytes(_) | PropertyValue::List(_) | PropertyValue::Object(_) => return Ok(()),
+        let Some(key) = encode_property_index_key(property, value) else {
+            return Ok(());
         };
+        let tree = self.prop_idx_tree()?;
 
-        let key = format!("idx:prop:{}:{}", property, value_str);
-
-        let mut nodes: Vec<NodeId> = match self.db.get(key.as_bytes())? {
+        let mut nodes: Vec<NodeId> = match tree.get(&key)? {
             Some(v) => deserialize(&v)?,
             None => return Ok(()),
         };
@@ -583,38 +641,55 @@ impl Storage {
         nodes.retain(|&id| id != node_id);
 
         if nodes.is_empty() {
-            self.db.remove(key.as_bytes())?;
+            tree.remove(&key)?;
         } else {
-            let value_bytes = serialize(&nodes)?;
-            self.db.insert(key.as_bytes(), value_bytes)?;
+            tree.insert(&key, serialize(&nodes)?)?;
         }
 
         Ok(())
     }
 
-    /// Obtiene lista de nodos que tienen una propiedad con cierto valor
+    /// Obtiene lista de nodos que tienen una propiedad con cierto valor.
     ///
-    /// ⚠️ FORMATO DE CLAVE EN DISCO — ver la advertencia en
-    /// `save_property_index`; el match debe permanecer idéntico al de allá.
+    /// Lookup TIPADO: `Int(1)`, `Float(1.0)` y `String("1")` son claves
+    /// distintas (en el v1 colisionaban en la misma entrada).
     pub async fn get_nodes_by_property(&self, property: &str, value: &PropertyValue) -> Result<Vec<NodeId>> {
-        let value_str = match value {
-            PropertyValue::String(s) => s.clone(),
-            PropertyValue::Int(i) => i.to_string(),
-            PropertyValue::Float(f) => f.to_string(),
-            PropertyValue::Bool(b) => b.to_string(),
-            PropertyValue::Null => "null".to_string(),
-            _ => return Ok(Vec::new()),
+        let Some(key) = encode_property_index_key(property, value) else {
+            return Ok(Vec::new());
         };
 
-        let key = format!("idx:prop:{}:{}", property, value_str);
-
-        match self.db.get(key.as_bytes())? {
+        match self.prop_idx_tree()?.get(&key)? {
             Some(v) => {
                 let nodes: Vec<NodeId> = deserialize(&v)?;
                 Ok(nodes)
             }
             None => Ok(Vec::new()),
         }
+    }
+
+    /// Borra las claves del formato LEGADO v1 (`idx:prop:*` en el tree
+    /// default). Idempotente; parte de la migración a v2.
+    pub(crate) async fn clear_legacy_property_index(&self) -> Result<usize> {
+        let mut removed = 0usize;
+        let keys: Vec<Vec<u8>> = self
+            .db
+            .scan_prefix(b"idx:prop:")
+            .keys()
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|k| k.to_vec())
+            .collect();
+        for key in keys {
+            self.db.remove(&key)?;
+            removed += 1;
+        }
+        Ok(removed)
+    }
+
+    /// Vacía el índice v2 completo (para rebuild). Idempotente.
+    pub(crate) async fn clear_property_index_v2(&self) -> Result<()> {
+        self.prop_idx_tree()?.clear()?;
+        Ok(())
     }
 
     // ═════════════════════════════════════════════════════════
@@ -1473,6 +1548,161 @@ mod tests {
     use super::*;
     use crate::types::PropertyValue;
     use crate::mvcc::VersionedNode;
+
+    #[test]
+    fn test_encode_v2_type_tags_are_disjoint() {
+        // Las colisiones de tipo del v1: Int(1), Float(1.0) y String("1")
+        // compartían clave. En v2 son claves distintas.
+        let k_int = encode_property_index_key("age", &PropertyValue::Int(1)).unwrap();
+        let k_float = encode_property_index_key("age", &PropertyValue::Float(1.0)).unwrap();
+        let k_str = encode_property_index_key("age", &PropertyValue::String("1".into())).unwrap();
+        assert_ne!(k_int, k_float);
+        assert_ne!(k_int, k_str);
+        assert_ne!(k_float, k_str);
+
+        // Ídem Bool(true) vs String("true") y Null vs String("null")
+        assert_ne!(
+            encode_property_index_key("x", &PropertyValue::Bool(true)).unwrap(),
+            encode_property_index_key("x", &PropertyValue::String("true".into())).unwrap()
+        );
+        assert_ne!(
+            encode_property_index_key("x", &PropertyValue::Null).unwrap(),
+            encode_property_index_key("x", &PropertyValue::String("null".into())).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_encode_v2_no_separator_injection() {
+        // v1: prop `a` + valor `b:c` colisionaba con prop `a:b` + valor `c`
+        let k1 = encode_property_index_key("a", &PropertyValue::String("b:c".into())).unwrap();
+        let k2 = encode_property_index_key("a:b", &PropertyValue::String("c".into())).unwrap();
+        assert_ne!(k1, k2);
+    }
+
+    #[test]
+    fn test_encode_v2_order_preserving() {
+        let enc = |v: i64| encode_property_index_key("n", &PropertyValue::Int(v)).unwrap();
+        assert!(enc(-5) < enc(-1));
+        assert!(enc(-1) < enc(0));
+        assert!(enc(0) < enc(3));
+        assert!(enc(3) < enc(i64::MAX));
+        assert!(enc(i64::MIN) < enc(-5));
+
+        let encf = |v: f64| encode_property_index_key("x", &PropertyValue::Float(v)).unwrap();
+        assert!(encf(-2.5) < encf(-0.5));
+        assert!(encf(-0.5) < encf(0.5));
+        assert!(encf(0.5) < encf(2.5));
+        assert!(encf(f64::NEG_INFINITY) < encf(-2.5));
+        assert!(encf(2.5) < encf(f64::INFINITY));
+    }
+
+    #[test]
+    fn test_encode_v2_float_canonicalization() {
+        let encf = |v: f64| encode_property_index_key("x", &PropertyValue::Float(v)).unwrap();
+        // -0.0 y 0.0 son la MISMA clave (v1: "-0" ≠ "0")
+        assert_eq!(encf(-0.0), encf(0.0));
+        // Todo NaN colapsa a un NaN canónico único
+        let nan_a = f64::NAN;
+        let nan_b = f64::from_bits(0x7ff8_0000_0000_0001);
+        assert_eq!(encf(nan_a), encf(nan_b));
+    }
+
+    #[test]
+    fn test_encode_v2_non_indexable_variants() {
+        assert!(encode_property_index_key("b", &PropertyValue::Bytes(vec![1])).is_none());
+        assert!(encode_property_index_key("l", &PropertyValue::List(vec![])).is_none());
+        assert!(encode_property_index_key("o", &PropertyValue::Object(vec![])).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_prop_index_migration_from_legacy() {
+        // DB persistente con: nodos + claves LEGADAS v1 fabricadas + sin
+        // sentinel → al abrir el Graph, la migración borra el legado,
+        // reconstruye v2 desde los nodos y escribe el sentinel.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mig_db");
+
+        let node_id;
+        {
+            let storage = Storage::new(&path).await.unwrap();
+            let node = Node::new("P")
+                .with_property("name", PropertyValue::String("Ana".into()))
+                .with_property("edad", PropertyValue::Int(1));
+            node_id = node.id;
+            storage.insert_node(&node).await.unwrap();
+
+            // Claves v1 fabricadas, incluida la COLISIÓN clásica: Int(1) y
+            // String("1") compartiendo entrada.
+            let legacy = serialize(&vec![node_id]).unwrap();
+            storage.db.insert(b"idx:prop:edad:1".as_slice(), legacy.clone()).unwrap();
+            storage.db.insert(b"idx:prop:name:Ana".as_slice(), legacy).unwrap();
+            storage.db.flush().unwrap();
+        }
+
+        let graph = crate::Graph::open(&path).await.unwrap();
+
+        // Sentinel escrito
+        assert_eq!(
+            graph.storage().get_meta_u64(META_PROP_IDX_FORMAT).await.unwrap(),
+            Some(PROP_IDX_FORMAT_CURRENT)
+        );
+        // Legado eliminado
+        assert_eq!(graph.storage().db.scan_prefix(b"idx:prop:").count(), 0);
+        // Lookups tipados correctos desde el v2 reconstruido
+        let hits = graph
+            .storage()
+            .get_nodes_by_property("edad", &PropertyValue::Int(1))
+            .await
+            .unwrap();
+        assert_eq!(hits, vec![node_id]);
+        // La colisión quedó resuelta: buscar el STRING "1" ya no encuentra al Int
+        let hits = graph
+            .storage()
+            .get_nodes_by_property("edad", &PropertyValue::String("1".into()))
+            .await
+            .unwrap();
+        assert!(hits.is_empty());
+
+        // Reabrir: idempotente, sin re-migración destructiva
+        drop(graph);
+        let graph = crate::Graph::open(&path).await.unwrap();
+        let hits = graph
+            .storage()
+            .get_nodes_by_property("name", &PropertyValue::String("Ana".into()))
+            .await
+            .unwrap();
+        assert_eq!(hits, vec![node_id]);
+    }
+
+    #[tokio::test]
+    async fn test_prop_index_migration_is_crash_safe() {
+        // Simula un crash a mitad de migración: legado ya borrado, v2 a
+        // medias, SIN sentinel. El próximo open debe completar el rebuild.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crash_db");
+
+        let node_id;
+        {
+            let graph = crate::Graph::open(&path).await.unwrap();
+            let node = Node::new("P").with_property("k", PropertyValue::Int(7));
+            node_id = graph.add_node(node).await.unwrap();
+            // Fabricar el estado post-crash: borrar sentinel y vaciar v2
+            graph.storage().delete_meta(META_PROP_IDX_FORMAT).await.unwrap();
+            graph.storage().clear_property_index_v2().await.unwrap();
+        }
+
+        let graph = crate::Graph::open(&path).await.unwrap();
+        assert_eq!(
+            graph.storage().get_meta_u64(META_PROP_IDX_FORMAT).await.unwrap(),
+            Some(PROP_IDX_FORMAT_CURRENT)
+        );
+        let hits = graph
+            .storage()
+            .get_nodes_by_property("k", &PropertyValue::Int(7))
+            .await
+            .unwrap();
+        assert_eq!(hits, vec![node_id]);
+    }
 
     #[test]
     fn test_node_key_predicates() {
