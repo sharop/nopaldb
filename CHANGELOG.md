@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.36] - 2026-08-01
+
+### ✨ Highlights
+
+- **Índice de propiedades tipo-correcto (formato v2) con migración
+  automática.** El formato anterior stringificaba el valor en la clave
+  (`idx:prop:{name}:{value}`), así que `Int(1)`, `Float(1.0)` y
+  `String("1")` compartían entrada — buscar cualquiera regresaba los nodos
+  de los otros. El formato v2 usa claves tipadas (length-prefix del nombre +
+  tag de tipo + valor canónico order-preserving) en un árbol sled propio
+  (`prop_idx_v2`). Al abrir una base existente, la migración corre sola:
+  borra el índice legado, reconstruye desde los nodos (fuente de verdad,
+  chunks de memoria acotada) y escribe el sentinel `meta:prop_idx_format`.
+  Idempotente y crash-safe: un crash a media migración simplemente la
+  repite en el próximo open; los nodos y aristas jamás se tocan.
+
+- **EXPLAIN honesto.** El plan que reporta `EXPLAIN` ahora sale de la misma
+  decisión estática que usa la ejecución (`index_fast_path_decision`), no de
+  un camino paralelo: reporta `INDEX SEEK` solo cuando el seek realmente
+  ocurrirá, `LABEL SCAN` con la razón concreta (operador no-igualdad, RHS no
+  literal, sin índice…), `FULL SCAN` para queries sin label (antes: error) y
+  un mensaje claro para writes (antes: Debug dump del AST).
+
+### Added
+
+- `Graph::rebuild_property_index()` — reconstruye el índice de propiedades
+  completo desde los nodos. Sirve para reparar un índice desactualizado
+  (p. ej. tras escrituras index-blind con `insert_node`) y es la base de la
+  migración v1→v2 y de un futuro `REINDEX`.
+- `nopaldb/tests/prop_index_v2_test.rs` (contrato del índice tipado) y
+  `nql_explain_honesty_test.rs` (matriz plan-reportado == ejecución-real),
+  más las suites de migración/crash-safety como unit tests de storage.
+
+### Changed
+
+- **Nota de downgrade**: una base migrada a v2 y abierta con un binario
+  ≤0.4.35 no se corrompe (nodos/aristas intactos), pero el índice legado ya
+  no existe: los lookups por propiedad dan falsos negativos. Para volver
+  atrás hay que reabrir con ≥0.4.36 o reconstruir el índice manualmente.
+- `get_node_by_property` (que recibe `&str`) ahora busca `String` estricto:
+  ya no «encuentra» nodos `Int`/`Float` vía la colisión del formato viejo.
+  Es la restauración del contrato documentado; va aquí por si algún
+  consumidor dependía de la colisión.
+- `BTreeIndex::range_query` usa `BTreeMap::range` (O(log N + k)) en lugar de
+  iterar todo el árbol con filter O(N). Misma semántica; `Between` con
+  extremos invertidos regresa vacío (documentado — antes el filter también
+  regresaba vacío, pero `range()` habría panicado).
+
+### Fixed
+
+- Colisiones de tipo del índice de propiedades (`Int(1)` == `Float(1.0)` ==
+  `String("1")`, `Bool(true)` == `String("true")`, `Null` == `String("null")`),
+  inyección de separador (prop `a` + valor `b:c` colisionaba con prop `a:b` +
+  valor `c`) y floats no canónicos (`-0.0` y `0.0` eran claves distintas;
+  todo NaN colapsa ahora a una clave canónica única).
+- Python: `Transaction.add_node`/`add_edge` descartaban el error del motor
+  (`let _ = …`) y devolvían el id de un nodo fantasma; ahora propagan la
+  excepción y el id devuelto es el confirmado por el motor.
+- Storage: los filtros del namespace `node:` usaban blacklists por substring
+  (`contains(":v")`…) que funcionaban por accidente; ahora son predicados
+  estructurales (prefijo + UUID parseado + sufijo exacto). El caso inverso
+  (`get_all_versioned_nodes` aceptando sufijos futuros y reventando el
+  export con `SerializationError`) quedó cerrado por la misma vía.
+
+### Documented
+
+- Hazard preexistente de `BTreeIndex`: el `Ord` de `PropertyValue` coerciona
+  Int↔Float pero su `Eq` derivado no — claves numéricas heterogéneas se
+  fusionan en el bucket del primero insertado. Pinneado en test; el fix real
+  (normalización canónica) queda en el roadmap.
+- `docs/PROPERTY_INDEXING.md` describe el formato v2 y la migración.
+
+---
+
 ## [0.4.35] - 2026-07-27
 
 ### ✨ Highlights
