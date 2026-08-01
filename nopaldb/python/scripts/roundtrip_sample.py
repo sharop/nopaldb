@@ -74,8 +74,20 @@ def main():
 
         run(graph, via_upsert, "UP")
 
+        # Los errores del add se propagan como excepción (antes se tragaban y
+        # el caller recibía el id de un nodo fantasma): usar una transacción
+        # ya cerrada debe levantar RuntimeError, no regresar un id.
+        tx = graph.begin_transaction()
+        tx.add_node("RTERR", {"x": 1})
+        tx.commit()
+        try:
+            tx.add_node("RTERR", {"x": 2})
+            raise AssertionError("add_node sobre tx cerrada debió levantar excepción")
+        except RuntimeError:
+            pass
+
         graph.close()
-    print("roundtrip_sample: OK (bool/int/float/str/None/bytes/list/dict tipo-exactos)")
+    print("roundtrip_sample: OK (bool/int/float/str/None/bytes/list/dict tipo-exactos; errores propagados)")
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ use crate::types::Node;
 use crate::types::{Edge, NodeId, PropertyValue};
 use crate::Transaction;
 use crate::index::IndexType as GraphIndexType;
-use crate::planner::{QueryPlanner, PlanNode};
+use crate::planner::PlanNode;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
@@ -440,6 +440,25 @@ enum PathPropertyKind {
     Result,  // F4-C
 }
 
+/// Resultado de [`Executor::index_fast_path_decision`] — ver su doc: única
+/// fuente para el despacho de `execute()` y el reporte de EXPLAIN.
+pub(crate) enum FastPathDecision {
+    /// `execute()` intentará `find_nodes_indexed` con estos parámetros.
+    Attempt {
+        label: String,
+        property: String,
+        value: PropertyValue,
+        /// `(nombre, tipo)` del índice REAL si existe. `None` ⇒
+        /// `find_nodes_indexed` cae a label-scan interno; tipo
+        /// FullText/Taxonomy ⇒ la consulta de igualdad falla y también se
+        /// cae a scan. El tipo puede ser `None` si el índice existe sin
+        /// metadata (skew conocida de `set_taxonomy`).
+        index: Option<(String, Option<crate::index::IndexType>)>,
+    },
+    /// El fast-path no aplica; `reason` explica por qué (para EXPLAIN).
+    Scan { reason: &'static str },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExecutionMode {
     FastTraverse,
@@ -472,87 +491,62 @@ impl<'a> Executor<'a> {
         // ========================================
         // OPTIMIZATION: Try to use indexes
         // ========================================
+        // La decisión sale de index_fast_path_decision — la MISMA fuente que
+        // usa EXPLAIN, para que el plan reportado nunca diverja del despacho
+        // real (antes eran dos caminos independientes).
 
-        log::debug!("Checking if query can use index...");
+        if let FastPathDecision::Attempt { label, property, value, index } =
+            self.index_fast_path_decision(&query).await?
+        {
+            log::info!(
+                "🚀 Attempting index lookup: {}.{} = {:?} (índice: {:?})",
+                label, property, value, index
+            );
 
-        // Check if we can use an index for this query
-        // (for now only single-node queries; relationship queries use dedicated pipeline).
-        if !has_relationships && let Some(filter) = &query.filter {
-            log::debug!("Query has WHERE clause, analyzing...");
+            // Try to use index (find_nodes_indexed cae a label-scan interno
+            // cuando no hay índice — mismo comportamiento de siempre)
+            match self.graph.find_nodes_indexed(&label, &property, value).await {
+                Ok(nodes) if !nodes.is_empty() => {
+                    log::info!("✅ Index returned {} nodes", nodes.len());
 
-            if let Some((variable, property, value)) = self.extract_indexed_condition(filter)? {
-                log::info!("🔍 Found indexed condition candidate: {}.{}", variable, property);
+                    // Apply any remaining filters
+                    let filtered = self.apply_remaining_filters(nodes, &query)?;
 
-                // Get label from FROM clause
-                if !query.from.patterns.is_empty() {
-                    let pattern = &query.from.patterns[0];
-                    if !pattern.elements.is_empty()
-                        && let PatternElement::Node(node_pattern) = &pattern.elements[0] {
-                            if let Some(label) = &node_pattern.label {
-                                // Check if variable matches
-                                if Some(&variable) == node_pattern.variable.as_ref() {
-                                    log::info!("🚀 Attempting index lookup: {} on {}.{} = {:?}",
-                                        label, label, property, value);
+                    // P2: Inject ORDER BY extras
+                    let order_by_extras = self.extract_order_by_extras(&query);
+                    let mut result = self.project_result_with_extras(filtered, &query, &order_by_extras).await?;
 
-                                    // Try to use index
-                                    match self.graph.find_nodes_indexed(label, &property, value).await {
-                                        Ok(nodes) if !nodes.is_empty() => {
-                                            log::info!("✅ Index returned {} nodes", nodes.len());
+                    self.apply_distinct_if_needed(&mut result, &query.find);
 
-                                            // Apply any remaining filters
-                                            let filtered = self.apply_remaining_filters(nodes, &query)?;
-
-                                            // P2: Inject ORDER BY extras
-                                            let order_by_extras = self.extract_order_by_extras(&query);
-                                            let mut result = self.project_result_with_extras(filtered, &query, &order_by_extras).await?;
-
-                                            self.apply_distinct_if_needed(&mut result, &query.find);
-
-                                            // Apply ORDER BY
-                                            if let Some(order_by) = &query.order_by {
-                                                self.apply_order_by(&mut result, order_by);
-                                            }
-
-                                            // Apply LIMIT/OFFSET (after ORDER BY)
-                                            if let Some(limit) = &query.limit {
-                                                let offset = limit.offset.unwrap_or(0);
-                                                result.rows = result.rows.into_iter()
-                                                    .skip(offset)
-                                                    .take(limit.limit)
-                                                    .collect();
-                                            }
-
-                                            // Strip ORDER BY extras
-                                            if !order_by_extras.is_empty() {
-                                                self.strip_extra_columns(&mut result, &order_by_extras);
-                                            }
-
-                                            log::info!("🎯 Returning {} results from index", result.len());
-                                            return Ok(result);
-                                        }
-                                        Ok(_) => {
-                                            log::info!("⚠️  Index returned 0 results, falling back to scan");
-                                        }
-                                        Err(e) => {
-                                            log::warn!("❌ Index lookup failed: {}, falling back to scan", e);
-                                        }
-                                    }
-                                } else {
-                                    log::debug!("Variable mismatch: {:?} != {:?}",
-                                        Some(&variable), node_pattern.variable);
-                                }
-                            } else {
-                                log::debug!("Node pattern has no label");
-                            }
+                    // Apply ORDER BY
+                    if let Some(order_by) = &query.order_by {
+                        self.apply_order_by(&mut result, order_by);
                     }
+
+                    // Apply LIMIT/OFFSET (after ORDER BY)
+                    if let Some(limit) = &query.limit {
+                        let offset = limit.offset.unwrap_or(0);
+                        result.rows = result.rows.into_iter()
+                            .skip(offset)
+                            .take(limit.limit)
+                            .collect();
+                    }
+
+                    // Strip ORDER BY extras
+                    if !order_by_extras.is_empty() {
+                        self.strip_extra_columns(&mut result, &order_by_extras);
+                    }
+
+                    log::info!("🎯 Returning {} results from index", result.len());
+                    return Ok(result);
                 }
-            } else {
-                log::debug!("Could not extract indexed condition");
+                Ok(_) => {
+                    log::info!("⚠️  Index returned 0 results, falling back to scan");
+                }
+                Err(e) => {
+                    log::warn!("❌ Index lookup failed: {}, falling back to scan", e);
+                }
             }
-        } else if !has_relationships {
-            log::debug!("Query has no WHERE clause");
-        } else {
-            log::debug!("Skipping index fast-path for relationship query");
         }
 
         // ========================================
@@ -921,6 +915,59 @@ impl<'a> Executor<'a> {
                 "Relationship patterns need execute_pattern_query()".into()
             ))
         }
+    }
+
+    /// Decisión estática del fast-path de índice.
+    ///
+    /// ÚNICA fuente tanto para el despacho real de `execute()` como para el
+    /// plan que reporta `execute_explain()`. Antes eran dos caminos sin
+    /// relación: EXPLAIN ignoraba el operador, el RHS, la variable del patrón
+    /// y las relaciones, y consultaba la METADATA de índices mientras la
+    /// ejecución consulta el mapa REAL — con 10 divergencias documentadas
+    /// (rangos reportados como seek, seeks reales reportados como scan en
+    /// labels chicos, etc.). Compartir la decisión las elimina por
+    /// construcción.
+    pub(crate) async fn index_fast_path_decision(
+        &self,
+        query: &Query,
+    ) -> Result<FastPathDecision> {
+        let has_relationships = query.from.patterns.iter().any(|p| {
+            p.elements.iter().any(|e| matches!(e, PatternElement::Relationship(_)))
+        });
+        if has_relationships {
+            return Ok(FastPathDecision::Scan {
+                reason: "el patrón tiene relaciones (pipeline de patrones)",
+            });
+        }
+        let Some(filter) = &query.filter else {
+            return Ok(FastPathDecision::Scan { reason: "sin cláusula WHERE" });
+        };
+        let Some((variable, property, value)) = self.extract_indexed_condition(filter)? else {
+            return Ok(FastPathDecision::Scan {
+                reason: "la condición no es `var.prop = literal` (operador no-Eq, RHS no literal o expresión compuesta)",
+            });
+        };
+        let Some(pattern) = query.from.patterns.first() else {
+            return Ok(FastPathDecision::Scan { reason: "FROM sin patrones" });
+        };
+        let Some(PatternElement::Node(node_pattern)) = pattern.elements.first() else {
+            return Ok(FastPathDecision::Scan { reason: "el patrón no inicia con un nodo" });
+        };
+        let Some(label) = &node_pattern.label else {
+            return Ok(FastPathDecision::Scan { reason: "nodo sin label (full scan)" });
+        };
+        if Some(&variable) != node_pattern.variable.as_ref() {
+            return Ok(FastPathDecision::Scan {
+                reason: "la variable del WHERE no es la del patrón",
+            });
+        }
+        let index = self.graph.equality_index_info(label, &property).await;
+        Ok(FastPathDecision::Attempt {
+            label: label.clone(),
+            property,
+            value,
+            index,
+        })
     }
 
     /// Extract indexed condition from WHERE clause
@@ -5035,15 +5082,17 @@ impl<'a> Executor<'a> {
     }
 
     /// Execute EXPLAIN
+    ///
+    /// El plan reportado sale de [`Self::index_fast_path_decision`] — la
+    /// MISMA decisión que despacha `execute()` — así que EXPLAIN describe la
+    /// estrategia real. El planner de costos se conserva solo para las
+    /// estimaciones mostradas (y para señalar cuando su modelo habría
+    /// preferido otra cosa, cosa que la ejecución ignora a propósito).
     pub async fn execute_explain(&self, stmt: Statement) -> Result<String> {
-        // Create planner
-        let planner = self.graph.create_planner().await?;
-
         match stmt {
             Statement::Query(query) => {
-                // Analyze query
-                let plan = self.build_plan_for_query(&query, &planner).await?;
-                let mut explanation = planner.explain(&plan);
+                let decision = self.index_fast_path_decision(&query).await?;
+                let mut explanation = self.render_decision_plan(&query, &decision).await?;
                 if self.query_uses_function(&query, &["community", "community_fast"]) {
                     explanation.push_str(
                         "\nCost note: community() requires global community partition computation (LIMIT applies after aggregation).",
@@ -5062,78 +5111,104 @@ impl<'a> Executor<'a> {
                 }
                 Ok(explanation)
             }
-            _ => {
-                Ok(format!("EXPLAIN for {:?} (not yet implemented)", stmt))
+            other => {
+                // Antes: Debug dump del AST completo. Mensaje claro en su lugar.
+                let kind = match &other {
+                    Statement::Add(_) => "ADD",
+                    Statement::Update(_) => "UPDATE",
+                    Statement::Delete(_) => "DELETE",
+                    Statement::CreateIndex(_) => "CREATE INDEX",
+                    Statement::DropIndex(_) => "DROP INDEX",
+                    _ => "write/DDL",
+                };
+                Ok(format!(
+                    "EXPLAIN: statement {kind} — plan de lectura no disponible \
+                     (EXPLAIN aplica a consultas find)"
+                ))
             }
         }
     }
 
-    /// Build execution plan for query
-    async fn build_plan_for_query(
+    /// Render textual del plan a partir de la decisión real de despacho.
+    async fn render_decision_plan(
         &self,
         query: &Query,
-        planner: &QueryPlanner,
-    ) -> Result<PlanNode> {
-        // Extract label from FROM clause
-        if query.from.patterns.is_empty() {
-            return Err(NopalError::custom("No patterns in FROM"));
-        }
+        decision: &FastPathDecision,
+    ) -> Result<String> {
+        use crate::index::IndexType;
 
-        let pattern = &query.from.patterns[0];
-        if pattern.elements.is_empty() {
-            return Err(NopalError::custom("Empty pattern"));
-        }
-
-        // Get label
-        let label = match &pattern.elements[0] {
-            PatternElement::Node(node) => {
-                node.label.as_ref()
-                    .ok_or_else(|| NopalError::custom("Node has no label"))?
+        let mut out = String::from("Query Execution Plan\n====================\n");
+        match decision {
+            FastPathDecision::Attempt { label, property, value, index } => {
+                match index {
+                    Some((name, ty)) if !matches!(ty, Some(IndexType::FullText) | Some(IndexType::Taxonomy)) => {
+                        let ty_str = ty
+                            .as_ref()
+                            .map(|t| format!("{t:?}"))
+                            .unwrap_or_else(|| "desconocido (sin metadata)".to_string());
+                        out.push_str(&format!(
+                            "Strategy: INDEX SEEK\n  Index: {name} (tipo {ty_str})\n  \
+                             Label: {label}\n  Predicate: {property} = {}\n  \
+                             Runtime fallback: label scan si el índice regresa vacío o falla.\n",
+                            value.to_display_string()
+                        ));
+                        // Estimaciones del planner (solo informativas): si su
+                        // modelo de costos habría preferido scan, decirlo —
+                        // la ejecución usa el índice de todas formas.
+                        if let Ok(planner) = self.graph.create_planner().await {
+                            let plan = planner.choose_best_plan(label, Some(property), true);
+                            out.push_str(&format!(
+                                "Planner estimate: ~{} rows, cost {:.1}\n",
+                                plan.estimated_rows(),
+                                plan.cost()
+                            ));
+                            if matches!(plan, PlanNode::LabelScan { .. }) {
+                                out.push_str(
+                                    "Cost note: el modelo de costos preferiría LABEL SCAN \
+                                     (label chico); la ejecución usa el índice de todas formas.\n",
+                                );
+                            }
+                        }
+                    }
+                    Some((name, ty)) => {
+                        out.push_str(&format!(
+                            "Strategy: LABEL SCAN\n  Label: {label}\n  Predicate: {property} = {}\n  \
+                             Reason: el índice {name} es de tipo {ty:?} y no sirve para igualdad \
+                             (la consulta falla y la ejecución cae a scan).\n",
+                            value.to_display_string()
+                        ));
+                    }
+                    None => {
+                        out.push_str(&format!(
+                            "Strategy: LABEL SCAN\n  Label: {label}\n  Predicate: {property} = {}\n  \
+                             Reason: no existe índice para {label}.{property} \
+                             (crear con CREATE INDEX).\n",
+                            value.to_display_string()
+                        ));
+                    }
+                }
             }
-            _ => return Err(NopalError::custom("Pattern must start with node")),
-        };
-
-        // Check if WHERE clause references an indexed property
-        let (property, has_index) = if let Some(filter) = &query.filter {
-            self.find_indexed_property(label, filter).await?
-        } else {
-            (None, false)
-        };
-
-        // Let planner choose
-        Ok(planner.choose_best_plan(label, property.as_deref(), has_index))
-    }
-
-    /// Find indexed property in WHERE clause
-    async fn find_indexed_property(
-        &self,
-        label: &str,
-        where_clause: &WhereClause,
-    ) -> Result<(Option<String>, bool)> {
-        let indexes = self.graph.list_indexes().await;
-
-        // Extract property from WHERE condition
-        let prop_name = self.extract_property_from_condition(&where_clause.condition)?;
-
-        if let Some(prop) = prop_name {
-            let index_name = format!("{}_{}", label, prop);
-            let has_index = indexes.iter().any(|meta| meta.name == index_name);
-
-            return Ok((Some(prop), has_index));
-        }
-
-        Ok((None, false))
-    }
-
-    /// Extract property name from condition
-    fn extract_property_from_condition(&self, expr: &Expression) -> Result<Option<String>> {
-        if let Expression::BinaryOp { left, op: _, right: _ } = expr {
-            // Check if left is a property (field access)
-            if let Expression::Property { variable: _, property } = &**left {
-                return Ok(Some(property.clone()));
+            FastPathDecision::Scan { reason } => {
+                let strategy = if query.from.patterns.iter().any(|p| {
+                    p.elements.iter().any(|e| matches!(e, PatternElement::Relationship(_)))
+                }) {
+                    "PATTERN PIPELINE"
+                } else {
+                    let labeled = query
+                        .from
+                        .patterns
+                        .first()
+                        .and_then(|p| p.elements.first())
+                        .and_then(|e| match e {
+                            PatternElement::Node(n) => n.label.as_deref(),
+                            _ => None,
+                        });
+                    if labeled.is_some() { "LABEL SCAN" } else { "FULL SCAN" }
+                };
+                out.push_str(&format!("Strategy: {strategy}\n  Reason: {reason}\n"));
             }
         }
-        Ok(None)
+        Ok(out)
     }
 
     fn query_uses_function(&self, query: &Query, names: &[&str]) -> bool {

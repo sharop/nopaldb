@@ -68,13 +68,11 @@ impl PyTransaction {
         for(key, value) in props{
             node = node.with_property(key, value);
         }
-        let node_id = node.id;
-
-        let _ = crate::python::runtime::block_on(py, async {
+        // Propagar el error del add: antes se descartaba con `let _ =` y el
+        // caller recibía el id de un nodo que quizá nunca se agregó.
+        let node_id = to_py_result(crate::python::runtime::block_on(py, async {
             tx.add_node(node).await
-        });
-
-        to_py_result(Ok(()))?;
+        }))?;
 
         Ok(node_id.to_string())
     }
@@ -122,10 +120,8 @@ impl PyTransaction {
             edge.properties.extend(super::pydict_to_props(props_dict)?);
         }
 
-        let edge_id = edge.id;
-
-        // Add to transaction
-        let _ = tx.add_edge(edge);
+        // Propagar el error del add (mismo patrón que add_node)
+        let edge_id = to_py_result(tx.add_edge(edge))?;
 
         Ok(edge_id.to_string())
     }
