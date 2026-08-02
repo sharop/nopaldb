@@ -2015,9 +2015,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.171"
+version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c19937216e9d3aa9956d9bb8dfc0b0c8beb6058fc4f7a4dc4d850edf86a237d6"
+checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libm"
@@ -2242,7 +2242,7 @@ checksum = "2195bf6aa996a481483b29d62a7663eed3fe39600c460e323f8ff41e90bdd89b"
 
 [[package]]
 name = "ndbstudio"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -2296,7 +2296,7 @@ dependencies = [
 
 [[package]]
 name = "nopaldb"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "arrow",
@@ -2319,6 +2319,7 @@ dependencies = [
  "pyo3",
  "rand 0.8.6",
  "rayon",
+ "redb",
  "regex",
  "rmp-serde",
  "serde",
@@ -2334,7 +2335,7 @@ dependencies = [
 
 [[package]]
 name = "nopaldb-mcp"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -3169,6 +3170,15 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "redb"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e925444704b5f17d32bf42f5b6e2df050bceebc3dcd6e71cc73dafe8092e839"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

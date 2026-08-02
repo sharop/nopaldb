@@ -3,9 +3,9 @@
 // El storage necesita exactamente un motor KV compilado. Sin esto, un build
 // sin backend produce cientos de errores crípticos en storage/ en vez de uno
 // accionable. (Cuando exista más de un backend, esto pasa a `not(any(...))`.)
-#[cfg(not(feature = "storage-sled"))]
+#[cfg(not(any(feature = "storage-sled", feature = "storage-redb")))]
 compile_error!(
-    "NopalDB requires a storage backend: enable the `storage-sled` feature (part of defaults)."
+    "NopalDB requires a storage backend: enable `storage-sled` (default) or `storage-redb`."
 );
 
 pub mod error;

@@ -20,6 +20,11 @@ fn engines() -> Vec<(&'static str, Arc<dyn KvEngine>)> {
         "sled",
         Arc::new(super::sled::SledEngine::open_temporary(StorageProfile::Default).unwrap()),
     ));
+    #[cfg(feature = "storage-redb")]
+    v.push((
+        "redb",
+        Arc::new(super::redb::RedbEngine::open_temporary(StorageProfile::Default).unwrap()),
+    ));
     v
 }
 
@@ -198,6 +203,46 @@ fn persistencia_tras_reabrir_sled() {
         engine.keyspace("p").unwrap().get(b"k").unwrap().as_deref(),
         Some(b"v".as_slice())
     );
+}
+
+#[cfg(feature = "storage-redb")]
+#[test]
+fn persistencia_tras_reabrir_redb() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("conf_reopen_redb");
+    {
+        let engine = super::redb::RedbEngine::open(&path, StorageProfile::Default).unwrap();
+        engine.keyspace("p").unwrap().insert(b"k", b"v").unwrap();
+        engine.flush().unwrap();
+    }
+    let engine = super::redb::RedbEngine::open(&path, StorageProfile::Default).unwrap();
+    assert_eq!(
+        engine.keyspace("p").unwrap().get(b"k").unwrap().as_deref(),
+        Some(b"v".as_slice())
+    );
+}
+
+#[cfg(all(feature = "storage-sled", feature = "storage-redb"))]
+#[test]
+fn sentinel_de_engine_bloquea_la_apertura_cruzada() {
+    // Abrir con el motor equivocado debe fallar con error explícito, no
+    // crear una base vacía junto a la existente (ningún lock del OS cubre
+    // el cruce: cada motor lockea archivos distintos).
+    let dir = tempfile::tempdir().unwrap();
+
+    let sled_path = dir.path().join("base_sled");
+    drop(super::sled::SledEngine::open(&sled_path, StorageProfile::Default).unwrap());
+    let err = super::redb::RedbEngine::open(&sled_path, StorageProfile::Default)
+        .err()
+        .expect("redb sobre dir sled debe fallar");
+    assert!(err.to_string().contains("base sled"), "{err}");
+
+    let redb_path = dir.path().join("base_redb");
+    drop(super::redb::RedbEngine::open(&redb_path, StorageProfile::Default).unwrap());
+    let err = super::sled::SledEngine::open(&redb_path, StorageProfile::Default)
+        .err()
+        .expect("sled sobre dir redb debe fallar");
+    assert!(err.to_string().contains("base redb"), "{err}");
 }
 
 #[cfg(feature = "storage-sled")]

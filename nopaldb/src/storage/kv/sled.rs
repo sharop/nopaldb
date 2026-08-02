@@ -58,6 +58,21 @@ impl SledEngine {
     }
 
     pub(crate) fn open(path: &std::path::Path, profile: StorageProfile) -> Result<Self> {
+        // Sentinel estructural inverso: si el directorio ya contiene una
+        // base redb, abrir con sled crearía una base sled vacía al lado y
+        // "desaparecerían" los datos. Ningún lock del OS protege el cruce
+        // (cada motor lockea archivos distintos).
+        #[cfg(feature = "storage-redb")]
+        if super::redb::sled_dir_has_redb(path) && !path.join("conf").exists() {
+            return Err(StorageError::new(
+                StorageErrorKind::InvalidData,
+                format!(
+                    "el directorio {} contiene una base redb; ábrela con engine=redb o migra los datos",
+                    path.display()
+                ),
+            )
+            .into());
+        }
         let db = Self::config_for(profile)
             .path(path)
             .open()
