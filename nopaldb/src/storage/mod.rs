@@ -28,6 +28,11 @@ const PROP_IDX_TREE: &str = "prop_idx_v2";
 /// Key meta con la cota superior persistida del contador de transaction ids.
 pub const META_NEXT_TX_ID: &str = "meta:next_tx_id";
 
+/// Capa KV: conversiones (y, a futuro, el contrato `KvEngine`/`KvKeyspace`)
+/// por motor de almacenamiento. Vive en su propio módulo para no sombrear
+/// los crates de los motores (`mod sled` aquí ocultaría al crate `sled`).
+mod kv;
+
 /// Storage engine basado en sled.
 ///
 /// Sled es thread-safe internamente (Send + Sync) con MVCC propio.
@@ -182,7 +187,7 @@ impl Storage {
         config = config.flush_every_ms(tuning.flush_every_ms);
         config = config.use_compression(tuning.use_compression);
 
-        let db = config.open().map_err(NopalError::StorageError)?;
+        let db = config.open().map_err(NopalError::from)?;
 
         Ok(Self {
             db: Arc::new(db),
@@ -213,7 +218,7 @@ impl Storage {
         config = config.flush_every_ms(tuning.flush_every_ms);
         config = config.use_compression(tuning.use_compression);
 
-        let db = config.open().map_err(NopalError::StorageError)?;
+        let db = config.open().map_err(NopalError::from)?;
 
         Ok(Self {
             db: Arc::new(db),

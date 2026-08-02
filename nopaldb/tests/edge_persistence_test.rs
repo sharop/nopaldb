@@ -83,6 +83,11 @@ async fn test_edges_persist_after_reopen() -> Result<()> {
 }
 
 /// Test that rebuild_indices is triggered when adjacency indices are missing
+///
+/// Gated on `storage-sled`: fabrica el estado "índices perdidos" abriendo la
+/// DB con sled DIRECTO y borrando las claves `idx:*` — acceso crudo al motor
+/// a propósito (no hay API pública para corromper índices, ni debe haberla).
+#[cfg(feature = "storage-sled")]
 #[tokio::test]
 async fn test_rebuild_indices_from_edges_tree() -> Result<()> {
     let tmp = TempDir::new().unwrap();

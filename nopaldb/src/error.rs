@@ -6,11 +6,70 @@
 // - Consolidado de 90+ variantes a ~15 variantes semánticas
 // - Mensajes claros y en inglés para consistencia
 
+/// Categoría general de un error de almacenamiento, independiente del motor.
+///
+/// `#[non_exhaustive]`: un motor futuro puede necesitar una categoría nueva
+/// sin que eso sea breaking para quien hace match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StorageErrorKind {
+    Io,
+    Corruption,
+    Conflict,
+    InvalidData,
+    Unsupported,
+    Internal,
+}
+
+/// Error independiente del motor de almacenamiento utilizado.
+#[derive(Debug)]
+pub struct StorageError {
+    kind: StorageErrorKind,
+    message: String,
+}
+
+impl StorageError {
+    pub fn new(
+        kind: StorageErrorKind,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub fn kind(&self) -> StorageErrorKind {
+        self.kind
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl std::fmt::Display for StorageError {
+    fn fmt(
+        &self,
+        formatter: &mut std::fmt::Formatter<'_>,
+    )-> std::fmt::Result {
+        write!(formatter, "{}", self.message)
+    }
+
+}
+
+impl std::error::Error for StorageError {}
+
+
 /// Errores de NopalDB
 ///
 /// Cada variante representa una categoría de error semánticamente distinta.
 /// Para errores específicos, usa el campo `String` con contexto adicional.
+///
+/// `#[non_exhaustive]`: consumidores externos deben incluir un brazo
+/// comodín al hacer match — permite agregar categorías sin breaking change.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum NopalError {
     // ═══════════════════════════════════════════════════════════════
     // ERRORES DE ENTIDADES (Nodos y Aristas)
@@ -28,9 +87,9 @@ pub enum NopalError {
     // ERRORES DE STORAGE
     // ═══════════════════════════════════════════════════════════════
 
-    /// Error del motor de storage (sled)
+    /// Error producido por el sub sistema de almacenamiento.
     #[error("Storage error: {0}")]
-    StorageError(#[from] sled::Error),
+    StorageError(#[from] StorageError),
 
     /// Error de I/O
     #[error("IO error: {0}")]

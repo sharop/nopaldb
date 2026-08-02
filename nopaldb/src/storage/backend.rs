@@ -1,7 +1,10 @@
 use crate::error::Result;
 
 /// Runtime profile for storage tuning.
+///
+/// `#[non_exhaustive]`: new profiles can be added without a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StorageProfile {
     Default,
     Mobile,
@@ -9,7 +12,11 @@ pub enum StorageProfile {
 }
 
 /// Logical storage engine selector.
+///
+/// `#[non_exhaustive]`: new engines (behind their own feature flags) can be
+/// added without a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StorageEngine {
     Sled,
 }
@@ -42,7 +49,12 @@ impl StorageProfile {
     pub fn tuning(self) -> StorageTuning {
         match self {
             StorageProfile::Default => StorageTuning {
-                cache_capacity_bytes: None,
+                // Explicit on purpose: this equals sled 0.34's implicit
+                // default, which the profile used to inherit silently via
+                // `None`. Right-sizing it is a separate, deliberate decision;
+                // an engine-agnostic profile must not depend on whatever a
+                // particular engine defaults to.
+                cache_capacity_bytes: Some(1024 * 1024 * 1024),
                 flush_every_ms: Some(1000),
                 use_compression: false,
             },

@@ -12,6 +12,11 @@ members = [
 [workspace.package]
 version = "0.4.36"
 edition = "2024"
+# Piso explícito y verificado por clippy (incompatible_msrv). No es el 1.85
+# de edition 2024: el código ya usa API estabilizada en 1.87
+# (`is_multiple_of`). Los MSRV de motores KV futuros (redb, etc.) se
+# negocian contra esta cota, no por accidente de `cargo update`.
+rust-version = "1.87"
 authors = ["Sharop <sharop@gmail.com>"]
 # Default for workspace members, matching the flagship library and the
 # top-level LICENSE file. The applications (nopaldb-mcp, ndbstudio) override

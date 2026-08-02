@@ -1,5 +1,13 @@
 // src/lib.rs
 
+// El storage necesita exactamente un motor KV compilado. Sin esto, un build
+// sin backend produce cientos de errores crípticos en storage/ en vez de uno
+// accionable. (Cuando exista más de un backend, esto pasa a `not(any(...))`.)
+#[cfg(not(feature = "storage-sled"))]
+compile_error!(
+    "NopalDB requires a storage backend: enable the `storage-sled` feature (part of defaults)."
+);
+
 pub mod error;
 pub mod types;
 pub mod storage;
@@ -54,7 +62,7 @@ pub mod ml;
 pub use ml::PyGData;
 
 // Re-exports
-pub use error::{NopalError, Result};
+pub use error::{NopalError, Result, StorageError, StorageErrorKind};
 pub use types::{Node, Edge, NodeId, EdgeId, PropertyValue, Properties};
 pub use storage::Storage;
 pub use storage::{StorageBackend, StorageEngine, StorageOptions, StorageProfile, StorageTuning};
