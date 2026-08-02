@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.36"
+version = "0.5.0"
 edition = "2024"
 # Piso explícito y verificado por clippy (incompatible_msrv). No es el 1.85
 # de edition 2024: el código ya usa API estabilizada en 1.87
