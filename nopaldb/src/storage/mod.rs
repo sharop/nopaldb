@@ -5,11 +5,10 @@ pub mod backend;
 use std::sync::Arc;
 use std::path::Path;
 use std::collections::HashMap;
-use sled::Db;
 use crate::error::{NopalError, Result};
 use crate::types::{Node, Edge, NodeId, EdgeId, PropertyValue};
 use crate::mvcc::{VersionedNode, VersionedEdge};
-pub use backend::{StorageBackend, StorageEngine, StorageOptions, StorageProfile, StorageTuning};
+pub use backend::{StorageEngine, StorageOptions, StorageProfile, StorageTuning};
 
 /// Key meta con la cota superior persistida del reloj lógico de timestamps.
 pub const META_NEXT_TIMESTAMP: &str = "meta:next_timestamp";
@@ -23,22 +22,34 @@ pub const META_PROP_IDX_FORMAT: &str = "meta:prop_idx_format";
 /// Valor actual de `META_PROP_IDX_FORMAT`.
 pub const PROP_IDX_FORMAT_CURRENT: u64 = 2;
 
-/// Nombre del sled tree del índice de propiedades v2.
+/// Nombre del keyspace del índice de propiedades v2.
 const PROP_IDX_TREE: &str = "prop_idx_v2";
 /// Key meta con la cota superior persistida del contador de transaction ids.
 pub const META_NEXT_TX_ID: &str = "meta:next_tx_id";
 
-/// Capa KV: conversiones (y, a futuro, el contrato `KvEngine`/`KvKeyspace`)
-/// por motor de almacenamiento. Vive en su propio módulo para no sombrear
-/// los crates de los motores (`mod sled` aquí ocultaría al crate `sled`).
+/// Capa KV: el contrato `KvEngine`/`KvKeyspace` y las implementaciones por
+/// motor de almacenamiento. Vive en su propio módulo para no sombrear los
+/// crates de los motores (`mod sled` aquí ocultaría al crate `sled`).
 mod kv;
 
-/// Storage engine basado en sled.
+/// Codec de claves compuestas en disco (namespaces `node:`/`idx:`/`ts:` del
+/// keyspace default y versiones de aristas). Ver la advertencia de formato
+/// en la cabecera del módulo.
+mod keys;
+
+/// Capa de dominio del storage (MVCC, adyacencia, índices) sobre el contrato
+/// KV (motor según feature).
 ///
-/// Sled es thread-safe internamente (Send + Sync) con MVCC propio.
-/// No requiere locking externo — todas las operaciones son concurrentes.
+/// Los motores embebidos soportados son thread-safe internamente
+/// (Send + Sync). No requiere locking externo — todas las operaciones son
+/// concurrentes.
 pub struct Storage {
-    db: Arc<Db>,
+    engine: Arc<dyn kv::KvEngine>,
+    default_ks: Arc<dyn kv::KvKeyspace>,
+    edges_ks: Arc<dyn kv::KvKeyspace>,
+    versioned_edges_ks: Arc<dyn kv::KvKeyspace>,
+    versioned_edges_current_ks: Arc<dyn kv::KvKeyspace>,
+    prop_idx_ks: Arc<dyn kv::KvKeyspace>,
     profile: StorageProfile,
 }
 
@@ -120,45 +131,31 @@ pub(crate) fn encode_property_index_key(property: &str, value: &PropertyValue) -
     Some(key)
 }
 
-// ─── Predicados estructurales del namespace `node:` ─────────────────────────
-// El namespace tiene exactamente cuatro formas: `node:{uuid}` (base),
-// `node:{uuid}:v{n}` (versión MVCC), `node:{uuid}:current` y
-// `node:{uuid}:versions`. Los filtros de scan clasifican por ESTRUCTURA
-// (prefijo + UUID parseado + sufijo exacto) y no por substring: una blacklist
-// tipo `contains(":v")` funciona hoy por accidente (un UUID no contiene `:`)
-// pero se rompe en silencio el día que se agregue un sufijo nuevo.
-
-/// Clave de nodo base: `node:{uuid}` exacto.
-fn is_base_node_key(key: &[u8]) -> bool {
-    match std::str::from_utf8(key) {
-        Ok(s) => s
-            .strip_prefix("node:")
-            .is_some_and(|rest| uuid::Uuid::parse_str(rest).is_ok()),
-        Err(_) => false,
-    }
-}
-
-/// Clave de versión MVCC: `node:{uuid}:v{n}` exacto (n = dígitos).
-fn is_version_node_key(key: &[u8]) -> bool {
-    let Ok(s) = std::str::from_utf8(key) else {
-        return false;
-    };
-    let Some(rest) = s.strip_prefix("node:") else {
-        return false;
-    };
-    let Some((uuid_part, suffix)) = rest.split_once(':') else {
-        return false;
-    };
-    uuid::Uuid::parse_str(uuid_part).is_ok()
-        && suffix
-            .strip_prefix('v')
-            .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
-}
-
 impl Storage {
     #[cfg(feature = "embeddings")]
-    fn open_embeddings_tree_sync(&self) -> Result<sled::Tree> {
-        Ok(self.db.open_tree("embeddings")?)
+    fn open_embeddings_tree_sync(&self) -> Result<Arc<dyn kv::KvKeyspace>> {
+        self.engine.keyspace("embeddings")
+    }
+
+    /// Construye la capa de dominio sobre un engine ya abierto, cacheando los
+    /// handles de keyspace que se usan en caliente (los de embeddings se
+    /// abren on-demand, igual que antes del rewire).
+    fn from_engine(engine: Arc<dyn kv::KvEngine>, profile: StorageProfile) -> Result<Self> {
+        let default_ks = engine.keyspace(kv::DEFAULT_KEYSPACE)?;
+        let edges_ks = engine.keyspace("edges")?;
+        let versioned_edges_ks = engine.keyspace("versioned_edges")?;
+        let versioned_edges_current_ks = engine.keyspace("versioned_edges_current")?;
+        let prop_idx_ks = engine.keyspace(PROP_IDX_TREE)?;
+
+        Ok(Self {
+            engine,
+            default_ks,
+            edges_ks,
+            versioned_edges_ks,
+            versioned_edges_current_ks,
+            prop_idx_ks,
+            profile,
+        })
     }
 
     /// Crea una nueva instancia de storage
@@ -171,28 +168,17 @@ impl Storage {
         path: impl AsRef<Path>,
         options: StorageOptions,
     ) -> Result<Self> {
-        match options.engine {
-            StorageEngine::Sled => Self::new_with_profile(path, options.profile).await,
-        }
+        let engine = kv::open_engine(path.as_ref(), options.profile, &options)?;
+        Self::from_engine(engine, options.profile)
     }
 
     /// Crea una nueva instancia de storage con perfil de tuning.
     pub async fn new_with_profile(path: impl AsRef<Path>, profile: StorageProfile) -> Result<Self> {
-        let tuning = profile.tuning();
-        let mut config = sled::Config::new().path(path.as_ref());
-
-        if let Some(cache_capacity_bytes) = tuning.cache_capacity_bytes {
-            config = config.cache_capacity(cache_capacity_bytes);
-        }
-        config = config.flush_every_ms(tuning.flush_every_ms);
-        config = config.use_compression(tuning.use_compression);
-
-        let db = config.open().map_err(NopalError::from)?;
-
-        Ok(Self {
-            db: Arc::new(db),
+        let options = StorageOptions {
             profile,
-        })
+            ..StorageOptions::default()
+        };
+        Self::new_with_options(path, options).await
     }
 
     /// Crea storage en memoria (útil para tests)
@@ -202,32 +188,27 @@ impl Storage {
 
     /// Crea storage en memoria con opciones explícitas.
     pub async fn in_memory_with_options(options: StorageOptions) -> Result<Self> {
-        match options.engine {
-            StorageEngine::Sled => Self::in_memory_with_profile(options.profile).await,
-        }
+        let engine = kv::open_in_memory(options.profile, &options)?;
+        Self::from_engine(engine, options.profile)
     }
 
     /// Crea storage en memoria con perfil de tuning.
     pub async fn in_memory_with_profile(profile: StorageProfile) -> Result<Self> {
-        let tuning = profile.tuning();
-        let mut config = sled::Config::new().temporary(true);
-
-        if let Some(cache_capacity_bytes) = tuning.cache_capacity_bytes {
-            config = config.cache_capacity(cache_capacity_bytes);
-        }
-        config = config.flush_every_ms(tuning.flush_every_ms);
-        config = config.use_compression(tuning.use_compression);
-
-        let db = config.open().map_err(NopalError::from)?;
-
-        Ok(Self {
-            db: Arc::new(db),
+        let options = StorageOptions {
             profile,
-        })
+            ..StorageOptions::default()
+        };
+        Self::in_memory_with_options(options).await
     }
 
     pub fn backend_name(&self) -> &'static str {
-        "sled"
+        self.engine.engine_name()
+    }
+
+    /// Perfil de tuning con el que se abrió este storage. Los knobs derivados
+    /// se consultan vía `StorageProfile::tuning()`.
+    pub fn profile(&self) -> StorageProfile {
+        self.profile
     }
 
     // ─── Relojes lógicos persistidos ─────────────────────────────────────────
@@ -246,9 +227,9 @@ impl Storage {
     }
 
     /// Registra `value` como cota del reloj `key` solo si supera la almacenada.
-    /// Atómico (CAS de sled), seguro ante escritores concurrentes.
+    /// Atómico (RMW del motor), seguro ante escritores concurrentes.
     fn bump_clock(&self, key: &str, value: u64) -> Result<()> {
-        self.db.fetch_and_update(key.as_bytes(), |old| {
+        self.default_ks.rmw(key.as_bytes(), &mut |old| {
             let current = old.map(Self::decode_meta_u64).unwrap_or(0);
             Some(current.max(value).to_be_bytes().to_vec())
         })?;
@@ -261,7 +242,7 @@ impl Storage {
     }
 
     pub(crate) fn get_meta_u64_sync(&self, key: &str) -> Result<Option<u64>> {
-        Ok(self.db.get(key.as_bytes())?.map(|v| Self::decode_meta_u64(&v)))
+        Ok(self.default_ks.get(key.as_bytes())?.map(|v| Self::decode_meta_u64(&v)))
     }
 
     /// Lee una cota de reloj lógico persistida.
@@ -272,7 +253,7 @@ impl Storage {
     /// Elimina una key meta. Existe para pruebas de migración (simular una base
     /// creada antes de que los relojes se persistieran).
     pub async fn delete_meta(&self, key: &str) -> Result<()> {
-        self.db.remove(key.as_bytes())?;
+        self.default_ks.remove(key.as_bytes())?;
         Ok(())
     }
 
@@ -282,17 +263,16 @@ impl Storage {
     pub async fn max_persisted_timestamp(&self) -> Result<u64> {
         let mut max_ts = 0u64;
 
-        for item in self.db.scan_prefix(b"ts:") {
+        for item in self.default_ks.scan_prefix(keys::TS_PREFIX.as_bytes()) {
             let (key, _) = item?;
             if let Ok(s) = std::str::from_utf8(&key)
-                && let Ok(ts) = s.trim_start_matches("ts:").parse::<u64>()
+                && let Ok(ts) = s.trim_start_matches(keys::TS_PREFIX).parse::<u64>()
             {
                 max_ts = max_ts.max(ts);
             }
         }
 
-        let tree = self.db.open_tree("versioned_edges")?;
-        for item in tree.iter() {
+        for item in self.versioned_edges_ks.iter() {
             let (_, value) = item?;
             if let Ok(versioned) = deserialize::<VersionedEdge>(&value) {
                 max_ts = max_ts.max(versioned.timestamp);
@@ -307,19 +287,19 @@ impl Storage {
 
     /// Inserta un nodo
     pub async fn insert_node(&self, node: &Node) -> Result<()> {
-        let key = format!("node:{}", node.id);
+        let key = keys::node_key(node.id);
         let value = serialize(node)?;
 
-        self.db.insert(key.as_bytes(), value)?;
+        self.default_ks.insert(key.as_bytes(), &value)?;
 
         Ok(())
     }
 
     /// Obtiene un nodo por ID
     pub async fn get_node(&self, id: NodeId) -> Result<Node> {
-        let key = format!("node:{}", id);
+        let key = keys::node_key(id);
 
-        let value = self.db.get(key.as_bytes())?
+        let value = self.default_ks.get(key.as_bytes())?
             .ok_or_else(|| NopalError::NodeNotFound(id.to_string()))?;
 
         let node: Node = deserialize(&value)?;
@@ -329,10 +309,15 @@ impl Storage {
 
     /// Elimina un nodo
     pub async fn delete_node(&self, id: NodeId) -> Result<()> {
-        let key = format!("node:{}", id);
+        let key = keys::node_key(id);
 
-        self.db.remove(key.as_bytes())?
-            .ok_or_else(|| NopalError::NodeNotFound(id.to_string()))?;
+        // El contrato KV no devuelve el valor previo en `remove`; la
+        // existencia se verifica antes (mismo error observable que el
+        // `remove` de sled devolviendo `None`).
+        if !self.default_ks.contains_key(key.as_bytes())? {
+            return Err(NopalError::NodeNotFound(id.to_string()));
+        }
+        self.default_ks.remove(key.as_bytes())?;
 
         Ok(())
     }
@@ -342,8 +327,7 @@ impl Storage {
         let key = edge.id.to_string();
         let value = serialize(edge)?;
 
-        let edges_tree = self.db.open_tree("edges")?;  // ← Tree "edges"
-        edges_tree.insert(key.as_bytes(), value)?;
+        self.edges_ks.insert(key.as_bytes(), &value)?;
 
         Ok(())
 
@@ -353,8 +337,7 @@ impl Storage {
     pub async fn get_edge(&self, id: EdgeId) -> Result<Edge> {
         let key = id.to_string();
 
-        let edges_tree = self.db.open_tree("edges")?;  // ← Tree "edges"
-        let value = edges_tree.get(key.as_bytes())?
+        let value = self.edges_ks.get(key.as_bytes())?
             .ok_or_else(|| NopalError::EdgeNotFound(id.to_string()))?;
 
         let edge: Edge = deserialize(&value)?;
@@ -362,25 +345,23 @@ impl Storage {
     }
 
     pub async fn node_exists(&self, id: NodeId) -> Result<bool> {
-        let key = format!("node:{}", id);
+        let key = keys::node_key(id);
 
-        Ok(self.db.contains_key(key.as_bytes())?)
+        self.default_ks.contains_key(key.as_bytes())
     }
 
     /// Verifica si una arista existe
     pub async fn edge_exists(&self, id: EdgeId) -> Result<bool> {
         let key = id.to_string();
 
-        let edges_tree = self.db.open_tree("edges")?;  // ← Tree "edges"
-        Ok(edges_tree.contains_key(key.as_bytes())?)
+        self.edges_ks.contains_key(key.as_bytes())
     }
 
     /// Elimina una arista del storage
     pub async fn delete_edge(&self, id: EdgeId) -> Result<()> {
         let key = id.to_string();
 
-        let edges_tree = self.db.open_tree("edges")?;  // ← Tree "edges"
-        edges_tree.remove(key.as_bytes())?;
+        self.edges_ks.remove(key.as_bytes())?;
 
         Ok(())
     }
@@ -395,15 +376,14 @@ impl Storage {
     /// Debe llamarse justo después de `insert_edge()`.
     pub async fn insert_versioned_edge(&self, edge: &Edge, timestamp: u64) -> Result<()> {
         let versioned = VersionedEdge::new(edge.clone(), timestamp);
-        let key = format!("{}:v{:020}", edge.id, versioned.version);
+        let key = keys::edge_version_key(edge.id, versioned.version);
         let value = serialize(&versioned)?;
         let current_value = serialize(&versioned)?;
 
-        let tree = self.db.open_tree("versioned_edges")?;
-        tree.insert(key.as_bytes(), value)?;
+        self.versioned_edges_ks.insert(key.as_bytes(), &value)?;
 
-        let current_tree = self.db.open_tree("versioned_edges_current")?;
-        current_tree.insert(edge.id.to_string().as_bytes(), current_value)?;
+        self.versioned_edges_current_ks
+            .insert(edge.id.to_string().as_bytes(), &current_value)?;
 
         // Avanzar la cota persistida del reloj lógico (nunca retrocede)
         self.bump_clock(META_NEXT_TIMESTAMP, timestamp.saturating_add(1))?;
@@ -413,9 +393,8 @@ impl Storage {
 
     /// Obtiene la versión actual de una arista del historial MVCC.
     pub async fn get_current_versioned_edge(&self, id: EdgeId) -> Result<VersionedEdge> {
-        
-        let current_tree = self.db.open_tree("versioned_edges_current")?;
-        let value = current_tree
+        let value = self
+            .versioned_edges_current_ks
             .get(id.to_string().as_bytes())?
             .ok_or_else(|| NopalError::EdgeNotFound(id.to_string()))?;
         let versioned: VersionedEdge = deserialize(&value)?;
@@ -428,26 +407,24 @@ impl Storage {
         let current = self.get_current_versioned_edge(id).await?;
         // Reescribir la entrada del historial con valid_to
         let closed = current.with_valid_to(timestamp);
-        let key = format!("{}:v{:020}", id, closed.version);
+        let key = keys::edge_version_key(id, closed.version);
         let value = serialize(&closed)?;
 
-        let tree = self.db.open_tree("versioned_edges")?;
-        tree.insert(key.as_bytes(), value)?;
+        self.versioned_edges_ks.insert(key.as_bytes(), &value)?;
 
         // Eliminar la entrada current (la arista ya no está activa)
-        let current_tree = self.db.open_tree("versioned_edges_current")?;
-        current_tree.remove(id.to_string().as_bytes())?;
+        self.versioned_edges_current_ks
+            .remove(id.to_string().as_bytes())?;
 
         Ok(())
     }
 
     /// Retorna todas las versiones de una arista, ordenadas de más antigua a más reciente.
     pub async fn get_edge_history(&self, id: EdgeId) -> Result<Vec<VersionedEdge>> {
-        let prefix = format!("{}:v", id);
-        
-        let tree = self.db.open_tree("versioned_edges")?;
+        let prefix = keys::edge_versions_prefix(id);
 
-        let mut versions: Vec<VersionedEdge> = tree
+        let mut versions: Vec<VersionedEdge> = self
+            .versioned_edges_ks
             .scan_prefix(prefix.as_bytes())
             .filter_map(|r| r.ok())
             .filter_map(|(_, v)| deserialize::<VersionedEdge>(&v).ok())
@@ -464,13 +441,10 @@ impl Storage {
         edge_type: &str,
         timestamp: u64,
     ) -> Result<Vec<Edge>> {
-        
-        let tree = self.db.open_tree("versioned_edges")?;
-
         // Track seen edge_ids to only include the best (latest valid) version per edge
         let mut best: HashMap<EdgeId, VersionedEdge> = HashMap::new();
 
-        for result in tree.iter() {
+        for result in self.versioned_edges_ks.iter() {
             let (_, v) = result?;
             if let Ok(ve) = deserialize::<VersionedEdge>(&v)
                 && ve.edge_data.edge_type == edge_type
@@ -488,19 +462,19 @@ impl Storage {
 
     /// Guarda el índice de adyacencia saliente de un nodo
     pub async fn save_adjacency_out(&self, node_id: NodeId, edges: &[EdgeId]) -> Result<()> {
-        let key = format!("idx:out:{}", node_id);
+        let key = keys::adjacency_out_key(node_id);
         let value = serialize(edges)?;
 
-        self.db.insert(key.as_bytes(), value)?;
+        self.default_ks.insert(key.as_bytes(), &value)?;
 
         Ok(())
     }
 
     /// Carga el índice de adyacencia saliente de un nodo
     pub async fn load_adjacency_out(&self, node_id: NodeId) -> Result<Vec<EdgeId>> {
-        let key = format!("idx:out:{}", node_id);
+        let key = keys::adjacency_out_key(node_id);
 
-        let value = self.db.get(key.as_bytes())?;
+        let value = self.default_ks.get(key.as_bytes())?;
 
         match value {
             Some(v) => {
@@ -513,19 +487,19 @@ impl Storage {
 
     /// Guarda el índice de adyacencia entrante de un nodo
     pub async fn save_adjacency_in(&self, node_id: NodeId, edges: &[EdgeId]) -> Result<()> {
-        let key = format!("idx:in:{}", node_id);
+        let key = keys::adjacency_in_key(node_id);
         let value = serialize(edges)?;
 
-        self.db.insert(key.as_bytes(), value)?;
+        self.default_ks.insert(key.as_bytes(), &value)?;
 
         Ok(())
     }
 
     /// Carga el índice de adyacencia entrante de un nodo
     pub async fn load_adjacency_in(&self, node_id: NodeId) -> Result<Vec<EdgeId>> {
-        let key = format!("idx:in:{}", node_id);
+        let key = keys::adjacency_in_key(node_id);
 
-        let value = self.db.get(key.as_bytes())?;
+        let value = self.default_ks.get(key.as_bytes())?;
 
         match value {
             Some(v) => {
@@ -546,18 +520,18 @@ impl Storage {
 
 
         // Iterar sobre todas las keys que empiezan con "idx:"
-        for item in self.db.scan_prefix(b"idx:") {
+        for item in self.default_ks.scan_prefix(keys::ADJ_PREFIX) {
             let (key, value) = item?;
             let key_str = String::from_utf8_lossy(&key);
 
-            if key_str.starts_with("idx:out:") {
-                if let Some(node_id_str) = key_str.strip_prefix("idx:out:")
+            if key_str.starts_with(keys::ADJ_OUT_PREFIX) {
+                if let Some(node_id_str) = key_str.strip_prefix(keys::ADJ_OUT_PREFIX)
                     && let Ok(node_id) = uuid::Uuid::parse_str(node_id_str) {
                         let edges: Vec<EdgeId> = deserialize(&value)?;
                         adjacency_out.insert(node_id, edges);
                 }
-            } else if key_str.starts_with("idx:in:")
-                && let Some(node_id_str) = key_str.strip_prefix("idx:in:")
+            } else if key_str.starts_with(keys::ADJ_IN_PREFIX)
+                && let Some(node_id_str) = key_str.strip_prefix(keys::ADJ_IN_PREFIX)
                 && let Ok(node_id) = uuid::Uuid::parse_str(node_id_str) {
                     let edges: Vec<EdgeId> = deserialize(&value)?;
                     adjacency_in.insert(node_id, edges);
@@ -575,10 +549,8 @@ impl Storage {
         let mut adjacency_out: HashMap<NodeId, Vec<EdgeId>> = HashMap::new();
         let mut adjacency_in: HashMap<NodeId, Vec<EdgeId>> = HashMap::new();
 
-        let edges_tree = self.db.open_tree("edges")?;
-
-        // Escanear todas las aristas del tree "edges"
-        for item in edges_tree.iter() {
+        // Escanear todas las aristas del keyspace "edges"
+        for item in self.edges_ks.iter() {
             let (_, value) = item?;
             let edge: Edge = deserialize(&value)?;
 
@@ -597,11 +569,6 @@ impl Storage {
 
         Ok((adjacency_out, adjacency_in))
     }
-    /// Tree del índice de propiedades v2 (claves tipadas order-preserving).
-    fn prop_idx_tree(&self) -> Result<sled::Tree> {
-        Ok(self.db.open_tree(PROP_IDX_TREE)?)
-    }
-
     /// Guarda un índice de propiedad: clave -> valor -> lista de nodos
     ///
     /// ⚠️ FORMATO EN DISCO: la clave la define `encode_property_index_key`
@@ -610,17 +577,16 @@ impl Storage {
         let Some(key) = encode_property_index_key(property, value) else {
             return Ok(()); // Variante no indexable (Bytes/List/Object, F2)
         };
-        let tree = self.prop_idx_tree()?;
 
         // RMW bajo el single-writer applier (igual que el v1)
-        let mut nodes: Vec<NodeId> = match tree.get(&key)? {
+        let mut nodes: Vec<NodeId> = match self.prop_idx_ks.get(&key)? {
             Some(v) => deserialize(&v)?,
             None => Vec::new(),
         };
 
         if !nodes.contains(&node_id) {
             nodes.push(node_id);
-            tree.insert(&key, serialize(&nodes)?)?;
+            self.prop_idx_ks.insert(&key, &serialize(&nodes)?)?;
         }
 
         Ok(())
@@ -636,9 +602,8 @@ impl Storage {
         let Some(key) = encode_property_index_key(property, value) else {
             return Ok(());
         };
-        let tree = self.prop_idx_tree()?;
 
-        let mut nodes: Vec<NodeId> = match tree.get(&key)? {
+        let mut nodes: Vec<NodeId> = match self.prop_idx_ks.get(&key)? {
             Some(v) => deserialize(&v)?,
             None => return Ok(()),
         };
@@ -646,9 +611,9 @@ impl Storage {
         nodes.retain(|&id| id != node_id);
 
         if nodes.is_empty() {
-            tree.remove(&key)?;
+            self.prop_idx_ks.remove(&key)?;
         } else {
-            tree.insert(&key, serialize(&nodes)?)?;
+            self.prop_idx_ks.insert(&key, &serialize(&nodes)?)?;
         }
 
         Ok(())
@@ -663,7 +628,7 @@ impl Storage {
             return Ok(Vec::new());
         };
 
-        match self.prop_idx_tree()?.get(&key)? {
+        match self.prop_idx_ks.get(&key)? {
             Some(v) => {
                 let nodes: Vec<NodeId> = deserialize(&v)?;
                 Ok(nodes)
@@ -677,15 +642,12 @@ impl Storage {
     pub(crate) async fn clear_legacy_property_index(&self) -> Result<usize> {
         let mut removed = 0usize;
         let keys: Vec<Vec<u8>> = self
-            .db
-            .scan_prefix(b"idx:prop:")
-            .keys()
-            .collect::<std::result::Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(|k| k.to_vec())
-            .collect();
+            .default_ks
+            .scan_prefix(keys::LEGACY_PROP_IDX_PREFIX)
+            .map(|item| item.map(|(k, _)| k))
+            .collect::<Result<Vec<_>>>()?;
         for key in keys {
-            self.db.remove(&key)?;
+            self.default_ks.remove(&key)?;
             removed += 1;
         }
         Ok(removed)
@@ -693,7 +655,7 @@ impl Storage {
 
     /// Vacía el índice v2 completo (para rebuild). Idempotente.
     pub(crate) async fn clear_property_index_v2(&self) -> Result<()> {
-        self.prop_idx_tree()?.clear()?;
+        self.prop_idx_ks.clear()?;
         Ok(())
     }
 
@@ -716,7 +678,7 @@ impl Storage {
     ) -> Result<bool> {
         let key = format!("{}:{}", node_id, model);
         let tree = self.open_embeddings_tree_sync()?;
-        Ok(tree.contains_key(key.as_bytes())?)
+        tree.contains_key(key.as_bytes())
     }
 
     /// Carga (sync) el embedding de `node_id` y `model`.
@@ -744,7 +706,7 @@ impl Storage {
     ) -> Result<bool> {
         let key = format!("e:{}:{}", edge_id, model);
         let tree = self.open_embeddings_tree_sync()?;
-        Ok(tree.contains_key(key.as_bytes())?)
+        tree.contains_key(key.as_bytes())
     }
 
     /// Carga (sync, estricta) el embedding de `edge_id` y `model`.
@@ -767,17 +729,17 @@ impl Storage {
     pub async fn save_node_embedding(&self, embedding: &crate::embeddings::Embedding) -> Result<()> {
         let key = format!("{}:{}", embedding.node_id, embedding.model);
         let value = serialize(embedding)?;
-        
-        let tree = self.db.open_tree("embeddings")?;
-        tree.insert(key.as_bytes(), value)?;
+
+        let tree = self.open_embeddings_tree_sync()?;
+        tree.insert(key.as_bytes(), &value)?;
         Ok(())
     }
 
     #[cfg(feature = "embeddings")]
     pub async fn load_node_embedding(&self, node_id: NodeId, model: &str) -> Result<crate::embeddings::Embedding> {
         let key = format!("{}:{}", node_id, model);
-        
-        let tree = self.db.open_tree("embeddings")?;
+
+        let tree = self.open_embeddings_tree_sync()?;
         let value = tree.get(key.as_bytes())?
             .ok_or_else(|| NopalError::custom(format!("Embedding not found for node {} model {}", node_id, model)))?;
         let embedding: crate::embeddings::Embedding = deserialize(&value)?;
@@ -786,20 +748,20 @@ impl Storage {
 
     #[cfg(feature = "embeddings")]
     pub async fn save_edge_embedding(&self, embedding: &crate::embeddings::EdgeEmbedding) -> Result<()> {
-        // Prefijo "e:" distingue aristas de nodos en el mismo árbol Sled
+        // Prefijo "e:" distingue aristas de nodos en el mismo keyspace
         let key = format!("e:{}:{}", embedding.edge_id, embedding.model);
         let value = serialize(embedding)?;
-        
-        let tree = self.db.open_tree("embeddings")?;
-        tree.insert(key.as_bytes(), value)?;
+
+        let tree = self.open_embeddings_tree_sync()?;
+        tree.insert(key.as_bytes(), &value)?;
         Ok(())
     }
 
     #[cfg(feature = "embeddings")]
     pub async fn load_edge_embedding(&self, edge_id: EdgeId, model: &str) -> Result<crate::embeddings::EdgeEmbedding> {
         let key = format!("e:{}:{}", edge_id, model);
-        
-        let tree = self.db.open_tree("embeddings")?;
+
+        let tree = self.open_embeddings_tree_sync()?;
         let value = tree.get(key.as_bytes())?
             .ok_or_else(|| NopalError::custom(format!("Embedding not found for edge {} model {}", edge_id, model)))?;
         let embedding: crate::embeddings::EdgeEmbedding = deserialize(&value)?;
@@ -811,8 +773,8 @@ impl Storage {
     // ───────────────────────────────────────────────────────────
 
     #[cfg(feature = "embeddings")]
-    fn open_path_ref_tree_sync(&self) -> Result<sled::Tree> {
-        Ok(self.db.open_tree("path_ref_embeddings")?)
+    fn open_path_ref_tree_sync(&self) -> Result<Arc<dyn kv::KvKeyspace>> {
+        self.engine.keyspace("path_ref_embeddings")
     }
 
     /// Persiste una referencia de path embedding (E-8).
@@ -826,9 +788,9 @@ impl Storage {
             &emb.name, &emb.node_model, &emb.edge_model,
         );
         let value = serialize(emb)?;
-        
-        let tree = self.db.open_tree("path_ref_embeddings")?;
-        tree.insert(key.as_bytes(), value)?;
+
+        let tree = self.open_path_ref_tree_sync()?;
+        tree.insert(key.as_bytes(), &value)?;
         Ok(())
     }
 
@@ -864,7 +826,7 @@ impl Storage {
     ) -> Result<bool> {
         let key = crate::embeddings::PathReferenceEmbedding::storage_key(name, node_model, edge_model);
         let tree = self.open_path_ref_tree_sync()?;
-        Ok(tree.contains_key(key.as_bytes())?)
+        tree.contains_key(key.as_bytes())
     }
 
     /// Carga (sync) todas las PathReferenceEmbedding para el par (node_model, edge_model).
@@ -900,8 +862,8 @@ impl Storage {
         model: &str,
     ) -> Result<Vec<crate::embeddings::Embedding>> {
         let suffix = format!(":{}", model);
-        
-        let tree = self.db.open_tree("embeddings")?;
+
+        let tree = self.open_embeddings_tree_sync()?;
         let mut result = Vec::new();
         for item in tree.iter() {
             let (key_bytes, val_bytes) = item?;
@@ -925,21 +887,21 @@ impl Storage {
         
 
         // 1. Guardar versión
-        let version_key = format!("node:{}:v{}", versioned.id, versioned.version);
+        let version_key = keys::node_version_key(versioned.id, versioned.version);
         let version_value = serialize(versioned)?;
 
-        self.db.insert(version_key.as_bytes(), version_value)?;
+        self.default_ks.insert(version_key.as_bytes(), &version_value)?;
 
         // 2. Actualizar puntero current (si es la versión más reciente)
         if versioned.valid_to.is_none() {
-            let current_key = format!("node:{}:current", versioned.id);
+            let current_key = keys::node_current_key(versioned.id);
             let version_bytes = versioned.version.to_le_bytes();
-            self.db.insert(current_key.as_bytes(), version_bytes.as_ref())?;
+            self.default_ks.insert(current_key.as_bytes(), version_bytes.as_ref())?;
         }
 
         // 3. Agregar a lista de versiones
-        let versions_key = format!("node:{}:versions", versioned.id);
-        let mut versions: Vec<u64> = match self.db.get(versions_key.as_bytes())? {
+        let versions_key = keys::node_versions_key(versioned.id);
+        let mut versions: Vec<u64> = match self.default_ks.get(versions_key.as_bytes())? {
             Some(v) => deserialize(&v)?,
             None => Vec::new(),
         };
@@ -950,12 +912,12 @@ impl Storage {
             versions.reverse(); // Más reciente primero
 
             let versions_value = serialize(&versions)?;
-            self.db.insert(versions_key.as_bytes(), versions_value)?;
+            self.default_ks.insert(versions_key.as_bytes(), &versions_value)?;
         }
 
         // 4. Indexar por timestamp
-        let ts_key = format!("ts:{}", versioned.timestamp);
-        let mut node_ids: Vec<NodeId> = match self.db.get(ts_key.as_bytes())? {
+        let ts_key = keys::ts_key(versioned.timestamp);
+        let mut node_ids: Vec<NodeId> = match self.default_ks.get(ts_key.as_bytes())? {
             Some(v) => deserialize(&v)?,
             None => Vec::new(),
         };
@@ -963,7 +925,7 @@ impl Storage {
         if !node_ids.contains(&versioned.id) {
             node_ids.push(versioned.id);
             let ts_value = serialize(&node_ids)?;
-            self.db.insert(ts_key.as_bytes(), ts_value)?;
+            self.default_ks.insert(ts_key.as_bytes(), &ts_value)?;
         }
 
         // 5. Avanzar la cota persistida del reloj lógico (nunca retrocede)
@@ -974,7 +936,7 @@ impl Storage {
         Ok(())
     }
 
-    /// Aplica ATÓMICAMENTE (un solo `sled::Batch` sobre el tree default) el
+    /// Aplica ATÓMICAMENTE (un solo `WriteBatch` sobre el keyspace default) el
     /// write-set de versión de un nodo commiteado:
     ///   - la versión anterior invalidada (si es update)
     ///   - la versión nueva + puntero current + lista de versiones + índice ts
@@ -993,25 +955,25 @@ impl Storage {
         new_version: &VersionedNode,
     ) -> Result<()> {
         let id = new_version.id;
-        let mut batch = sled::Batch::default();
+        let mut batch = kv::WriteBatch::default();
 
         // 1. Versión anterior invalidada (update)
         if let Some(prev) = invalidated_prev {
-            let key = format!("node:{}:v{}", id, prev.version);
+            let key = keys::node_version_key(id, prev.version);
             batch.insert(key.as_bytes(), serialize(prev)?);
         }
 
         // 2. Versión nueva
-        let version_key = format!("node:{}:v{}", id, new_version.version);
+        let version_key = keys::node_version_key(id, new_version.version);
         batch.insert(version_key.as_bytes(), serialize(new_version)?);
 
         // 3. Puntero current
-        let current_key = format!("node:{}:current", id);
+        let current_key = keys::node_current_key(id);
         batch.insert(current_key.as_bytes(), new_version.version.to_le_bytes().as_ref());
 
         // 4. Lista de versiones (RMW bajo commit lock)
-        let versions_key = format!("node:{}:versions", id);
-        let mut versions: Vec<u64> = match self.db.get(versions_key.as_bytes())? {
+        let versions_key = keys::node_versions_key(id);
+        let mut versions: Vec<u64> = match self.default_ks.get(versions_key.as_bytes())? {
             Some(v) => deserialize(&v)?,
             None => Vec::new(),
         };
@@ -1023,8 +985,8 @@ impl Storage {
         batch.insert(versions_key.as_bytes(), serialize(&versions)?);
 
         // 5. Índice por timestamp (RMW bajo commit lock)
-        let ts_key = format!("ts:{}", new_version.timestamp);
-        let mut node_ids: Vec<NodeId> = match self.db.get(ts_key.as_bytes())? {
+        let ts_key = keys::ts_key(new_version.timestamp);
+        let mut node_ids: Vec<NodeId> = match self.default_ks.get(ts_key.as_bytes())? {
             Some(v) => deserialize(&v)?,
             None => Vec::new(),
         };
@@ -1033,11 +995,11 @@ impl Storage {
         }
         batch.insert(ts_key.as_bytes(), serialize(&node_ids)?);
 
-        // 6. Registro current legacy (mismo tree → misma atomicidad)
-        let node_key = format!("node:{}", node.id);
+        // 6. Registro current legacy (mismo keyspace → misma atomicidad)
+        let node_key = keys::node_key(node.id);
         batch.insert(node_key.as_bytes(), serialize(node)?);
 
-        self.db.apply_batch(batch)?;
+        self.default_ks.apply_batch(batch)?;
 
         // Cota del reloj: fuera del batch, con CAS-max (los escritores directos
         // concurrentes también la avanzan; un put plano podría retrocederla).
@@ -1050,13 +1012,13 @@ impl Storage {
 
     /// Obtiene la versión actual de un nodo
     pub async fn get_current_version(&self, id: NodeId) -> Result<u64> {
-        let current_key = format!("node:{}:current", id);
+        let current_key = keys::node_current_key(id);
 
-        let value = self.db.get(current_key.as_bytes())?
+        let value = self.default_ks.get(current_key.as_bytes())?
             .ok_or_else(|| NopalError::NodeNotFound(id.to_string()))?;
 
         let version = u64::from_le_bytes(
-            value.as_ref().try_into()
+            value.as_slice().try_into()
                 .map_err(|_| NopalError::Custom("Invalid version format".into()))?
         );
 
@@ -1065,9 +1027,9 @@ impl Storage {
 
     /// Obtiene una versión específica de un nodo
     pub async fn get_node_version(&self, id: NodeId, version: u64) -> Result<VersionedNode> {
-        let version_key = format!("node:{}:v{}", id, version);
+        let version_key = keys::node_version_key(id, version);
 
-        let value = self.db.get(version_key.as_bytes())?
+        let value = self.default_ks.get(version_key.as_bytes())?
             .ok_or_else(|| NopalError::NodeNotFound(
                 format!("{}:v{}", id, version)
             ))?;
@@ -1080,9 +1042,9 @@ impl Storage {
     /// Obtiene nodo en un timestamp específico (MVCC as_of)
     pub async fn get_node_at_timestamp(&self, id: NodeId, timestamp: u64) -> Result<VersionedNode> {
         // Obtener lista de versiones
-        let versions_key = format!("node:{}:versions", id);
+        let versions_key = keys::node_versions_key(id);
 
-        let versions: Vec<u64> = match self.db.get(versions_key.as_bytes())? {
+        let versions: Vec<u64> = match self.default_ks.get(versions_key.as_bytes())? {
             Some(v) => deserialize(&v)?,
             None => {
                 log::debug!("No versions found for node {}", id);
@@ -1121,9 +1083,9 @@ impl Storage {
 
     /// Obtiene historial completo de un nodo
     pub async fn get_node_history(&self, id: NodeId) -> Result<Vec<VersionedNode>> {
-        let versions_key = format!("node:{}:versions", id);
+        let versions_key = keys::node_versions_key(id);
 
-        let versions: Vec<u64> = match self.db.get(versions_key.as_bytes())? {
+        let versions: Vec<u64> = match self.default_ks.get(versions_key.as_bytes())? {
             Some(v) => deserialize(&v)?,
             None => return Ok(Vec::new()),
         };
@@ -1146,10 +1108,10 @@ impl Storage {
         versioned.invalidate(timestamp);
 
         // Guardar versión invalidada
-        let version_key = format!("node:{}:v{}", id, current_version);
+        let version_key = keys::node_version_key(id, current_version);
         let version_value = serialize(&versioned)?;
 
-        self.db.insert(version_key.as_bytes(), version_value)?;
+        self.default_ks.insert(version_key.as_bytes(), &version_value)?;
 
         Ok(())
     }
@@ -1183,14 +1145,14 @@ impl Storage {
         
         let mut node_ids_with_versions: Vec<NodeId> = Vec::new();
 
-        for item in self.db.scan_prefix(b"node:") {
+        for item in self.default_ks.scan_prefix(keys::NODE_PREFIX.as_bytes()) {
             let (key, _) = item?;
             let key_str = String::from_utf8_lossy(&key);
 
             // Solo procesar keys de versiones (e.g., "node:uuid:versions")
             if key_str.ends_with(":versions") {
                 let node_id_str = key_str
-                    .strip_prefix("node:")
+                    .strip_prefix(keys::NODE_PREFIX)
                     .and_then(|s| s.strip_suffix(":versions"));
 
                 if let Some(id_str) = node_id_str
@@ -1272,46 +1234,59 @@ impl Storage {
         Ok(stats)
     }
 
-    /// Elimina versiones específicas de un nodo
+    /// Elimina versiones específicas de un nodo.
+    ///
+    /// Dos fases: LECTURA (los `get` por versión para contabilizar
+    /// deleted/bytes_freed — el contrato KV no devuelve el valor previo en
+    /// `remove` — más el RMW de la lista `:versions`; el GC corre
+    /// serializado, sin carrera) y ESCRITURA: un solo `WriteBatch` con todos
+    /// los removes de versiones + el update/remove de la lista, aplicado de
+    /// una vez. El borrado por versión anterior era N syscalls/N entradas de
+    /// árbol y bloqueaba el write_gate más tiempo; el batch es una sola
+    /// aplicación atómica — preparación honesta para medir GC entre engines
+    /// (los removals masivos son la debilidad declarada de redb).
     async fn delete_node_versions(&self, node_id: NodeId, versions: &[u64]) -> Result<(usize, usize)> {
-        
         let mut deleted = 0;
         let mut bytes_freed = 0;
+        let mut batch = kv::WriteBatch::default();
 
-        // 1. Eliminar cada versión
+        // Fase de lectura 1: versiones a borrar (solo cuentan las existentes)
         for &version in versions {
-            let version_key = format!("node:{}:v{}", node_id, version);
-            if let Some(value) = self.db.remove(version_key.as_bytes())? {
+            let version_key = keys::node_version_key(node_id, version);
+            if let Some(value) = self.default_ks.get(version_key.as_bytes())? {
+                batch.remove(version_key.as_bytes());
                 deleted += 1;
                 bytes_freed += value.len();
             }
         }
 
-        // 2. Actualizar lista de versiones
-        let versions_key = format!("node:{}:versions", node_id);
-        if let Some(value) = self.db.get(versions_key.as_bytes())? {
+        // Fase de lectura 2: lista de versiones filtrada. Si queda vacía se
+        // borra la clave; si no, se reescribe (misma semántica que el borrado
+        // por versión que reemplazó este batch).
+        let versions_key = keys::node_versions_key(node_id);
+        if let Some(value) = self.default_ks.get(versions_key.as_bytes())? {
             let mut version_list: Vec<u64> = deserialize(&value)?;
 
             version_list.retain(|v| !versions.contains(v));
 
             if version_list.is_empty() {
-                self.db.remove(versions_key.as_bytes())?;
+                batch.remove(versions_key.as_bytes());
             } else {
-                let new_value = serialize(&version_list)?;
-                self.db.insert(versions_key.as_bytes(), new_value)?;
+                batch.insert(versions_key.as_bytes(), serialize(&version_list)?);
             }
         }
+
+        // Fase de escritura: todo el write-set en una sola aplicación atómica.
+        self.default_ks.apply_batch(batch)?;
 
         Ok((deleted, bytes_freed))
     }
 
     /// Get all edges (for query executor)
     pub async fn get_all_edges(&self) -> Result<Vec<Edge>> {
-        
-        let edges_tree = self.db.open_tree("edges")?;
         let mut edges = Vec::new();
 
-        for result in edges_tree.iter() {
+        for result in self.edges_ks.iter() {
             let (_, value) = result?;
             let edge: Edge = deserialize(&value)
                 .map_err(|e| NopalError::SerializationError(format!("{}", e)))?;
@@ -1324,13 +1299,13 @@ impl Storage {
     pub async fn get_all_nodes(&self) -> Result<Vec<Node>> {
         let mut nodes = Vec::new();
 
-        for item in self.db.scan_prefix(b"node:") {
+        for item in self.default_ks.scan_prefix(keys::NODE_PREFIX.as_bytes()) {
             let (key, value) = item?;
 
             // Predicado estructural (no blacklist por substring): solo claves
             // base `node:{uuid}` exactas. No se rompe si aparece un sufijo
             // nuevo en el namespace.
-            if !is_base_node_key(&key) {
+            if !keys::is_base_node_key(&key) {
                 continue;
             }
 
@@ -1360,15 +1335,15 @@ impl Storage {
 
         let start = start_after
             .map(|s| s.as_bytes().to_vec())
-            .unwrap_or_else(|| b"node:".to_vec());
+            .unwrap_or_else(|| keys::NODE_PREFIX.as_bytes().to_vec());
 
         let mut nodes = Vec::with_capacity(limit);
         let mut last_seen_key: Option<String> = None;
 
-        for item in self.db.range(start..) {
+        for item in self.default_ks.range_from(&start) {
             let (key, value) = item?;
 
-            if !key.starts_with(b"node:") {
+            if !key.starts_with(keys::NODE_PREFIX.as_bytes()) {
                 if last_seen_key.is_some() {
                     break;
                 }
@@ -1386,7 +1361,7 @@ impl Storage {
             // is_base_node_key). Nota de semántica del cursor: el loop corre
             // hasta juntar `limit` MATCHES o agotar el namespace de nodos;
             // `next_cursor == None` significa scan completo, nunca corte.
-            if !is_base_node_key(&key) {
+            if !keys::is_base_node_key(&key) {
                 continue;
             }
 
@@ -1417,14 +1392,14 @@ impl Storage {
     pub async fn get_all_versioned_nodes(&self) -> Result<Vec<crate::mvcc::VersionedNode>> {
         let mut versioned_nodes = Vec::new();
 
-        for item in self.db.scan_prefix(b"node:") {
+        for item in self.default_ks.scan_prefix(keys::NODE_PREFIX.as_bytes()) {
             let (key, value) = item?;
 
             // Solo claves de versión `node:{uuid}:v{n}` exactas. La whitelist
             // anterior (`contains(":v") && !contains(":versions")`) aceptaría
             // cualquier sufijo futuro que empiece con `v` y reventaría el
             // export completo con SerializationError.
-            if is_version_node_key(&key) {
+            if keys::is_version_node_key(&key) {
                 let versioned: crate::mvcc::VersionedNode = deserialize(&value)?;
 
                 versioned_nodes.push(versioned);
@@ -1449,18 +1424,18 @@ impl Storage {
             return Ok(Vec::new());
         }
 
-        let mut batch = sled::Batch::default();
+        let mut batch = kv::WriteBatch::default();
         let mut ids = Vec::with_capacity(nodes.len());
 
         for node in nodes {
-            let key = format!("node:{}", node.id);
+            let key = keys::node_key(node.id);
             let value = serialize(node)?;
             batch.insert(key.as_bytes(), value);
             ids.push(node.id);
         }
 
         // Una sola operación de disco para todos los nodos
-        self.db.apply_batch(batch)?;
+        self.default_ks.apply_batch(batch)?;
 
         log::debug!("Batch inserted {} nodes", ids.len());
         Ok(ids)
@@ -1472,12 +1447,10 @@ impl Storage {
             return Ok(Vec::new());
         }
 
-        let edges_tree = self.db.open_tree("edges")?;
-
-        let mut batch = sled::Batch::default();
+        let mut batch = kv::WriteBatch::default();
         let mut ids = Vec::with_capacity(edges.len());
 
-        //Revisar el tree de edges
+        //Revisar el keyspace de edges
         for edge in edges {
             let key = edge.id.to_string();
             let value = serialize(edge)?;
@@ -1485,7 +1458,7 @@ impl Storage {
             ids.push(edge.id);
         }
 
-        edges_tree.apply_batch(batch)?;
+        self.edges_ks.apply_batch(batch)?;
 
         log::debug!("Batch inserted {} edges to edges tree", ids.len());
         Ok(ids)
@@ -1497,22 +1470,21 @@ impl Storage {
         out_indices: &[(NodeId, Vec<EdgeId>)],
         in_indices: &[(NodeId, Vec<EdgeId>)],
     ) -> Result<()> {
-        
-        let mut batch = sled::Batch::default();
+        let mut batch = kv::WriteBatch::default();
 
         for (node_id, edge_ids) in out_indices {
-            let key = format!("idx:out:{}", node_id);
+            let key = keys::adjacency_out_key(*node_id);
             let value = serialize(edge_ids)?;
             batch.insert(key.as_bytes(), value);
         }
 
         for (node_id, edge_ids) in in_indices {
-            let key = format!("idx:in:{}", node_id);
+            let key = keys::adjacency_in_key(*node_id);
             let value = serialize(edge_ids)?;
             batch.insert(key.as_bytes(), value);
         }
 
-        self.db.apply_batch(batch)?;
+        self.default_ks.apply_batch(batch)?;
 
         log::debug!(
             "Batch saved {} out indices and {} in indices",
@@ -1524,27 +1496,9 @@ impl Storage {
 
     /// Flush all pending writes to disk
     ///
-    /// Forces the underlying sled database to persist all buffered data.
+    /// Forces the underlying storage engine to persist all buffered data.
     pub async fn flush(&self) -> Result<()> {
-        
-        self.db.flush_async()
-            .await
-            .map_err(|e| NopalError::custom(format!("Storage flush failed: {}", e)))?;
-        Ok(())
-    }
-}
-
-impl StorageBackend for Storage {
-    fn backend_name(&self) -> &'static str {
-        "sled"
-    }
-
-    fn profile(&self) -> StorageProfile {
-        self.profile
-    }
-
-    fn verify_health(&self) -> Result<()> {
-        Ok(())
+        self.engine.flush()
     }
 }
 
@@ -1639,9 +1593,9 @@ mod tests {
             // Claves v1 fabricadas, incluida la COLISIÓN clásica: Int(1) y
             // String("1") compartiendo entrada.
             let legacy = serialize(&vec![node_id]).unwrap();
-            storage.db.insert(b"idx:prop:edad:1".as_slice(), legacy.clone()).unwrap();
-            storage.db.insert(b"idx:prop:name:Ana".as_slice(), legacy).unwrap();
-            storage.db.flush().unwrap();
+            storage.default_ks.insert(b"idx:prop:edad:1", &legacy).unwrap();
+            storage.default_ks.insert(b"idx:prop:name:Ana", &legacy).unwrap();
+            storage.engine.flush().unwrap();
         }
 
         let graph = crate::Graph::open(&path).await.unwrap();
@@ -1652,7 +1606,10 @@ mod tests {
             Some(PROP_IDX_FORMAT_CURRENT)
         );
         // Legado eliminado
-        assert_eq!(graph.storage().db.scan_prefix(b"idx:prop:").count(), 0);
+        assert_eq!(
+            graph.storage().default_ks.scan_prefix(keys::LEGACY_PROP_IDX_PREFIX).count(),
+            0
+        );
         // Lookups tipados correctos desde el v2 reconstruido
         let hits = graph
             .storage()
@@ -1707,30 +1664,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(hits, vec![node_id]);
-    }
-
-    #[test]
-    fn test_node_key_predicates() {
-        let uuid = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
-
-        assert!(is_base_node_key(format!("node:{uuid}").as_bytes()));
-        assert!(!is_base_node_key(format!("node:{uuid}:v1").as_bytes()));
-        assert!(!is_base_node_key(format!("node:{uuid}:current").as_bytes()));
-        assert!(!is_base_node_key(format!("node:{uuid}:versions").as_bytes()));
-        assert!(!is_base_node_key(b"node:not-a-uuid"));
-        assert!(!is_base_node_key(b"edge:whatever"));
-        // Un sufijo futuro no clasifica como base (la blacklist vieja lo
-        // habría dejado pasar o no según sus letras)
-        assert!(!is_base_node_key(format!("node:{uuid}:vector").as_bytes()));
-
-        assert!(is_version_node_key(format!("node:{uuid}:v1").as_bytes()));
-        assert!(is_version_node_key(format!("node:{uuid}:v42").as_bytes()));
-        assert!(!is_version_node_key(format!("node:{uuid}").as_bytes()));
-        assert!(!is_version_node_key(format!("node:{uuid}:versions").as_bytes()));
-        assert!(!is_version_node_key(format!("node:{uuid}:current").as_bytes()));
-        // El caso que la whitelist vieja aceptaba y reventaba el export:
-        assert!(!is_version_node_key(format!("node:{uuid}:vector").as_bytes()));
-        assert!(!is_version_node_key(format!("node:{uuid}:v").as_bytes()));
     }
 
     #[tokio::test]
@@ -1794,7 +1727,7 @@ mod tests {
         let storage = Storage::in_memory_with_options(options).await.unwrap();
         assert_eq!(storage.backend_name(), "sled");
         assert_eq!(storage.profile(), StorageProfile::Mobile);
-        assert_eq!(storage.tuning().cache_capacity_bytes, Some(16 * 1024 * 1024));
+        assert_eq!(storage.profile().tuning().cache_capacity_bytes, Some(16 * 1024 * 1024));
     }
 
     #[tokio::test]

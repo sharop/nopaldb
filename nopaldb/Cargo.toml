@@ -35,7 +35,11 @@ async-recursion = "1.0"
 bytes = "1.0"
 log = "0.4"
 rand = "0.8"
-sled = { version="0.34", optional = true }                                       # Embedded storage
+# SIN la feature "compression" a propósito: arrastra zstd 0.9 (zstd-sys 1.x),
+# que colisiona por `links` con el zstd-sys 2.x de parquet — irresoluble en el
+# mismo lockfile. Consecuencia: el backend sled NUNCA comprime (el perfil
+# Server estuvo roto por pedirlo; ver StorageProfile::tuning).
+sled = { version = "0.34", optional = true }                                    # Embedded storage
 serde = { version = "1.0", features = ["derive"] }  # Data serialization
 serde_json = "1.0"                                  # Data serialization
 thiserror = "2.0"                # Error handling (highly recommended)
