@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.0] - unreleased
+
+### ✨ Highlights
+
+- **El storage quedó desacoplado del motor.** `Storage` (MVCC, adyacencia,
+  índices) ahora opera sobre un contrato KV interno con una suite de
+  conformidad que pinnea sus invariantes (orden, límites de prefijo,
+  atomicidad de batch, RMW atómico). sled es la implementación por defecto,
+  detrás de una feature real — un motor alternativo se agrega implementando
+  dos traits y pasando la suite, sin tocar el resto del crate. Es la base
+  para la evaluación de motores de siguiente generación.
+- **Ventana única de breaking changes.** Todo lo incompatible de este ciclo
+  va junto aquí (detalle abajo); 0.5.x en adelante vuelve a ser aditivo.
+
+### ⚠️ Breaking
+
+- `NopalError::StorageError` ya no expone `sled::Error`: envuelve un
+  `StorageError { kind, message }` neutral al motor. Quien matcheaba la
+  variante esperando el tipo de sled debe usar `kind()` (con
+  `StorageErrorKind`: `Io`/`Corruption`/`Conflict`/`InvalidData`/
+  `Unsupported`/`Internal`) y `message()`.
+- `#[non_exhaustive]` en `NopalError`, `StorageEngine`, `StorageProfile` y
+  `StorageErrorKind`: los `match` externos necesitan brazo comodín. Se paga
+  una sola vez — agregar motores, perfiles o categorías de error ya no
+  romperá a nadie.
+- El trait `StorageBackend` fue **eliminado** (metadata y hooks que jamás
+  tuvieron un caller). Los tipos `StorageEngine`/`StorageOptions`/
+  `StorageProfile`/`StorageTuning` permanecen sin cambios.
+- `rust-version = "1.87"` explícito en el workspace (MSRV real verificado
+  por clippy; el código ya usaba API de 1.87).
+- sled pasa a dependencia **opcional** detrás de `storage-sled` (activa por
+  default). Compilar sin ningún backend produce un `compile_error!` con
+  mensaje accionable.
+
+### Added
+
+- Contrato KV interno (`KvEngine`/`KvKeyspace`) + suite de conformidad
+  parametrizada por motor: roundtrips 0 B–1 MiB, claves con `0x00`/`0xFF`,
+  orden big-endian numérico, bordes de prefijo, batch todo-o-nada,
+  RMW concurrente (el patrón de los relojes lógicos), independencia de
+  keyspaces y persistencia tras reopen.
+- `storage/keys.rs`: toda clave compuesta del almacén se construye y
+  clasifica en un solo módulo — la lección del índice v1 (colisiones por
+  stringificación dispersa) aplicada al namespace completo.
+- `StorageError` y `StorageErrorKind` re-exportados en la raíz del crate.
+
+### Fixed
+
+- `StorageProfile::Server` no podía **abrir** una base: pedía compresión a
+  un sled sin la feature `compression` (`Storage error: Unsupported: the
+  'compression' feature must be enabled`) — roto desde que existen los
+  perfiles. Esa feature además es inactivable en este workspace (su zstd
+  0.9 colisiona por `links` con el zstd de parquet), así que el perfil ya
+  no la pide y el backend la ignora con un warning: abrir jamás falla por
+  tuning. El backend sled no comprime; la compresión volverá como capacidad
+  por-keyspace de motores que la den sin conflicto.
+
+### Changed
+
+- GC de versiones MVCC: el borrado pasa de N `remove` individuales a un
+  solo batch atómico — menos tiempo bloqueando escritores por ciclo de GC.
+- La caché del perfil `Default` queda explícita en 1 GiB (el mismo valor
+  que sled aplicaba implícitamente; un perfil no debe heredar en silencio
+  el default de un motor).
+
+---
+
 ## [0.4.36] - 2026-08-01
 
 ### ✨ Highlights

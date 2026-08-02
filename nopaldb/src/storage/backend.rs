@@ -1,7 +1,8 @@
-use crate::error::Result;
-
 /// Runtime profile for storage tuning.
+///
+/// `#[non_exhaustive]`: new profiles can be added without a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StorageProfile {
     Default,
     Mobile,
@@ -9,7 +10,11 @@ pub enum StorageProfile {
 }
 
 /// Logical storage engine selector.
+///
+/// `#[non_exhaustive]`: new engines (behind their own feature flags) can be
+/// added without a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StorageEngine {
     Sled,
 }
@@ -42,7 +47,12 @@ impl StorageProfile {
     pub fn tuning(self) -> StorageTuning {
         match self {
             StorageProfile::Default => StorageTuning {
-                cache_capacity_bytes: None,
+                // Explicit on purpose: this equals sled 0.34's implicit
+                // default, which the profile used to inherit silently via
+                // `None`. Right-sizing it is a separate, deliberate decision;
+                // an engine-agnostic profile must not depend on whatever a
+                // particular engine defaults to.
+                cache_capacity_bytes: Some(1024 * 1024 * 1024),
                 flush_every_ms: Some(1000),
                 use_compression: false,
             },
@@ -55,39 +65,18 @@ impl StorageProfile {
             StorageProfile::Server => StorageTuning {
                 cache_capacity_bytes: Some(256 * 1024 * 1024),
                 flush_every_ms: Some(500),
-                use_compression: true,
+                // false desde 0.5.0: pedirle compresión a sled hacía FALLAR
+                // el open del perfil completo ("the 'compression' feature
+                // must be enabled") — y esa feature es inactivable aquí: su
+                // zstd 0.9 colisiona por `links` con el zstd de parquet.
+                // La compresión vuelve como capacidad por-keyspace de los
+                // motores que la den sin conflicto (p. ej. fjall, LZ4).
+                use_compression: false,
             },
         }
     }
 }
 
-/// Minimal contract to decouple query/graph layers from a concrete KV engine.
-///
-/// NOTE: We start with a narrow trait and grow it with stable semantics.
-pub trait StorageBackend: Send + Sync {
-    fn backend_name(&self) -> &'static str;
-    fn profile(&self) -> StorageProfile;
-    fn tuning(&self) -> StorageTuning {
-        self.profile().tuning()
-    }
-
-    /// Health check hook for backend-specific validation.
-    fn verify_health(&self) -> Result<()> {
-        Ok(())
-    }
-
-    /// Basic scan capability contract used by streaming executor.
-    fn supports_node_batch_scan(&self) -> bool {
-        true
-    }
-
-    /// Optional hint for backend implementations that can expose metrics.
-    fn estimated_cache_capacity_bytes(&self) -> Option<u64> {
-        self.tuning().cache_capacity_bytes
-    }
-
-    /// Backend-agnostic integrity hook. Concrete backend may no-op.
-    fn repair_metadata_if_needed(&self) -> Result<()> {
-        Ok(())
-    }
-}
+// Aquí vivió `pub trait StorageBackend` (metadata: backend_name/profile/hooks
+// de salud). Murió en 0.5.0 sin haber tenido jamás un caller: el contrato
+// real de desacople es `storage::kv::KvEngine`/`KvKeyspace` (pub(crate)).

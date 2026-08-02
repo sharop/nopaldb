@@ -1,11 +1,12 @@
 [package]
 name = "nopaldb"
-version = "0.4.36"
+version = "0.5.0"
 authors = ["NopalDB Contributors"]
 description = "High-performance graph database with ACID transactions, MVCC time-travel, and Arrow analytics"
 keywords = ["graph", "database", "embedded", "mvcc", "arrow"]
 categories = ["database", "database-implementations", "data-structures", "algorithms"]
 edition = "2024"
+rust-version.workspace = true
 repository = "https://github.com/sharop/nopaldb"
 license = "MPL-2.0"
 readme = "README.md"
@@ -34,7 +35,11 @@ async-recursion = "1.0"
 bytes = "1.0"
 log = "0.4"
 rand = "0.8"
-sled = "0.34"                                       # Embedded storage
+# SIN la feature "compression" a propósito: arrastra zstd 0.9 (zstd-sys 1.x),
+# que colisiona por `links` con el zstd-sys 2.x de parquet — irresoluble en el
+# mismo lockfile. Consecuencia: el backend sled NUNCA comprime (el perfil
+# Server estuvo roto por pedirlo; ver StorageProfile::tuning).
+sled = { version = "0.34", optional = true }                                    # Embedded storage
 serde = { version = "1.0", features = ["derive"] }  # Data serialization
 serde_json = "1.0"                                  # Data serialization
 thiserror = "2.0"                # Error handling (highly recommended)
@@ -74,7 +79,7 @@ default = ["storage-sled"]
 embeddings = []
 embeddings-index = ["embeddings", "hnsw_rs"]
 hnsw-simd = ["embeddings-index", "hnsw_rs/simdeez_f"]  # SIMD acceleration (x86_64 only)
-storage-sled = []
+storage-sled = ["dep:sled"]
 python = ["pyo3"]
 analytics = ["arrow", "parquet"]
 ml = ["analytics"]
@@ -117,6 +122,11 @@ required-features = ["shacl"]
 [[test]]
 name = "nql_regression_agg_algo_bool_test"
 required-features = ["core"]
+
+# Migración de formato legado: abre la DB vieja con sled directo a propósito.
+[[example]]
+name = "migrate_json_to_bincode"
+required-features = ["storage-sled"]
 
 [[example]]
 name = "gnn_node_classification"
