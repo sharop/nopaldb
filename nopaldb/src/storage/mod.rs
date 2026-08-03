@@ -1720,12 +1720,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_storage_profile_mobile_on_in_memory() {
+        // Agnóstico al motor: usa el engine default del build (sled si está
+        // compilado; redb si es el único backend) — el perfil es lo probado.
         let options = StorageOptions {
-            engine: StorageEngine::Sled,
             profile: StorageProfile::Mobile,
+            ..StorageOptions::default()
         };
         let storage = Storage::in_memory_with_options(options).await.unwrap();
-        assert_eq!(storage.backend_name(), "sled");
+        assert!(matches!(storage.backend_name(), "sled" | "redb"));
         assert_eq!(storage.profile(), StorageProfile::Mobile);
         assert_eq!(storage.profile().tuning().cache_capacity_bytes, Some(16 * 1024 * 1024));
     }

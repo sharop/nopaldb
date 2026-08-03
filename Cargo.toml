@@ -10,13 +10,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
-# Piso explícito y verificado por clippy (incompatible_msrv). No es el 1.85
-# de edition 2024: el código ya usa API estabilizada en 1.87
-# (`is_multiple_of`). Los MSRV de motores KV futuros (redb, etc.) se
-# negocian contra esta cota, no por accidente de `cargo update`.
-rust-version = "1.87"
+# Piso explícito y verificado por clippy (incompatible_msrv). Historia:
+# 1.87 por `is_multiple_of` (F1); subido a 1.89 en F3 como DECISIÓN al
+# adoptar redb 4.1 (su MSRV) — exactamente la negociación consciente para
+# la que existe este pin, no un accidente de `cargo update`.
+rust-version = "1.89"
 authors = ["Sharop <sharop@gmail.com>"]
 # Default for workspace members, matching the flagship library and the
 # top-level LICENSE file. The applications (nopaldb-mcp, ndbstudio) override

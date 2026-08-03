@@ -1,6 +1,6 @@
 [package]
 name = "nopaldb"
-version = "0.5.0"
+version = "0.5.1"
 authors = ["NopalDB Contributors"]
 description = "High-performance graph database with ACID transactions, MVCC time-travel, and Arrow analytics"
 keywords = ["graph", "database", "embedded", "mvcc", "arrow"]
@@ -40,6 +40,7 @@ rand = "0.8"
 # mismo lockfile. Consecuencia: el backend sled NUNCA comprime (el perfil
 # Server estuvo roto por pedirlo; ver StorageProfile::tuning).
 sled = { version = "0.34", optional = true }                                    # Embedded storage
+redb = { version = "4.1", optional = true }                                     # Embedded storage (experimental)
 serde = { version = "1.0", features = ["derive"] }  # Data serialization
 serde_json = "1.0"                                  # Data serialization
 thiserror = "2.0"                # Error handling (highly recommended)
@@ -80,6 +81,7 @@ embeddings = []
 embeddings-index = ["embeddings", "hnsw_rs"]
 hnsw-simd = ["embeddings-index", "hnsw_rs/simdeez_f"]  # SIMD acceleration (x86_64 only)
 storage-sled = ["dep:sled"]
+storage-redb = ["dep:redb"]
 python = ["pyo3"]
 analytics = ["arrow", "parquet"]
 ml = ["analytics"]

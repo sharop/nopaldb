@@ -26,8 +26,11 @@ fn parse_profile(profile: &str) -> PyResult<StorageProfile> {
 fn parse_engine(engine: &str) -> PyResult<StorageEngine> {
     match engine.to_ascii_lowercase().as_str() {
         "sled" => Ok(StorageEngine::Sled),
+        // Experimental: requiere compilar con la feature `storage-redb`
+        // (si no, abrir falla con un error claro, no un panic).
+        "redb" => Ok(StorageEngine::Redb),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            format!("Invalid engine '{}'. Use 'sled'", engine)
+            format!("Invalid engine '{}'. Use 'sled' or 'redb'", engine)
         )),
     }
 }

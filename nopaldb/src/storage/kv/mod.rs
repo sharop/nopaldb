@@ -23,6 +23,9 @@ use crate::storage::backend::{StorageOptions, StorageProfile};
 #[cfg(feature = "storage-sled")]
 pub(crate) mod sled;
 
+#[cfg(feature = "storage-redb")]
+pub(crate) mod redb;
+
 #[cfg(test)]
 mod conformance;
 
@@ -132,13 +135,14 @@ pub(crate) fn open_engine(
     profile: StorageProfile,
     options: &StorageOptions,
 ) -> Result<Arc<dyn KvEngine>> {
+    use crate::storage::backend::StorageEngine;
     match options.engine {
-        #[allow(unreachable_patterns)] // non_exhaustive: un solo brazo hoy
-        crate::storage::backend::StorageEngine::Sled => {
-            Ok(Arc::new(sled::SledEngine::open(path, profile)?))
-        }
+        #[cfg(feature = "storage-sled")]
+        StorageEngine::Sled => Ok(Arc::new(sled::SledEngine::open(path, profile)?)),
+        #[cfg(feature = "storage-redb")]
+        StorageEngine::Redb => Ok(Arc::new(redb::RedbEngine::open(path, profile)?)),
         #[allow(unreachable_patterns)]
-        _ => unreachable!("engine sin backend compilado"),
+        other => Err(engine_not_compiled(other)),
     }
 }
 
@@ -147,12 +151,23 @@ pub(crate) fn open_in_memory(
     profile: StorageProfile,
     options: &StorageOptions,
 ) -> Result<Arc<dyn KvEngine>> {
+    use crate::storage::backend::StorageEngine;
     match options.engine {
+        #[cfg(feature = "storage-sled")]
+        StorageEngine::Sled => Ok(Arc::new(sled::SledEngine::open_temporary(profile)?)),
+        #[cfg(feature = "storage-redb")]
+        StorageEngine::Redb => Ok(Arc::new(redb::RedbEngine::open_temporary(profile)?)),
         #[allow(unreachable_patterns)]
-        crate::storage::backend::StorageEngine::Sled => {
-            Ok(Arc::new(sled::SledEngine::open_temporary(profile)?))
-        }
-        #[allow(unreachable_patterns)]
-        _ => unreachable!("engine sin backend compilado"),
+        other => Err(engine_not_compiled(other)),
     }
+}
+
+/// Error claro (no panic) cuando piden un engine cuyo backend no se compiló:
+/// el enum es público y non_exhaustive — el valor puede llegar por API.
+fn engine_not_compiled(engine: crate::storage::backend::StorageEngine) -> crate::error::NopalError {
+    crate::error::StorageError::new(
+        crate::error::StorageErrorKind::Unsupported,
+        format!("engine {engine:?} sin backend compilado; activa su feature storage-*"),
+    )
+    .into()
 }

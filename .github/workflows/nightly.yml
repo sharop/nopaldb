@@ -30,6 +30,18 @@ jobs:
           NOPAL_CRASH_ROUNDS: "100"
         run: cargo test -p nopaldb --test crash_mixed_load_test -- --nocapture
 
+      # Backend redb (experimental): mismas garantías de crash que sled.
+      # El gate del flip del default exige ≥4 semanas de este job en verde.
+      - name: Crash harness on redb — commit-focused (100 SIGKILL rounds)
+        env:
+          NOPAL_CRASH_ROUNDS: "100"
+        run: cargo test -p nopaldb --no-default-features --features storage-redb --test crash_commit_test -- --nocapture
+
+      - name: Crash harness on redb — mixed load (100 SIGKILL rounds)
+        env:
+          NOPAL_CRASH_ROUNDS: "100"
+        run: cargo test -p nopaldb --no-default-features --features storage-redb --test crash_mixed_load_test -- --nocapture
+
   property-hardening:
     runs-on: ubuntu-latest
     timeout-minutes: 60

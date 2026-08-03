@@ -17,6 +17,8 @@ pub enum StorageProfile {
 #[non_exhaustive]
 pub enum StorageEngine {
     Sled,
+    /// Experimental (0.5.x): requiere la feature `storage-redb`.
+    Redb,
 }
 
 /// Storage creation options.
@@ -29,7 +31,15 @@ pub struct StorageOptions {
 impl Default for StorageOptions {
     fn default() -> Self {
         Self {
+            // Precedencia sled: nada cambia para nadie mientras la feature
+            // default esté activa. Con SOLO storage-redb compilado, el
+            // default cae a Redb — así la suite completa corre contra redb
+            // sin tocar un solo test (`--no-default-features --features
+            // storage-redb`).
+            #[cfg(feature = "storage-sled")]
             engine: StorageEngine::Sled,
+            #[cfg(all(not(feature = "storage-sled"), feature = "storage-redb"))]
+            engine: StorageEngine::Redb,
             profile: StorageProfile::Default,
         }
     }

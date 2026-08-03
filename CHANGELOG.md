@@ -7,7 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.0] - unreleased
+## [0.5.1] - unreleased
+
+### ✨ Highlights
+
+- **Backend redb experimental** (`--features storage-redb`). Primer motor
+  alternativo sobre el contrato KV de 0.5.0: pasa la misma suite de
+  conformidad y el mismo crash harness (SIGKILL) que sled, con la suite
+  completa del crate en verde usando redb como único backend. La base vive
+  como un archivo `nopal.redb` dentro del directorio; la durabilidad
+  replica el contrato de sled (escrituras diferidas + checkpoint durable
+  periódico y al cerrar), con el WAL propio como garantía por commit.
+- **Sentinel de engine**: abrir un directorio que contiene una base de otro
+  motor falla con un error explícito en vez de crear una base vacía al
+  lado — los locks del OS no protegen ese cruce.
+
+### ⚠️ MSRV
+
+- `rust-version` sube de 1.87 a **1.89** (lo exige redb 4.1). Es la
+  negociación consciente para la que existe el pin explícito del workspace.
+
+### Added
+
+- `StorageEngine::Redb` (aditivo; el enum es `non_exhaustive` desde 0.5.0)
+  y `engine="redb"` en los bindings Python. Sin la feature compilada, pedir
+  redb da un error claro, no un panic.
+- Jobs de CI para el backend: conformidad dual-engine, suite completa con
+  redb como único backend, y crash harness nightly de 100 rondas SIGKILL.
+
+---
+
+## [0.5.0] - 2026-08-02
 
 ### ✨ Highlights
 

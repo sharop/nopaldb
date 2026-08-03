@@ -70,6 +70,15 @@ jobs:
       - name: Test property index v2 (typed keys + migration)
         run: cargo test -p nopaldb --features core --test prop_index_v2_test
 
+      - name: KV conformance with both engines (sled + redb)
+        run: cargo test -p nopaldb --features core,storage-redb --lib conformance
+
+      - name: Full lib suite with redb as only backend (experimental)
+        run: cargo test -p nopaldb --no-default-features --features storage-redb --lib
+
+      - name: Crash + persistence harness with redb backend
+        run: cargo test -p nopaldb --no-default-features --features storage-redb --test crash_commit_test --test clock_persistence_test --test edge_persistence_test --test adjacency_update_regression_test
+
   python-stubs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
