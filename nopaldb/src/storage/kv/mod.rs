@@ -26,6 +26,8 @@ pub(crate) mod sled;
 #[cfg(feature = "storage-redb")]
 pub(crate) mod redb;
 
+pub(crate) mod migrate;
+
 #[cfg(test)]
 mod conformance;
 

@@ -1,6 +1,6 @@
 [package]
 name = "nopaldb"
-version = "0.5.1"
+version = "0.5.2"
 authors = ["NopalDB Contributors"]
 description = "High-performance graph database with ACID transactions, MVCC time-travel, and Arrow analytics"
 keywords = ["graph", "database", "embedded", "mvcc", "arrow"]
@@ -109,6 +109,11 @@ full       = ["semantic", "full-isolation"]
 name = "graph_ops"
 harness = false
 
+# GC de versiones MVCC end-to-end (la carga que discrimina motores).
+[[bench]]
+name = "gc_removals"
+harness = false
+
 [[test]]
 name = "owl_import_integration_test"
 required-features = ["owl-import"]
@@ -124,6 +129,15 @@ required-features = ["shacl"]
 [[test]]
 name = "nql_regression_agg_algo_bool_test"
 required-features = ["core"]
+
+[[test]]
+name = "kv_migrate_test"
+required-features = ["storage-sled", "storage-redb"]
+
+# Migración entre motores KV (sled ↔ redb).
+[[example]]
+name = "migrate_engine"
+required-features = ["storage-sled", "storage-redb"]
 
 # Migración de formato legado: abre la DB vieja con sled directo a propósito.
 [[example]]

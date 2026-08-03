@@ -31,8 +31,23 @@ fn rt() -> tokio::runtime::Runtime {
 }
 
 /// Grafo persistente pre-poblado con `n` nodos; retorna también sus ids.
+
+/// Motor por env (NOPALDB_BENCH_ENGINE=sled|redb); default = el del build.
+/// Permite comparar engines con el MISMO bench sin tocar código.
+fn bench_options() -> nopaldb::StorageOptions {
+    let mut opts = nopaldb::StorageOptions::default();
+    if let Ok(name) = std::env::var("NOPALDB_BENCH_ENGINE") {
+        opts.engine = match name.to_ascii_lowercase().as_str() {
+            "sled" => nopaldb::StorageEngine::Sled,
+            "redb" => nopaldb::StorageEngine::Redb,
+            other => panic!("NOPALDB_BENCH_ENGINE desconocido: {other}"),
+        };
+    }
+    opts
+}
+
 async fn seeded_graph(dir: &std::path::Path, n: usize) -> (Arc<Graph>, Vec<nopaldb::NodeId>) {
-    let graph = Arc::new(Graph::open(dir).await.expect("open"));
+    let graph = Arc::new(Graph::open_with_options(dir, bench_options()).await.expect("open"));
     let mut ids = Vec::with_capacity(n);
     let mut loader = graph.bulk_loader(256);
     for i in 0..n {
@@ -188,7 +203,7 @@ fn bench_bulk_load(c: &mut Criterion) {
     group.bench_function("1k_nodes", |b| {
         b.to_async(&rt).iter(|| async {
             let dir = tempfile::tempdir().unwrap();
-            let graph = Graph::open(dir.path()).await.expect("open");
+            let graph = Graph::open_with_options(dir.path(), bench_options()).await.expect("open");
             let mut loader = graph.bulk_loader(256);
             for i in 0..1000usize {
                 loader.add_node(person(i)).await.expect("bulk add");
