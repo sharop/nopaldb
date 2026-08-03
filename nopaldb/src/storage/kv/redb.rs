@@ -369,7 +369,10 @@ impl RedbKeyspace {
     }
 }
 
-/// ¿El directorio contiene una base redb? (para el sentinel inverso de sled)
+/// ¿El directorio contiene una base redb? (para el sentinel inverso de sled;
+/// cfg: su único caller vive en kv/sled.rs — sin sled compilado es dead code
+/// y el CI compila con -D warnings).
+#[cfg(feature = "storage-sled")]
 pub(crate) fn sled_dir_has_redb(dir: &Path) -> bool {
     dir.join(DB_FILE).exists()
 }
