@@ -7,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.1] - unreleased
+## [0.5.2] - unreleased
+
+### ✨ Highlights
+
+- **Migración entre motores, verificada.** `Storage::copy_database(src, …,
+  dst, …)` copia una base completa entre engines (p. ej. sled → redb) byte a
+  byte, keyspace por keyspace — nodos, aristas, historia MVCC completa
+  (el time-travel sobrevive intacto), índices, relojes y embeddings. La
+  verificación es doble: conteo de pares + checksum por keyspace,
+  recalculados con un re-scan del destino; si no cuadra, la migración
+  devuelve error. El destino debe estar vacío: nunca se mezclan bases.
+  Ejemplo listo: `cargo run --example migrate_engine --features
+  storage-redb -- <src> sled <dst> redb`.
+
+### Added
+
+- `MigrationReport` (pares y bytes por keyspace + veredicto de
+  verificación), re-exportado en la raíz del crate.
+- Bench `gc_removals` (GC de versiones MVCC end-to-end, escala por env) y
+  `graph_ops` parametrizable por motor con `NOPALDB_BENCH_ENGINE=sled|redb`
+  — la base de la comparación formal entre engines.
+- CI: round-trip de migración sled→redb→sled verificado por checksum en
+  cada build.
+
+---
+
+## [0.5.1] - 2026-08-03
 
 ### ✨ Highlights
 

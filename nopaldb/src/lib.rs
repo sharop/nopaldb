@@ -64,7 +64,7 @@ pub use ml::PyGData;
 // Re-exports
 pub use error::{NopalError, Result, StorageError, StorageErrorKind};
 pub use types::{Node, Edge, NodeId, EdgeId, PropertyValue, Properties};
-pub use storage::Storage;
+pub use storage::{MigrationReport, Storage};
 pub use storage::{StorageEngine, StorageOptions, StorageProfile, StorageTuning};
 pub use graph::{Graph, Direction, BulkLoader, BulkLoadStats, AutoGcConfig, AutoGcStatus, GraphView, Subgraph, LinkSpec, UpsertOutcome, UpsertRequest};
 #[cfg(feature = "hybrid")]

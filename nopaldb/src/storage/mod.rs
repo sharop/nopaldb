@@ -9,6 +9,7 @@ use crate::error::{NopalError, Result};
 use crate::types::{Node, Edge, NodeId, EdgeId, PropertyValue};
 use crate::mvcc::{VersionedNode, VersionedEdge};
 pub use backend::{StorageEngine, StorageOptions, StorageProfile, StorageTuning};
+pub use kv::migrate::MigrationReport;
 
 /// Key meta con la cota superior persistida del reloj lógico de timestamps.
 pub const META_NEXT_TIMESTAMP: &str = "meta:next_timestamp";
@@ -156,6 +157,28 @@ impl Storage {
             prop_idx_ks,
             profile,
         })
+    }
+
+    /// Copia una base COMPLETA entre motores (p. ej. sled → redb), verificada.
+    ///
+    /// Copia byte a byte los 7 keyspaces (nodos, versiones MVCC, aristas,
+    /// adyacencia, índices, relojes, embeddings) — el time-travel y los
+    /// índices sobreviven intactos porque nada se reinterpreta. Verifica con
+    /// conteo + checksum por keyspace re-escaneando el DESTINO; si la
+    /// verificación falla devuelve error y el destino no debe usarse.
+    ///
+    /// Precondiciones: ambos directorios CERRADOS (los locks de motor lo
+    /// imponen para otros procesos); el origen debe haberse abierto y
+    /// cerrado limpio con `Graph` para aplicar su WAL. El destino debe
+    /// estar vacío — la migración jamás mezcla bases. Requiere compilar las
+    /// features de ambos motores involucrados.
+    pub async fn copy_database(
+        src_dir: impl AsRef<Path>,
+        src_opts: StorageOptions,
+        dst_dir: impl AsRef<Path>,
+        dst_opts: StorageOptions,
+    ) -> Result<MigrationReport> {
+        kv::migrate::copy_database_dirs(src_dir.as_ref(), src_opts, dst_dir.as_ref(), dst_opts)
     }
 
     /// Crea una nueva instancia de storage
