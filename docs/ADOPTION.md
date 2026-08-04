@@ -66,25 +66,20 @@ Building from source instead: `pip install maturin && maturin develop --release 
 
 ## 3. LLM agents via MCP (15 minutes)
 
-The `nopaldb-mcp` binary exposes the graph to Claude Desktop / Claude Code /
-any MCP client — natural-language querying over your data:
+The MCP server exposes the graph to Claude Desktop / Claude Code /
+any MCP client — natural-language querying over your data, with a
+`--readonly` mode that blocks write statements at the NQL level.
 
-```bash
-cargo install --path nopaldb-mcp   # or build from the repo
-nopaldb-mcp --db ./data.db --readonly
-```
-
-`--readonly` blocks write statements at the NQL level. See
-[MCP_CLAUDE_DESKTOP.md](MCP_CLAUDE_DESKTOP.md) for client configuration.
+The server lives in its own repository: build/run instructions and client
+configuration at https://github.com/Anxious-Mind-Group/nopaldb-mcp.
 
 ## 4. Exploring visually: NDBStudio
 
-```bash
-cargo run -p ndbstudio -- --web --db ./data.db
-```
+Local TUI/web workbench: schema tree, NQL editor, graph visualization,
+session history.
 
-Local web workbench: schema tree, NQL editor, graph visualization, session
-history. TUI mode without `--web`. See [ndbstudio/web_quickstart.md](ndbstudio/web_quickstart.md).
+NDBStudio lives in its own repository: build/run instructions at
+https://github.com/Anxious-Mind-Group/ndbstudio.
 
 ## Operational rules (read before production)
 

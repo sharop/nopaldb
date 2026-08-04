@@ -4,8 +4,8 @@ NOTEBOOKS_DIR := notebooks
 NBEXEC_OUT ?= /tmp/tutorial-nbexec
 REPO_ROOT := $(shell cd .. && pwd)
 
-.PHONY: help install install-min install-nopaldb smoke jupyter notebook nbexec-all nbexec-05 nbexec-06 clean \
-	nbexec-ci studio-florentine studio-offshore studio-fraud
+.PHONY: help install install-min install-nopaldb smoke jupyter notebook nbexec-all clean \
+	nbexec-ci
 
 help:
 	@echo "Targets:"
@@ -16,12 +16,6 @@ help:
 	@echo "  make smoke            - ejecuta 00_setup_smoke_test.ipynb headless"
 	@echo "  make nbexec-all       - ejecuta los 5 notebooks headless (CI gate)"
 	@echo "  make nbexec-ci        - ejecuta actos 1-4 headless fuera del checkout"
-	@echo "  make nbexec-05        - ejecuta el notebook del Acto 5 (MCP smoke test)"
-	@echo "  make nbexec-06        - ejecuta el notebook del Acto 6 (ontología OWL smoke test)"
-	@echo ""
-	@echo "  make studio-florentine - levanta NDBStudio Web sobre Florentine"
-	@echo "  make studio-offshore     - levanta NDBStudio Web sobre Synthetic Offshore Network"
-	@echo "  make studio-fraud      - levanta NDBStudio Web sobre Synthetic Fraud"
 	@echo ""
 	@echo "  make clean            - limpia precomputed/ y *.ipynb_checkpoints"
 
@@ -44,16 +38,8 @@ smoke:
 	$(PYTHON) -m jupyter nbconvert --to notebook --execute --inplace \
 		$(NOTEBOOKS_DIR)/00_setup_smoke_test.ipynb
 
-nbexec-05:
-	$(PYTHON) -m jupyter nbconvert --to notebook --execute --inplace \
-		$(NOTEBOOKS_DIR)/05_mcp_claude.ipynb
-
-nbexec-06:
-	$(PYTHON) -m jupyter nbconvert --to notebook --execute --inplace \
-		$(NOTEBOOKS_DIR)/06_mcp_ontologia.ipynb
-
 nbexec-all:
-	@for nb in 00_setup_smoke_test 01_florentine_families 02_synthetic_offshore 03_biomedical_owl 04_synthetic_fraud 05_mcp_claude 06_mcp_ontologia; do \
+	@for nb in 00_setup_smoke_test 01_florentine_families 02_synthetic_offshore 03_biomedical_owl 04_synthetic_fraud; do \
 		if [ -f "$(NOTEBOOKS_DIR)/$$nb.ipynb" ]; then \
 			echo "Ejecutando $$nb.ipynb"; \
 			$(PYTHON) -m jupyter nbconvert --to notebook --execute --inplace \
@@ -73,15 +59,6 @@ nbexec-ci:
 		fi; \
 	done
 	@echo "Notebooks CI ejecutados correctamente en $(NBEXEC_OUT)."
-
-studio-florentine:
-	$(MAKE) -C $(REPO_ROOT) run-studio-web DB=$(REPO_ROOT)/test_dbs/florentine_families.db
-
-studio-offshore:
-	$(MAKE) -C $(REPO_ROOT) run-studio-web DB=$(REPO_ROOT)/test_dbs/synthetic_offshore.db
-
-studio-fraud:
-	$(MAKE) -C $(REPO_ROOT) run-studio-web DB=$(REPO_ROOT)/test_dbs/synthetic_fraud.db
 
 clean:
 	rm -rf precomputed/*.npy precomputed/*.json

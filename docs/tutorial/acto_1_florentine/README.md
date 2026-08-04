@@ -154,7 +154,7 @@ Los **4 medios** deben producir el mismo top-3 de PageRank. Estos son los nombre
 | Markdown | leer `queries/03_centralidad.nql` |
 | Notebook | `tutorials/notebooks/01_florentine_families.ipynb`, celda "centralidad" |
 | Rust | `cargo run --example tutorial_acto_1_florentine` |
-| NDBStudio Web | `make studio-florentine` desde `tutorials/`, luego pegar `queries/03_centralidad.nql` |
+| NDBStudio Web | levantar la UI ([repo de NDBStudio](https://github.com/Anxious-Mind-Group/ndbstudio)) sobre `test_dbs/florentine_families.db`, luego pegar `queries/03_centralidad.nql` |
 
 Si los 4 coinciden en top-3 → Acto 1 OK.
 
@@ -162,7 +162,7 @@ Si los 4 coinciden en top-3 → Acto 1 OK.
 
 ## Walkthrough en NDBStudio
 
-Ver [ndbstudio_walkthrough.md](ndbstudio_walkthrough.md) para el recorrido visual paso-a-paso (focus mode, timeline, results graph view).
+El recorrido visual paso-a-paso (focus mode, timeline, results graph view) se movió junto con la app (walkthrough del TUI: ver el [repo de NDBStudio](https://github.com/Anxious-Mind-Group/ndbstudio)).
 
 ## Siguiente
 

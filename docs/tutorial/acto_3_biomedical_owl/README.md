@@ -378,7 +378,7 @@ find n.name from (n) where n.label = "Disease"
 
 ## NDBStudio Web
 
-Ver [`ndbstudio_walkthrough.md`](ndbstudio_walkthrough.md) para la visualización del árbol OWL.
+La visualización del árbol OWL se movió junto con la app (walkthrough del TUI: ver el [repo de NDBStudio](https://github.com/Anxious-Mind-Group/ndbstudio)).
 
 **TL;DR:** NDBStudio muestra la estructura *asertada* (lo que está en el TTL). Las *inferencias*
 (lo que derivó el reasoner) son visibles sólo via NQL con `instanceOf` o via el notebook.

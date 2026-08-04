@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [unreleased]
+
+### Changed
+
+- **Split del ecosistema:** `ndbstudio` y `nopaldb-mcp` viven ahora en
+  github.com/Anxious-Mind-Group (con su historial completo). Este repositorio
+  queda enfocado en el engine + wrapper Python y es MPL-2.0 puro. Sin cambios
+  de código ni release del crate por este split.
+
+---
+
 ## [0.5.2] - unreleased
 
 ### ✨ Highlights

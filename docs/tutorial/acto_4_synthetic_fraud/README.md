@@ -132,7 +132,7 @@ df = table.to_pandas()
 
 ## Walkthrough en NDBStudio
 
-Ver [`ndbstudio_walkthrough.md`](ndbstudio_walkthrough.md).
+El recorrido visual se movió junto con la app (walkthrough del TUI: ver el [repo de NDBStudio](https://github.com/Anxious-Mind-Group/ndbstudio)).
 
 ## Cierre del tutorial
 

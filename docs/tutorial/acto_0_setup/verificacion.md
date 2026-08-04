@@ -61,36 +61,19 @@ Esperado: `cargo 1.7x.x` o superior.
 
 **Si no está:** instala con `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`.
 
-## 4. NDBStudio Web build
+## 4. NDBStudio Web (opcional)
 
-```bash
-cargo check -p ndbstudio --features web
-```
+NDBStudio vive ahora en su propio repositorio; su build y smoke test se
+verifican ahí: https://github.com/Anxious-Mind-Group/ndbstudio
 
-Esperado: compila sin errores en <60s (la primera vez puede tardar más por descarga de deps).
-
-**Si falla con errores de OpenSSL/SDK:** consulta `docs/ndbstudio/web_quickstart.md` para troubleshooting macOS.
-
-## 5. Smoke test de NDBStudio Web
-
-Necesita una DB válida primero. Genera la de Florentine:
+Si quieres el medio visual, genera primero la DB de Florentine y apunta la UI a ella:
 
 ```bash
 python nopaldb/examples/florentine_families_dataset.py \
   --db test_dbs/florentine_families.db --reset
 ```
 
-Y luego:
-
-```bash
-make smoke-studio-web DB=test_dbs/florentine_families.db
-```
-
-Esperado: imprime `Smoke test NDBStudio Web OK` después de ~10s.
-
-**Si falla `health check fallo`:** revisa `/tmp/ndbstudio-web-smoke.log`. Causa común: el puerto 3737 está ocupado. Pasa `BIND=127.0.0.1:3838`.
-
-## 6. Notebook headless
+## 5. Notebook headless
 
 ```bash
 cd tutorials

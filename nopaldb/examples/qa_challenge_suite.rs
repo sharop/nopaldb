@@ -276,7 +276,10 @@ async fn main() -> Result<()> {
 
     println!("\\n✅ QA challenge DB ready at {}", db_path.display());
     println!("Run next: python nopaldb/examples/qa_challenge_python_checks.py --db {}", db_path.display());
-    println!("Open in ndbstudio: ndbstudio {}", db_path.display());
+    println!(
+        "Explore it with NDBStudio (https://github.com/Anxious-Mind-Group/ndbstudio): open the UI at {}",
+        db_path.display()
+    );
 
     Ok(())
 }

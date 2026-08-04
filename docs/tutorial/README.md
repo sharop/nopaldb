@@ -63,7 +63,7 @@ Para evitar que las queries diverjan entre Markdown / Notebook / Rust / NDBStudi
       "../../docs/tutorial/acto_1_florentine/queries/03_centralidad.nql"
   );
   ```
-- **NDBStudio Web**: copy/paste manual desde el archivo (paso documentado en cada `ndbstudio_walkthrough.md`).
+- **NDBStudio Web**: copy/paste manual desde el archivo (walkthrough del TUI: ver el [repo de NDBStudio](https://github.com/Anxious-Mind-Group/ndbstudio)).
 
 Si una query debe cambiar, cambia en un único archivo `.nql` y los cuatro medios actualizan automáticamente (excepto NDBStudio que requiere re-pegar).
 
@@ -81,8 +81,8 @@ cd tutorials && pip install -r requirements.txt
 # Por acto (Florentine como ejemplo):
 cd tutorials
 python -m jupyter notebook notebooks/01_florentine_families.ipynb
-# en otra terminal:
-make studio-florentine                        # NDBStudio Web en :3737
+# en otra terminal (opcional): NDBStudio Web sobre la misma DB
+#   → ver https://github.com/Anxious-Mind-Group/ndbstudio
 # o ejemplo Rust:
 cd .. && cargo run --example tutorial_acto_1_florentine
 ```
