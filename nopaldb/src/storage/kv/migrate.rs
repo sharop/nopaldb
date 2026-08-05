@@ -23,6 +23,12 @@ use super::{KvEngine, WriteBatch};
 /// Los keyspaces que componen una base. Fuente de verdad ÚNICA para la
 /// migración; si Storage abre un keyspace nuevo, se agrega aquí o la copia
 /// quedará incompleta (el test de round-trip lo detectaría).
+///
+/// `default` SE QUEDA aunque el layout v2 (F5) lo vacíe: copiar una base
+/// legacy (pre-migración de layout) debe seguir funcionando — la matriz
+/// layout×backend está desacoplada a propósito (copiar una base v1 y abrirla
+/// después la migra de layout in-place). En una base ya migrada los
+/// keyspaces vacíos son no-ops de la copia.
 pub(crate) const ALL_KEYSPACES: &[&str] = &[
     super::DEFAULT_KEYSPACE,
     "edges",
@@ -31,6 +37,12 @@ pub(crate) const ALL_KEYSPACES: &[&str] = &[
     "prop_idx_v2",
     "embeddings",
     "path_ref_embeddings",
+    // Layout v2 (F5): catálogo/entidades/historia/adyacencia/índices.
+    "catalog",
+    "entities",
+    "history",
+    "adjacency",
+    "indexes",
 ];
 
 const BATCH_PAIRS: usize = 10_000;
@@ -54,14 +66,16 @@ impl MigrationReport {
 }
 
 /// FNV-1a 64 streaming — determinista, sin dependencia nueva. No es
-/// criptográfico: detecta corrupción/omisión, no adversarios.
-struct Fnv1a(u64);
+/// criptográfico: detecta corrupción/omisión, no adversarios. Compartido con
+/// la verificación de identidad de la migración de layout
+/// (`storage::layout_migrate`).
+pub(crate) struct Fnv1a(pub(crate) u64);
 
 impl Fnv1a {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(0xcbf2_9ce4_8422_2325)
     }
-    fn update(&mut self, bytes: &[u8]) {
+    pub(crate) fn update(&mut self, bytes: &[u8]) {
         for b in bytes {
             self.0 ^= u64::from(*b);
             self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);

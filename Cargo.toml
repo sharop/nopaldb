@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.2"
+version = "0.5.3"
 edition = "2024"
 # Piso explícito y verificado por clippy (incompatible_msrv). Historia:
 # 1.87 por `is_multiple_of` (F1); subido a 1.89 en F3 como DECISIÓN al

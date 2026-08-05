@@ -55,9 +55,10 @@ pub(crate) type RmwFn<'a> = dyn FnMut(Option<&[u8]>) -> Option<Vec<u8>> + 'a;
 ///
 /// Es el contrato de `sled::Batch` + `apply_batch`: atómico y crash-safe
 /// dentro del keyspace. Motores con transacciones globales (redb, fjall) lo
-/// satisfacen trivialmente; el contrato NO promete atomicidad entre
-/// keyspaces distintos — esa promesa se agregará (y probará) el día que un
-/// caller la necesite.
+/// satisfacen trivialmente. `apply_batch` sigue siendo la vía
+/// single-keyspace; la atomicidad ENTRE keyspaces distintos la promete
+/// `KvEngine::apply_multi`, que recibe varios `WriteBatch` (uno por
+/// keyspace) y los aplica como una sola transacción.
 #[derive(Default)]
 pub(crate) struct WriteBatch {
     ops: Vec<(Vec<u8>, Option<Vec<u8>>)>, // Some = insert, None = remove
@@ -126,6 +127,21 @@ pub(crate) trait KvKeyspace: Send + Sync {
 pub(crate) trait KvEngine: Send + Sync {
     fn engine_name(&self) -> &'static str;
     fn keyspace(&self, name: &str) -> Result<Arc<dyn KvKeyspace>>;
+    /// Aplica varios `WriteBatch` — cada uno sobre el keyspace nombrado —
+    /// como UNA transacción TODO-o-nada CRUZANDO keyspaces, incluso ante
+    /// crash: o se ven todos los cambios de todos los batches, o ninguno
+    /// (con durabilidad diferida el conjunto puede perderse COMPLETO, jamás
+    /// verse a medias ni parcialmente por keyspace). Keyspaces repetidos en
+    /// el `Vec` están permitidos: sus batches se aplican en orden, así que
+    /// la última escritura de una clave gana. `Vec` vacío es no-op.
+    ///
+    /// Es la promesa cross-keyspace que el doc de `WriteBatch` dejó
+    /// diferida hasta tener caller: el layout v2 (F5.3) lo es — una arista y
+    /// sus entradas de adyacencia viven en keyspaces distintos y jamás
+    /// deben verse a medias (`Storage::insert_edge_with_adjacency` y
+    /// compañía). Para escribir en UN solo keyspace,
+    /// `KvKeyspace::apply_batch` sigue siendo la vía.
+    fn apply_multi(&self, batches: Vec<(String, WriteBatch)>) -> Result<()>;
     /// Fuerza durabilidad de todo lo escrito (fsync). Síncrono y bloqueante.
     fn flush(&self) -> Result<()>;
 }

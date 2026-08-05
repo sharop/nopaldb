@@ -11,32 +11,67 @@ use crate::mvcc::{VersionedNode, VersionedEdge};
 pub use backend::{StorageEngine, StorageOptions, StorageProfile, StorageTuning};
 pub use kv::migrate::MigrationReport;
 
-/// Key meta con la cota superior persistida del reloj lógico de timestamps.
-pub const META_NEXT_TIMESTAMP: &str = "meta:next_timestamp";
+/// Nombre meta con la cota superior persistida del reloj lógico de
+/// timestamps. Vive en el keyspace `catalog` (clave `m|next_timestamp`,
+/// F5.4); en bases v1 era `meta:next_timestamp` en el tree default
+/// (`keys::LEGACY_META_NEXT_TIMESTAMP`, solo migración F5.5).
+pub const META_NEXT_TIMESTAMP: &str = "next_timestamp";
 
 /// Versión del formato del índice de propiedades en disco. Ausente = formato
 /// legado v1 (`idx:prop:{name}:{value_str}` en el tree default); `2` = claves
 /// tipadas order-preserving en el tree `prop_idx_v2`. La migración corre en
 /// `Graph::open_with_options` (ver `migrate_property_index_if_needed`).
-pub const META_PROP_IDX_FORMAT: &str = "meta:prop_idx_format";
+/// El sentinel vive en `catalog` para bases nuevas (F5.4); el legacy
+/// `meta:prop_idx_format` del tree default lo leerá F5.5.
+pub const META_PROP_IDX_FORMAT: &str = "prop_idx_format";
 
 /// Valor actual de `META_PROP_IDX_FORMAT`.
 pub const PROP_IDX_FORMAT_CURRENT: u64 = 2;
 
 /// Nombre del keyspace del índice de propiedades v2.
 const PROP_IDX_TREE: &str = "prop_idx_v2";
-/// Key meta con la cota superior persistida del contador de transaction ids.
-pub const META_NEXT_TX_ID: &str = "meta:next_tx_id";
+/// Nombre del keyspace de aristas (registro current por EdgeId).
+const EDGES_TREE: &str = "edges";
+/// Nombre del keyspace de adyacencia v2 (F5): dos claves de 53 bytes por
+/// arista (`keys::v2`), valor vacío.
+const ADJACENCY_TREE: &str = "adjacency";
+/// Nombre del keyspace de entidades v2 (F5.4): registro base de nodos,
+/// clave `n|{uuid16}` (`keys::v2::node_key_v2`).
+const ENTITIES_TREE: &str = "entities";
+/// Nombre del keyspace de historia MVCC de nodos v2 (F5.4): versiones
+/// (`v|`), puntero current (`c|`) y lista de versiones (`l|`).
+const HISTORY_TREE: &str = "history";
+/// Nombre del keyspace de índices derivados v2 (F5.4): hoy solo el índice
+/// ts des-blobeado (`t|{ts8 BE}|{uuid16}|{ver8 BE}`, valor vacío).
+const INDEXES_TREE: &str = "indexes";
+/// Nombre del keyspace de catálogo v2 (F5): metas (`m|`) + interning de
+/// edge-types (`et*`).
+const CATALOG_TREE: &str = "catalog";
+/// Nombre meta con la cota superior persistida del contador de transaction
+/// ids. Vive en `catalog` (F5.4); legacy: `meta:next_tx_id` (F5.5).
+pub const META_NEXT_TX_ID: &str = "next_tx_id";
 
 /// Capa KV: el contrato `KvEngine`/`KvKeyspace` y las implementaciones por
 /// motor de almacenamiento. Vive en su propio módulo para no sombrear los
 /// crates de los motores (`mod sled` aquí ocultaría al crate `sled`).
 mod kv;
 
-/// Codec de claves compuestas en disco (namespaces `node:`/`idx:`/`ts:` del
-/// keyspace default y versiones de aristas). Ver la advertencia de formato
-/// en la cabecera del módulo.
+/// Codec de claves compuestas en disco: el codec binario del layout v2 en
+/// `keys::v2` (F5) + versiones de aristas + la sección LEGACY del keyspace
+/// default (`node:`/`idx:`/`ts:`/`meta:`, solo para la migración F5.5). Ver
+/// la advertencia de formato en la cabecera del módulo.
 mod keys;
+
+/// Interning de tipos de arista string↔u32 (layout v2, F5), persistido en el
+/// keyspace `catalog`. Consumidor: la adyacencia v2 — el tipo viaja como
+/// u32 BE dentro de la clave de 53 bytes (`keys::v2`).
+mod interner;
+pub(crate) use interner::EdgeTypeInterner;
+
+/// Migración automática del layout v1→v2 (F5.5): mueve la fuente de verdad
+/// del tree `default` a los keyspaces v2 con la máquina copy → verify →
+/// rebuild → activate → cleanup. La orquesta `Graph::open_with_options`.
+mod layout_migrate;
 
 /// Capa de dominio del storage (MVCC, adyacencia, índices) sobre el contrato
 /// KV (motor según feature).
@@ -44,13 +79,37 @@ mod keys;
 /// Los motores embebidos soportados son thread-safe internamente
 /// (Send + Sync). No requiere locking externo — todas las operaciones son
 /// concurrentes.
+///
+/// # Layout v2 (F5.4): el keyspace `default` no tiene escritores
+///
+/// Para bases NUEVAS, cada dato vive en su keyspace con claves binarias de
+/// `keys::v2`: nodos en `entities`, historia MVCC en `history`, índice ts en
+/// `indexes`, metas + interning en `catalog`, adyacencia en `adjacency` (las
+/// aristas ya vivían en `edges`/`versioned_edges*`). NINGÚN path de runtime
+/// escribe ya en `default` — el único código que lo toca es
+/// `clear_legacy_property_index` (solo borra claves v1) y lo tocará la
+/// migración de layout F5.5 (sección legacy de `keys.rs`), que moverá las
+/// bases v1 existentes a este layout.
 pub struct Storage {
     engine: Arc<dyn kv::KvEngine>,
+    /// Tree `default`: SIN escritores desde F5.4 (ver el doc del struct).
+    /// Se conserva para leer/limpiar bases v1 (prop-idx legacy hoy, F5.5
+    /// mañana).
     default_ks: Arc<dyn kv::KvKeyspace>,
     edges_ks: Arc<dyn kv::KvKeyspace>,
     versioned_edges_ks: Arc<dyn kv::KvKeyspace>,
     versioned_edges_current_ks: Arc<dyn kv::KvKeyspace>,
     prop_idx_ks: Arc<dyn kv::KvKeyspace>,
+    // Keyspaces del layout v2 (F5) — todos con consumidores de runtime:
+    // catalog/adjacency desde F5.3, entities/history/indexes desde F5.4.
+    catalog_ks: Arc<dyn kv::KvKeyspace>,
+    entities_ks: Arc<dyn kv::KvKeyspace>,
+    history_ks: Arc<dyn kv::KvKeyspace>,
+    adjacency_ks: Arc<dyn kv::KvKeyspace>,
+    indexes_ks: Arc<dyn kv::KvKeyspace>,
+    /// Interning nombre↔u32 de tipos de arista (RAM, respaldado por
+    /// `catalog_ks`), cargado completo al abrir.
+    interner: EdgeTypeInterner,
     profile: StorageProfile,
 }
 
@@ -62,6 +121,49 @@ fn serialize<T: serde::Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
 fn deserialize<'a, T: serde::de::Deserialize<'a>>(bytes: &'a [u8]) -> Result<T> {
     rmp_serde::from_slice(bytes)
         .map_err(|e| NopalError::SerializationError(format!("MessagePack deserialize error: {}", e)))
+}
+
+/// Valor de las claves de adyacencia y del índice ts v2: vacío por contrato
+/// (toda la información viaja en la clave).
+const EMPTY_VALUE: &[u8] = &[];
+
+/// Cota de operaciones por `WriteBatch` en el rebuild de adyacencia
+/// (memoria acotada; el rebuild es reparación idempotente, no necesita ser
+/// una sola transacción).
+const REBUILD_BATCH_OPS: usize = 10_000;
+
+/// Error de clave malformada dentro de un keyspace v2: nada más que este
+/// módulo escribe ahí, así que un parser que rechaza es bug o corrupción
+/// externa y falla FUERTE.
+fn malformed_key(keyspace: &str, key: &[u8]) -> NopalError {
+    crate::error::StorageError::new(
+        crate::error::StorageErrorKind::InvalidData,
+        format!(
+            "clave malformada en el keyspace {keyspace} ({} bytes: {:02x?})",
+            key.len(),
+            key
+        ),
+    )
+    .into()
+}
+
+/// Parser de clave de adyacencia con semántica de corrupción (ver
+/// `malformed_key`).
+fn parse_adj_key_strict(
+    key: &[u8],
+) -> Result<(keys::v2::AdjDir, NodeId, u32, NodeId, EdgeId)> {
+    keys::v2::parse_adj_key(key).ok_or_else(|| malformed_key(ADJACENCY_TREE, key))
+}
+
+/// Parser estricto de una entrada del índice ts (keyspace `indexes`).
+fn parse_ts_index_key_strict(key: &[u8]) -> Result<(u64, NodeId, u64)> {
+    keys::v2::parse_ts_index_key(key).ok_or_else(|| malformed_key(INDEXES_TREE, key))
+}
+
+/// Parser estricto de una clave de lista de versiones (`l|{uuid16}`,
+/// keyspace `history`).
+fn parse_history_versions_key_strict(key: &[u8]) -> Result<NodeId> {
+    keys::v2::parse_history_versions_key(key).ok_or_else(|| malformed_key(HISTORY_TREE, key))
 }
 
 // ─── Codificación de claves del índice de propiedades (formato v2) ──────────
@@ -143,10 +245,16 @@ impl Storage {
     /// abren on-demand, igual que antes del rewire).
     fn from_engine(engine: Arc<dyn kv::KvEngine>, profile: StorageProfile) -> Result<Self> {
         let default_ks = engine.keyspace(kv::DEFAULT_KEYSPACE)?;
-        let edges_ks = engine.keyspace("edges")?;
+        let edges_ks = engine.keyspace(EDGES_TREE)?;
         let versioned_edges_ks = engine.keyspace("versioned_edges")?;
         let versioned_edges_current_ks = engine.keyspace("versioned_edges_current")?;
         let prop_idx_ks = engine.keyspace(PROP_IDX_TREE)?;
+        let catalog_ks = engine.keyspace(CATALOG_TREE)?;
+        let entities_ks = engine.keyspace(ENTITIES_TREE)?;
+        let history_ks = engine.keyspace(HISTORY_TREE)?;
+        let adjacency_ks = engine.keyspace(ADJACENCY_TREE)?;
+        let indexes_ks = engine.keyspace(INDEXES_TREE)?;
+        let interner = EdgeTypeInterner::load(&catalog_ks)?;
 
         Ok(Self {
             engine,
@@ -155,14 +263,22 @@ impl Storage {
             versioned_edges_ks,
             versioned_edges_current_ks,
             prop_idx_ks,
+            catalog_ks,
+            entities_ks,
+            history_ks,
+            adjacency_ks,
+            indexes_ks,
+            interner,
             profile,
         })
     }
 
     /// Copia una base COMPLETA entre motores (p. ej. sled → redb), verificada.
     ///
-    /// Copia byte a byte los 7 keyspaces (nodos, versiones MVCC, aristas,
-    /// adyacencia, índices, relojes, embeddings) — el time-travel y los
+    /// Copia byte a byte TODOS los keyspaces (la lista canónica es
+    /// `kv::migrate::ALL_KEYSPACES`: nodos, versiones MVCC, aristas,
+    /// adyacencia, índices, relojes, embeddings, y los del layout v2 aunque
+    /// estén vacíos) — el time-travel y los
     /// índices sobreviven intactos porque nada se reinterpreta. Verifica con
     /// conteo + checksum por keyspace re-escaneando el DESTINO; si la
     /// verificación falla devuelve error y el destino no debe usarse.
@@ -239,7 +355,8 @@ impl Storage {
     // `next_timestamp` y `next_tx_id` viven como atomics en `Graph`, pero deben
     // sobrevivir reinicios: si se reinician, los `valid_from`/`valid_to` nuevos
     // colisionan con versiones ya guardadas y el time-travel deja de ser fiable.
-    // Se persisten como cotas superiores bajo keys `meta:` con semántica de
+    // Se persisten como cotas superiores en el keyspace `catalog` (claves
+    // `m|{nombre}` de `keys::v2::catalog_meta_key`, F5.4) con semántica de
     // máximo (nunca retroceden), codificadas como u64 big-endian.
 
     fn decode_meta_u64(bytes: &[u8]) -> u64 {
@@ -249,10 +366,11 @@ impl Storage {
         u64::from_be_bytes(buf)
     }
 
-    /// Registra `value` como cota del reloj `key` solo si supera la almacenada.
-    /// Atómico (RMW del motor), seguro ante escritores concurrentes.
-    fn bump_clock(&self, key: &str, value: u64) -> Result<()> {
-        self.default_ks.rmw(key.as_bytes(), &mut |old| {
+    /// Registra `value` como cota del reloj `name` solo si supera la
+    /// almacenada. Atómico (RMW del motor sobre `catalog`), seguro ante
+    /// escritores concurrentes.
+    fn bump_clock(&self, name: &str, value: u64) -> Result<()> {
+        self.catalog_ks.rmw(&keys::v2::catalog_meta_key(name), &mut |old| {
             let current = old.map(Self::decode_meta_u64).unwrap_or(0);
             Some(current.max(value).to_be_bytes().to_vec())
         })?;
@@ -265,7 +383,10 @@ impl Storage {
     }
 
     pub(crate) fn get_meta_u64_sync(&self, key: &str) -> Result<Option<u64>> {
-        Ok(self.default_ks.get(key.as_bytes())?.map(|v| Self::decode_meta_u64(&v)))
+        Ok(self
+            .catalog_ks
+            .get(&keys::v2::catalog_meta_key(key))?
+            .map(|v| Self::decode_meta_u64(&v)))
     }
 
     /// Lee una cota de reloj lógico persistida.
@@ -276,23 +397,24 @@ impl Storage {
     /// Elimina una key meta. Existe para pruebas de migración (simular una base
     /// creada antes de que los relojes se persistieran).
     pub async fn delete_meta(&self, key: &str) -> Result<()> {
-        self.default_ks.remove(key.as_bytes())?;
+        self.catalog_ks.remove(&keys::v2::catalog_meta_key(key))?;
         Ok(())
     }
 
     /// Escaneo de migración: máximo timestamp presente en versiones ya
-    /// persistidas (nodos vía keys `ts:{n}`, aristas vía el tree MVCC).
-    /// Solo se usa al abrir una base que aún no tiene keys `meta:`.
+    /// persistidas (nodos vía el índice ts del keyspace `indexes`, aristas
+    /// vía el tree MVCC). Solo se usa al abrir una base que aún no tiene la
+    /// meta del reloj.
     pub async fn max_persisted_timestamp(&self) -> Result<u64> {
         let mut max_ts = 0u64;
 
-        for item in self.default_ks.scan_prefix(keys::TS_PREFIX.as_bytes()) {
+        // El ts va BE al inicio de la clave: bastaría la última entrada,
+        // pero el contrato KV no expone reverse scan — se recorre completo
+        // (path de migración, no de runtime).
+        for item in self.indexes_ks.scan_prefix(&[keys::v2::TS_TAG]) {
             let (key, _) = item?;
-            if let Ok(s) = std::str::from_utf8(&key)
-                && let Ok(ts) = s.trim_start_matches(keys::TS_PREFIX).parse::<u64>()
-            {
-                max_ts = max_ts.max(ts);
-            }
+            let (ts, _, _) = parse_ts_index_key_strict(&key)?;
+            max_ts = max_ts.max(ts);
         }
 
         for item in self.versioned_edges_ks.iter() {
@@ -308,21 +430,21 @@ impl Storage {
         Ok(max_ts)
     }
 
-    /// Inserta un nodo
+    /// Inserta un nodo (registro base, keyspace `entities`)
     pub async fn insert_node(&self, node: &Node) -> Result<()> {
-        let key = keys::node_key(node.id);
+        let key = keys::v2::node_key_v2(node.id);
         let value = serialize(node)?;
 
-        self.default_ks.insert(key.as_bytes(), &value)?;
+        self.entities_ks.insert(&key, &value)?;
 
         Ok(())
     }
 
     /// Obtiene un nodo por ID
     pub async fn get_node(&self, id: NodeId) -> Result<Node> {
-        let key = keys::node_key(id);
+        let key = keys::v2::node_key_v2(id);
 
-        let value = self.default_ks.get(key.as_bytes())?
+        let value = self.entities_ks.get(&key)?
             .ok_or_else(|| NopalError::NodeNotFound(id.to_string()))?;
 
         let node: Node = deserialize(&value)?;
@@ -332,15 +454,15 @@ impl Storage {
 
     /// Elimina un nodo
     pub async fn delete_node(&self, id: NodeId) -> Result<()> {
-        let key = keys::node_key(id);
+        let key = keys::v2::node_key_v2(id);
 
         // El contrato KV no devuelve el valor previo en `remove`; la
         // existencia se verifica antes (mismo error observable que el
         // `remove` de sled devolviendo `None`).
-        if !self.default_ks.contains_key(key.as_bytes())? {
+        if !self.entities_ks.contains_key(&key)? {
             return Err(NopalError::NodeNotFound(id.to_string()));
         }
-        self.default_ks.remove(key.as_bytes())?;
+        self.entities_ks.remove(&key)?;
 
         Ok(())
     }
@@ -368,9 +490,9 @@ impl Storage {
     }
 
     pub async fn node_exists(&self, id: NodeId) -> Result<bool> {
-        let key = keys::node_key(id);
+        let key = keys::v2::node_key_v2(id);
 
-        self.default_ks.contains_key(key.as_bytes())
+        self.entities_ks.contains_key(&key)
     }
 
     /// Verifica si una arista existe
@@ -483,88 +605,168 @@ impl Storage {
         Ok(best.into_values().map(|ve| ve.edge_data).collect())
     }
 
-    /// Guarda el índice de adyacencia saliente de un nodo
-    pub async fn save_adjacency_out(&self, node_id: NodeId, edges: &[EdgeId]) -> Result<()> {
-        let key = keys::adjacency_out_key(node_id);
-        let value = serialize(edges)?;
+    // ─── Adyacencia v2 (F5.3): arista-por-clave tipada, keyspace `adjacency` ──
+    //
+    // Cada arista son exactamente DOS claves de 53 bytes con valor vacío
+    // (`O|src|etype|tgt|edge` + espejo `I|tgt|etype|src|edge`, codec en
+    // `keys::v2`), escritas/borradas en el MISMO `apply_multi` que su
+    // registro del keyspace `edges`. La invariante "jamás edges sin sus O/I,
+    // ni O sin su espejo I" la garantiza la atomicidad cross-keyspace del
+    // contrato KV (F5.1) — no una convención de callers. Costo por operación:
+    // O(1) puts/removes (el v1 reescribía la lista completa del nodo: O(deg)).
 
-        self.default_ks.insert(key.as_bytes(), &value)?;
-
-        Ok(())
+    /// Interner nombre↔u32 de tipos de arista, cargado del catalog al abrir.
+    pub(crate) fn edge_type_interner(&self) -> &EdgeTypeInterner {
+        &self.interner
     }
 
-    /// Carga el índice de adyacencia saliente de un nodo
-    pub async fn load_adjacency_out(&self, node_id: NodeId) -> Result<Vec<EdgeId>> {
-        let key = keys::adjacency_out_key(node_id);
+    /// Id internado del tipo, asignando uno nuevo si no existía (batch
+    /// atómico sobre el catalog). Toda ASIGNACIÓN debe correr bajo el
+    /// write_gate del `Graph` — el mismo régimen serializado del resto de
+    /// las escrituras; para tipos ya internados es un lookup RAM O(1).
+    pub(crate) fn intern_edge_type(&self, name: &str) -> Result<u32> {
+        self.edge_type_interner().intern(&self.catalog_ks, name)
+    }
 
-        let value = self.default_ks.get(key.as_bytes())?;
+    /// Inserta una arista Y sus dos claves de adyacencia (O + espejo I) como
+    /// UNA transacción cross-keyspace (`apply_multi`): o se ve todo, o nada.
+    /// Idempotente (puts): el redo del WAL puede re-aplicarla sin duplicar.
+    pub async fn insert_edge_with_adjacency(&self, edge: &Edge, etype_id: u32) -> Result<()> {
+        let mut edges_batch = kv::WriteBatch::default();
+        edges_batch.insert(edge.id.to_string().as_bytes(), serialize(edge)?);
 
-        match value {
-            Some(v) => {
-                let edges: Vec<EdgeId> = deserialize(&v)?;
-                Ok(edges)
-            }
-            None => Ok(Vec::new()),
+        let mut adj_batch = kv::WriteBatch::default();
+        adj_batch.insert(keys::v2::adj_out_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
+        adj_batch.insert(keys::v2::adj_in_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
+
+        self.engine.apply_multi(vec![
+            (EDGES_TREE.to_string(), edges_batch),
+            (ADJACENCY_TREE.to_string(), adj_batch),
+        ])
+    }
+
+    /// Elimina una arista Y sus dos claves de adyacencia — el espejo exacto
+    /// de `insert_edge_with_adjacency`: 3 removes en un `apply_multi`.
+    pub async fn remove_edge_with_adjacency(&self, edge: &Edge, etype_id: u32) -> Result<()> {
+        let mut edges_batch = kv::WriteBatch::default();
+        edges_batch.remove(edge.id.to_string().as_bytes());
+
+        let mut adj_batch = kv::WriteBatch::default();
+        adj_batch.remove(keys::v2::adj_out_key(edge.source, etype_id, edge.target, edge.id));
+        adj_batch.remove(keys::v2::adj_in_key(edge.source, etype_id, edge.target, edge.id));
+
+        self.engine.apply_multi(vec![
+            (EDGES_TREE.to_string(), edges_batch),
+            (ADJACENCY_TREE.to_string(), adj_batch),
+        ])
+    }
+
+    /// Adyacencia saliente de un nodo leída de DISCO: `(etype, target,
+    /// edge)` en orden (etype, target, edge) — prefix scan O(deg del nodo).
+    pub async fn scan_adjacency_out(&self, node: NodeId) -> Result<Vec<(u32, NodeId, EdgeId)>> {
+        self.scan_adjacency_dir(keys::v2::adj_out_prefix(node))
+    }
+
+    /// Adyacencia entrante de un nodo leída de DISCO: `(etype, source, edge)`.
+    pub async fn scan_adjacency_in(&self, node: NodeId) -> Result<Vec<(u32, NodeId, EdgeId)>> {
+        self.scan_adjacency_dir(keys::v2::adj_in_prefix(node))
+    }
+
+    fn scan_adjacency_dir(&self, prefix: [u8; 17]) -> Result<Vec<(u32, NodeId, EdgeId)>> {
+        let mut entries = Vec::new();
+        for item in self.adjacency_ks.scan_prefix(&prefix) {
+            let (key, _) = item?;
+            let (_dir, _own, etype, other, edge) = parse_adj_key_strict(&key)?;
+            entries.push((etype, other, edge));
         }
+        Ok(entries)
     }
 
-    /// Guarda el índice de adyacencia entrante de un nodo
-    pub async fn save_adjacency_in(&self, node_id: NodeId, edges: &[EdgeId]) -> Result<()> {
-        let key = keys::adjacency_in_key(node_id);
-        let value = serialize(edges)?;
-
-        self.default_ks.insert(key.as_bytes(), &value)?;
-
-        Ok(())
-    }
-
-    /// Carga el índice de adyacencia entrante de un nodo
-    pub async fn load_adjacency_in(&self, node_id: NodeId) -> Result<Vec<EdgeId>> {
-        let key = keys::adjacency_in_key(node_id);
-
-        let value = self.default_ks.get(key.as_bytes())?;
-
-        match value {
-            Some(v) => {
-                let edges: Vec<EdgeId> = deserialize(&v)?;
-                Ok(edges)
-            }
-            None => Ok(Vec::new()),
-        }
-    }
-
-    /// Carga todos los índices de adyacencia (para reconstruir al abrir el grafo)
-    pub async fn load_all_adjacency_indices(&self) -> Result<(
+    /// Reconstruye los dos HashMaps RAM de adyacencia con un scan COMPLETO
+    /// del keyspace `adjacency` (solo claves: el valor es vacío por
+    /// contrato). Sustituye a `load_all_adjacency_indices` del layout v1.
+    /// Un nodo sin aristas simplemente no aparece (v1 persistía listas
+    /// vacías; en v2 ausencia == vacío).
+    pub async fn load_all_adjacency_v2(&self) -> Result<(
         HashMap<NodeId, Vec<EdgeId>>,  // adjacency_out
         HashMap<NodeId, Vec<EdgeId>>,  // adjacency_in
     )> {
-        let mut adjacency_out = HashMap::new();
-        let mut adjacency_in = HashMap::new();
+        let mut adjacency_out: HashMap<NodeId, Vec<EdgeId>> = HashMap::new();
+        let mut adjacency_in: HashMap<NodeId, Vec<EdgeId>> = HashMap::new();
 
-
-        // Iterar sobre todas las keys que empiezan con "idx:"
-        for item in self.default_ks.scan_prefix(keys::ADJ_PREFIX) {
-            let (key, value) = item?;
-            let key_str = String::from_utf8_lossy(&key);
-
-            if key_str.starts_with(keys::ADJ_OUT_PREFIX) {
-                if let Some(node_id_str) = key_str.strip_prefix(keys::ADJ_OUT_PREFIX)
-                    && let Ok(node_id) = uuid::Uuid::parse_str(node_id_str) {
-                        let edges: Vec<EdgeId> = deserialize(&value)?;
-                        adjacency_out.insert(node_id, edges);
-                }
-            } else if key_str.starts_with(keys::ADJ_IN_PREFIX)
-                && let Some(node_id_str) = key_str.strip_prefix(keys::ADJ_IN_PREFIX)
-                && let Ok(node_id) = uuid::Uuid::parse_str(node_id_str) {
-                    let edges: Vec<EdgeId> = deserialize(&value)?;
-                    adjacency_in.insert(node_id, edges);
+        for item in self.adjacency_ks.iter() {
+            let (key, _) = item?;
+            let (dir, own, _etype, _other, edge) = parse_adj_key_strict(&key)?;
+            match dir {
+                keys::v2::AdjDir::Out => adjacency_out.entry(own).or_default().push(edge),
+                keys::v2::AdjDir::In => adjacency_in.entry(own).or_default().push(edge),
             }
         }
 
         Ok((adjacency_out, adjacency_in))
     }
 
-    /// Reconstruye índices desde cero escaneando todas las aristas
+    /// Purga hasta `max_edges` aristas incidentes a `node`: por cada una,
+    /// su registro en `edges` + su clave O/I propia + el ESPEJO del otro
+    /// extremo, todo en UN `apply_multi` atómico. Retorna `(saliente?, otro
+    /// extremo, edge)` por arista purgada; vacío = no queda adyacencia del
+    /// nodo en disco. Idempotente: cada chunk re-escanea desde el prefijo y
+    /// las claves ya purgadas no reaparecen — un crash intermedio deja
+    /// aristas completas de menos, jamás pares rotos.
+    pub(crate) async fn purge_node_adjacency_chunk(
+        &self,
+        node: NodeId,
+        max_edges: usize,
+    ) -> Result<Vec<(bool, NodeId, EdgeId)>> {
+        debug_assert!(max_edges > 0);
+        // (saliente?, etype, otro, edge)
+        let mut entries: Vec<(bool, u32, NodeId, EdgeId)> = Vec::new();
+        for (is_out, prefix) in [
+            (true, keys::v2::adj_out_prefix(node)),
+            (false, keys::v2::adj_in_prefix(node)),
+        ] {
+            for item in self.adjacency_ks.scan_prefix(&prefix) {
+                if entries.len() >= max_edges {
+                    break;
+                }
+                let (key, _) = item?;
+                let (_dir, _own, etype, other, edge) = parse_adj_key_strict(&key)?;
+                entries.push((is_out, etype, other, edge));
+            }
+            if entries.len() >= max_edges {
+                break;
+            }
+        }
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut edges_batch = kv::WriteBatch::default();
+        let mut adj_batch = kv::WriteBatch::default();
+        for &(is_out, etype, other, edge) in &entries {
+            edges_batch.remove(edge.to_string().as_bytes());
+            // Los constructores reciben SIEMPRE (src, etype, tgt, edge) y
+            // voltean solos el lado I — aquí solo se decide quién es src.
+            let (src, tgt) = if is_out { (node, other) } else { (other, node) };
+            adj_batch.remove(keys::v2::adj_out_key(src, etype, tgt, edge));
+            adj_batch.remove(keys::v2::adj_in_key(src, etype, tgt, edge));
+        }
+        self.engine.apply_multi(vec![
+            (EDGES_TREE.to_string(), edges_batch),
+            (ADJACENCY_TREE.to_string(), adj_batch),
+        ])?;
+
+        Ok(entries
+            .into_iter()
+            .map(|(is_out, _etype, other, edge)| (is_out, other, edge))
+            .collect())
+    }
+
+    /// Reconstruye la adyacencia COMPLETA desde el keyspace `edges` (la
+    /// fuente de verdad): interna los tipos, REESCRIBE las claves v2 en disco
+    /// (clear + batches acotados) y devuelve los HashMaps para la RAM.
+    /// Es el reparador canónico: cualquier clave O/I faltante o huérfana
+    /// queda corregida. Idempotente.
     pub async fn rebuild_indices(&self) -> Result<(
         HashMap<NodeId, Vec<EdgeId>>,
         HashMap<NodeId, Vec<EdgeId>>,
@@ -572,22 +774,28 @@ impl Storage {
         let mut adjacency_out: HashMap<NodeId, Vec<EdgeId>> = HashMap::new();
         let mut adjacency_in: HashMap<NodeId, Vec<EdgeId>> = HashMap::new();
 
-        // Escanear todas las aristas del keyspace "edges"
+        self.adjacency_ks.clear()?;
+
+        let mut batch = kv::WriteBatch::default();
+        let mut pending_ops = 0usize;
         for item in self.edges_ks.iter() {
             let (_, value) = item?;
             let edge: Edge = deserialize(&value)?;
+            let etype_id = self.intern_edge_type(&edge.edge_type)?;
 
-            // Actualizar índice out
-            adjacency_out
-                .entry(edge.source)
-                .or_default()
-                .push(edge.id);
+            batch.insert(keys::v2::adj_out_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
+            batch.insert(keys::v2::adj_in_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
+            pending_ops += 2;
+            if pending_ops >= REBUILD_BATCH_OPS {
+                self.adjacency_ks.apply_batch(std::mem::take(&mut batch))?;
+                pending_ops = 0;
+            }
 
-            // Actualizar índice in
-            adjacency_in
-                .entry(edge.target)
-                .or_default()
-                .push(edge.id);
+            adjacency_out.entry(edge.source).or_default().push(edge.id);
+            adjacency_in.entry(edge.target).or_default().push(edge.id);
+        }
+        if pending_ops > 0 {
+            self.adjacency_ks.apply_batch(batch)?;
         }
 
         Ok((adjacency_out, adjacency_in))
@@ -905,26 +1113,25 @@ impl Storage {
     // ✅ MÉTODOS MVCC
     // ═════════════════════════════════════════════════════════
 
-    /// Inserta una versión de nodo (MVCC)
+    /// Inserta una versión de nodo (MVCC): versión + puntero current + lista
+    /// de versiones en `history`, entrada del índice ts en `indexes`.
     pub async fn insert_node_version(&self, versioned: &VersionedNode) -> Result<()> {
-        
-
         // 1. Guardar versión
-        let version_key = keys::node_version_key(versioned.id, versioned.version);
+        let version_key = keys::v2::history_version_key(versioned.id, versioned.version);
         let version_value = serialize(versioned)?;
 
-        self.default_ks.insert(version_key.as_bytes(), &version_value)?;
+        self.history_ks.insert(&version_key, &version_value)?;
 
         // 2. Actualizar puntero current (si es la versión más reciente)
         if versioned.valid_to.is_none() {
-            let current_key = keys::node_current_key(versioned.id);
+            let current_key = keys::v2::history_current_key(versioned.id);
             let version_bytes = versioned.version.to_le_bytes();
-            self.default_ks.insert(current_key.as_bytes(), version_bytes.as_ref())?;
+            self.history_ks.insert(&current_key, version_bytes.as_ref())?;
         }
 
         // 3. Agregar a lista de versiones
-        let versions_key = keys::node_versions_key(versioned.id);
-        let mut versions: Vec<u64> = match self.default_ks.get(versions_key.as_bytes())? {
+        let versions_key = keys::v2::history_versions_key(versioned.id);
+        let mut versions: Vec<u64> = match self.history_ks.get(&versions_key)? {
             Some(v) => deserialize(&v)?,
             None => Vec::new(),
         };
@@ -935,21 +1142,17 @@ impl Storage {
             versions.reverse(); // Más reciente primero
 
             let versions_value = serialize(&versions)?;
-            self.default_ks.insert(versions_key.as_bytes(), &versions_value)?;
+            self.history_ks.insert(&versions_key, &versions_value)?;
         }
 
-        // 4. Indexar por timestamp
-        let ts_key = keys::ts_key(versioned.timestamp);
-        let mut node_ids: Vec<NodeId> = match self.default_ks.get(ts_key.as_bytes())? {
-            Some(v) => deserialize(&v)?,
-            None => Vec::new(),
-        };
-
-        if !node_ids.contains(&versioned.id) {
-            node_ids.push(versioned.id);
-            let ts_value = serialize(&node_ids)?;
-            self.default_ks.insert(ts_key.as_bytes(), &ts_value)?;
-        }
+        // 4. Indexar por timestamp — des-blobeado (F5.4): una clave
+        // `t|ts|nodo|versión` con valor vacío por entrada, en vez del RMW
+        // del blob `ts:{n}` → Vec<NodeId>. El put es idempotente por clave
+        // (la versión desambigua; el dedup por nodo del v1 sobra).
+        self.indexes_ks.insert(
+            &keys::v2::ts_index_key(versioned.timestamp, versioned.id, versioned.version),
+            EMPTY_VALUE,
+        )?;
 
         // 5. Avanzar la cota persistida del reloj lógico (nunca retrocede)
         self.bump_clock(META_NEXT_TIMESTAMP, versioned.timestamp.saturating_add(1))?;
@@ -959,15 +1162,17 @@ impl Storage {
         Ok(())
     }
 
-    /// Aplica ATÓMICAMENTE (un solo `WriteBatch` sobre el keyspace default) el
-    /// write-set de versión de un nodo commiteado:
-    ///   - la versión anterior invalidada (si es update)
-    ///   - la versión nueva + puntero current + lista de versiones + índice ts
-    ///   - el registro current legacy `node:{id}`
+    /// Aplica ATÓMICAMENTE el write-set de versión de un nodo commiteado:
+    ///   - la versión anterior invalidada (si es update) — `history`
+    ///   - la versión nueva + puntero current + lista de versiones — `history`
+    ///   - la entrada del índice ts — `indexes`
+    ///   - el registro base del nodo — `entities`
     ///
     /// Antes esto eran 5+ escrituras independientes: un crash a la mitad dejaba
-    /// al nodo sin versión current o con la cadena rota. Con el batch, o se
-    /// aplica todo o no se aplica nada (el WAL redo cubre el caso "nada").
+    /// al nodo sin versión current o con la cadena rota. En v1 todo cabía en un
+    /// `WriteBatch` del tree default; con el layout v2 el write-set CRUZA tres
+    /// keyspaces, así que la atomicidad la da `apply_multi` (contrato F5.1):
+    /// o se aplica todo o no se aplica nada (el WAL redo cubre el caso "nada").
     ///
     /// PRECONDICIÓN: el caller serializa los commits (commit lock); las listas
     /// se leen-modifican-escriben aquí sin coordinación adicional.
@@ -978,25 +1183,26 @@ impl Storage {
         new_version: &VersionedNode,
     ) -> Result<()> {
         let id = new_version.id;
-        let mut batch = kv::WriteBatch::default();
+        let mut history_batch = kv::WriteBatch::default();
+        let mut indexes_batch = kv::WriteBatch::default();
+        let mut entities_batch = kv::WriteBatch::default();
 
         // 1. Versión anterior invalidada (update)
         if let Some(prev) = invalidated_prev {
-            let key = keys::node_version_key(id, prev.version);
-            batch.insert(key.as_bytes(), serialize(prev)?);
+            history_batch.insert(keys::v2::history_version_key(id, prev.version), serialize(prev)?);
         }
 
         // 2. Versión nueva
-        let version_key = keys::node_version_key(id, new_version.version);
-        batch.insert(version_key.as_bytes(), serialize(new_version)?);
+        history_batch
+            .insert(keys::v2::history_version_key(id, new_version.version), serialize(new_version)?);
 
         // 3. Puntero current
-        let current_key = keys::node_current_key(id);
-        batch.insert(current_key.as_bytes(), new_version.version.to_le_bytes().as_ref());
+        history_batch
+            .insert(keys::v2::history_current_key(id), new_version.version.to_le_bytes().as_ref());
 
         // 4. Lista de versiones (RMW bajo commit lock)
-        let versions_key = keys::node_versions_key(id);
-        let mut versions: Vec<u64> = match self.default_ks.get(versions_key.as_bytes())? {
+        let versions_key = keys::v2::history_versions_key(id);
+        let mut versions: Vec<u64> = match self.history_ks.get(&versions_key)? {
             Some(v) => deserialize(&v)?,
             None => Vec::new(),
         };
@@ -1005,24 +1211,23 @@ impl Storage {
             versions.sort_unstable();
             versions.reverse();
         }
-        batch.insert(versions_key.as_bytes(), serialize(&versions)?);
+        history_batch.insert(versions_key, serialize(&versions)?);
 
-        // 5. Índice por timestamp (RMW bajo commit lock)
-        let ts_key = keys::ts_key(new_version.timestamp);
-        let mut node_ids: Vec<NodeId> = match self.default_ks.get(ts_key.as_bytes())? {
-            Some(v) => deserialize(&v)?,
-            None => Vec::new(),
-        };
-        if !node_ids.contains(&id) {
-            node_ids.push(id);
-        }
-        batch.insert(ts_key.as_bytes(), serialize(&node_ids)?);
+        // 5. Índice por timestamp — des-blobeado: un put con valor vacío
+        // (adiós al RMW del Vec<NodeId> bajo commit lock).
+        indexes_batch.insert(
+            keys::v2::ts_index_key(new_version.timestamp, id, new_version.version),
+            EMPTY_VALUE,
+        );
 
-        // 6. Registro current legacy (mismo keyspace → misma atomicidad)
-        let node_key = keys::node_key(node.id);
-        batch.insert(node_key.as_bytes(), serialize(node)?);
+        // 6. Registro base del nodo (keyspace `entities`)
+        entities_batch.insert(keys::v2::node_key_v2(node.id), serialize(node)?);
 
-        self.default_ks.apply_batch(batch)?;
+        self.engine.apply_multi(vec![
+            (HISTORY_TREE.to_string(), history_batch),
+            (INDEXES_TREE.to_string(), indexes_batch),
+            (ENTITIES_TREE.to_string(), entities_batch),
+        ])?;
 
         // Cota del reloj: fuera del batch, con CAS-max (los escritores directos
         // concurrentes también la avanzan; un put plano podría retrocederla).
@@ -1035,9 +1240,9 @@ impl Storage {
 
     /// Obtiene la versión actual de un nodo
     pub async fn get_current_version(&self, id: NodeId) -> Result<u64> {
-        let current_key = keys::node_current_key(id);
+        let current_key = keys::v2::history_current_key(id);
 
-        let value = self.default_ks.get(current_key.as_bytes())?
+        let value = self.history_ks.get(&current_key)?
             .ok_or_else(|| NopalError::NodeNotFound(id.to_string()))?;
 
         let version = u64::from_le_bytes(
@@ -1050,9 +1255,9 @@ impl Storage {
 
     /// Obtiene una versión específica de un nodo
     pub async fn get_node_version(&self, id: NodeId, version: u64) -> Result<VersionedNode> {
-        let version_key = keys::node_version_key(id, version);
+        let version_key = keys::v2::history_version_key(id, version);
 
-        let value = self.default_ks.get(version_key.as_bytes())?
+        let value = self.history_ks.get(&version_key)?
             .ok_or_else(|| NopalError::NodeNotFound(
                 format!("{}:v{}", id, version)
             ))?;
@@ -1065,9 +1270,9 @@ impl Storage {
     /// Obtiene nodo en un timestamp específico (MVCC as_of)
     pub async fn get_node_at_timestamp(&self, id: NodeId, timestamp: u64) -> Result<VersionedNode> {
         // Obtener lista de versiones
-        let versions_key = keys::node_versions_key(id);
+        let versions_key = keys::v2::history_versions_key(id);
 
-        let versions: Vec<u64> = match self.default_ks.get(versions_key.as_bytes())? {
+        let versions: Vec<u64> = match self.history_ks.get(&versions_key)? {
             Some(v) => deserialize(&v)?,
             None => {
                 log::debug!("No versions found for node {}", id);
@@ -1106,9 +1311,9 @@ impl Storage {
 
     /// Obtiene historial completo de un nodo
     pub async fn get_node_history(&self, id: NodeId) -> Result<Vec<VersionedNode>> {
-        let versions_key = keys::node_versions_key(id);
+        let versions_key = keys::v2::history_versions_key(id);
 
-        let versions: Vec<u64> = match self.default_ks.get(versions_key.as_bytes())? {
+        let versions: Vec<u64> = match self.history_ks.get(&versions_key)? {
             Some(v) => deserialize(&v)?,
             None => return Ok(Vec::new()),
         };
@@ -1131,10 +1336,10 @@ impl Storage {
         versioned.invalidate(timestamp);
 
         // Guardar versión invalidada
-        let version_key = keys::node_version_key(id, current_version);
+        let version_key = keys::v2::history_version_key(id, current_version);
         let version_value = serialize(&versioned)?;
 
-        self.default_ks.insert(version_key.as_bytes(), &version_value)?;
+        self.history_ks.insert(&version_key, &version_value)?;
 
         Ok(())
     }
@@ -1164,27 +1369,17 @@ impl Storage {
         let start = std::time::Instant::now();
         let mut stats = GCStats::default();
 
-        // 1. Encontrar todos los nodos con versiones
-        
+        // 1. Encontrar todos los nodos con versiones: el namespace `l|` del
+        // keyspace `history` ES esa lista (una clave `l|{uuid16}` por nodo
+        // con historia). En v1 esto era filtrar sufijos `:versions` de la
+        // sopa del tree default.
         let mut node_ids_with_versions: Vec<NodeId> = Vec::new();
 
-        for item in self.default_ks.scan_prefix(keys::NODE_PREFIX.as_bytes()) {
+        for item in self.history_ks.scan_prefix(&[keys::v2::HISTORY_VERSIONS_TAG]) {
             let (key, _) = item?;
-            let key_str = String::from_utf8_lossy(&key);
-
-            // Solo procesar keys de versiones (e.g., "node:uuid:versions")
-            if key_str.ends_with(":versions") {
-                let node_id_str = key_str
-                    .strip_prefix(keys::NODE_PREFIX)
-                    .and_then(|s| s.strip_suffix(":versions"));
-
-                if let Some(id_str) = node_id_str
-                    && let Ok(node_id) = uuid::Uuid::parse_str(id_str) {
-                        node_ids_with_versions.push(node_id);
-                }
-            }
+            node_ids_with_versions.push(parse_history_versions_key_strict(&key)?);
         }
-        
+
 
         log::debug!("GC: Found {} nodes with versions", node_ids_with_versions.len());
 
@@ -1275,9 +1470,9 @@ impl Storage {
 
         // Fase de lectura 1: versiones a borrar (solo cuentan las existentes)
         for &version in versions {
-            let version_key = keys::node_version_key(node_id, version);
-            if let Some(value) = self.default_ks.get(version_key.as_bytes())? {
-                batch.remove(version_key.as_bytes());
+            let version_key = keys::v2::history_version_key(node_id, version);
+            if let Some(value) = self.history_ks.get(&version_key)? {
+                batch.remove(version_key);
                 deleted += 1;
                 bytes_freed += value.len();
             }
@@ -1286,21 +1481,25 @@ impl Storage {
         // Fase de lectura 2: lista de versiones filtrada. Si queda vacía se
         // borra la clave; si no, se reescribe (misma semántica que el borrado
         // por versión que reemplazó este batch).
-        let versions_key = keys::node_versions_key(node_id);
-        if let Some(value) = self.default_ks.get(versions_key.as_bytes())? {
+        //
+        // Las entradas `t|ts|nodo|versión` del índice ts NO se tocan — misma
+        // semántica que el v1, que tampoco limpiaba su blob `ts:{n}` (su
+        // único lector, `max_persisted_timestamp`, solo quiere el máximo).
+        let versions_key = keys::v2::history_versions_key(node_id);
+        if let Some(value) = self.history_ks.get(&versions_key)? {
             let mut version_list: Vec<u64> = deserialize(&value)?;
 
             version_list.retain(|v| !versions.contains(v));
 
             if version_list.is_empty() {
-                batch.remove(versions_key.as_bytes());
+                batch.remove(versions_key);
             } else {
-                batch.insert(versions_key.as_bytes(), serialize(&version_list)?);
+                batch.insert(versions_key, serialize(&version_list)?);
             }
         }
 
         // Fase de escritura: todo el write-set en una sola aplicación atómica.
-        self.default_ks.apply_batch(batch)?;
+        self.history_ks.apply_batch(batch)?;
 
         Ok((deleted, bytes_freed))
     }
@@ -1319,19 +1518,17 @@ impl Storage {
         Ok(edges)
     }
     /// Obtiene todos los nodos del storage (para export)
+    ///
+    /// Scan PLANO del keyspace `entities`: es homogéneo por construcción
+    /// (solo registros base `n|{uuid16}`), así que el filtro estructural del
+    /// v1 (`is_base_node_key` para apartar `:v{n}`/`:current`/`:versions` de
+    /// la sopa del tree default) ya no existe — la separación la da el
+    /// keyspace, no un predicado.
     pub async fn get_all_nodes(&self) -> Result<Vec<Node>> {
         let mut nodes = Vec::new();
 
-        for item in self.default_ks.scan_prefix(keys::NODE_PREFIX.as_bytes()) {
-            let (key, value) = item?;
-
-            // Predicado estructural (no blacklist por substring): solo claves
-            // base `node:{uuid}` exactas. No se rompe si aparece un sufijo
-            // nuevo en el namespace.
-            if !keys::is_base_node_key(&key) {
-                continue;
-            }
-
+        for item in self.entities_ks.iter() {
+            let (_, value) = item?;
             let node: Node = deserialize(&value)?;
 
             nodes.push(node);
@@ -1345,7 +1542,14 @@ impl Storage {
     /// Scan nodes in key order using a cursor and bounded batch size.
     ///
     /// This enables pull-based execution without materializing all nodes in memory.
-    /// Returns `(nodes, next_cursor)` where `next_cursor` is the last scanned key.
+    /// Returns `(nodes, next_cursor)`.
+    ///
+    /// Cursor (opaco para los callers, que solo lo devuelven tal cual): el
+    /// uuid en string del último nodo entregado — se traduce a su clave
+    /// binaria `n|{uuid16}` y el `range_from` sobre `entities` arranca ahí
+    /// (inclusivo; la propia clave del cursor se filtra). El loop corre
+    /// hasta juntar `limit` MATCHES de label o agotar el keyspace;
+    /// `next_cursor == None` significa scan completo, nunca corte.
     pub async fn scan_nodes_batch(
         &self,
         label: Option<&str>,
@@ -1356,40 +1560,33 @@ impl Storage {
             return Ok((Vec::new(), start_after.map(|s| s.to_string())));
         }
 
-        let start = start_after
-            .map(|s| s.as_bytes().to_vec())
-            .unwrap_or_else(|| keys::NODE_PREFIX.as_bytes().to_vec());
+        let start: Vec<u8> = match start_after {
+            Some(cursor) => {
+                let id = uuid::Uuid::parse_str(cursor).map_err(|_| {
+                    crate::error::StorageError::new(
+                        crate::error::StorageErrorKind::InvalidData,
+                        format!("cursor de scan_nodes_batch inválido (se espera uuid): {cursor:?}"),
+                    )
+                })?;
+                keys::v2::node_key_v2(id).to_vec()
+            }
+            // `n` (ENTITY_TAG) es <= que toda clave del keyspace homogéneo.
+            None => vec![keys::v2::ENTITY_TAG],
+        };
 
         let mut nodes = Vec::with_capacity(limit);
-        let mut last_seen_key: Option<String> = None;
+        let mut last_seen: Option<NodeId> = None;
 
-        for item in self.default_ks.range_from(&start) {
+        for item in self.entities_ks.range_from(&start) {
             let (key, value) = item?;
 
-            if !key.starts_with(keys::NODE_PREFIX.as_bytes()) {
-                if last_seen_key.is_some() {
-                    break;
-                }
-                continue;
-            }
-
-            let key_str = String::from_utf8_lossy(&key).to_string();
-
-            if let Some(cursor) = start_after
-                && key_str.as_str() <= cursor {
-                    continue;
-            }
-
-            // Solo claves base `node:{uuid}` (predicado estructural, ver
-            // is_base_node_key). Nota de semántica del cursor: el loop corre
-            // hasta juntar `limit` MATCHES o agotar el namespace de nodos;
-            // `next_cursor == None` significa scan completo, nunca corte.
-            if !keys::is_base_node_key(&key) {
+            // range_from es inclusivo: saltar la clave del propio cursor.
+            if start_after.is_some() && key.as_slice() == start.as_slice() {
                 continue;
             }
 
             let node: Node = deserialize(&value)?;
-            last_seen_key = Some(key_str);
+            last_seen = Some(node.id);
 
             if let Some(expected_label) = label
                 && node.label != expected_label {
@@ -1403,7 +1600,7 @@ impl Storage {
         }
 
         let next_cursor = if nodes.len() >= limit {
-            last_seen_key
+            last_seen.map(|id| id.to_string())
         } else {
             None
         };
@@ -1412,21 +1609,19 @@ impl Storage {
     }
 
     /// Obtiene todos los nodos versionados del storage (para MVCC export)
+    ///
+    /// Scan del namespace `v|` del keyspace `history`: el tag discrimina por
+    /// estructura (las listas `l|` y punteros `c|` viven bajo otros tags),
+    /// así que el clasificador string del v1 (`is_version_node_key` sobre la
+    /// sopa `node:*`) ya no hace falta.
     pub async fn get_all_versioned_nodes(&self) -> Result<Vec<crate::mvcc::VersionedNode>> {
         let mut versioned_nodes = Vec::new();
 
-        for item in self.default_ks.scan_prefix(keys::NODE_PREFIX.as_bytes()) {
-            let (key, value) = item?;
+        for item in self.history_ks.scan_prefix(&[keys::v2::HISTORY_VERSION_TAG]) {
+            let (_, value) = item?;
+            let versioned: crate::mvcc::VersionedNode = deserialize(&value)?;
 
-            // Solo claves de versión `node:{uuid}:v{n}` exactas. La whitelist
-            // anterior (`contains(":v") && !contains(":versions")`) aceptaría
-            // cualquier sufijo futuro que empiece con `v` y reventaría el
-            // export completo con SerializationError.
-            if keys::is_version_node_key(&key) {
-                let versioned: crate::mvcc::VersionedNode = deserialize(&value)?;
-
-                versioned_nodes.push(versioned);
-            }
+            versioned_nodes.push(versioned);
         }
 
         log::debug!("Retrieved {} versioned nodes for export", versioned_nodes.len());
@@ -1451,70 +1646,52 @@ impl Storage {
         let mut ids = Vec::with_capacity(nodes.len());
 
         for node in nodes {
-            let key = keys::node_key(node.id);
             let value = serialize(node)?;
-            batch.insert(key.as_bytes(), value);
+            batch.insert(keys::v2::node_key_v2(node.id), value);
             ids.push(node.id);
         }
 
         // Una sola operación de disco para todos los nodos
-        self.default_ks.apply_batch(batch)?;
+        self.entities_ks.apply_batch(batch)?;
 
         log::debug!("Batch inserted {} nodes", ids.len());
         Ok(ids)
     }
 
-    /// Inserta múltiples aristas en una sola operación atómica.
+    /// Inserta múltiples aristas CON su adyacencia v2 en UNA aplicación
+    /// atómica cross-keyspace. Cierra el hueco histórico del bulk: antes las
+    /// aristas entraban sin adyacencia persistida y dependían de un
+    /// `flush_indices` posterior que alguien tenía que acordarse de llamar.
+    ///
+    /// Los tipos se internan ANTES del `apply_multi` (cada asignación es su
+    /// propio batch atómico del catalog): un crash entre medias deja a lo
+    /// sumo tipos internados sin aristas, que es inocuo — los ids jamás se
+    /// reciclan. Debe llamarse bajo el write_gate (los bulk paths del Graph
+    /// ya lo toman).
     pub async fn insert_edges_batch(&self, edges: &[Edge]) -> Result<Vec<EdgeId>> {
         if edges.is_empty() {
             return Ok(Vec::new());
         }
 
-        let mut batch = kv::WriteBatch::default();
+        let mut edges_batch = kv::WriteBatch::default();
+        let mut adj_batch = kv::WriteBatch::default();
         let mut ids = Vec::with_capacity(edges.len());
 
-        //Revisar el keyspace de edges
         for edge in edges {
-            let key = edge.id.to_string();
-            let value = serialize(edge)?;
-            batch.insert(key.as_bytes(), value);
+            let etype_id = self.intern_edge_type(&edge.edge_type)?;
+            edges_batch.insert(edge.id.to_string().as_bytes(), serialize(edge)?);
+            adj_batch.insert(keys::v2::adj_out_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
+            adj_batch.insert(keys::v2::adj_in_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
             ids.push(edge.id);
         }
 
-        self.edges_ks.apply_batch(batch)?;
+        self.engine.apply_multi(vec![
+            (EDGES_TREE.to_string(), edges_batch),
+            (ADJACENCY_TREE.to_string(), adj_batch),
+        ])?;
 
-        log::debug!("Batch inserted {} edges to edges tree", ids.len());
+        log::debug!("Batch inserted {} edges (+ adjacency v2) atomically", ids.len());
         Ok(ids)
-    }
-
-    /// Guarda múltiples índices de adyacencia en batch
-    pub async fn save_adjacency_batch(
-        &self,
-        out_indices: &[(NodeId, Vec<EdgeId>)],
-        in_indices: &[(NodeId, Vec<EdgeId>)],
-    ) -> Result<()> {
-        let mut batch = kv::WriteBatch::default();
-
-        for (node_id, edge_ids) in out_indices {
-            let key = keys::adjacency_out_key(*node_id);
-            let value = serialize(edge_ids)?;
-            batch.insert(key.as_bytes(), value);
-        }
-
-        for (node_id, edge_ids) in in_indices {
-            let key = keys::adjacency_in_key(*node_id);
-            let value = serialize(edge_ids)?;
-            batch.insert(key.as_bytes(), value);
-        }
-
-        self.default_ks.apply_batch(batch)?;
-
-        log::debug!(
-            "Batch saved {} out indices and {} in indices",
-            out_indices.len(),
-            in_indices.len()
-        );
-        Ok(())
     }
 
     /// Flush all pending writes to disk
@@ -1522,6 +1699,43 @@ impl Storage {
     /// Forces the underlying storage engine to persist all buffered data.
     pub async fn flush(&self) -> Result<()> {
         self.engine.flush()
+    }
+
+    // ─── Seams crudas SOLO para tests de migración ──────────────────────────
+    //
+    // No son API: existen para que los tests de integración de la migración
+    // de layout (tests/layout_v2_migration_test.rs) puedan FABRICAR bases v1
+    // byte a byte y simular crashes/corrupción por fase — cosas imposibles
+    // desde la API pública precisamente porque el runtime ya no escribe el
+    // layout v1. Ocultas de la doc; pueden cambiar o desaparecer sin aviso.
+    // (Mismo precedente que los easter eggs #[doc(hidden)] del Graph.)
+
+    /// Escritura cruda en un keyspace por nombre. SOLO tests de migración.
+    #[doc(hidden)]
+    pub fn debug_raw_insert(&self, keyspace: &str, key: &[u8], value: &[u8]) -> Result<()> {
+        self.engine.keyspace(keyspace)?.insert(key, value)
+    }
+
+    /// Borrado crudo en un keyspace por nombre. SOLO tests de migración.
+    #[doc(hidden)]
+    pub fn debug_raw_remove(&self, keyspace: &str, key: &[u8]) -> Result<()> {
+        self.engine.keyspace(keyspace)?.remove(key)
+    }
+
+    /// Lectura cruda de un keyspace por nombre. SOLO tests de migración.
+    #[doc(hidden)]
+    pub fn debug_raw_get(&self, keyspace: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        self.engine.keyspace(keyspace)?.get(key)
+    }
+
+    /// Todas las claves de un keyspace, en orden. SOLO tests de migración.
+    #[doc(hidden)]
+    pub fn debug_raw_keys(&self, keyspace: &str) -> Result<Vec<Vec<u8>>> {
+        self.engine
+            .keyspace(keyspace)?
+            .iter()
+            .map(|item| item.map(|(k, _)| k))
+            .collect()
     }
 }
 
@@ -1601,6 +1815,12 @@ mod tests {
         // DB persistente con: nodos + claves LEGADAS v1 fabricadas + sin
         // sentinel → al abrir el Graph, la migración borra el legado,
         // reconstruye v2 desde los nodos y escribe el sentinel.
+        //
+        // Nota F5.4: fabricar `idx:prop:*` en el tree default sigue siendo
+        // EXACTAMENTE lo que esta sub-migración limpia (una base v1 tiene el
+        // legado ahí); lo que cambió es dónde vive el sentinel (catalog) y de
+        // dónde se reconstruye el v2 (nodos en `entities`). La migración de
+        // TODO el layout v1 (nodos/historia/meta en default) es F5.5.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mig_db");
 
@@ -1796,26 +2016,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_save_and_load_adjacency() {
+    async fn test_adjacency_v2_roundtrip_insert_scan_remove() {
         let storage = Storage::in_memory().await.unwrap();
 
-        let node_id = uuid::Uuid::new_v4();
-        let edge_ids = vec![
-            uuid::Uuid::new_v4(),
-            uuid::Uuid::new_v4(),
-            uuid::Uuid::new_v4(),
-        ];
+        let a = uuid::Uuid::new_v4();
+        let b = uuid::Uuid::new_v4();
+        let edge = Edge::new(a, b, "LINKS");
+        let et = storage.intern_edge_type("LINKS").unwrap();
 
-        // Guardar índices
-        storage.save_adjacency_out(node_id, &edge_ids).await.unwrap();
-        storage.save_adjacency_in(node_id, &edge_ids).await.unwrap();
+        storage.insert_edge_with_adjacency(&edge, et).await.unwrap();
 
-        // Cargar índices
-        let loaded_out = storage.load_adjacency_out(node_id).await.unwrap();
-        let loaded_in = storage.load_adjacency_in(node_id).await.unwrap();
+        // Registro + espejo O/I consistente: la O de `a` y la I de `b` ven la
+        // MISMA tripleta; los lados que no tocan quedan vacíos.
+        assert!(storage.edge_exists(edge.id).await.unwrap());
+        assert_eq!(storage.scan_adjacency_out(a).await.unwrap(), vec![(et, b, edge.id)]);
+        assert_eq!(storage.scan_adjacency_in(b).await.unwrap(), vec![(et, a, edge.id)]);
+        assert!(storage.scan_adjacency_out(b).await.unwrap().is_empty());
+        assert!(storage.scan_adjacency_in(a).await.unwrap().is_empty());
 
-        assert_eq!(loaded_out, edge_ids);
-        assert_eq!(loaded_in, edge_ids);
+        // load_all reconstruye ambos mapas desde las claves.
+        let (out, inn) = storage.load_all_adjacency_v2().await.unwrap();
+        assert_eq!(out.get(&a), Some(&vec![edge.id]));
+        assert_eq!(inn.get(&b), Some(&vec![edge.id]));
+        assert_eq!(out.len(), 1);
+        assert_eq!(inn.len(), 1);
+
+        // Remove espejo: las 3 claves fuera, nada residual.
+        storage.remove_edge_with_adjacency(&edge, et).await.unwrap();
+        assert!(!storage.edge_exists(edge.id).await.unwrap());
+        assert!(storage.scan_adjacency_out(a).await.unwrap().is_empty());
+        assert!(storage.scan_adjacency_in(b).await.unwrap().is_empty());
+        let (out, inn) = storage.load_all_adjacency_v2().await.unwrap();
+        assert!(out.is_empty());
+        assert!(inn.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_adjacency_v2_rebuild_repara_clave_perdida() {
+        // La invariante de pares la garantiza apply_multi (probado en la
+        // conformance del contrato KV); esto simula corrupción EXTERNA:
+        // borrar a mano UNA de las dos claves y verificar que rebuild —
+        // que deriva de edges, la fuente de verdad — repara ambas.
+        let storage = Storage::in_memory().await.unwrap();
+
+        let a = uuid::Uuid::new_v4();
+        let b = uuid::Uuid::new_v4();
+        let edge = Edge::new(a, b, "LINKS");
+        let et = storage.intern_edge_type("LINKS").unwrap();
+        storage.insert_edge_with_adjacency(&edge, et).await.unwrap();
+
+        let in_key = keys::v2::adj_in_key(a, et, b, edge.id);
+        storage.adjacency_ks.remove(&in_key).unwrap();
+        assert!(storage.scan_adjacency_in(b).await.unwrap().is_empty(), "clave I perdida");
+
+        let (out, inn) = storage.rebuild_indices().await.unwrap();
+        assert_eq!(out.get(&a), Some(&vec![edge.id]));
+        assert_eq!(inn.get(&b), Some(&vec![edge.id]));
+        assert_eq!(storage.scan_adjacency_out(a).await.unwrap(), vec![(et, b, edge.id)]);
+        assert_eq!(storage.scan_adjacency_in(b).await.unwrap(), vec![(et, a, edge.id)]);
     }
     #[tokio::test]
     async fn test_mvcc_insert_and_get() {
@@ -1913,6 +2171,89 @@ mod tests {
         assert_eq!(
             at_350.node_data.properties.get("age"),
             Some(&PropertyValue::Int(35))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_layout_v2_base_nueva_default_sin_escritores() {
+        // Pin de F5.4: en una base NUEVA todo vive en los keyspaces v2 y el
+        // tree default queda VACÍO. Si algún path vuelve a escribir claves
+        // legacy (`node:`/`idx:`/`ts:`/`meta:`), el conteo final lo delata.
+        // El reopen verifica además que nodos, historia, time-travel y
+        // relojes se leen íntegros de entities/history/indexes/catalog.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v2_db");
+
+        let node_id;
+        let other_id;
+        let (ts_v1, ts_v2);
+        {
+            let graph = crate::Graph::open(&path).await.unwrap();
+
+            let mut tx = graph.begin_transaction().await.unwrap();
+            node_id = tx
+                .add_node(Node::new("Person").with_property("edad", PropertyValue::Int(25)))
+                .await
+                .unwrap();
+            other_id = tx.add_node(Node::new("Person")).await.unwrap();
+            tx.commit().await.unwrap();
+
+            // Segunda versión (update) → historia + time-travel reales.
+            let mut tx = graph.begin_transaction().await.unwrap();
+            let mut node = graph.get_node(node_id).await.unwrap();
+            node.properties.insert("edad".into(), PropertyValue::Int(30));
+            tx.add_node(node).await.unwrap();
+            tx.commit().await.unwrap();
+
+            // Una arista: en v1 la adyacencia también ensuciaba el default.
+            graph
+                .add_edge(crate::types::Edge::new(node_id, other_id, "CONOCE"))
+                .await
+                .unwrap();
+
+            let history = graph.storage().get_node_history(node_id).await.unwrap();
+            assert_eq!(history.len(), 2);
+            ts_v1 = history.iter().find(|v| v.version == 1).unwrap().timestamp;
+            ts_v2 = history.iter().find(|v| v.version == 2).unwrap().timestamp;
+            assert!(ts_v2 > ts_v1);
+        }
+
+        let graph = crate::Graph::open(&path).await.unwrap();
+        let storage = graph.storage();
+
+        // Nodo current desde `entities`.
+        let node = storage.get_node(node_id).await.unwrap();
+        assert_eq!(node.properties.get("edad"), Some(&PropertyValue::Int(30)));
+
+        // Historia completa y puntero current desde `history`.
+        assert_eq!(storage.get_current_version(node_id).await.unwrap(), 2);
+        assert_eq!(storage.get_node_history(node_id).await.unwrap().len(), 2);
+
+        // Time-travel intacto tras el reopen.
+        let at_v1 = storage.get_node_at_timestamp(node_id, ts_v1).await.unwrap();
+        assert_eq!(at_v1.node_data.properties.get("edad"), Some(&PropertyValue::Int(25)));
+        let at_v2 = storage.get_node_at_timestamp(node_id, ts_v2).await.unwrap();
+        assert_eq!(at_v2.node_data.properties.get("edad"), Some(&PropertyValue::Int(30)));
+
+        // Relojes desde `catalog` (persistidos en cada commit) y el índice
+        // ts des-blobeado desde `indexes`.
+        let clock = storage.get_meta_u64(META_NEXT_TIMESTAMP).await.unwrap().unwrap();
+        assert!(clock > ts_v2, "la cota del reloj supera el último ts escrito");
+        assert!(storage.get_meta_u64(META_NEXT_TX_ID).await.unwrap().is_some());
+        assert!(storage.max_persisted_timestamp().await.unwrap() >= ts_v2);
+
+        // Cada keyspace v2 tiene lo suyo…
+        assert!(storage.entities_ks.iter().count() >= 2, "entities: registros base");
+        assert!(storage.history_ks.iter().count() > 0, "history: v|/c|/l|");
+        assert!(storage.indexes_ks.iter().count() > 0, "indexes: t| des-blobeado");
+        assert!(storage.catalog_ks.iter().count() > 0, "catalog: metas + interning");
+        assert!(storage.adjacency_ks.iter().count() == 2, "adjacency: O + espejo I");
+
+        // …y el default quedó VACÍO: cero escritores legacy en bases nuevas.
+        assert_eq!(
+            storage.default_ks.iter().count(),
+            0,
+            "el tree default no debe recibir NINGUNA clave en una base nueva"
         );
     }
 

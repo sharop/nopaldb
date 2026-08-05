@@ -7,14 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [unreleased]
+## [0.5.3] - unreleased
+
+### ✨ Highlights
+
+- **Layout de almacenamiento v2.** La adyacencia pasa de blobs
+  `Vec<EdgeId>` por nodo a una clave binaria tipada por arista
+  (`O|src|etype|tgt|edge` + espejo `I|…`): insertar o borrar una arista es
+  O(1) — antes reescribía la lista completa del nodo, O(grado), y borrar
+  un supernodo era O(grado²). Los datos viven en keyspaces separados con
+  claves binarias order-preserving (entities, history, adjacency, indexes,
+  catalog): se acabó la sopa de namespaces string del tree default. Los
+  tipos de arista se internan (u32 en la clave) y el índice temporal se
+  des-blobea: una clave `t|ts|nodo|versión` por entrada en vez del RMW de
+  un `Vec` bajo el commit lock.
+- **Migración automática al primer open.** Una base ≤0.5.2 abre con este
+  binario y queda 100% en layout v2 sin intervención, vía una máquina de
+  estados reanudable: copia (el legado queda intacto) → verificación por
+  identidad (digest multiconjunto por namespace, no solo conteos) →
+  activación → limpieza idempotente. Cada transición se hace durable antes
+  de avanzar, así que un crash en cualquier fase se reanuda solo en el
+  siguiente open. Si la verificación falla, el open devuelve error fuerte:
+  el sentinel jamás se escribe y el legado sigue recuperable.
+
+### ⚠️ DOWNGRADE
+
+- **Una base migrada a layout v2 NO es legible por binarios ≤0.5.2** — y
+  peor: un binario viejo podría ESCRIBIR datos en el formato antiguo,
+  creando un universo paralelo dentro de la misma base. No hay vuelta
+  automática; para volver a ≤0.5.2, usa `Storage::copy_database` hacia una
+  base nueva con el binario nuevo, o restaura un backup previo a la
+  migración. La marca de diagnóstico `meta:layout_migrated_to` queda
+  escrita en el formato viejo para que soporte pueda distinguir el caso.
+
+### Added
+
+- Invariante de atomicidad cruzada: una arista y sus claves de adyacencia
+  se confirman juntas o ninguna (`apply_multi`, batch atómico
+  cross-keyspace en el contrato KV interno, con suite de conformidad para
+  ambos motores). Sin ella, un crash podía dejar `edges` sin adyacencia o
+  una dirección sin su espejo.
+- Claves `idx:out/in:` huérfanas: la migración reconstruye la adyacencia
+  desde `edges` (fuente de verdad), así que las huérfanas de nodos
+  borrados que v1 acumulaba mueren al migrar y son imposibles hacia
+  adelante.
 
 ### Changed
 
+- **Rendimiento medido del layout v2** (misma máquina, vs 0.5.2): bulk load
+  **−38%**, lecturas iguales o mejores, commits concurrentes iguales. El
+  commit transaccional pequeño en **sled** paga ~+14% (la invariante de
+  atomicidad cruzada usa su transacción multi-tree, que serializa con un
+  lock global); en **redb** el mismo commit corre en ~6 ms — 2× más rápido
+  que el baseline anterior de sled — porque su transacción única da la
+  invariante sin costo extra. Trade-off aceptado a sabiendas: el backend
+  experimental decidido absorbe la invariante gratis.
+
+- La migración de layout corre ANTES del replay del WAL: el redo necesita
+  reconciliar transacciones commiteadas del WAL sobre el estado ya
+  migrado — replayar sobre keyspaces v2 vacíos re-crearía cadenas MVCC
+  truncadas al sufijo del WAL. El porqué completo está documentado en el
+  call site.
+- `flush_indices` es ahora un no-op: la adyacencia se persiste por
+  operación (dirección edges → disco → RAM) y los blobs en RAM dejan de
+  tener autoridad sobre el disco.
 - **Split del ecosistema:** `ndbstudio` y `nopaldb-mcp` viven ahora en
   github.com/Anxious-Mind-Group (con su historial completo). Este repositorio
   queda enfocado en el engine + wrapper Python y es MPL-2.0 puro. Sin cambios
-  de código ni release del crate por este split.
+  de código por este split.
+
+### Fixed
+
+- `add_edges_batch`/`BulkLoader` ahora persiste aristas + adyacencia
+  directamente en el mismo batch atómico (antes dependía de un
+  `flush_indices` posterior que alguien tenía que acordarse de llamar).
+- Borrar un nodo ya no deja claves de adyacencia huérfanas: la purga de un
+  supernodo va por chunks idempotentes (incluido el espejo del otro
+  extremo) y la entidad se borra al final — un crash intermedio deja un
+  nodo válido con menos aristas, no basura.
 
 ---
 
