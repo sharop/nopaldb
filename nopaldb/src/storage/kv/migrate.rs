@@ -66,14 +66,16 @@ impl MigrationReport {
 }
 
 /// FNV-1a 64 streaming — determinista, sin dependencia nueva. No es
-/// criptográfico: detecta corrupción/omisión, no adversarios.
-struct Fnv1a(u64);
+/// criptográfico: detecta corrupción/omisión, no adversarios. Compartido con
+/// la verificación de identidad de la migración de layout
+/// (`storage::layout_migrate`).
+pub(crate) struct Fnv1a(pub(crate) u64);
 
 impl Fnv1a {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(0xcbf2_9ce4_8422_2325)
     }
-    fn update(&mut self, bytes: &[u8]) {
+    pub(crate) fn update(&mut self, bytes: &[u8]) {
         for b in bytes {
             self.0 ^= u64::from(*b);
             self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);

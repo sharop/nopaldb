@@ -68,6 +68,11 @@ mod keys;
 mod interner;
 pub(crate) use interner::EdgeTypeInterner;
 
+/// Migración automática del layout v1→v2 (F5.5): mueve la fuente de verdad
+/// del tree `default` a los keyspaces v2 con la máquina copy → verify →
+/// rebuild → activate → cleanup. La orquesta `Graph::open_with_options`.
+mod layout_migrate;
+
 /// Capa de dominio del storage (MVCC, adyacencia, índices) sobre el contrato
 /// KV (motor según feature).
 ///
@@ -1694,6 +1699,43 @@ impl Storage {
     /// Forces the underlying storage engine to persist all buffered data.
     pub async fn flush(&self) -> Result<()> {
         self.engine.flush()
+    }
+
+    // ─── Seams crudas SOLO para tests de migración ──────────────────────────
+    //
+    // No son API: existen para que los tests de integración de la migración
+    // de layout (tests/layout_v2_migration_test.rs) puedan FABRICAR bases v1
+    // byte a byte y simular crashes/corrupción por fase — cosas imposibles
+    // desde la API pública precisamente porque el runtime ya no escribe el
+    // layout v1. Ocultas de la doc; pueden cambiar o desaparecer sin aviso.
+    // (Mismo precedente que los easter eggs #[doc(hidden)] del Graph.)
+
+    /// Escritura cruda en un keyspace por nombre. SOLO tests de migración.
+    #[doc(hidden)]
+    pub fn debug_raw_insert(&self, keyspace: &str, key: &[u8], value: &[u8]) -> Result<()> {
+        self.engine.keyspace(keyspace)?.insert(key, value)
+    }
+
+    /// Borrado crudo en un keyspace por nombre. SOLO tests de migración.
+    #[doc(hidden)]
+    pub fn debug_raw_remove(&self, keyspace: &str, key: &[u8]) -> Result<()> {
+        self.engine.keyspace(keyspace)?.remove(key)
+    }
+
+    /// Lectura cruda de un keyspace por nombre. SOLO tests de migración.
+    #[doc(hidden)]
+    pub fn debug_raw_get(&self, keyspace: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        self.engine.keyspace(keyspace)?.get(key)
+    }
+
+    /// Todas las claves de un keyspace, en orden. SOLO tests de migración.
+    #[doc(hidden)]
+    pub fn debug_raw_keys(&self, keyspace: &str) -> Result<Vec<Vec<u8>>> {
+        self.engine
+            .keyspace(keyspace)?
+            .iter()
+            .map(|item| item.map(|(k, _)| k))
+            .collect()
     }
 }
 

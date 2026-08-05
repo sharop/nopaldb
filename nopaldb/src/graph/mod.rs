@@ -216,6 +216,26 @@ impl Graph {
         let path_ref = path.as_ref();
         let storage = Storage::new_with_options(path_ref, options).await?;
 
+        // F5.5: migración automática del layout v1→v2. Corre ANTES que
+        // cualquier otro lector del open — índices secundarios, adyacencia,
+        // relojes lógicos y, sobre todo, el replay del WAL. El plan original
+        // la colocaba post-replay (molde de la sub-migración prop-idx), pero
+        // eso no se sostiene contra el código real: el redo del WAL decide su
+        // idempotencia LEYENDO el estado actual (`replay_node_upsert` compara
+        // contra la versión current en `history`; `edge_exists` contra
+        // `edges`) y `close()` no trunca el WAL — una base v1 recién
+        // actualizada trae registros commiteados casi siempre. Replay sobre
+        // keyspaces v2 vacíos re-crearía cadenas MVCC truncadas al sufijo del
+        // WAL (versiones renumeradas desde 1) que la copia posterior no puede
+        // reconciliar. Migrar primero reproduce el mundo v1→v1: el replay
+        // aplica el WAL sobre el estado completo ya migrado y se salta lo ya
+        // aplicado. La verificación por identidad también lo exige: compara
+        // legacy vs copia byte a byte, sin escrituras de terceros en medio.
+        // La sub-migración del índice de propiedades (más abajo) queda
+        // igualmente servida: su sentinel legacy `meta:prop_idx_format` ya
+        // está reconciliado en `catalog` cuando ella lo lee.
+        storage.migrate_layout_if_needed().await?;
+
         //Crear WAL
         let wal_path = path_ref.join("nopal.wal");
         let wal = WalManager::new(wal_path).await?;
@@ -502,7 +522,8 @@ impl Graph {
     ///
     /// Idempotente y crash-safe: el sentinel `prop_idx_format` (keyspace
     /// `catalog` desde F5.4; las bases v1 lo tenían como
-    /// `meta:prop_idx_format` en el tree default y las reconcilia F5.5) se
+    /// `meta:prop_idx_format` en el tree default y la migración de layout —
+    /// que corre antes, al inicio del open — ya lo copió a `catalog`) se
     /// escribe AL FINAL, así que un crash a mitad de migración simplemente
     /// la repite en el próximo open (borrado y rebuild son idempotentes; los
     /// índices de propiedades son datos DERIVADOS — los nodos jamás se
