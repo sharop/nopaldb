@@ -500,7 +500,9 @@ impl Graph {
 
     /// Migración del índice de propiedades al formato v2 (claves tipadas).
     ///
-    /// Idempotente y crash-safe: el sentinel `meta:prop_idx_format` se
+    /// Idempotente y crash-safe: el sentinel `prop_idx_format` (keyspace
+    /// `catalog` desde F5.4; las bases v1 lo tenían como
+    /// `meta:prop_idx_format` en el tree default y las reconcilia F5.5) se
     /// escribe AL FINAL, así que un crash a mitad de migración simplemente
     /// la repite en el próximo open (borrado y rebuild son idempotentes; los
     /// índices de propiedades son datos DERIVADOS — los nodos jamás se

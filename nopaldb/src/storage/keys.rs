@@ -23,14 +23,19 @@ use crate::types::{EdgeId, NodeId};
 
 // ─── Prefijos de scan ────────────────────────────────────────────────────────
 
-/// Prefijo del namespace de nodos en el keyspace default.
+/// Prefijo del namespace de nodos en el keyspace default. LEGACY sin
+/// consumidores desde F5.4 (los nodos viven en `entities` con claves de
+/// `v2`); lo usará la migración de layout (F5.5).
+#[allow(dead_code)]
 pub(crate) const NODE_PREFIX: &str = "node:";
 /// Prefijo común de los índices de adyacencia (`idx:out:` / `idx:in:`).
 /// LEGACY sin consumidores desde F5.3 (la adyacencia vive en el keyspace
 /// `adjacency` con claves de `v2`); lo usará la migración de layout (F5.5).
 #[allow(dead_code)]
 pub(crate) const ADJ_PREFIX: &[u8] = b"idx:";
-/// Prefijo del índice por timestamp.
+/// Prefijo del índice por timestamp. LEGACY sin consumidores desde F5.4
+/// (el índice ts vive des-blobeado en `indexes` con claves de `v2`).
+#[allow(dead_code)]
 pub(crate) const TS_PREFIX: &str = "ts:";
 /// Prefijo del índice de propiedades LEGADO v1 (solo migración/limpieza; el
 /// v2 vive en su propio keyspace con claves de `encode_property_index_key`).
@@ -45,30 +50,53 @@ pub(crate) const ADJ_OUT_PREFIX: &str = "idx:out:";
 #[allow(dead_code)]
 pub(crate) const ADJ_IN_PREFIX: &str = "idx:in:";
 
-// ─── Constructores (keyspace default) ────────────────────────────────────────
+// ─── Nombres meta LEGACY del tree default ────────────────────────────────────
+// Las bases nuevas guardan estas metas en el keyspace `catalog`
+// (`v2::catalog_meta_key` con los nombres SIN prefijo que exporta
+// `storage::META_*`); estos nombres `meta:*` solo los leerá la migración de
+// layout (F5.5) sobre bases v1.
 
-/// Registro base de un nodo: `node:{uuid}`.
+#[allow(dead_code)]
+pub(crate) const LEGACY_META_NEXT_TIMESTAMP: &str = "meta:next_timestamp";
+#[allow(dead_code)]
+pub(crate) const LEGACY_META_NEXT_TX_ID: &str = "meta:next_tx_id";
+#[allow(dead_code)]
+pub(crate) const LEGACY_META_PROP_IDX_FORMAT: &str = "meta:prop_idx_format";
+
+// ─── Constructores (keyspace default) ────────────────────────────────────────
+// LEGACY todos desde F5.4: los reutilizará la migración de layout (F5.5);
+// ningún path de runtime los llama ya.
+
+/// Registro base de un nodo: `node:{uuid}`. LEGACY (F5.5).
+#[allow(dead_code)]
 pub(crate) fn node_key(id: NodeId) -> String {
     format!("{NODE_PREFIX}{id}")
 }
 
 /// Versión MVCC de un nodo: `node:{uuid}:v{n}` (n en decimal, sin padding).
+/// LEGACY (F5.5).
+#[allow(dead_code)]
 pub(crate) fn node_version_key(id: NodeId, version: u64) -> String {
     format!("{NODE_PREFIX}{id}:v{version}")
 }
 
 /// Puntero a la versión current de un nodo: `node:{uuid}:current`.
+/// LEGACY (F5.5).
+#[allow(dead_code)]
 pub(crate) fn node_current_key(id: NodeId) -> String {
     format!("{NODE_PREFIX}{id}:current")
 }
 
-/// Lista de versiones de un nodo: `node:{uuid}:versions`.
+/// Lista de versiones de un nodo: `node:{uuid}:versions`. LEGACY (F5.5).
+#[allow(dead_code)]
 pub(crate) fn node_versions_key(id: NodeId) -> String {
     format!("{NODE_PREFIX}{id}:versions")
 }
 
 /// Índice por timestamp: `ts:{n}` (n en decimal, sin padding — el orden
 /// lexicográfico NO es el numérico; los consumidores parsean, no ordenan).
+/// LEGACY (F5.5): el v2 des-blobea a `v2::ts_index_key` en `indexes`.
+#[allow(dead_code)]
 pub(crate) fn ts_key(ts: u64) -> String {
     format!("{TS_PREFIX}{ts}")
 }
@@ -107,8 +135,10 @@ pub(crate) fn edge_versions_prefix(id: EdgeId) -> String {
 // (prefijo + UUID parseado + sufijo exacto) y no por substring: una blacklist
 // tipo `contains(":v")` funciona hoy por accidente (un UUID no contiene `:`)
 // pero se rompe en silencio el día que se agregue un sufijo nuevo.
+// LEGACY ambos desde F5.4: los usará el clasificador de la migración F5.5.
 
-/// Clave de nodo base: `node:{uuid}` exacto.
+/// Clave de nodo base: `node:{uuid}` exacto. LEGACY (F5.5).
+#[allow(dead_code)]
 pub(crate) fn is_base_node_key(key: &[u8]) -> bool {
     match std::str::from_utf8(key) {
         Ok(s) => s
@@ -119,6 +149,8 @@ pub(crate) fn is_base_node_key(key: &[u8]) -> bool {
 }
 
 /// Clave de versión MVCC: `node:{uuid}:v{n}` exacto (n = dígitos).
+/// LEGACY (F5.5).
+#[allow(dead_code)]
 pub(crate) fn is_version_node_key(key: &[u8]) -> bool {
     let Ok(s) = std::str::from_utf8(key) else {
         return false;
@@ -147,10 +179,9 @@ pub(crate) fn is_version_node_key(key: &[u8]) -> bool {
 /// ⚠️ FORMATO EN DISCO — misma advertencia que la cabecera del archivo:
 /// cambiar cualquier constructor exige bump de formato + migración.
 ///
-/// (allow(dead_code) fuera de tests: el namespace de adyacencia ya tiene
-/// consumidores desde F5.3; entities/history/indexes/catalog-meta los
-/// estrenan los paths de F5.4 y entonces el allow se retira.)
-#[cfg_attr(not(test), allow(dead_code))]
+/// Todos los namespaces tienen consumidores de runtime desde F5.4; los
+/// allow(dead_code) que quedan son puntuales (sentinels y prefijos tipados
+/// que estrenan F5.5 y los reads por tipo post-F5).
 pub(crate) mod v2 {
     use crate::types::{EdgeId, NodeId};
 
@@ -170,6 +201,10 @@ pub(crate) mod v2 {
     }
 
     /// Parser estricto de `node_key_v2`: rechaza longitud ≠ 17 y tag ajeno.
+    /// (Sin consumidor de runtime: los reads de `entities` deserializan el
+    /// valor y el id viaja dentro del Node; lo usará la verificación de la
+    /// migración F5.5. Pinneado por tests.)
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn parse_node_key_v2(key: &[u8]) -> Option<NodeId> {
         if key.len() != ENTITY_KEY_LEN || key[0] != ENTITY_TAG {
             return None;
@@ -199,7 +234,10 @@ pub(crate) mod v2 {
 
     /// Prefijo de scan de TODAS las versiones de un nodo: `v` + uuid16
     /// (17 bytes). El uuid es de longitud fija, así que el prefijo no captura
-    /// versiones de otros nodos.
+    /// versiones de otros nodos. (Sin consumidor de runtime: los reads de
+    /// historia van por la lista `l|`; candidato natural del purge por nodo
+    /// de F5.5. Pinneado por tests.)
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn history_version_prefix(id: NodeId) -> [u8; 17] {
         let mut key = [0u8; 17];
         key[0] = HISTORY_VERSION_TAG;
@@ -221,6 +259,17 @@ pub(crate) mod v2 {
         key[0] = HISTORY_VERSIONS_TAG;
         key[1..17].copy_from_slice(id.as_bytes());
         key
+    }
+
+    /// Parser estricto de `history_versions_key` (`l` + uuid16): rechaza
+    /// longitud ≠ 17 y tag ajeno. El scan de "todos los nodos con historia"
+    /// (GC) recorre el prefijo `[HISTORY_VERSIONS_TAG]` y decodifica con
+    /// esto — en v1 eso era filtrar sufijos `:versions` de la sopa.
+    pub(crate) fn parse_history_versions_key(key: &[u8]) -> Option<NodeId> {
+        if key.len() != 17 || key[0] != HISTORY_VERSIONS_TAG {
+            return None;
+        }
+        Some(NodeId::from_bytes(key[1..17].try_into().ok()?))
     }
 
     // ─── Keyspace `adjacency`: contrato de 53 bytes ─────────────────────────
@@ -289,7 +338,9 @@ pub(crate) mod v2 {
 
     /// Prefijo de la adyacencia saliente de un nodo POR TIPO:
     /// `O` + uuid16 + etype u32 BE (21 bytes) — el neighbors-por-tipo del
-    /// benchmark, sin N+1.
+    /// benchmark, sin N+1. (Consumidor de runtime: los reads por tipo
+    /// post-F5; hoy lo pinnean los tests de frontera.)
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn adj_out_typed_prefix(node: NodeId, etype: u32) -> [u8; 21] {
         let mut key = [0u8; 21];
         key[..17].copy_from_slice(&adj_out_prefix(node));
@@ -298,6 +349,7 @@ pub(crate) mod v2 {
     }
 
     /// Espejo entrante de `adj_out_typed_prefix` (21 bytes).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn adj_in_typed_prefix(node: NodeId, etype: u32) -> [u8; 21] {
         let mut key = [0u8; 21];
         key[..17].copy_from_slice(&adj_in_prefix(node));
@@ -345,11 +397,24 @@ pub(crate) mod v2 {
     }
 
     /// Prefijo de scan de un timestamp exacto: `t` + ts u64 BE (9 bytes).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn ts_prefix(ts: u64) -> [u8; 9] {
         let mut key = [0u8; 9];
         key[0] = TS_TAG;
         key[1..9].copy_from_slice(&ts.to_be_bytes());
         key
+    }
+
+    /// Decodifica una entrada del índice ts como `(ts, nodo, versión)`.
+    /// RECHAZA longitud ≠ 33 y tag ajeno.
+    pub(crate) fn parse_ts_index_key(key: &[u8]) -> Option<(u64, NodeId, u64)> {
+        if key.len() != 33 || key[0] != TS_TAG {
+            return None;
+        }
+        let ts = u64::from_be_bytes(key[1..9].try_into().ok()?);
+        let id = NodeId::from_bytes(key[9..25].try_into().ok()?);
+        let version = u64::from_be_bytes(key[25..33].try_into().ok()?);
+        Some((ts, id, version))
     }
 
     // ─── Keyspace `catalog`: `m|{nombre}` · `et|{u32 BE}` · `etn|{nombre}` ──
@@ -377,10 +442,16 @@ pub(crate) mod v2 {
 
     /// Nombre meta del sentinel de formato de layout (`layout_format=2` se
     /// escribe al ACTIVAR la migración F5, ANTES de limpiar el legacy).
+    /// Consumidor: F5.5.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const META_LAYOUT_FORMAT: &str = "layout_format";
     /// Nombre meta de la máquina de estados de la migración de layout.
+    /// Consumidor: F5.5.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const META_LAYOUT_MIGRATION_STATE: &str = "layout_migration_state";
     /// Nombre meta de la marca de limpieza idempotente del legacy.
+    /// Consumidor: F5.5.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const META_LEGACY_CLEANUP_DONE: &str = "legacy_cleanup_done";
 
     /// Entrada meta del catalog: `m` + nombre UTF-8 (sin separador: el
@@ -513,6 +584,27 @@ mod tests {
     }
 
     #[test]
+    fn test_v2_history_versions_key_roundtrip_y_rechazos() {
+        for id in [U00, mid_uuid(), UFF] {
+            let key = v2::history_versions_key(id);
+            assert_eq!(v2::parse_history_versions_key(&key), Some(id));
+        }
+        let key = v2::history_versions_key(mid_uuid());
+        assert_eq!(v2::parse_history_versions_key(&key[..16]), None, "truncada");
+        assert_eq!(
+            v2::parse_history_versions_key(&[&key[..], &[0u8]].concat()),
+            None,
+            "bytes extra"
+        );
+        // Los otros dos namespaces del keyspace NO clasifican como lista.
+        assert_eq!(v2::parse_history_versions_key(&v2::history_current_key(mid_uuid())), None);
+        assert_eq!(
+            v2::parse_history_versions_key(&v2::history_version_key(mid_uuid(), 1)),
+            None
+        );
+    }
+
+    #[test]
     fn test_v2_adj_contrato_53_bytes_roundtrip() {
         // etype en las fronteras del rango completo, UUIDs extremos.
         for (src, tgt, edge) in [(U00, UFF, mid_uuid()), (UFF, U00, U00), (UFF, UFF, UFF)] {
@@ -629,6 +721,20 @@ mod tests {
                 assert!(!v2::ts_index_key(ts - 1, UFF, u64::MAX).starts_with(&p));
             }
         }
+    }
+
+    #[test]
+    fn test_v2_ts_index_key_roundtrip_y_rechazos() {
+        for (ts, id, ver) in [(0u64, U00, 0u64), (7, mid_uuid(), 42), (u64::MAX, UFF, u64::MAX)] {
+            let key = v2::ts_index_key(ts, id, ver);
+            assert_eq!(v2::parse_ts_index_key(&key), Some((ts, id, ver)));
+        }
+        let key = v2::ts_index_key(7, mid_uuid(), 42);
+        assert_eq!(v2::parse_ts_index_key(&key[..32]), None, "truncada");
+        assert_eq!(v2::parse_ts_index_key(&[&key[..], &[0u8]].concat()), None, "34 bytes");
+        let mut ajena = key;
+        ajena[0] = b'x';
+        assert_eq!(v2::parse_ts_index_key(&ajena), None, "tag ajeno");
     }
 
     #[test]
