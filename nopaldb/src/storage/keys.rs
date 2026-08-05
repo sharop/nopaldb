@@ -26,6 +26,9 @@ use crate::types::{EdgeId, NodeId};
 /// Prefijo del namespace de nodos en el keyspace default.
 pub(crate) const NODE_PREFIX: &str = "node:";
 /// Prefijo común de los índices de adyacencia (`idx:out:` / `idx:in:`).
+/// LEGACY sin consumidores desde F5.3 (la adyacencia vive en el keyspace
+/// `adjacency` con claves de `v2`); lo usará la migración de layout (F5.5).
+#[allow(dead_code)]
 pub(crate) const ADJ_PREFIX: &[u8] = b"idx:";
 /// Prefijo del índice por timestamp.
 pub(crate) const TS_PREFIX: &str = "ts:";
@@ -33,9 +36,13 @@ pub(crate) const TS_PREFIX: &str = "ts:";
 /// v2 vive en su propio keyspace con claves de `encode_property_index_key`).
 pub(crate) const LEGACY_PROP_IDX_PREFIX: &[u8] = b"idx:prop:";
 
-/// Prefijo de adyacencia saliente (subconjunto de `ADJ_PREFIX`).
+/// Prefijo de adyacencia saliente (subconjunto de `ADJ_PREFIX`). LEGACY:
+/// solo para la migración F5.5, como `ADJ_PREFIX`.
+#[allow(dead_code)]
 pub(crate) const ADJ_OUT_PREFIX: &str = "idx:out:";
-/// Prefijo de adyacencia entrante (subconjunto de `ADJ_PREFIX`).
+/// Prefijo de adyacencia entrante (subconjunto de `ADJ_PREFIX`). LEGACY:
+/// solo para la migración F5.5, como `ADJ_PREFIX`.
+#[allow(dead_code)]
 pub(crate) const ADJ_IN_PREFIX: &str = "idx:in:";
 
 // ─── Constructores (keyspace default) ────────────────────────────────────────
@@ -66,12 +73,16 @@ pub(crate) fn ts_key(ts: u64) -> String {
     format!("{TS_PREFIX}{ts}")
 }
 
-/// Adyacencia saliente de un nodo: `idx:out:{uuid}`.
+/// Adyacencia saliente de un nodo: `idx:out:{uuid}`. LEGACY sin
+/// consumidores desde F5.3; lo usará la migración de layout (F5.5).
+#[allow(dead_code)]
 pub(crate) fn adjacency_out_key(id: NodeId) -> String {
     format!("{ADJ_OUT_PREFIX}{id}")
 }
 
-/// Adyacencia entrante de un nodo: `idx:in:{uuid}`.
+/// Adyacencia entrante de un nodo: `idx:in:{uuid}`. LEGACY sin
+/// consumidores desde F5.3; lo usará la migración de layout (F5.5).
+#[allow(dead_code)]
 pub(crate) fn adjacency_in_key(id: NodeId) -> String {
     format!("{ADJ_IN_PREFIX}{id}")
 }
@@ -136,8 +147,9 @@ pub(crate) fn is_version_node_key(key: &[u8]) -> bool {
 /// ⚠️ FORMATO EN DISCO — misma advertencia que la cabecera del archivo:
 /// cambiar cualquier constructor exige bump de formato + migración.
 ///
-/// (allow(dead_code) fuera de tests: los consumidores llegan con el rewire
-/// de los paths de dominio en F5.3/F5.4 y entonces el allow se retira.)
+/// (allow(dead_code) fuera de tests: el namespace de adyacencia ya tiene
+/// consumidores desde F5.3; entities/history/indexes/catalog-meta los
+/// estrenan los paths de F5.4 y entonces el allow se retira.)
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod v2 {
     use crate::types::{EdgeId, NodeId};

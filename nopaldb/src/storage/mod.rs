@@ -25,6 +25,11 @@ pub const PROP_IDX_FORMAT_CURRENT: u64 = 2;
 
 /// Nombre del keyspace del índice de propiedades v2.
 const PROP_IDX_TREE: &str = "prop_idx_v2";
+/// Nombre del keyspace de aristas (registro current por EdgeId).
+const EDGES_TREE: &str = "edges";
+/// Nombre del keyspace de adyacencia v2 (F5): dos claves de 53 bytes por
+/// arista (`keys::v2`), valor vacío.
+const ADJACENCY_TREE: &str = "adjacency";
 /// Key meta con la cota superior persistida del contador de transaction ids.
 pub const META_NEXT_TX_ID: &str = "meta:next_tx_id";
 
@@ -40,11 +45,9 @@ mod kv;
 mod keys;
 
 /// Interning de tipos de arista string↔u32 (layout v2, F5), persistido en el
-/// keyspace `catalog`. Sin consumidores hasta el rewire de adyacencia
-/// (F5.3/F5.4).
-#[cfg_attr(not(test), allow(dead_code))]
+/// keyspace `catalog`. Consumidor: la adyacencia v2 — el tipo viaja como
+/// u32 BE dentro de la clave de 53 bytes (`keys::v2`).
 mod interner;
-#[allow(unused_imports)] // el consumidor (Graph) llega en F5.3/F5.4
 pub(crate) use interner::EdgeTypeInterner;
 
 /// Capa de dominio del storage (MVCC, adyacencia, índices) sobre el contrato
@@ -60,19 +63,21 @@ pub struct Storage {
     versioned_edges_ks: Arc<dyn kv::KvKeyspace>,
     versioned_edges_current_ks: Arc<dyn kv::KvKeyspace>,
     prop_idx_ks: Arc<dyn kv::KvKeyspace>,
-    // Keyspaces del layout v2 (F5): abiertos y cacheados desde F5.2, AÚN sin
-    // consumidores — el rewire de los paths de dominio llega en F5.3/F5.4 y
-    // ahí se retiran estos allow(dead_code).
-    #[allow(dead_code)]
+    // Keyspaces del layout v2 (F5): `catalog` (interning) y `adjacency`
+    // (arista-por-clave tipada) tienen consumidores desde F5.3;
+    // entities/history/indexes los estrenan los paths de F5.4 y ahí se
+    // retiran sus allow(dead_code).
     catalog_ks: Arc<dyn kv::KvKeyspace>,
     #[allow(dead_code)]
     entities_ks: Arc<dyn kv::KvKeyspace>,
     #[allow(dead_code)]
     history_ks: Arc<dyn kv::KvKeyspace>,
-    #[allow(dead_code)]
     adjacency_ks: Arc<dyn kv::KvKeyspace>,
     #[allow(dead_code)]
     indexes_ks: Arc<dyn kv::KvKeyspace>,
+    /// Interning nombre↔u32 de tipos de arista (RAM, respaldado por
+    /// `catalog_ks`), cargado completo al abrir.
+    interner: EdgeTypeInterner,
     profile: StorageProfile,
 }
 
@@ -84,6 +89,34 @@ fn serialize<T: serde::Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
 fn deserialize<'a, T: serde::de::Deserialize<'a>>(bytes: &'a [u8]) -> Result<T> {
     rmp_serde::from_slice(bytes)
         .map_err(|e| NopalError::SerializationError(format!("MessagePack deserialize error: {}", e)))
+}
+
+/// Valor de las claves de adyacencia v2: vacío por contrato (toda la
+/// información viaja en la clave de 53 bytes).
+const EMPTY_VALUE: &[u8] = &[];
+
+/// Cota de operaciones por `WriteBatch` en el rebuild de adyacencia
+/// (memoria acotada; el rebuild es reparación idempotente, no necesita ser
+/// una sola transacción).
+const REBUILD_BATCH_OPS: usize = 10_000;
+
+/// Parser de clave de adyacencia con semántica de corrupción: una clave que
+/// `keys::v2::parse_adj_key` rechaza dentro del keyspace `adjacency` es un
+/// bug o corrupción externa y falla FUERTE (nada más escribe ahí).
+fn parse_adj_key_strict(
+    key: &[u8],
+) -> Result<(keys::v2::AdjDir, NodeId, u32, NodeId, EdgeId)> {
+    keys::v2::parse_adj_key(key).ok_or_else(|| {
+        crate::error::StorageError::new(
+            crate::error::StorageErrorKind::InvalidData,
+            format!(
+                "clave malformada en el keyspace adjacency ({} bytes: {:02x?})",
+                key.len(),
+                key
+            ),
+        )
+        .into()
+    })
 }
 
 // ─── Codificación de claves del índice de propiedades (formato v2) ──────────
@@ -165,15 +198,16 @@ impl Storage {
     /// abren on-demand, igual que antes del rewire).
     fn from_engine(engine: Arc<dyn kv::KvEngine>, profile: StorageProfile) -> Result<Self> {
         let default_ks = engine.keyspace(kv::DEFAULT_KEYSPACE)?;
-        let edges_ks = engine.keyspace("edges")?;
+        let edges_ks = engine.keyspace(EDGES_TREE)?;
         let versioned_edges_ks = engine.keyspace("versioned_edges")?;
         let versioned_edges_current_ks = engine.keyspace("versioned_edges_current")?;
         let prop_idx_ks = engine.keyspace(PROP_IDX_TREE)?;
         let catalog_ks = engine.keyspace("catalog")?;
         let entities_ks = engine.keyspace("entities")?;
         let history_ks = engine.keyspace("history")?;
-        let adjacency_ks = engine.keyspace("adjacency")?;
+        let adjacency_ks = engine.keyspace(ADJACENCY_TREE)?;
         let indexes_ks = engine.keyspace("indexes")?;
+        let interner = EdgeTypeInterner::load(&catalog_ks)?;
 
         Ok(Self {
             engine,
@@ -187,6 +221,7 @@ impl Storage {
             history_ks,
             adjacency_ks,
             indexes_ks,
+            interner,
             profile,
         })
     }
@@ -517,88 +552,168 @@ impl Storage {
         Ok(best.into_values().map(|ve| ve.edge_data).collect())
     }
 
-    /// Guarda el índice de adyacencia saliente de un nodo
-    pub async fn save_adjacency_out(&self, node_id: NodeId, edges: &[EdgeId]) -> Result<()> {
-        let key = keys::adjacency_out_key(node_id);
-        let value = serialize(edges)?;
+    // ─── Adyacencia v2 (F5.3): arista-por-clave tipada, keyspace `adjacency` ──
+    //
+    // Cada arista son exactamente DOS claves de 53 bytes con valor vacío
+    // (`O|src|etype|tgt|edge` + espejo `I|tgt|etype|src|edge`, codec en
+    // `keys::v2`), escritas/borradas en el MISMO `apply_multi` que su
+    // registro del keyspace `edges`. La invariante "jamás edges sin sus O/I,
+    // ni O sin su espejo I" la garantiza la atomicidad cross-keyspace del
+    // contrato KV (F5.1) — no una convención de callers. Costo por operación:
+    // O(1) puts/removes (el v1 reescribía la lista completa del nodo: O(deg)).
 
-        self.default_ks.insert(key.as_bytes(), &value)?;
-
-        Ok(())
+    /// Interner nombre↔u32 de tipos de arista, cargado del catalog al abrir.
+    pub(crate) fn edge_type_interner(&self) -> &EdgeTypeInterner {
+        &self.interner
     }
 
-    /// Carga el índice de adyacencia saliente de un nodo
-    pub async fn load_adjacency_out(&self, node_id: NodeId) -> Result<Vec<EdgeId>> {
-        let key = keys::adjacency_out_key(node_id);
+    /// Id internado del tipo, asignando uno nuevo si no existía (batch
+    /// atómico sobre el catalog). Toda ASIGNACIÓN debe correr bajo el
+    /// write_gate del `Graph` — el mismo régimen serializado del resto de
+    /// las escrituras; para tipos ya internados es un lookup RAM O(1).
+    pub(crate) fn intern_edge_type(&self, name: &str) -> Result<u32> {
+        self.edge_type_interner().intern(&self.catalog_ks, name)
+    }
 
-        let value = self.default_ks.get(key.as_bytes())?;
+    /// Inserta una arista Y sus dos claves de adyacencia (O + espejo I) como
+    /// UNA transacción cross-keyspace (`apply_multi`): o se ve todo, o nada.
+    /// Idempotente (puts): el redo del WAL puede re-aplicarla sin duplicar.
+    pub async fn insert_edge_with_adjacency(&self, edge: &Edge, etype_id: u32) -> Result<()> {
+        let mut edges_batch = kv::WriteBatch::default();
+        edges_batch.insert(edge.id.to_string().as_bytes(), serialize(edge)?);
 
-        match value {
-            Some(v) => {
-                let edges: Vec<EdgeId> = deserialize(&v)?;
-                Ok(edges)
-            }
-            None => Ok(Vec::new()),
+        let mut adj_batch = kv::WriteBatch::default();
+        adj_batch.insert(keys::v2::adj_out_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
+        adj_batch.insert(keys::v2::adj_in_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
+
+        self.engine.apply_multi(vec![
+            (EDGES_TREE.to_string(), edges_batch),
+            (ADJACENCY_TREE.to_string(), adj_batch),
+        ])
+    }
+
+    /// Elimina una arista Y sus dos claves de adyacencia — el espejo exacto
+    /// de `insert_edge_with_adjacency`: 3 removes en un `apply_multi`.
+    pub async fn remove_edge_with_adjacency(&self, edge: &Edge, etype_id: u32) -> Result<()> {
+        let mut edges_batch = kv::WriteBatch::default();
+        edges_batch.remove(edge.id.to_string().as_bytes());
+
+        let mut adj_batch = kv::WriteBatch::default();
+        adj_batch.remove(keys::v2::adj_out_key(edge.source, etype_id, edge.target, edge.id));
+        adj_batch.remove(keys::v2::adj_in_key(edge.source, etype_id, edge.target, edge.id));
+
+        self.engine.apply_multi(vec![
+            (EDGES_TREE.to_string(), edges_batch),
+            (ADJACENCY_TREE.to_string(), adj_batch),
+        ])
+    }
+
+    /// Adyacencia saliente de un nodo leída de DISCO: `(etype, target,
+    /// edge)` en orden (etype, target, edge) — prefix scan O(deg del nodo).
+    pub async fn scan_adjacency_out(&self, node: NodeId) -> Result<Vec<(u32, NodeId, EdgeId)>> {
+        self.scan_adjacency_dir(keys::v2::adj_out_prefix(node))
+    }
+
+    /// Adyacencia entrante de un nodo leída de DISCO: `(etype, source, edge)`.
+    pub async fn scan_adjacency_in(&self, node: NodeId) -> Result<Vec<(u32, NodeId, EdgeId)>> {
+        self.scan_adjacency_dir(keys::v2::adj_in_prefix(node))
+    }
+
+    fn scan_adjacency_dir(&self, prefix: [u8; 17]) -> Result<Vec<(u32, NodeId, EdgeId)>> {
+        let mut entries = Vec::new();
+        for item in self.adjacency_ks.scan_prefix(&prefix) {
+            let (key, _) = item?;
+            let (_dir, _own, etype, other, edge) = parse_adj_key_strict(&key)?;
+            entries.push((etype, other, edge));
         }
+        Ok(entries)
     }
 
-    /// Guarda el índice de adyacencia entrante de un nodo
-    pub async fn save_adjacency_in(&self, node_id: NodeId, edges: &[EdgeId]) -> Result<()> {
-        let key = keys::adjacency_in_key(node_id);
-        let value = serialize(edges)?;
-
-        self.default_ks.insert(key.as_bytes(), &value)?;
-
-        Ok(())
-    }
-
-    /// Carga el índice de adyacencia entrante de un nodo
-    pub async fn load_adjacency_in(&self, node_id: NodeId) -> Result<Vec<EdgeId>> {
-        let key = keys::adjacency_in_key(node_id);
-
-        let value = self.default_ks.get(key.as_bytes())?;
-
-        match value {
-            Some(v) => {
-                let edges: Vec<EdgeId> = deserialize(&v)?;
-                Ok(edges)
-            }
-            None => Ok(Vec::new()),
-        }
-    }
-
-    /// Carga todos los índices de adyacencia (para reconstruir al abrir el grafo)
-    pub async fn load_all_adjacency_indices(&self) -> Result<(
+    /// Reconstruye los dos HashMaps RAM de adyacencia con un scan COMPLETO
+    /// del keyspace `adjacency` (solo claves: el valor es vacío por
+    /// contrato). Sustituye a `load_all_adjacency_indices` del layout v1.
+    /// Un nodo sin aristas simplemente no aparece (v1 persistía listas
+    /// vacías; en v2 ausencia == vacío).
+    pub async fn load_all_adjacency_v2(&self) -> Result<(
         HashMap<NodeId, Vec<EdgeId>>,  // adjacency_out
         HashMap<NodeId, Vec<EdgeId>>,  // adjacency_in
     )> {
-        let mut adjacency_out = HashMap::new();
-        let mut adjacency_in = HashMap::new();
+        let mut adjacency_out: HashMap<NodeId, Vec<EdgeId>> = HashMap::new();
+        let mut adjacency_in: HashMap<NodeId, Vec<EdgeId>> = HashMap::new();
 
-
-        // Iterar sobre todas las keys que empiezan con "idx:"
-        for item in self.default_ks.scan_prefix(keys::ADJ_PREFIX) {
-            let (key, value) = item?;
-            let key_str = String::from_utf8_lossy(&key);
-
-            if key_str.starts_with(keys::ADJ_OUT_PREFIX) {
-                if let Some(node_id_str) = key_str.strip_prefix(keys::ADJ_OUT_PREFIX)
-                    && let Ok(node_id) = uuid::Uuid::parse_str(node_id_str) {
-                        let edges: Vec<EdgeId> = deserialize(&value)?;
-                        adjacency_out.insert(node_id, edges);
-                }
-            } else if key_str.starts_with(keys::ADJ_IN_PREFIX)
-                && let Some(node_id_str) = key_str.strip_prefix(keys::ADJ_IN_PREFIX)
-                && let Ok(node_id) = uuid::Uuid::parse_str(node_id_str) {
-                    let edges: Vec<EdgeId> = deserialize(&value)?;
-                    adjacency_in.insert(node_id, edges);
+        for item in self.adjacency_ks.iter() {
+            let (key, _) = item?;
+            let (dir, own, _etype, _other, edge) = parse_adj_key_strict(&key)?;
+            match dir {
+                keys::v2::AdjDir::Out => adjacency_out.entry(own).or_default().push(edge),
+                keys::v2::AdjDir::In => adjacency_in.entry(own).or_default().push(edge),
             }
         }
 
         Ok((adjacency_out, adjacency_in))
     }
 
-    /// Reconstruye índices desde cero escaneando todas las aristas
+    /// Purga hasta `max_edges` aristas incidentes a `node`: por cada una,
+    /// su registro en `edges` + su clave O/I propia + el ESPEJO del otro
+    /// extremo, todo en UN `apply_multi` atómico. Retorna `(saliente?, otro
+    /// extremo, edge)` por arista purgada; vacío = no queda adyacencia del
+    /// nodo en disco. Idempotente: cada chunk re-escanea desde el prefijo y
+    /// las claves ya purgadas no reaparecen — un crash intermedio deja
+    /// aristas completas de menos, jamás pares rotos.
+    pub(crate) async fn purge_node_adjacency_chunk(
+        &self,
+        node: NodeId,
+        max_edges: usize,
+    ) -> Result<Vec<(bool, NodeId, EdgeId)>> {
+        debug_assert!(max_edges > 0);
+        // (saliente?, etype, otro, edge)
+        let mut entries: Vec<(bool, u32, NodeId, EdgeId)> = Vec::new();
+        for (is_out, prefix) in [
+            (true, keys::v2::adj_out_prefix(node)),
+            (false, keys::v2::adj_in_prefix(node)),
+        ] {
+            for item in self.adjacency_ks.scan_prefix(&prefix) {
+                if entries.len() >= max_edges {
+                    break;
+                }
+                let (key, _) = item?;
+                let (_dir, _own, etype, other, edge) = parse_adj_key_strict(&key)?;
+                entries.push((is_out, etype, other, edge));
+            }
+            if entries.len() >= max_edges {
+                break;
+            }
+        }
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut edges_batch = kv::WriteBatch::default();
+        let mut adj_batch = kv::WriteBatch::default();
+        for &(is_out, etype, other, edge) in &entries {
+            edges_batch.remove(edge.to_string().as_bytes());
+            // Los constructores reciben SIEMPRE (src, etype, tgt, edge) y
+            // voltean solos el lado I — aquí solo se decide quién es src.
+            let (src, tgt) = if is_out { (node, other) } else { (other, node) };
+            adj_batch.remove(keys::v2::adj_out_key(src, etype, tgt, edge));
+            adj_batch.remove(keys::v2::adj_in_key(src, etype, tgt, edge));
+        }
+        self.engine.apply_multi(vec![
+            (EDGES_TREE.to_string(), edges_batch),
+            (ADJACENCY_TREE.to_string(), adj_batch),
+        ])?;
+
+        Ok(entries
+            .into_iter()
+            .map(|(is_out, _etype, other, edge)| (is_out, other, edge))
+            .collect())
+    }
+
+    /// Reconstruye la adyacencia COMPLETA desde el keyspace `edges` (la
+    /// fuente de verdad): interna los tipos, REESCRIBE las claves v2 en disco
+    /// (clear + batches acotados) y devuelve los HashMaps para la RAM.
+    /// Es el reparador canónico: cualquier clave O/I faltante o huérfana
+    /// queda corregida. Idempotente.
     pub async fn rebuild_indices(&self) -> Result<(
         HashMap<NodeId, Vec<EdgeId>>,
         HashMap<NodeId, Vec<EdgeId>>,
@@ -606,22 +721,28 @@ impl Storage {
         let mut adjacency_out: HashMap<NodeId, Vec<EdgeId>> = HashMap::new();
         let mut adjacency_in: HashMap<NodeId, Vec<EdgeId>> = HashMap::new();
 
-        // Escanear todas las aristas del keyspace "edges"
+        self.adjacency_ks.clear()?;
+
+        let mut batch = kv::WriteBatch::default();
+        let mut pending_ops = 0usize;
         for item in self.edges_ks.iter() {
             let (_, value) = item?;
             let edge: Edge = deserialize(&value)?;
+            let etype_id = self.intern_edge_type(&edge.edge_type)?;
 
-            // Actualizar índice out
-            adjacency_out
-                .entry(edge.source)
-                .or_default()
-                .push(edge.id);
+            batch.insert(keys::v2::adj_out_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
+            batch.insert(keys::v2::adj_in_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
+            pending_ops += 2;
+            if pending_ops >= REBUILD_BATCH_OPS {
+                self.adjacency_ks.apply_batch(std::mem::take(&mut batch))?;
+                pending_ops = 0;
+            }
 
-            // Actualizar índice in
-            adjacency_in
-                .entry(edge.target)
-                .or_default()
-                .push(edge.id);
+            adjacency_out.entry(edge.source).or_default().push(edge.id);
+            adjacency_in.entry(edge.target).or_default().push(edge.id);
+        }
+        if pending_ops > 0 {
+            self.adjacency_ks.apply_batch(batch)?;
         }
 
         Ok((adjacency_out, adjacency_in))
@@ -1498,57 +1619,40 @@ impl Storage {
         Ok(ids)
     }
 
-    /// Inserta múltiples aristas en una sola operación atómica.
+    /// Inserta múltiples aristas CON su adyacencia v2 en UNA aplicación
+    /// atómica cross-keyspace. Cierra el hueco histórico del bulk: antes las
+    /// aristas entraban sin adyacencia persistida y dependían de un
+    /// `flush_indices` posterior que alguien tenía que acordarse de llamar.
+    ///
+    /// Los tipos se internan ANTES del `apply_multi` (cada asignación es su
+    /// propio batch atómico del catalog): un crash entre medias deja a lo
+    /// sumo tipos internados sin aristas, que es inocuo — los ids jamás se
+    /// reciclan. Debe llamarse bajo el write_gate (los bulk paths del Graph
+    /// ya lo toman).
     pub async fn insert_edges_batch(&self, edges: &[Edge]) -> Result<Vec<EdgeId>> {
         if edges.is_empty() {
             return Ok(Vec::new());
         }
 
-        let mut batch = kv::WriteBatch::default();
+        let mut edges_batch = kv::WriteBatch::default();
+        let mut adj_batch = kv::WriteBatch::default();
         let mut ids = Vec::with_capacity(edges.len());
 
-        //Revisar el keyspace de edges
         for edge in edges {
-            let key = edge.id.to_string();
-            let value = serialize(edge)?;
-            batch.insert(key.as_bytes(), value);
+            let etype_id = self.intern_edge_type(&edge.edge_type)?;
+            edges_batch.insert(edge.id.to_string().as_bytes(), serialize(edge)?);
+            adj_batch.insert(keys::v2::adj_out_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
+            adj_batch.insert(keys::v2::adj_in_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
             ids.push(edge.id);
         }
 
-        self.edges_ks.apply_batch(batch)?;
+        self.engine.apply_multi(vec![
+            (EDGES_TREE.to_string(), edges_batch),
+            (ADJACENCY_TREE.to_string(), adj_batch),
+        ])?;
 
-        log::debug!("Batch inserted {} edges to edges tree", ids.len());
+        log::debug!("Batch inserted {} edges (+ adjacency v2) atomically", ids.len());
         Ok(ids)
-    }
-
-    /// Guarda múltiples índices de adyacencia en batch
-    pub async fn save_adjacency_batch(
-        &self,
-        out_indices: &[(NodeId, Vec<EdgeId>)],
-        in_indices: &[(NodeId, Vec<EdgeId>)],
-    ) -> Result<()> {
-        let mut batch = kv::WriteBatch::default();
-
-        for (node_id, edge_ids) in out_indices {
-            let key = keys::adjacency_out_key(*node_id);
-            let value = serialize(edge_ids)?;
-            batch.insert(key.as_bytes(), value);
-        }
-
-        for (node_id, edge_ids) in in_indices {
-            let key = keys::adjacency_in_key(*node_id);
-            let value = serialize(edge_ids)?;
-            batch.insert(key.as_bytes(), value);
-        }
-
-        self.default_ks.apply_batch(batch)?;
-
-        log::debug!(
-            "Batch saved {} out indices and {} in indices",
-            out_indices.len(),
-            in_indices.len()
-        );
-        Ok(())
     }
 
     /// Flush all pending writes to disk
@@ -1830,26 +1934,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_save_and_load_adjacency() {
+    async fn test_adjacency_v2_roundtrip_insert_scan_remove() {
         let storage = Storage::in_memory().await.unwrap();
 
-        let node_id = uuid::Uuid::new_v4();
-        let edge_ids = vec![
-            uuid::Uuid::new_v4(),
-            uuid::Uuid::new_v4(),
-            uuid::Uuid::new_v4(),
-        ];
+        let a = uuid::Uuid::new_v4();
+        let b = uuid::Uuid::new_v4();
+        let edge = Edge::new(a, b, "LINKS");
+        let et = storage.intern_edge_type("LINKS").unwrap();
 
-        // Guardar índices
-        storage.save_adjacency_out(node_id, &edge_ids).await.unwrap();
-        storage.save_adjacency_in(node_id, &edge_ids).await.unwrap();
+        storage.insert_edge_with_adjacency(&edge, et).await.unwrap();
 
-        // Cargar índices
-        let loaded_out = storage.load_adjacency_out(node_id).await.unwrap();
-        let loaded_in = storage.load_adjacency_in(node_id).await.unwrap();
+        // Registro + espejo O/I consistente: la O de `a` y la I de `b` ven la
+        // MISMA tripleta; los lados que no tocan quedan vacíos.
+        assert!(storage.edge_exists(edge.id).await.unwrap());
+        assert_eq!(storage.scan_adjacency_out(a).await.unwrap(), vec![(et, b, edge.id)]);
+        assert_eq!(storage.scan_adjacency_in(b).await.unwrap(), vec![(et, a, edge.id)]);
+        assert!(storage.scan_adjacency_out(b).await.unwrap().is_empty());
+        assert!(storage.scan_adjacency_in(a).await.unwrap().is_empty());
 
-        assert_eq!(loaded_out, edge_ids);
-        assert_eq!(loaded_in, edge_ids);
+        // load_all reconstruye ambos mapas desde las claves.
+        let (out, inn) = storage.load_all_adjacency_v2().await.unwrap();
+        assert_eq!(out.get(&a), Some(&vec![edge.id]));
+        assert_eq!(inn.get(&b), Some(&vec![edge.id]));
+        assert_eq!(out.len(), 1);
+        assert_eq!(inn.len(), 1);
+
+        // Remove espejo: las 3 claves fuera, nada residual.
+        storage.remove_edge_with_adjacency(&edge, et).await.unwrap();
+        assert!(!storage.edge_exists(edge.id).await.unwrap());
+        assert!(storage.scan_adjacency_out(a).await.unwrap().is_empty());
+        assert!(storage.scan_adjacency_in(b).await.unwrap().is_empty());
+        let (out, inn) = storage.load_all_adjacency_v2().await.unwrap();
+        assert!(out.is_empty());
+        assert!(inn.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_adjacency_v2_rebuild_repara_clave_perdida() {
+        // La invariante de pares la garantiza apply_multi (probado en la
+        // conformance del contrato KV); esto simula corrupción EXTERNA:
+        // borrar a mano UNA de las dos claves y verificar que rebuild —
+        // que deriva de edges, la fuente de verdad — repara ambas.
+        let storage = Storage::in_memory().await.unwrap();
+
+        let a = uuid::Uuid::new_v4();
+        let b = uuid::Uuid::new_v4();
+        let edge = Edge::new(a, b, "LINKS");
+        let et = storage.intern_edge_type("LINKS").unwrap();
+        storage.insert_edge_with_adjacency(&edge, et).await.unwrap();
+
+        let in_key = keys::v2::adj_in_key(a, et, b, edge.id);
+        storage.adjacency_ks.remove(&in_key).unwrap();
+        assert!(storage.scan_adjacency_in(b).await.unwrap().is_empty(), "clave I perdida");
+
+        let (out, inn) = storage.rebuild_indices().await.unwrap();
+        assert_eq!(out.get(&a), Some(&vec![edge.id]));
+        assert_eq!(inn.get(&b), Some(&vec![edge.id]));
+        assert_eq!(storage.scan_adjacency_out(a).await.unwrap(), vec![(et, b, edge.id)]);
+        assert_eq!(storage.scan_adjacency_in(b).await.unwrap(), vec![(et, a, edge.id)]);
     }
     #[tokio::test]
     async fn test_mvcc_insert_and_get() {

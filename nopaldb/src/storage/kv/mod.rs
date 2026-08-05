@@ -136,15 +136,11 @@ pub(crate) trait KvEngine: Send + Sync {
     /// la última escritura de una clave gana. `Vec` vacío es no-op.
     ///
     /// Es la promesa cross-keyspace que el doc de `WriteBatch` dejó
-    /// diferida hasta tener caller: el layout v2 (F5) lo es — una arista y
+    /// diferida hasta tener caller: el layout v2 (F5.3) lo es — una arista y
     /// sus entradas de adyacencia viven en keyspaces distintos y jamás
-    /// deben verse a medias. Para escribir en UN solo keyspace,
+    /// deben verse a medias (`Storage::insert_edge_with_adjacency` y
+    /// compañía). Para escribir en UN solo keyspace,
     /// `KvKeyspace::apply_batch` sigue siendo la vía.
-    ///
-    /// (allow(dead_code) fuera de tests: el contrato y su conformance
-    /// entran en F5.1; el caller de producción llega con el layout v2 en
-    /// el siguiente commit de F5 y entonces el allow se retira.)
-    #[cfg_attr(not(test), allow(dead_code))]
     fn apply_multi(&self, batches: Vec<(String, WriteBatch)>) -> Result<()>;
     /// Fuerza durabilidad de todo lo escrito (fsync). Síncrono y bloqueante.
     fn flush(&self) -> Result<()>;

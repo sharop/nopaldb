@@ -36,6 +36,12 @@ use crate::wal::{WalManager, WalRecord};
 // NQL parse is used inline via crate::query::nql::parse in execute_statement/execute_nql
 
 
+/// Cota de aristas por chunk en la purga de `apply_delete_node`: cada arista
+/// son 3 mutaciones (registro `edges` + clave O/I propia + espejo del otro
+/// extremo), así que ≈10_000 mutaciones por `apply_multi` — transacciones
+/// acotadas y memoria acotada para supernodos (F5 invariante 4).
+const DELETE_NODE_CHUNK_EDGES: usize = 3_333;
+
 /// Dirección de traversal en el grafo
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -233,15 +239,18 @@ impl Graph {
         }
 
 
-        // Intentar cargar índices existentes
-        let (adjacency_out, adjacency_in) = storage.load_all_adjacency_indices().await?;
+        // Adyacencia v2 (F5.3): reconstruir la RAM desde el keyspace
+        // `adjacency` (dos claves de 53 bytes por arista, solo se leen las
+        // claves). Vacío puede ser base recién creada O adyacencia perdida:
+        // rebuild desde edges (fuente de verdad) — en una base sin aristas
+        // es un no-op.
+        let (adjacency_out, adjacency_in) = storage.load_all_adjacency_v2().await?;
 
-        // Si no hay índices guardados, reconstruirlos
         let (adjacency_out, adjacency_in) = if adjacency_out.is_empty() && adjacency_in.is_empty() {
-            log::info!("No indices found, rebuilding from edges...");
+            log::info!("No adjacency entries found, rebuilding from edges...");
             storage.rebuild_indices().await?
         } else {
-            log::info!("Loaded {} outgoing and {} incoming adjacency entries",
+            log::info!("Loaded adjacency for {} outgoing and {} incoming nodes",
                       adjacency_out.len(), adjacency_in.len());
             (adjacency_out, adjacency_in)
         };
@@ -364,25 +373,16 @@ impl Graph {
     }
 
 
-    /// Persiste los índices en disco.
-    /// Toma el write-gate: escribe snapshots completos de adyacencia y no debe
-    /// interlevarse con aplicaciones físicas concurrentes.
+    /// Persistencia de índices en checkpoint/close/bulk-finish.
+    ///
+    /// Desde el layout v2 (F5.3) es un NO-OP deliberado: la adyacencia se
+    /// persiste POR OPERACIÓN — cada arista escribe/borra sus claves O/I en
+    /// el mismo `apply_multi` que su registro — así que ya no existe un
+    /// snapshot RAM que volcar ni una autoridad que "flushear" (la dirección
+    /// es edges → adyacencia disco → RAM, jamás al revés). El método se
+    /// conserva por compatibilidad de API y como punto de extensión de
+    /// checkpoint.
     pub async fn flush_indices(&self) -> Result<()> {
-        let _gate = self.write_gate.lock().await;
-        let adj_out = self.adjacency_out.read().await;
-        let adj_in = self.adjacency_in.read().await;
-
-        // Guardar todos los índices out
-        for (node_id, edge_ids) in adj_out.iter() {
-            self.storage.save_adjacency_out(*node_id, edge_ids).await?;
-        }
-
-        // Guardar todos los índices in
-        for (node_id, edge_ids) in adj_in.iter() {
-            self.storage.save_adjacency_in(*node_id, edge_ids).await?;
-        }
-
-        log::info!("Flushed {} nodes to disk", adj_out.len());
         Ok(())
     }
 
@@ -412,17 +412,16 @@ impl Graph {
         // Guardar en storage
         self.storage.insert_node(&node).await?;
 
-        // Inicializar adyacencia SOLO si el nodo es nuevo: un upsert de un
-        // nodo existente (update de commit o replay del WAL) NO debe borrar
-        // sus aristas de la adyacencia (bug histórico: se re-insertaba
-        // Vec::new() y se persistía una lista vacía).
+        // Inicializar adyacencia RAM SOLO si el nodo es nuevo: un upsert de
+        // un nodo existente (update de commit o replay del WAL) NO debe
+        // borrar sus aristas (bug histórico: se re-insertaba Vec::new()).
+        // En disco ya no se persiste nada aquí (v2): un nodo sin aristas
+        // simplemente no tiene claves en el keyspace `adjacency`.
         let mut adj_out = self.adjacency_out.write().await;
         let mut adj_in = self.adjacency_in.write().await;
 
         adj_out.entry(node_id).or_default();
         adj_in.entry(node_id).or_default();
-        let out_list = adj_out.get(&node_id).cloned().unwrap_or_default();
-        let in_list = adj_in.get(&node_id).cloned().unwrap_or_default();
 
         drop(adj_out);
         drop(adj_in);
@@ -443,10 +442,6 @@ impl Graph {
                 }
             }
         }
-
-        // Persistir las listas reales (vacías solo si el nodo es nuevo)
-        self.storage.save_adjacency_out(node_id, &out_list).await?;
-        self.storage.save_adjacency_in(node_id, &in_list).await?;
 
         // Visibilidad para la validación Serializable: las escrituras directas
         // también cuentan como modificación (safety net para escritores que
@@ -1213,54 +1208,67 @@ impl Graph {
     }
 
     /// Aplicación física de DeleteNode. Solo el single-writer apply debe llamarla.
+    ///
+    /// Orden de purga DELIBERADO (supernodo-safe, F5 invariante 4):
+    ///   1. Aristas incidentes por CHUNKS idempotentes de ≤
+    ///      `DELETE_NODE_CHUNK_EDGES` aristas (≈10k mutaciones por
+    ///      `apply_multi`): el registro `edges`, la clave O/I propia y el
+    ///      ESPEJO del otro extremo van en el MISMO batch atómico. O(deg) sí,
+    ///      transacción gigante no.
+    ///   2. El índice de propiedades del nodo.
+    ///   3. La entidad del nodo AL FINAL (su historia MVCC sigue en layout v1
+    ///      en este commit y no se toca aquí, igual que antes).
+    ///
+    /// Un crash intermedio deja un nodo VÁLIDO con menos aristas — jamás
+    /// adyacencia colgante, pares O/I rotos ni huérfanas del v1 (las claves
+    /// del nodo se purgan del keyspace, no quedan "para siempre") — y
+    /// re-ejecutar el delete retoma la purga donde quedó.
     async fn apply_delete_node(&self, id: NodeId) -> Result<()> {
-        // ✅ Obtener nodo antes de borrar
+        // Obtener nodo antes de borrar (si no existe: NodeNotFound, como antes)
         let node = self.get_node(id).await?;
 
-        // ✅ Limpiar índices de propiedades
+        // 1. Purga de aristas por chunks, escaneando el DISCO (no la RAM):
+        //    idempotente ante re-runs y completo aunque la RAM esté stale.
+        //    La RAM del OTRO extremo se limpia por chunk (memoria acotada).
+        loop {
+            let purged = self
+                .storage
+                .purge_node_adjacency_chunk(id, DELETE_NODE_CHUNK_EDGES)
+                .await?;
+            if purged.is_empty() {
+                break;
+            }
+
+            let mut adj_out = self.adjacency_out.write().await;
+            let mut adj_in = self.adjacency_in.write().await;
+            for (is_out, other, edge_id) in &purged {
+                let map_entry = if *is_out {
+                    // Arista saliente nuestra ⇒ limpiar la lista IN del target
+                    adj_in.get_mut(other)
+                } else {
+                    // Arista entrante ⇒ limpiar la lista OUT del source
+                    adj_out.get_mut(other)
+                };
+                if let Some(edges) = map_entry {
+                    edges.retain(|e| e != edge_id);
+                }
+            }
+        }
+
+        // 2. Índice de propiedades: después de las aristas — mientras el nodo
+        //    exista debe seguir siendo consultable por sus propiedades.
         for (key, value) in &node.properties {
             self.storage.remove_from_property_index(key, value, id).await?;
         }
 
-        // ✅ Delete actual edges from storage (P0 fix: prevent orphaned edges)
-        let outgoing = self.get_outgoing_edges(id).await?;
-        let incoming = self.get_incoming_edges(id).await?;
-
-        for edge in &outgoing {
-            // Remove edge from storage
-            self.storage.delete_edge(edge.id).await?;
-            // Clean target's adjacency_in
-            let mut adj_in = self.adjacency_in.write().await;
-            if let Some(edges) = adj_in.get_mut(&edge.target) {
-                edges.retain(|&e| e != edge.id);
-            }
-            drop(adj_in);
-            self.storage.save_adjacency_in(edge.target,
-                                           &self.adjacency_in.read().await.get(&edge.target).cloned().unwrap_or_default()
-            ).await?;
-        }
-
-        for edge in &incoming {
-            self.storage.delete_edge(edge.id).await?;
-            // Clean source's adjacency_out
-            let mut adj_out = self.adjacency_out.write().await;
-            if let Some(edges) = adj_out.get_mut(&edge.source) {
-                edges.retain(|&e| e != edge.id);
-            }
-            drop(adj_out);
-            self.storage.save_adjacency_out(edge.source,
-                                            &self.adjacency_out.read().await.get(&edge.source).cloned().unwrap_or_default()
-            ).await?;
-        }
-
-        // Borrar nodo del storage
+        // 3. La entidad, al final.
         self.storage.delete_node(id).await?;
 
         #[cfg(feature = "full-isolation")]
         self.mark_modified(id, self.next_timestamp.load(AtomicOrdering::SeqCst))
             .await?;
 
-        // Limpiar índices de adyacencia del nodo eliminado
+        // Limpiar las entradas RAM del propio nodo (al final, como siempre)
         let mut adj_out = self.adjacency_out.write().await;
         let mut adj_in = self.adjacency_in.write().await;
 
@@ -1301,18 +1309,26 @@ impl Graph {
             return Err(NopalError::NodeNotFound(target.to_string()));
         }
 
-        // Guardar en storage (árbol "edges" — sin cambios)
-        self.storage.insert_edge(&edge).await?;
+        // Tipo internado (corre bajo el write_gate: quien asigna ids está
+        // serializado; para tipos ya vistos es lookup RAM O(1)).
+        let etype_id = self.storage.intern_edge_type(&edge.edge_type)?;
 
-        // Guardar versión MVCC (árbol "versioned_edges")
+        // Registro de la arista (keyspace "edges") + sus DOS claves de
+        // adyacencia (O y espejo I) en UN apply_multi atómico: jamás edges
+        // sin su adyacencia, ni a medias tras un crash. Antes esto eran la
+        // escritura del Edge y DOS reescrituras O(deg) de listas completas.
+        self.storage.insert_edge_with_adjacency(&edge, etype_id).await?;
+
+        // Guardar versión MVCC (árbol "versioned_edges") — sin cambios.
         self.storage.insert_versioned_edge(&edge, timestamp).await?;
 
-        // Actualizar índices
+        // Actualizar índices RAM.
         let mut adj_out = self.adjacency_out.write().await;
         let mut adj_in = self.adjacency_in.write().await;
 
         // Idempotente: el WAL replay puede re-aplicar una arista ya aplicada
-        // antes de un crash; no debe duplicar la entrada de adyacencia.
+        // antes de un crash; no debe duplicar la entrada de adyacencia (en
+        // disco los puts v2 ya son idempotentes por construcción).
         let out = adj_out.entry(source).or_insert_with(Vec::new);
         if !out.contains(&edge_id) {
             out.push(edge_id);
@@ -1322,14 +1338,8 @@ impl Graph {
             inn.push(edge_id);
         }
 
-        let source_edges = adj_out.get(&source).cloned().unwrap_or_default();
-        let target_edges = adj_in.get(&target).cloned().unwrap_or_default();
-
         drop(adj_out);
         drop(adj_in);
-
-        self.storage.save_adjacency_out(source, &source_edges).await?;
-        self.storage.save_adjacency_in(target, &target_edges).await?;
 
         // Los endpoints cuentan como modificados para validación Serializable
         #[cfg(feature = "full-isolation")]
@@ -1400,10 +1410,13 @@ impl Graph {
             Err(e) => return Err(e),
         }
 
-        // 3. Eliminar del storage principal (árbol "edges")
-        self.storage.delete_edge(id).await?;
+        // 3. Disco: registro "edges" + ambas claves O/I en UN apply_multi
+        // atómico (espejo exacto del alta). El tipo ya está internado — la
+        // arista entró por el path v2 — así que intern es lookup O(1).
+        let etype_id = self.storage.intern_edge_type(&edge.edge_type)?;
+        self.storage.remove_edge_with_adjacency(&edge, etype_id).await?;
 
-        // 4. Actualizar índices de adyacencia
+        // 4. Actualizar índices RAM.
         let mut adj_out = self.adjacency_out.write().await;
         let mut adj_in = self.adjacency_in.write().await;
 
@@ -1414,14 +1427,8 @@ impl Graph {
             edges.retain(|&e| e != id);
         }
 
-        let source_edges = adj_out.get(&source).cloned().unwrap_or_default();
-        let target_edges = adj_in.get(&target).cloned().unwrap_or_default();
-
         drop(adj_out);
         drop(adj_in);
-
-        self.storage.save_adjacency_out(source, &source_edges).await?;
-        self.storage.save_adjacency_in(target, &target_edges).await?;
 
         #[cfg(feature = "full-isolation")]
         {
@@ -2106,7 +2113,7 @@ impl Graph {
     pub async fn checkpoint(&self) -> Result<()> {
         log::info!("Creating checkpoint...");
 
-        // 1. Flush todos los índices a disco
+        // 1. Índices: no-op desde v2 (la adyacencia se persiste por operación)
         self.flush_indices().await?;
 
         // 2. Obtener transacciones activas para el WAL checkpoint
@@ -2541,18 +2548,14 @@ impl Graph {
     /// snapshots de adyacencia guardados pueden haber quedado stale.
     pub(crate) async fn rebuild_adjacency_from_edges(&self) -> Result<()> {
         let _gate = self.write_gate.lock().await;
+        // rebuild_indices (v2) interna los tipos y REESCRIBE las claves de
+        // adyacencia en disco él mismo; aquí solo se instala la RAM.
         let (out, inn) = self.storage.rebuild_indices().await?;
         {
             let mut adj_out = self.adjacency_out.write().await;
             let mut adj_in = self.adjacency_in.write().await;
-            *adj_out = out.clone();
-            *adj_in = inn.clone();
-        }
-        for (node_id, edge_ids) in &out {
-            self.storage.save_adjacency_out(*node_id, edge_ids).await?;
-        }
-        for (node_id, edge_ids) in &inn {
-            self.storage.save_adjacency_in(*node_id, edge_ids).await?;
+            *adj_out = out;
+            *adj_in = inn;
         }
         self.bump_topology_version();
         Ok(())
@@ -2988,7 +2991,9 @@ impl Graph {
         // 1. Batch insert en storage
         let ids = self.storage.insert_nodes_batch(&nodes).await?;
 
-        // 2. Inicializar índices de adyacencia en memoria
+        // 2. Inicializar índices de adyacencia en memoria. En disco no hay
+        //    nada que escribir (v2): un nodo sin aristas no tiene claves en
+        //    el keyspace `adjacency` — ausencia == lista vacía.
         {
             let mut adj_out = self.adjacency_out.write().await;
             let mut adj_in = self.adjacency_in.write().await;
@@ -2998,10 +3003,6 @@ impl Graph {
                 adj_in.insert(node.id, Vec::new());
             }
         }
-
-        // 3. Batch save de índices vacíos
-        let empty_indices: Vec<_> = ids.iter().map(|id| (*id, Vec::new())).collect();
-        self.storage.save_adjacency_batch(&empty_indices, &empty_indices).await?;
 
         self.bump_topology_version();
 
@@ -3017,7 +3018,9 @@ impl Graph {
             return Ok(Vec::new());
         }
 
-        // 1. Batch insert en storage
+        // 1. Batch insert en storage: aristas + adyacencia v2 en el MISMO
+        //    apply_multi (murió el hueco histórico "el bulk no persiste
+        //    adyacencia y depende de un flush_indices posterior").
         let ids = self.storage.insert_edges_batch(&edges).await?;
 
         // 2. Actualizar índices de adyacencia en memoria
@@ -3177,9 +3180,9 @@ impl Graph {
     pub async fn close(&self) -> Result<()> {
         log::info!("🔒 Closing NopalDB database...");
 
-        // 1. Flush adjacency indices to disk
+        // 1. Índices (no-op desde v2: la adyacencia se persiste por operación)
         self.flush_indices().await?;
-        log::debug!("  ✓ Adjacency indices flushed");
+        log::debug!("  ✓ Indices flushed (adjacency is persisted per-operation)");
 
         // 2. Flush Write-Ahead Log
         self.wal.flush().await?;

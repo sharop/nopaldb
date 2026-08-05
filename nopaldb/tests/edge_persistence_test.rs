@@ -86,9 +86,10 @@ async fn test_edges_persist_after_reopen() -> Result<()> {
 
 /// Test that rebuild_indices is triggered when adjacency indices are missing
 ///
-/// Gated on `storage-sled`: fabrica el estado "índices perdidos" abriendo la
-/// DB con sled DIRECTO y borrando las claves `idx:*` — acceso crudo al motor
-/// a propósito (no hay API pública para corromper índices, ni debe haberla).
+/// Gated on `storage-sled`: fabrica el estado "adyacencia perdida" abriendo
+/// la DB con sled DIRECTO y vaciando el tree `adjacency` (layout v2: dos
+/// claves binarias por arista) — acceso crudo al motor a propósito (no hay
+/// API pública para corromper índices, ni debe haberla).
 #[cfg(feature = "storage-sled")]
 #[tokio::test]
 async fn test_rebuild_indices_from_edges_tree() -> Result<()> {
@@ -110,21 +111,11 @@ async fn test_rebuild_indices_from_edges_tree() -> Result<()> {
         edge_id = graph.add_edge(Edge::new(alice_id, bob_id, "KNOWS")).await?;
     }
 
-    // Phase 2: Manually clear adjacency indices to force rebuild path
+    // Phase 2: Manually clear the adjacency keyspace to force rebuild path
     {
         let db = sled::open(&path).unwrap();
-        let mut keys_to_remove = Vec::new();
-        for item in db.scan_prefix(b"idx:out:") {
-            let (key, _) = item.unwrap();
-            keys_to_remove.push(key);
-        }
-        for item in db.scan_prefix(b"idx:in:") {
-            let (key, _) = item.unwrap();
-            keys_to_remove.push(key);
-        }
-        for key in keys_to_remove {
-            db.remove(key).unwrap();
-        }
+        let tree = db.open_tree("adjacency").unwrap();
+        tree.clear().unwrap();
         db.flush().unwrap();
         drop(db);
     }
