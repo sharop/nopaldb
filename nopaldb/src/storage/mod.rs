@@ -34,9 +34,18 @@ pub const META_NEXT_TX_ID: &str = "meta:next_tx_id";
 mod kv;
 
 /// Codec de claves compuestas en disco (namespaces `node:`/`idx:`/`ts:` del
-/// keyspace default y versiones de aristas). Ver la advertencia de formato
-/// en la cabecera del módulo.
+/// keyspace default y versiones de aristas) + el codec binario del layout
+/// v2 en `keys::v2` (F5). Ver la advertencia de formato en la cabecera del
+/// módulo.
 mod keys;
+
+/// Interning de tipos de arista string↔u32 (layout v2, F5), persistido en el
+/// keyspace `catalog`. Sin consumidores hasta el rewire de adyacencia
+/// (F5.3/F5.4).
+#[cfg_attr(not(test), allow(dead_code))]
+mod interner;
+#[allow(unused_imports)] // el consumidor (Graph) llega en F5.3/F5.4
+pub(crate) use interner::EdgeTypeInterner;
 
 /// Capa de dominio del storage (MVCC, adyacencia, índices) sobre el contrato
 /// KV (motor según feature).
@@ -51,6 +60,19 @@ pub struct Storage {
     versioned_edges_ks: Arc<dyn kv::KvKeyspace>,
     versioned_edges_current_ks: Arc<dyn kv::KvKeyspace>,
     prop_idx_ks: Arc<dyn kv::KvKeyspace>,
+    // Keyspaces del layout v2 (F5): abiertos y cacheados desde F5.2, AÚN sin
+    // consumidores — el rewire de los paths de dominio llega en F5.3/F5.4 y
+    // ahí se retiran estos allow(dead_code).
+    #[allow(dead_code)]
+    catalog_ks: Arc<dyn kv::KvKeyspace>,
+    #[allow(dead_code)]
+    entities_ks: Arc<dyn kv::KvKeyspace>,
+    #[allow(dead_code)]
+    history_ks: Arc<dyn kv::KvKeyspace>,
+    #[allow(dead_code)]
+    adjacency_ks: Arc<dyn kv::KvKeyspace>,
+    #[allow(dead_code)]
+    indexes_ks: Arc<dyn kv::KvKeyspace>,
     profile: StorageProfile,
 }
 
@@ -147,6 +169,11 @@ impl Storage {
         let versioned_edges_ks = engine.keyspace("versioned_edges")?;
         let versioned_edges_current_ks = engine.keyspace("versioned_edges_current")?;
         let prop_idx_ks = engine.keyspace(PROP_IDX_TREE)?;
+        let catalog_ks = engine.keyspace("catalog")?;
+        let entities_ks = engine.keyspace("entities")?;
+        let history_ks = engine.keyspace("history")?;
+        let adjacency_ks = engine.keyspace("adjacency")?;
+        let indexes_ks = engine.keyspace("indexes")?;
 
         Ok(Self {
             engine,
@@ -155,14 +182,21 @@ impl Storage {
             versioned_edges_ks,
             versioned_edges_current_ks,
             prop_idx_ks,
+            catalog_ks,
+            entities_ks,
+            history_ks,
+            adjacency_ks,
+            indexes_ks,
             profile,
         })
     }
 
     /// Copia una base COMPLETA entre motores (p. ej. sled → redb), verificada.
     ///
-    /// Copia byte a byte los 7 keyspaces (nodos, versiones MVCC, aristas,
-    /// adyacencia, índices, relojes, embeddings) — el time-travel y los
+    /// Copia byte a byte TODOS los keyspaces (la lista canónica es
+    /// `kv::migrate::ALL_KEYSPACES`: nodos, versiones MVCC, aristas,
+    /// adyacencia, índices, relojes, embeddings, y los del layout v2 aunque
+    /// estén vacíos) — el time-travel y los
     /// índices sobreviven intactos porque nada se reinterpreta. Verifica con
     /// conteo + checksum por keyspace re-escaneando el DESTINO; si la
     /// verificación falla devuelve error y el destino no debe usarse.
