@@ -118,8 +118,8 @@ def generate_dataset(db_path: str, reset: bool) -> None:
     print("=" * 60)
     print("Done.")
     print("=" * 60)
-    print("Try in NDBStudio:")
-    print(f"  cargo run -p ndbstudio -- {db_path}")
+    print("Explore it with NDBStudio: https://github.com/Anxious-Mind-Group/ndbstudio")
+    print(f"  (open the UI pointing at {db_path})")
     print('Then run: find f.name, pagerank(f) as pr from (f:Family) order by pr desc')
 
 

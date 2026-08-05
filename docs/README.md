@@ -17,20 +17,12 @@
 - [NQL Guide](python/NQL_GUIDE.md)
 - [NQL Write CRUD Hands-on](NQL_WRITE_CRUD_HANDS_ON.md)
 
-## NDBStudio (TUI)
+## Ecosystem
 
-- [NDBStudio Docs Index](ndbstudio/README.md)
-- [Quickstart](ndbstudio/quickstart.md)
-- [NDBStudio Web Quickstart](ndbstudio/web_quickstart.md)
-- [Keybindings](ndbstudio/keybindings.md)
-- [Commands](ndbstudio/commands.md)
-- [Cookbook Queries](ndbstudio/cookbook.md)
-- [Florentine Families Analysis](ndbstudio/florentine_families_analysis.md)
-- [Media Guide](ndbstudio/media.md)
-- [Panels](ndbstudio/panels.md)
-- [Troubleshooting](ndbstudio/troubleshooting.md)
-- [Architecture](ndbstudio/architecture.md)
-- [NDBStudio Docs (EN)](ndbstudio/en/README.md)
+The applications born in this repo now live in their own repositories (AGPL-3.0, with full history):
+
+- [NDBStudio (TUI / web workbench)](https://github.com/Anxious-Mind-Group/ndbstudio)
+- [MCP server](https://github.com/Anxious-Mind-Group/nopaldb-mcp)
 
 ## Getting Started
 

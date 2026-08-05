@@ -4,8 +4,8 @@ on:
   pull_request:
     # Solo dispara cuando cambia algo que estos jobs realmente ejercitan:
     # el crate nopaldb (build default + wheel maturin), los tutoriales, o la
-    # configuración de build/toolchain. Cambios en docs, READMEs, ndbstudio,
-    # nopaldb-mcp (cubierto por community-ci) o python/ raíz no lo activan.
+    # configuración de build/toolchain. Cambios en docs, READMEs o python/
+    # raíz no lo activan.
     paths:
       - 'tutorials/**'
       - 'nopaldb/**'
@@ -33,11 +33,6 @@ jobs:
 
       - name: Check default features
         run: cargo check -p nopaldb
-
-      - name: Check nopaldb-mcp (default y sin risk)
-        run: |
-          cargo check -p nopaldb-mcp
-          cargo check -p nopaldb-mcp --no-default-features
 
   tutorial-smoke:
     runs-on: ubuntu-latest

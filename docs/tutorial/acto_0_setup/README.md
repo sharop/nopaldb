@@ -3,11 +3,11 @@
 **Tiempo estimado:** 20 minutos
 **Pre-requisitos:** Rust toolchain, Python ≥3.10, `cargo`, `pip`.
 
-Antes de empezar el tutorial, montamos los tres componentes que vamos a usar:
+Antes de empezar el tutorial, montamos los componentes que vamos a usar:
 
 1. **NopalDB** — la base de datos en sí, vía wheel de Python (binding PyO3) o el ejemplo Rust.
 2. **Jupyter** + helpers `shared/` (en `tutorials/`).
-3. **NDBStudio Web** — la UI interactiva con visualización de grafo.
+3. *(Opcional)* **NDBStudio Web** — la UI interactiva con visualización de grafo, ahora en su propio repo: https://github.com/Anxious-Mind-Group/ndbstudio
 
 ---
 
@@ -46,25 +46,13 @@ Esto trae `jupyter`, `pandas`, `pyarrow`, `matplotlib`, `networkx`, `numpy`, y `
 
 ---
 
-## 3. NDBStudio Web
+## 3. NDBStudio Web (opcional)
 
-NDBStudio es la UI: editor NQL + visualización de grafo + timeline + schema panel. Lo construimos una vez con el feature `web` y lo levantamos por DB:
+NDBStudio es la UI: editor NQL + visualización de grafo + timeline + schema panel. Vive en su propio repositorio; las instrucciones de build y arranque están ahí:
 
-```bash
-# Desde la raíz del repo
-make run-studio-web DB=test_dbs/florentine_families.db
-```
+https://github.com/Anxious-Mind-Group/ndbstudio
 
-Por defecto bindea en `http://127.0.0.1:3737`. Puedes pasar `BIND=0.0.0.0:8080` para cambiar.
-
-Cada acto del tutorial trae un `Makefile target` que lanza la UI con la DB correspondiente:
-
-```bash
-cd tutorials
-make studio-florentine    # Acto 1
-make studio-offshore        # Acto 2 (después de generarla)
-make studio-fraud         # Acto 4 (después de generarla)
-```
+Apunta la UI a la DB del acto que estés siguiendo (p. ej. `test_dbs/florentine_families.db`). El tutorial funciona completo sin NDBStudio — es el medio visual opcional.
 
 ---
 
@@ -87,7 +75,7 @@ Si falla, revisa [verificacion.md](verificacion.md) para diagnóstico rápido.
 
 El binding Python ya viene compilado en el wheel — el toolchain de Rust solo se necesita para:
 - **Construir el wheel** (`make build-wheel`)
-- **Levantar NDBStudio Web** (`make run-studio-web`)
+- **Levantar NDBStudio Web** (opcional, desde [su repo](https://github.com/Anxious-Mind-Group/ndbstudio))
 - **Correr los ejemplos Rust** del tutorial
 
 Si solo te interesan los notebooks Python (3 de los 4 medios), basta con que alguien te pase un wheel pre-construido. Pero perdés:

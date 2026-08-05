@@ -123,8 +123,11 @@ found a security vulnerability, please report it privately rather than opening a
 
 ## License
 
-NopalDB is licensed per component. By contributing, you agree that your
-contribution is licensed under the license of the component it touches:
+This repository is **MPL-2.0** in its entirety (the `nopaldb` library: crate +
+Python bindings). By contributing, you agree that your contribution is licensed
+under **MPL-2.0**.
 
-- the **`nopaldb` library** (crate + Python bindings) → **MPL-2.0**;
-- the **`nopaldb-mcp`** and **`ndbstudio`** applications → **AGPL-3.0-only**.
+The ecosystem applications (MCP server, NDBStudio) are AGPL-3.0-only and live
+in their own repositories — contribute to them there:
+<https://github.com/Anxious-Mind-Group/nopaldb-mcp> ·
+<https://github.com/Anxious-Mind-Group/ndbstudio>.

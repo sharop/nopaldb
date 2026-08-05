@@ -1,8 +1,9 @@
 """Genera tutorials/test_dbs/biomedical_owl.db importando tutorials/data/biomedical.ttl.
 
 Requiere wheel compilado con --features python-owl (incluido en el tier 'semantic').
-La DB es requerida por el Acto 6 (06_mcp_ontologia.ipynb) para las tools MCP:
-  classify_node, list_instances, list_subclasses.
+La DB es requerida por el tutorial de ontologías del servidor MCP (tools
+classify_node, list_instances, list_subclasses) — ver
+https://github.com/Anxious-Mind-Group/nopaldb-mcp.
 """
 
 from __future__ import annotations
@@ -65,7 +66,8 @@ def generate(db_path=None, reset: bool = False) -> dict:
     except AttributeError:
         g.close()
         del g
-        # Wheel sin python-owl — fallback al ejemplo Rust (ya disponible si compilaste nopaldb-mcp)
+        # Wheel sin python-owl — fallback al ejemplo Rust del engine
+        # (para el servidor MCP, ver https://github.com/Anxious-Mind-Group/nopaldb-mcp)
         return _generate_via_rust(db_path, ttl_path)
 
     print(f"biomedical_owl.db generada en {db_path}")

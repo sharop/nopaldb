@@ -24,9 +24,6 @@ jobs:
       - name: Check default features
         run: cargo check -p nopaldb
 
-      - name: Check nopaldb-mcp
-        run: cargo check -p nopaldb-mcp
-
       - name: Clippy (semantic)
         run: cargo clippy -p nopaldb --features semantic -- -D warnings
 
@@ -36,9 +33,6 @@ jobs:
       # Sin python: el link de tests PyO3 se valida via maturin, no aqui
       - name: Test semantic tier (rust-only)
         run: cargo test -p nopaldb --features core,reasoner,owl-import,shacl --lib
-
-      - name: Test ndbstudio
-        run: cargo test -p ndbstudio
 
       - name: Test isolation feature (full-isolation)
         run: cargo test -p nopaldb --features full-isolation --test p1_isolation_levels_test --test deadlock_tests --test p1_isolation_concurrent_test

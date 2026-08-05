@@ -85,4 +85,4 @@ df = batch.to_pandas()   # zero-copy into Pandas / Polars / PyTorch pipelines
 - **NQL reference:** <https://github.com/sharop/nopaldb/blob/main/docs/en/NQL_REFERENCE.md>
 - **Rust crate:** <https://crates.io/crates/nopaldb>
 
-License: MPL-2.0 (the `nopaldb` library). The companion `nopaldb-mcp` server and `ndbstudio` TUI are AGPL-3.0-only. Releases ≤ 0.4.31 were AGPL-3.0-only. NopalDB™ is a trademark of Sergio Haro Pérez.
+License: MPL-2.0 (the `nopaldb` library — this repository in its entirety). The companion ecosystem apps (MCP server, NDBStudio) are AGPL-3.0-only and live in their own repositories: <https://github.com/Anxious-Mind-Group/nopaldb-mcp> · <https://github.com/Anxious-Mind-Group/ndbstudio>. Releases ≤ 0.4.31 were AGPL-3.0-only. NopalDB™ is a trademark of Sergio Haro Pérez.

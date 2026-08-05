@@ -262,7 +262,7 @@ Los tres medios principales verifican invariantes distintos pero complementarios
 | **Rust** | `path_sum` top-1 destino | `"Pinnacle International #038"` (~11.48M, 3 hops) |
 | **NDBStudio Web** | pegar `queries/03_hnsw.nql` | Requiere que el notebook haya persistido embeddings en la DB |
 
-> **Nota sobre NDBStudio Web:** la query `similar_to` funciona en NDBStudio solo si los embeddings ya están persistidos en la DB (el notebook los persiste). El generador no los crea automáticamente. Si ejecutas `make studio-offshore` sin haber corrido el notebook, la query devolverá vacío.
+> **Nota sobre NDBStudio Web:** la query `similar_to` funciona en NDBStudio solo si los embeddings ya están persistidos en la DB (el notebook los persiste). El generador no los crea automáticamente. Si levantas NDBStudio sobre la DB sin haber corrido el notebook, la query devolverá vacío.
 
 ### Cómo correr el gate de Rust
 
@@ -280,7 +280,7 @@ El ejemplo Rust no cubre embeddings (eso requiere Python + sentence-transformers
 
 ## Walkthrough en NDBStudio
 
-Ver [`ndbstudio_walkthrough.md`](ndbstudio_walkthrough.md) para el recorrido visual paso-a-paso.
+El recorrido visual paso-a-paso se movió junto con la app (walkthrough del TUI: ver el [repo de NDBStudio](https://github.com/Anxious-Mind-Group/ndbstudio)).
 
 ## Siguiente
 

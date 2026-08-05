@@ -79,8 +79,11 @@ NopalDB also ships as a Python package built with [maturin]. See the
 The `nopaldb` library (this crate and its Python bindings) is licensed under the
 **Mozilla Public License 2.0** ([MPL-2.0](LICENSE)) — file-level copyleft, so it
 can be embedded in projects of any license while changes to NopalDB's own files
-stay open. The companion applications `nopaldb-mcp` and `ndbstudio` are
-AGPL-3.0-only. Releases ≤ 0.4.31 were AGPL-3.0-only.
+stay open. The companion ecosystem apps (MCP server, NDBStudio) are
+AGPL-3.0-only and live in their own repositories:
+<https://github.com/Anxious-Mind-Group/nopaldb-mcp> ·
+<https://github.com/Anxious-Mind-Group/ndbstudio>. Releases ≤ 0.4.31 were
+AGPL-3.0-only.
 
 [maturin]: https://github.com/PyO3/maturin
 [repo]: https://github.com/sharop/nopaldb

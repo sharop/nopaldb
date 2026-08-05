@@ -11,8 +11,7 @@
 [![Nightly](https://github.com/sharop/nopaldb/actions/workflows/nightly.yml/badge.svg)](https://github.com/sharop/nopaldb/actions/workflows/nightly.yml)
 [![Crates.io downloads](https://img.shields.io/crates/d/nopaldb.svg)](https://crates.io/crates/nopaldb)
 [![PyPI downloads](https://img.shields.io/pypi/dm/nopaldb.svg)](https://pypi.org/project/nopaldb/)
-[![Library: MPL-2.0](https://img.shields.io/badge/library-MPL--2.0-brightgreen.svg)](nopaldb/LICENSE)
-[![Apps: AGPL-3.0-only](https://img.shields.io/badge/apps-AGPL--3.0--only-blue.svg)](nopaldb-mcp/LICENSE)
+[![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-brightgreen.svg)](nopaldb/LICENSE)
 
 A high-performance embedded graph database written in Rust with **MVCC**, **ACID transactions**, **Apache Arrow integration**, and **Python bindings**.
 
@@ -21,6 +20,13 @@ A high-performance embedded graph database written in Rust with **MVCC**, **ACID
 ---
 
 ## English
+
+### Ecosystem 🌐
+
+This repository contains the **engine** (Rust library + Python wrapper), licensed MPL-2.0. The applications born in this repo now live in their own repositories — exported **with their full history** — under AGPL-3.0:
+
+- **NDBStudio** (TUI / web workbench) → https://github.com/Anxious-Mind-Group/ndbstudio
+- **MCP server** → https://github.com/Anxious-Mind-Group/nopaldb-mcp
 
 ### Features ✨
 
@@ -175,8 +181,8 @@ graph.upsert_many([
 ```
 
 The same operation is available in Rust (`Graph::upsert_node`) and as the
-`upsert_node` MCP tool. See [docs/UPSERT.md](docs/UPSERT.md) for semantics,
-concurrency guarantees, and current limits.
+`upsert_node` tool of the [MCP server](https://github.com/Anxious-Mind-Group/nopaldb-mcp).
+See [docs/UPSERT.md](docs/UPSERT.md) for semantics, concurrency guarantees, and current limits.
 
 ---
 
@@ -195,8 +201,8 @@ hits = graph.search_hybrid(
 # hits: [{"node_id", "score", "text_rank", "vector_rank"}, ...] best first
 ```
 
-Also available in Rust (`Graph::search_hybrid`), as the `search_hybrid` MCP tool,
-and inside NQL:
+Also available in Rust (`Graph::search_hybrid`), as the `search_hybrid` tool of the
+[MCP server](https://github.com/Anxious-Mind-Group/nopaldb-mcp), and inside NQL:
 
 ```nql
 find n.name from (n:Chunk)
@@ -292,10 +298,10 @@ See `examples/`:
 
 #### Build & Features
 - **[Feature Tiers Guide](docs/FEATURE_TIERS.md)** - How to compile by role (researcher, developer, production)
-- **[NDBStudio Web Quickstart](docs/ndbstudio/web_quickstart.md)** - Launch the local web workbench for graph and session analysis
+- **[NDBStudio](https://github.com/Anxious-Mind-Group/ndbstudio)** - Local TUI/web workbench for graph and session analysis (own repository)
 
 #### Architecture
-- **[Adoption Guide](docs/ADOPTION.md)** - Fastest path in for Rust, Python, MCP and Studio users
+- **[Adoption Guide](docs/ADOPTION.md)** - Fastest path in for Rust and Python users, plus pointers to the MCP and Studio apps
 - **[Architecture Overview](docs/ARCHITECTURE.md)** - System design
 - **[Durability Guarantees](docs/DURABILITY.md)** - Crash-safety model and what survives SIGKILL
 - **[Arrow Integration](docs/arrow/01-OVERVIEW.md)** - Arrow/ML pipeline docs
@@ -356,7 +362,7 @@ Integrates with:
 
 ### Operational Model 🧩
 
-- **One process per data directory.** The storage engine takes a file lock on the database directory; a second process opening the same path will fail with a "could not acquire lock" error. Close the other process (app, MCP server, or NDBStudio) first.
+- **One process per data directory.** The storage engine takes a file lock on the database directory; a second process opening the same path will fail with a "could not acquire lock" error. Close the other process (your app, the [MCP server](https://github.com/Anxious-Mind-Group/nopaldb-mcp), or [NDBStudio](https://github.com/Anxious-Mind-Group/ndbstudio)) first.
 - **Share within the process by cloning the handle.** `Graph` is `Clone + Send + Sync`; clone it (cheap, `Arc`-backed) to use the same database from multiple threads or tasks.
 - For bulk ingestion use `BulkLoader`; for update-heavy datasets enable version GC with `start_auto_gc`.
 
@@ -402,15 +408,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Copyright © 2026 Sergio Haro Pérez (Sharop).
 
-NopalDB is licensed **per component** (effective v0.4.32; releases ≤ 0.4.31 remain AGPL-3.0-only):
+This repository is **MPL-2.0** in its entirety (effective v0.4.32; releases ≤ 0.4.31 remain AGPL-3.0-only):
 
-| Component | Crate / package | License |
-|-----------|-----------------|---------|
-| **Library** (embeddable engine + Python bindings) | `nopaldb` (crates.io + PyPI) | **MPL-2.0** ([nopaldb/LICENSE](./nopaldb/LICENSE)) |
-| **MCP server** (application) | `nopaldb-mcp` | AGPL-3.0-only ([LICENSE](./nopaldb-mcp/LICENSE)) |
-| **NDStudio TUI** (application) | `ndbstudio` | AGPL-3.0-only ([LICENSE](./ndbstudio/LICENSE)) |
+| Component | Where it lives | License |
+|-----------|----------------|---------|
+| **Library** (embeddable engine + Python bindings) | `nopaldb` in this repo (crates.io + PyPI) | **MPL-2.0** ([nopaldb/LICENSE](./nopaldb/LICENSE)) |
+| **Ecosystem apps** (MCP server, NDBStudio) | [Anxious-Mind-Group/nopaldb-mcp](https://github.com/Anxious-Mind-Group/nopaldb-mcp) · [Anxious-Mind-Group/ndbstudio](https://github.com/Anxious-Mind-Group/ndbstudio) | AGPL-3.0-only (in their own repos) |
 
-The library is **MPL-2.0** — file-level copyleft — so it can be embedded in projects under any license (including MIT/Apache and proprietary), while improvements to NopalDB's own files stay open. The applications you *run* (`nopaldb-mcp`, `ndbstudio`) remain **AGPL-3.0-only**. The repository's top-level `LICENSE` is MPL-2.0 (the library is the primary artifact); each application carries its own AGPL-3.0 `LICENSE` file.
+The library is **MPL-2.0** — file-level copyleft — so it can be embedded in projects under any license (including MIT/Apache and proprietary), while improvements to NopalDB's own files stay open. The applications (MCP server, NDBStudio) are **AGPL-3.0-only** and live in their own repositories (see [Ecosystem](#ecosystem-)). The repository's top-level `LICENSE` is MPL-2.0.
 
 NopalDB™ is a trademark of Sergio Haro Pérez.
 
@@ -443,6 +448,13 @@ Built with:
 ---
 
 ## Español
+
+### Ecosistema 🌐
+
+Este repositorio contiene el **motor** (librería Rust + wrapper Python), con licencia MPL-2.0. Las aplicaciones que nacieron en este repo ahora viven en sus propios repositorios — exportadas **con su historial completo** — bajo AGPL-3.0:
+
+- **NDBStudio** (workbench TUI / web) → https://github.com/Anxious-Mind-Group/ndbstudio
+- **Servidor MCP** → https://github.com/Anxious-Mind-Group/nopaldb-mcp
 
 ### Características ✨
 
@@ -588,7 +600,7 @@ Ver **[Guía de Feature Tiers](docs/FEATURE_TIERS.md)** para opciones de compila
 
 #### Documentación API
 - **[Índice de Documentación (Español)](docs/es/README.md)** - Guía central de docs y runbooks
-- **[Guía de Adopción](docs/ADOPTION.md)** - La ruta rápida para Rust, Python, MCP y Studio
+- **[Guía de Adopción](docs/ADOPTION.md)** - La ruta rápida para Rust y Python, con pointers a las apps MCP y Studio
 - **[Guía API Python](python/README.md)** - Bindings Python
 
 #### Versionado (SemVer)
@@ -601,7 +613,7 @@ Ver **[Guía de Feature Tiers](docs/FEATURE_TIERS.md)** para opciones de compila
 
 ### Modelo Operacional 🧩
 
-- **Un proceso por directorio de datos.** El motor de almacenamiento toma un file lock sobre el directorio; un segundo proceso que abra la misma ruta fallará con "could not acquire lock". Cierra primero el otro proceso (app, servidor MCP o NDBStudio).
+- **Un proceso por directorio de datos.** El motor de almacenamiento toma un file lock sobre el directorio; un segundo proceso que abra la misma ruta fallará con "could not acquire lock". Cierra primero el otro proceso (tu app, el [servidor MCP](https://github.com/Anxious-Mind-Group/nopaldb-mcp) o [NDBStudio](https://github.com/Anxious-Mind-Group/ndbstudio)).
 - **Comparte dentro del proceso clonando el handle.** `Graph` es `Clone + Send + Sync`; clónalo (barato, respaldado por `Arc`) para usar la misma base desde varios hilos o tasks.
 - Para cargas masivas usa `BulkLoader`; con datasets de muchas actualizaciones habilita el GC de versiones con `start_auto_gc`.
 
@@ -622,15 +634,14 @@ Ver **[Guía de Feature Tiers](docs/FEATURE_TIERS.md)** para opciones de compila
 
 Copyright © 2026 Sergio Haro Pérez (Sharop).
 
-NopalDB tiene licencia **por componente** (a partir de v0.4.32; las versiones ≤ 0.4.31 permanecen AGPL-3.0-only):
+Este repositorio es **MPL-2.0** en su totalidad (a partir de v0.4.32; las versiones ≤ 0.4.31 permanecen AGPL-3.0-only):
 
-| Componente | Crate / paquete | Licencia |
-|------------|-----------------|----------|
-| **Librería** (motor embebible + bindings Python) | `nopaldb` (crates.io + PyPI) | **MPL-2.0** ([nopaldb/LICENSE](./nopaldb/LICENSE)) |
-| **Servidor MCP** (aplicación) | `nopaldb-mcp` | AGPL-3.0-only ([LICENSE](./nopaldb-mcp/LICENSE)) |
-| **TUI NDStudio** (aplicación) | `ndbstudio` | AGPL-3.0-only ([LICENSE](./ndbstudio/LICENSE)) |
+| Componente | Dónde vive | Licencia |
+|------------|------------|----------|
+| **Librería** (motor embebible + bindings Python) | `nopaldb` en este repo (crates.io + PyPI) | **MPL-2.0** ([nopaldb/LICENSE](./nopaldb/LICENSE)) |
+| **Apps del ecosistema** (servidor MCP, NDBStudio) | [Anxious-Mind-Group/nopaldb-mcp](https://github.com/Anxious-Mind-Group/nopaldb-mcp) · [Anxious-Mind-Group/ndbstudio](https://github.com/Anxious-Mind-Group/ndbstudio) | AGPL-3.0-only (en sus propios repos) |
 
-La librería es **MPL-2.0** —copyleft por archivo— así que puede embeberse en proyectos con cualquier licencia (incluidas MIT/Apache y propietarias), mientras que las mejoras a los archivos propios de NopalDB siguen abiertas. Las aplicaciones que *ejecutas* (`nopaldb-mcp`, `ndbstudio`) siguen siendo **AGPL-3.0-only**. El `LICENSE` de la raíz del repositorio es MPL-2.0 (la librería es el artefacto principal); cada aplicación lleva su propio archivo `LICENSE` AGPL-3.0.
+La librería es **MPL-2.0** —copyleft por archivo— así que puede embeberse en proyectos con cualquier licencia (incluidas MIT/Apache y propietarias), mientras que las mejoras a los archivos propios de NopalDB siguen abiertas. Las aplicaciones (servidor MCP, NDBStudio) son **AGPL-3.0-only** y viven en sus propios repositorios (ver [Ecosistema](#ecosistema-)). El `LICENSE` de la raíz del repositorio es MPL-2.0.
 
 NopalDB™ es una marca de Sergio Haro Pérez.
 
