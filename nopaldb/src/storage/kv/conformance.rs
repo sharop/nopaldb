@@ -141,6 +141,125 @@ fn batch_aplica_todo_y_la_ultima_escritura_gana() {
 }
 
 #[test]
+fn apply_multi_es_visible_en_todos_los_keyspaces() {
+    for (name, engine) in engines() {
+        // Tres keyspaces, incluido "default" (en sled es el tree default,
+        // ruta de resolución distinta a open_tree). Los otros dos NO se
+        // pre-crean: apply_multi debe poder crearlos.
+        let mut edges = WriteBatch::default();
+        edges.insert(b"e1".to_vec(), b"edge".to_vec());
+        let mut adj_out = WriteBatch::default();
+        adj_out.insert(b"a->b".to_vec(), b"".to_vec());
+        let mut default = WriteBatch::default();
+        default.insert(b"meta".to_vec(), b"v".to_vec());
+
+        engine
+            .apply_multi(vec![
+                ("mk_edges".to_string(), edges),
+                ("mk_adj_out".to_string(), adj_out),
+                (super::DEFAULT_KEYSPACE.to_string(), default),
+            ])
+            .unwrap();
+
+        // Visibilidad post-commit: handles pedidos DESPUÉS del apply.
+        let e = engine.keyspace("mk_edges").unwrap();
+        let a = engine.keyspace("mk_adj_out").unwrap();
+        let d = engine.keyspace(super::DEFAULT_KEYSPACE).unwrap();
+        assert_eq!(e.get(b"e1").unwrap().as_deref(), Some(b"edge".as_slice()), "[{name}]");
+        assert_eq!(a.get(b"a->b").unwrap().as_deref(), Some(b"".as_slice()), "[{name}]");
+        assert_eq!(d.get(b"meta").unwrap().as_deref(), Some(b"v".as_slice()), "[{name}]");
+    }
+}
+
+#[test]
+fn apply_multi_keyspace_repetido_aplica_en_orden() {
+    for (name, engine) in engines() {
+        // El mismo keyspace dos veces en el Vec: el contrato promete
+        // aplicación en orden — la escritura del ÚLTIMO batch gana.
+        let mut first = WriteBatch::default();
+        first.insert(b"k".to_vec(), b"first".to_vec());
+        first.insert(b"solo_first".to_vec(), b"1".to_vec());
+        let mut second = WriteBatch::default();
+        second.insert(b"k".to_vec(), b"second".to_vec());
+        second.remove(b"solo_first".to_vec());
+
+        engine
+            .apply_multi(vec![
+                ("mk_rep".to_string(), first),
+                ("mk_rep".to_string(), second),
+            ])
+            .unwrap();
+
+        let ks = engine.keyspace("mk_rep").unwrap();
+        assert_eq!(
+            ks.get(b"k").unwrap().as_deref(),
+            Some(b"second".as_slice()),
+            "[{name}] el batch posterior debe ganar"
+        );
+        assert_eq!(
+            ks.get(b"solo_first").unwrap(),
+            None,
+            "[{name}] el remove posterior debe ganar al insert anterior"
+        );
+    }
+}
+
+#[test]
+fn apply_multi_vacio_es_noop() {
+    for (name, engine) in engines() {
+        let ks = engine.keyspace("mk_noop").unwrap();
+        ks.insert(b"k", b"v").unwrap();
+        engine.apply_multi(Vec::new()).unwrap();
+        assert_eq!(ks.get(b"k").unwrap().as_deref(), Some(b"v".as_slice()), "[{name}]");
+        assert_eq!(ks.iter().count(), 1, "[{name}] el no-op no debe tocar nada");
+    }
+}
+
+#[test]
+fn apply_multi_deja_cada_keyspace_exactamente_como_se_pidio() {
+    for (name, engine) in engines() {
+        // Estado previo en ambos keyspaces; el multi-batch inserta y borra
+        // mezclado. Después, un scan COMPLETO de cada keyspace debe dar
+        // EXACTAMENTE el conjunto esperado — ni claves de más (efectos
+        // parciales o cruzados), ni de menos.
+        let e = engine.keyspace("mk_exact_a").unwrap();
+        let a = engine.keyspace("mk_exact_b").unwrap();
+        e.insert(b"keep", b"old").unwrap();
+        e.insert(b"gone", b"x").unwrap();
+        a.insert(b"adj_gone", b"y").unwrap();
+
+        let mut ba = WriteBatch::default();
+        ba.insert(b"new".to_vec(), b"1".to_vec());
+        ba.remove(b"gone".to_vec());
+        let mut bb = WriteBatch::default();
+        bb.remove(b"adj_gone".to_vec());
+        bb.insert(b"adj_new".to_vec(), b"2".to_vec());
+        engine
+            .apply_multi(vec![
+                ("mk_exact_a".to_string(), ba),
+                ("mk_exact_b".to_string(), bb),
+            ])
+            .unwrap();
+
+        let scan_a: Vec<(Vec<u8>, Vec<u8>)> = e.iter().map(|i| i.unwrap()).collect();
+        assert_eq!(
+            scan_a,
+            vec![
+                (b"keep".to_vec(), b"old".to_vec()),
+                (b"new".to_vec(), b"1".to_vec()),
+            ],
+            "[{name}] mk_exact_a"
+        );
+        let scan_b: Vec<(Vec<u8>, Vec<u8>)> = a.iter().map(|i| i.unwrap()).collect();
+        assert_eq!(
+            scan_b,
+            vec![(b"adj_new".to_vec(), b"2".to_vec())],
+            "[{name}] mk_exact_b"
+        );
+    }
+}
+
+#[test]
 fn rmw_concurrente_conserva_el_maximo() {
     // 8 hilos empujando máximos monótonos sobre la MISMA clave: el patrón
     // exacto de los relojes lógicos (put_meta_u64_max). Si rmw no es

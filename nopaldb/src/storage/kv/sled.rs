@@ -106,6 +106,60 @@ impl KvEngine for SledEngine {
         Ok(Arc::new(SledKeyspace { tree }))
     }
 
+    fn apply_multi(&self, batches: Vec<(String, WriteBatch)>) -> Result<()> {
+        use ::sled::transaction::TransactionError;
+        use ::sled::Transactional;
+
+        // Guard OBLIGATORIO, no cortesía: TransactionalTrees::commit indexa
+        // inner[0] — un slice de trees vacío haría panic DENTRO de sled.
+        if batches.is_empty() {
+            return Ok(());
+        }
+
+        // Misma regla de resolución que keyspace(): "default" ES el tree
+        // default de sled (Db: Deref<Tree>), nunca open_tree("default").
+        let trees = batches
+            .iter()
+            .map(|(name, _)| {
+                if name == DEFAULT_KEYSPACE {
+                    Ok((*self.db).clone())
+                } else {
+                    self.db.open_tree(name).map_err(NopalError::from)
+                }
+            })
+            .collect::<Result<Vec<::sled::Tree>>>()?;
+
+        // Transacción multi-tree de sled: un tree repetido en el slice es
+        // válido (el lock de stage() es global, no por tree) y commit aplica
+        // los overlays en el orden del slice — última escritura gana.
+        let result: ::sled::transaction::TransactionResult<(), ()> =
+            trees.as_slice().transaction(|txn_trees| {
+                for ((_, batch), tree) in batches.iter().zip(txn_trees) {
+                    for (key, value) in batch.ops() {
+                        match value {
+                            Some(v) => {
+                                tree.insert(key.as_slice(), v.as_slice())?;
+                            }
+                            None => {
+                                tree.remove(key.as_slice())?;
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            });
+        result.map_err(|e| match e {
+            TransactionError::Storage(err) => NopalError::from(err),
+            // El closure nunca aborta; se mapea por exhaustividad, no panic.
+            TransactionError::Abort(()) => StorageError::new(
+                StorageErrorKind::Internal,
+                "transacción multi-tree de sled abortada sin causa",
+            )
+            .into(),
+        })?;
+        Ok(())
+    }
+
     fn flush(&self) -> Result<()> {
         self.db.flush()?;
         Ok(())

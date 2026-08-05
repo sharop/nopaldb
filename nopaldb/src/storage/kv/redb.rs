@@ -159,6 +159,34 @@ impl KvEngine for RedbEngine {
         }))
     }
 
+    fn apply_multi(&self, batches: Vec<(String, WriteBatch)>) -> Result<()> {
+        // UNA write-txn cubre todos los keyspaces: el commit único es la
+        // atomicidad cross-keyspace (Durability::None, mismo contrato de
+        // visibilidad-sin-fsync que el resto de escrituras). Cada tabla se
+        // abre y se cierra por batch — reabrir la misma tabla más adelante
+        // en la txn es válido porque el handle anterior ya se soltó, y así
+        // los keyspaces repetidos se aplican en orden.
+        let mut txn = self.db.begin_write().map_err(internal)?;
+        txn.set_durability(::redb::Durability::None).map_err(internal)?;
+        for (name, batch) in &batches {
+            let mut table = txn.open_table(table_def(name)).map_err(internal)?;
+            for (key, value) in batch.ops() {
+                match value {
+                    Some(v) => {
+                        table
+                            .insert(key.as_slice(), v.as_slice())
+                            .map_err(NopalError::from)?;
+                    }
+                    None => {
+                        table.remove(key.as_slice()).map_err(NopalError::from)?;
+                    }
+                }
+            }
+        }
+        txn.commit().map_err(internal)?;
+        Ok(())
+    }
+
     fn flush(&self) -> Result<()> {
         durable_checkpoint(&self.db)
     }
