@@ -2606,27 +2606,39 @@ impl Graph {
             self.apply_delete_edge_at(*edge_id, commit_timestamp).await?;
         }
 
-        // 2. Upserts de nodos: cadena MVCC en un batch atómico de storage
+        // 2. Upserts de nodos: cadena MVCC en un batch atómico de storage.
+        //    La clasificación update/create mira la EXISTENCIA DE LA CADENA
+        //    MVCC (get_current_version), no el registro base (`entities`):
+        //    un nodo creado con `add_node` directo existe en `entities` pero
+        //    no tiene cadena, y clasificarlo como update reventaba con
+        //    NodeNotFound en el primer commit que lo tocaba. Mismo patrón que
+        //    `replay_node_upsert` — sin cadena → primera versión con el ts
+        //    del commit (sana lazy los nodos directos preexistentes).
         for node in &set.pending_nodes {
-            let is_update = self.storage.node_exists(node.id).await?;
-            if is_update {
-                let current_version_num = self.storage.get_current_version(node.id).await?;
-                let current_version = self
-                    .storage
-                    .get_node_version(node.id, current_version_num)
-                    .await?;
-                let mut invalidated_prev = current_version.clone();
-                invalidated_prev.invalidate(commit_timestamp);
-                let new_version =
-                    VersionedNode::new_version(&current_version, node.clone(), commit_timestamp);
-                self.storage
-                    .commit_node_version_atomic(node, Some(&invalidated_prev), &new_version)
-                    .await?;
-            } else {
-                let first_version = VersionedNode::new(node.clone(), commit_timestamp);
-                self.storage
-                    .commit_node_version_atomic(node, None, &first_version)
-                    .await?;
+            match self.storage.get_current_version(node.id).await {
+                Ok(current_version_num) => {
+                    let current_version = self
+                        .storage
+                        .get_node_version(node.id, current_version_num)
+                        .await?;
+                    let mut invalidated_prev = current_version.clone();
+                    invalidated_prev.invalidate(commit_timestamp);
+                    let new_version = VersionedNode::new_version(
+                        &current_version,
+                        node.clone(),
+                        commit_timestamp,
+                    );
+                    self.storage
+                        .commit_node_version_atomic(node, Some(&invalidated_prev), &new_version)
+                        .await?;
+                }
+                Err(_) => {
+                    // Sin cadena: primera versión con el timestamp del commit
+                    let first_version = VersionedNode::new(node.clone(), commit_timestamp);
+                    self.storage
+                        .commit_node_version_atomic(node, None, &first_version)
+                        .await?;
+                }
             }
 
             // Registro legacy + inicialización de adyacencia (sin indexar aquí)
