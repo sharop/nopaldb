@@ -58,6 +58,14 @@ jobs:
           PROPTEST_CASES: "200"
         run: cargo test -p nopaldb --test property_model_test -- --nocapture
 
+      # Oráculo de invariantes estructurales (E3): secuencias aleatorias de
+      # ops de API + verificación edges↔adjacency / RAM==rebuild / current
+      # válido / entities==get_all_nodes. #[ignore] en la suite normal.
+      - name: Structural invariants oracle (proptest, nightly-only)
+        env:
+          PROPTEST_CASES: "64"
+        run: cargo test -p nopaldb --features core --test invariants_oracle_proptest -- --ignored --nocapture
+
       - name: Concurrency and isolation suites (full features)
         run: >
           cargo test -p nopaldb --features full
