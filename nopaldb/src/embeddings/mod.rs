@@ -14,4 +14,6 @@ pub use path_reference::PathReferenceEmbedding;
 #[cfg(feature = "embeddings-index")]
 pub use index::HnswIndex;
 #[cfg(feature = "embeddings-index")]
+pub use index::{DEFAULT_EF_SEARCH, EXACT_SEARCH_THRESHOLD};
+#[cfg(feature = "embeddings-index")]
 pub use index::EmbeddingIndex; // backward-compatible alias

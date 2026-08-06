@@ -18,10 +18,10 @@ use crate::types::{NodeId, PropertyValue};
 
 use super::Graph;
 
-/// HNSW `ef_search` default when the query does not override it (mirrors the
-/// embeddings index default).
+/// HNSW `ef_search` default when the query does not override it — the
+/// embeddings index default itself, so both entry points cannot drift.
 #[cfg(feature = "hybrid")]
-const DEFAULT_EF_SEARCH: usize = 30;
+use crate::embeddings::index::DEFAULT_EF_SEARCH;
 
 /// Equality-conjunction filter over a node's label and properties.
 #[derive(Debug, Clone, Default)]

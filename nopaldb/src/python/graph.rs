@@ -760,6 +760,10 @@ impl PyGraph {
     ///     query_vector (list[float]): Vector de consulta.
     ///     k (int): Número de vecinos a retornar.
     ///     model (str): Nombre del modelo.
+    ///     ef_search (int, optional): Tamaño de la lista de candidatos HNSW
+    ///         (más alto = mejor recall, más lento). Default: 30. Solo tiene
+    ///         efecto con índices grandes (>1024 puntos); bajo ese umbral la
+    ///         búsqueda es exacta y el parámetro es irrelevante.
     ///
     /// Returns:
     ///     list[tuple[str, float]]: Lista de (node_id, distancia_coseno) ordenada por similitud.
@@ -769,7 +773,8 @@ impl PyGraph {
     ///     >>> for node_id, dist in results:
     ///     ...     print(node_id, dist)
     #[cfg(feature = "embeddings-index")]
-    fn knn_nodes(&self, py: Python<'_>, query_vector: Vec<f32>, k: usize, model: &str) -> PyResult<Vec<(String, f32)>> {
+    #[pyo3(signature = (query_vector, k, model, ef_search=None))]
+    fn knn_nodes(&self, py: Python<'_>, query_vector: Vec<f32>, k: usize, model: &str, ef_search: Option<usize>) -> PyResult<Vec<(String, f32)>> {
         let graph = self.graph()?;
         let model = model.to_string();
 
@@ -777,7 +782,8 @@ impl PyGraph {
             graph.build_embedding_index(&model).await
         }))?;
 
-        to_py_result(idx.search_knn(&query_vector, k))
+        let ef = ef_search.unwrap_or(crate::embeddings::DEFAULT_EF_SEARCH);
+        to_py_result(idx.search_knn_with_ef(&query_vector, k, ef))
             .map(|hits| hits.into_iter().map(|(id, dist)| (id.to_string(), dist)).collect())
     }
 
