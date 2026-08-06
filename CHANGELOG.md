@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.3] - unreleased
+## [0.5.4] - unreleased
+
+### ✨ Highlights
+
+- **Integridad del redo del WAL.** Dos bugs encontrados por el nuevo oráculo de invariantes (nightly) quedaron cerrados: un commit que FALLA ya no se materializa tras reabrir (prevalidación de endpoints antes del WAL + registro de aborto como respaldo — semántica explícita: commit con `Err` = abortado definitivo, también tras un crash), y el redo ya no puede perder datos commiteados en secuencias que mezclan escrituras directas y transaccionales (marca de progreso por timestamp de commit; las guardas existentes se conservan como defensa). Los deletes de aristas de una transacción ahora viajan al WAL como el resto del write-set.
+
+### Added
+
+- Oráculo de invariantes estructurales con proptest en nightly: secuencias aleatorias de operaciones + verificación de biyección aristas↔adyacencia, RAM==disco tras reopen, punteros de versión válidos.
+- Búsqueda vectorial exacta bajo umbral (determinista) y `ef_search` expuesto en Rust y Python (M1-6).
+
+### Fixed
+
+- El primer commit transaccional sobre un nodo creado con `add_node` directo fallaba con `NodeNotFound` (bug desde 0.4.27); el time-travel de esos nodos también quedó reparado.
+- `add_nodes_batch` reseteaba la adyacencia en RAM de ids existentes.
+- Familia de tests flaky de HNSW eliminada (20/20 × 3 tests).
+
+## [0.5.3] - 2026-08-05
 
 ### ✨ Highlights
 

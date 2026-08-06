@@ -398,6 +398,10 @@ impl WalManager {
                 WalRecord::Abort { tx_id } => {
                     max_tx_id = max_tx_id.max(*tx_id);
                     active_txs.remove(tx_id);
+                    // Abort DESPUÉS de un Commit = backstop de un apply
+                    // fallido (H3, #65): la tx reportó Err al cliente y no
+                    // cuenta como commiteada.
+                    committed_txs.remove(tx_id);
                 }
 
                 // Agregar operaciones a tx activa
@@ -461,10 +465,19 @@ impl WalManager {
         let mut committed_txs = std::collections::HashMap::new();
         let mut replay_ops = Vec::new();
 
-        // Primer pase: identificar txs commiteadas y su timestamp de commit
+        // Primer pase: identificar txs commiteadas y su timestamp de commit.
+        // Un `Abort` POSTERIOR al `Commit` de la misma tx es el backstop de
+        // un apply fallido (H3, #65): commit() devolvió Err al cliente, así
+        // que el redo debe saltar su write-set aunque el Commit esté fsynced.
         for record in &records {
-            if let WalRecord::Commit { tx_id, timestamp } = record {
-                committed_txs.insert(*tx_id, *timestamp);
+            match record {
+                WalRecord::Commit { tx_id, timestamp } => {
+                    committed_txs.insert(*tx_id, *timestamp);
+                }
+                WalRecord::Abort { tx_id } => {
+                    committed_txs.remove(tx_id);
+                }
+                _ => {}
             }
         }
 

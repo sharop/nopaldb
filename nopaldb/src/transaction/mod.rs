@@ -783,11 +783,20 @@ impl Transaction {
             deleted_nodes.push((*node_id, self.graph.get_node(*node_id).await?));
         }
 
+        // Prefetch de aristas borradas (#65): el registro WAL DeleteEdge
+        // lleva la arista entera — antes los deleted_edges NO generaban
+        // registro y el redo podía resucitarlas re-aplicando su InsertEdge.
+        // Una arista inexistente falla aquí, ANTES del WAL.
+        let mut deleted_edges = Vec::with_capacity(self.deleted_edges.len());
+        for edge_id in &self.deleted_edges {
+            deleted_edges.push((*edge_id, self.graph.get_edge(*edge_id).await?));
+        }
+
         let set = crate::graph::applier::CommitSet {
             tx_id: self.id,
             begin_timestamp: self.timestamp,
             deleted_nodes,
-            deleted_edges: self.deleted_edges.iter().cloned().collect(),
+            deleted_edges,
             pending_nodes: self.pending_nodes.values().cloned().collect(),
             pending_edges: self.pending_edges.values().cloned().collect(),
         };

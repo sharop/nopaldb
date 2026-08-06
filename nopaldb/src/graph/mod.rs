@@ -753,10 +753,57 @@ impl Graph {
             Err(tokio::sync::mpsc::error::SendError(msg)) => {
                 let applier::Work::Commit(set) = msg.work else { unreachable!() };
                 let _gate = self.write_gate.lock().await;
+
+                // Misma semántica que el applier (#65): prevalidar ANTES del
+                // WAL (H3) — un commit condenado jamás toca el log.
+                let empty = std::collections::HashSet::new();
+                applier::validate_commit_set(self, &set, &empty, &empty).await?;
+
                 let commit_timestamp = self.next_logical_timestamp();
                 self.wal().append_batch(&set.wal_records(commit_timestamp)).await?;
-                self.apply_commit_set(&set, commit_timestamp).await?;
-                self.persist_clocks().await
+                match self.apply_commit_set(&set, commit_timestamp).await {
+                    Ok(()) => {
+                        // Marca de progreso del redo (H4), best effort: si no
+                        // se persiste, las guardas de `replay_wal` cubren.
+                        if let Err(e) = self
+                            .storage
+                            .put_meta_u64_max(
+                                crate::storage::META_WAL_APPLIED_UPTO,
+                                commit_timestamp,
+                            )
+                            .await
+                        {
+                            log::warn!(
+                                "inline commit: failed to advance WAL applied-upto marker: {}",
+                                e
+                            );
+                        }
+                        self.persist_clocks().await
+                    }
+                    Err(apply_err) => {
+                        // Backstop H3 (ver `applier::process_batch`): sin el
+                        // Abort, el redo materializaría un commit con Err.
+                        match self.wal().append(WalRecord::Abort { tx_id: set.tx_id }).await {
+                            Ok(_) => {
+                                let _ = self
+                                    .storage
+                                    .put_meta_u64_max(
+                                        crate::storage::META_WAL_APPLIED_UPTO,
+                                        commit_timestamp,
+                                    )
+                                    .await;
+                            }
+                            Err(abort_err) => log::warn!(
+                                "inline commit: apply failed for tx {} AND its Abort record could not be written ({}); \
+                                 the next open's redo will retry the write-set",
+                                set.tx_id,
+                                abort_err
+                            ),
+                        }
+                        let _ = self.persist_clocks().await;
+                        Err(apply_err)
+                    }
+                }
             }
         }
     }
@@ -2059,9 +2106,30 @@ impl Graph {
     async fn replay_wal(&self) -> Result<()> {
         let operations = self.wal.get_replay_operations_with_ts().await?;
 
+        // Marca de progreso (H4, #65): todo commit con ts ≤ marca ya quedó
+        // totalmente aplicado — el redo solo procesa el sufijo posterior.
+        // Sin la marca, las guardas heurísticas de cada brazo (DeleteNode
+        // "si existe" vs InsertNode "por timestamp de historia") deciden de
+        // forma inconsistente sobre mundos mixtos directo/tx y pueden borrar
+        // datos commiteados. Las guardas se CONSERVAN como defensa para el
+        // sufijo no marcado (crash post-apply/pre-marca) y para bases cuyo
+        // WAL es previo a la marca (clave ausente → 0 → replay completo,
+        // comportamiento histórico). Ver `META_WAL_APPLIED_UPTO` para el
+        // descarte de la alternativa por posición en bytes.
+        let applied_upto = self
+            .storage
+            .get_meta_u64(crate::storage::META_WAL_APPLIED_UPTO)
+            .await?
+            .unwrap_or(0);
+
         let mut replayed = 0;
+        let mut max_commit_ts = 0u64;
 
         for (operation, commit_ts) in operations {
+            max_commit_ts = max_commit_ts.max(commit_ts);
+            if commit_ts <= applied_upto {
+                continue;
+            }
             match operation {
                 WalRecord::InsertNode { node, .. } => {
                     // Redo con cadena MVCC: un crash post-WAL/pre-apply deja el
@@ -2117,6 +2185,14 @@ impl Graph {
 
                 _ => {}
             }
+        }
+
+        // Al terminar, TODO lo commiteado del log está aplicado: fijar la
+        // marca para que un segundo open no re-decida con heurísticas.
+        if max_commit_ts > applied_upto {
+            self.storage
+                .put_meta_u64_max(crate::storage::META_WAL_APPLIED_UPTO, max_commit_ts)
+                .await?;
         }
 
         log::info!("Replayed {} operations from WAL", replayed);
@@ -2600,9 +2676,14 @@ impl Graph {
             self.mark_modified(*node_id, commit_timestamp).await?;
         }
 
-        // 1b. Borrados de aristas (cualquier fallo aborta: el WAL ya tiene el
-        //     registro y el redo del próximo open reintenta).
-        for edge_id in &set.deleted_edges {
+        // 1b. Borrados de aristas. Un Err en cualquier paso del apply aborta
+        //     el commit DEFINITIVAMENTE (#65): el applier escribe el registro
+        //     Abort (backstop H3) y el redo salta el write-set — commit() con
+        //     Err = abortado, nunca "reintentable". Solo un crash a MEDIO
+        //     apply (sin Err ni ack) deja el caso "committed but
+        //     unacknowledged" de docs/DURABILITY.md: ahí el redo sí completa
+        //     el set en el próximo open.
+        for (edge_id, _edge) in &set.deleted_edges {
             self.apply_delete_edge_at(*edge_id, commit_timestamp).await?;
         }
 
@@ -3026,16 +3107,19 @@ impl Graph {
         // 1. Batch insert en storage
         let ids = self.storage.insert_nodes_batch(&nodes).await?;
 
-        // 2. Inicializar índices de adyacencia en memoria. En disco no hay
-        //    nada que escribir (v2): un nodo sin aristas no tiene claves en
-        //    el keyspace `adjacency` — ausencia == lista vacía.
+        // 2. Inicializar índices de adyacencia en memoria SOLO si el nodo es
+        //    nuevo (H1, #65): un batch-upsert sobre un id existente no debe
+        //    pisar sus aristas RAM con Vec::new() — mismo patrón que
+        //    `apply_add_node`. En disco no hay nada que escribir (v2): un
+        //    nodo sin aristas no tiene claves en el keyspace `adjacency` —
+        //    ausencia == lista vacía.
         {
             let mut adj_out = self.adjacency_out.write().await;
             let mut adj_in = self.adjacency_in.write().await;
 
             for node in &nodes {
-                adj_out.insert(node.id, Vec::new());
-                adj_in.insert(node.id, Vec::new());
+                adj_out.entry(node.id).or_default();
+                adj_in.entry(node.id).or_default();
             }
         }
 

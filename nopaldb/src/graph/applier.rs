@@ -66,24 +66,31 @@ pub(crate) enum WriteOp {
 }
 
 /// Write-set completo de un commit transaccional: todo lo que la fase de
-/// aplicación necesita, capturado ANTES de encolar (los nodos borrados van
-/// prefetcheados porque el registro WAL DeleteNode lleva el nodo entero).
+/// aplicación necesita, capturado ANTES de encolar (los nodos y aristas
+/// borrados van prefetcheados porque los registros WAL DeleteNode/DeleteEdge
+/// llevan la entidad entera).
 #[derive(Debug)]
 pub(crate) struct CommitSet {
     pub tx_id: TransactionId,
     /// Timestamp de inicio de la transacción (registro WAL Begin).
     pub begin_timestamp: u64,
     pub deleted_nodes: Vec<(NodeId, Node)>,
-    pub deleted_edges: Vec<EdgeId>,
+    pub deleted_edges: Vec<(EdgeId, Edge)>,
     pub pending_nodes: Vec<Node>,
     pub pending_edges: Vec<Edge>,
 }
 
 impl CommitSet {
     /// Registros WAL del commit con el timestamp asignado por el applier.
+    /// El orden es ESPEJO del apply (`apply_commit_set`): DeleteNode →
+    /// DeleteEdge → InsertNode → InsertEdge — así el redo en orden-de-log
+    /// reproduce exactamente el apply.
     pub(crate) fn wal_records(&self, commit_timestamp: u64) -> Vec<WalRecord> {
         let mut records = Vec::with_capacity(
-            2 + self.deleted_nodes.len() + self.pending_nodes.len() + self.pending_edges.len(),
+            2 + self.deleted_nodes.len()
+                + self.deleted_edges.len()
+                + self.pending_nodes.len()
+                + self.pending_edges.len(),
         );
         records.push(WalRecord::Begin {
             tx_id: self.tx_id,
@@ -94,6 +101,13 @@ impl CommitSet {
                 tx_id: self.tx_id,
                 node_id: *node_id,
                 node: node.clone(),
+            });
+        }
+        for (edge_id, edge) in &self.deleted_edges {
+            records.push(WalRecord::DeleteEdge {
+                tx_id: self.tx_id,
+                edge_id: *edge_id,
+                edge: edge.clone(),
             });
         }
         for node in &self.pending_nodes {
@@ -152,29 +166,113 @@ pub(crate) fn spawn_applier() -> tokio::sync::mpsc::Sender<ApplierMsg> {
     tx
 }
 
+/// Prevalidación del write-set ANTES de escribir sus registros al WAL (H3,
+/// #65): un commit cuyo apply va a fallar de forma previsible (arista hacia
+/// un endpoint inexistente, o borrado por la propia tx sin re-alta) se
+/// rechaza aquí y NUNCA toca el log — `commit()` devuelve Err sin dejar un
+/// write-set fsynced que el redo del próximo open pudiera materializar.
+///
+/// `created_in_batch`/`deleted_in_batch` reflejan lo que commits ANTERIORES
+/// del mismo lote (ya validados: van antes en el log y en el apply) habrán
+/// creado/borrado cuando este set se aplique.
+pub(crate) async fn validate_commit_set(
+    graph: &super::Graph,
+    set: &CommitSet,
+    created_in_batch: &std::collections::HashSet<NodeId>,
+    deleted_in_batch: &std::collections::HashSet<NodeId>,
+) -> Result<()> {
+    if set.pending_edges.is_empty() {
+        return Ok(());
+    }
+    let own_nodes: std::collections::HashSet<NodeId> =
+        set.pending_nodes.iter().map(|n| n.id).collect();
+    let own_deleted: std::collections::HashSet<NodeId> =
+        set.deleted_nodes.iter().map(|(id, _)| *id).collect();
+
+    for edge in &set.pending_edges {
+        for endpoint in [edge.source, edge.target] {
+            // Un upsert de la propia tx (o de un commit previo del lote)
+            // garantiza el endpoint: los upserts se aplican antes que las
+            // aristas (`apply_commit_set`).
+            if own_nodes.contains(&endpoint) {
+                continue;
+            }
+            let doomed = own_deleted.contains(&endpoint)
+                || deleted_in_batch.contains(&endpoint);
+            if doomed {
+                return Err(crate::error::NopalError::NodeNotFound(endpoint.to_string()));
+            }
+            if created_in_batch.contains(&endpoint) {
+                continue;
+            }
+            if !graph.storage.node_exists(endpoint).await? {
+                return Err(crate::error::NopalError::NodeNotFound(endpoint.to_string()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Plan de la FASE 1 para cada mensaje del lote.
+enum Plan {
+    /// Operación directa: no depende del WAL.
+    Op,
+    /// Commit validado: sus registros van en el grupo con este timestamp.
+    Commit { ts: u64 },
+    /// Commit rechazado por la prevalidación: sin registros WAL, ack Err.
+    Rejected(crate::error::NopalError),
+}
+
 /// Procesa un lote: group-fsync del WAL de todos los commits, luego apply en
 /// orden FIFO. Todos los mensajes de un canal pertenecen a la MISMA base
 /// (cada Graph::open crea su canal), así que comparten write_gate/WAL/relojes.
+///
+/// Semántica de fallo (#65): `commit()` con Err = transacción ABORTADA
+/// definitivamente. Si el apply falla tras el fsync del grupo, se escribe un
+/// registro `Abort` (backstop H3) para que el redo salte ese write-set. Se
+/// descartó el esquema two-phase (registro `Intent` + `Committed` tras el
+/// apply) porque duplica los fsyncs por commit — rompe el group commit de
+/// 1 fsync — y, sin undo físico, tampoco da atomicidad: un crash entre el
+/// apply y el `Committed` dejaría estado durable que el log declararía
+/// no-commiteado.
 async fn process_batch(batch: Vec<ApplierMsg>) {
     let anchor = batch[0].graph.clone();
     let gate = anchor.write_gate();
     let _gate = gate.lock().await;
 
-    // FASE 1 — WAL agrupado: timestamps de commit asignados EN ORDEN de cola
-    // (garantiza orden-de-log == orden-de-apply) y UN fsync para el grupo.
-    let mut commit_timestamps: Vec<Option<u64>> = Vec::with_capacity(batch.len());
+    // FASE 1 — prevalidación + WAL agrupado: timestamps de commit asignados
+    // EN ORDEN de cola (garantiza orden-de-log == orden-de-apply) y UN fsync
+    // para el grupo. Los commits rechazados no consumen timestamp ni log.
+    let mut plans: Vec<Plan> = Vec::with_capacity(batch.len());
     let mut group_records: Vec<WalRecord> = Vec::new();
     let mut commits_in_group = 0usize;
+    let mut created_in_batch: std::collections::HashSet<NodeId> = Default::default();
+    let mut deleted_in_batch: std::collections::HashSet<NodeId> = Default::default();
 
     for msg in &batch {
         match &msg.work {
             Work::Commit(set) => {
-                let ts = msg.graph.next_logical_timestamp();
-                group_records.extend(set.wal_records(ts));
-                commit_timestamps.push(Some(ts));
-                commits_in_group += 1;
+                match validate_commit_set(&msg.graph, set, &created_in_batch, &deleted_in_batch)
+                    .await
+                {
+                    Ok(()) => {
+                        let ts = msg.graph.next_logical_timestamp();
+                        group_records.extend(set.wal_records(ts));
+                        for (id, _) in &set.deleted_nodes {
+                            created_in_batch.remove(id);
+                            deleted_in_batch.insert(*id);
+                        }
+                        for node in &set.pending_nodes {
+                            deleted_in_batch.remove(&node.id);
+                            created_in_batch.insert(node.id);
+                        }
+                        plans.push(Plan::Commit { ts });
+                        commits_in_group += 1;
+                    }
+                    Err(e) => plans.push(Plan::Rejected(e)),
+                }
             }
-            Work::Op(_) => commit_timestamps.push(None),
+            Work::Op(_) => plans.push(Plan::Op),
         }
     }
 
@@ -193,23 +291,86 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
     }
 
     // FASE 2 — apply en orden FIFO; ack de cada mensaje tras SU resultado.
-    for (msg, commit_ts) in batch.into_iter().zip(commit_timestamps) {
-        let result = match (&wal_ok, msg.work) {
-            // Si el fsync del grupo falló, NINGÚN commit es durable: no se
-            // aplica ninguno. Las ops directas no dependen del WAL y se
-            // aplican de todas formas (misma semántica que hoy).
-            (Err(e), Work::Commit(_)) => Err(crate::error::NopalError::custom(format!(
-                "group WAL fsync failed, commit aborted before apply: {}",
-                e
-            ))),
-            (_, Work::Op(op)) => msg.graph.apply_write_op(op).await,
-            (Ok(()), Work::Commit(set)) => {
-                msg.graph
-                    .apply_commit_set(&set, commit_ts.expect("commit has timestamp"))
-                    .await
-            }
+    //
+    // Marca de progreso (H4): `settled_upto` avanza sobre el PREFIJO de
+    // commits resueltos — aplicados OK o abortados con registro fsynced.
+    // Un commit no resuelto (apply Err + Abort no escribible) corta el
+    // prefijo: la marca no puede saltarlo o el redo perdería su reintento.
+    let mut settled_upto: Option<u64> = None;
+    let mut prefix_intact = true;
+
+    for (msg, plan) in batch.into_iter().zip(plans) {
+        let result = match msg.work {
+            // Las ops directas no dependen del WAL y se aplican de todas
+            // formas (misma semántica que hoy).
+            Work::Op(op) => msg.graph.apply_write_op(op).await,
+            Work::Commit(set) => match plan {
+                Plan::Rejected(e) => Err(e),
+                Plan::Commit { ts } => match &wal_ok {
+                    // Si el fsync del grupo falló, NINGÚN commit es durable:
+                    // no se aplica ninguno (y la marca no avanza).
+                    Err(e) => {
+                        prefix_intact = false;
+                        Err(crate::error::NopalError::custom(format!(
+                            "group WAL fsync failed, commit aborted before apply: {}",
+                            e
+                        )))
+                    }
+                    Ok(()) => match msg.graph.apply_commit_set(&set, ts).await {
+                        Ok(()) => {
+                            if prefix_intact {
+                                settled_upto = Some(ts);
+                            }
+                            Ok(())
+                        }
+                        Err(apply_err) => {
+                            // Backstop H3: el write-set ya está fsynced con su
+                            // Commit; sin este registro el redo del próximo
+                            // open materializaría un commit que reportó Err.
+                            // Ventana residual: un crash ENTRE el Err del
+                            // apply y este fsync deja Commit sin Abort y el
+                            // redo aplica el set parcial — idéntico al
+                            // comportamiento previo, y alcanzable solo si el
+                            // apply falló pese a la prevalidación (IO/bug).
+                            match anchor
+                                .wal()
+                                .append(WalRecord::Abort { tx_id: set.tx_id })
+                                .await
+                            {
+                                Ok(_) => {
+                                    if prefix_intact {
+                                        settled_upto = Some(ts);
+                                    }
+                                }
+                                Err(abort_err) => {
+                                    prefix_intact = false;
+                                    log::warn!(
+                                        "applier: apply failed for tx {} AND its Abort record could not be written ({}); \
+                                         the next open's redo will retry the write-set",
+                                        set.tx_id,
+                                        abort_err
+                                    );
+                                }
+                            }
+                            Err(apply_err)
+                        }
+                    },
+                },
+                Plan::Op => unreachable!("Plan::Op para un Work::Commit"),
+            },
         };
         let _ = msg.ack.send(result);
+    }
+
+    // Marca de progreso del redo (best effort: si no se persiste, las
+    // guardas heurísticas de `replay_wal` siguen cubriendo el sufijo).
+    if let Some(upto) = settled_upto
+        && let Err(e) = anchor
+            .storage
+            .put_meta_u64_max(crate::storage::META_WAL_APPLIED_UPTO, upto)
+            .await
+    {
+        log::warn!("applier: failed to advance WAL applied-upto marker: {}", e);
     }
 
     // Cota de relojes una vez por lote (CAS-max, best effort: el WAL del

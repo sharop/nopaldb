@@ -1,10 +1,13 @@
 // tests/crash_mixed_load_test.rs
 //
 // Crash safety bajo CARGA MIXTA: el hijo intercala commits transaccionales,
-// escrituras directas, deletes de nodos/aristas y updates de propiedades
-// indexadas — el perfil de una app real — y muere con SIGKILL en momentos
-// aleatorios. Al reabrir se verifican los invariantes estructurales y de
-// índices. Complementa a crash_commit_test (perfil enfocado a commits).
+// escrituras directas, deletes de nodos/aristas (directos Y por tx), updates
+// de propiedades indexadas y commits condenados (arista a endpoint
+// inexistente, rechazados en la prevalidación pre-WAL de #65) — el perfil de
+// una app real — y muere con SIGKILL en momentos aleatorios. Al reabrir se
+// verifican los invariantes estructurales y de índices, incluido que ningún
+// commit con Err se materialice. Complementa a crash_commit_test (perfil
+// enfocado a commits).
 //
 // Rondas configurables con NOPAL_CRASH_ROUNDS (default 12; el nightly sube).
 
@@ -43,10 +46,11 @@ async fn mixed_load_child() {
     }
 
     let mut spokes: Vec<Uuid> = Vec::new();
+    let mut tx_edges: Vec<Uuid> = Vec::new();
     let mut i: i64 = 0;
     loop {
         i += 1;
-        match i % 5 {
+        match i % 7 {
             // Commit transaccional: nodo indexado + arista al hub
             0 | 1 => {
                 let mut tx = graph.begin_transaction().await.expect("begin");
@@ -58,9 +62,10 @@ async fn mixed_load_child() {
                     )
                     .await
                     .expect("tx add");
-                tx.add_edge(Edge::new(n, hub, "BELONGS")).expect("tx edge");
+                let e = tx.add_edge(Edge::new(n, hub, "BELONGS")).expect("tx edge");
                 tx.commit().await.expect("commit");
                 spokes.push(n);
+                tx_edges.push(e);
             }
             // Escritura directa (sin tx)
             2 => {
@@ -86,12 +91,46 @@ async fn mixed_load_child() {
                 .expect("hub update");
                 tx.commit().await.expect("hub commit");
             }
-            // Delete de un spoke viejo (nodo + sus aristas)
+            // Commit CONDENADO (#65): arista hacia un endpoint que no existe.
+            // La prevalidación pre-WAL debe rechazarlo — Err garantizado y
+            // CERO rastro, incluso si el SIGKILL cae justo después (el
+            // write-set jamás tocó el log). El padre verifica que ningún
+            // nodo "Ghost" sobreviva a ningún crash.
+            4 => {
+                let mut tx = graph.begin_transaction().await.expect("begin");
+                let g = tx
+                    .add_node(Node::new("Ghost").with_property("seq", PropertyValue::Int(i)))
+                    .await
+                    .expect("ghost add");
+                tx.add_edge(Edge::new(g, Uuid::new_v4(), "HAUNTS")).expect("ghost edge");
+                assert!(
+                    tx.commit().await.is_err(),
+                    "commit con endpoint inexistente debe fallar en la prevalidación"
+                );
+            }
+            // Delete de arista vieja VÍA TX (registro WAL DeleteEdge, #65).
+            // Puede fallar pre-WAL si un delete de nodo ya la purgó — tolerado.
+            5 => {
+                if tx_edges.len() > 8 {
+                    let victim = tx_edges.remove(0);
+                    let mut tx = graph.begin_transaction().await.expect("begin");
+                    tx.delete_edge(victim).expect("tx delete_edge");
+                    let _ = tx.commit().await;
+                }
+            }
+            // Delete de un spoke viejo (nodo + sus aristas), alternando el
+            // path directo y el transaccional (mundos mixtos del redo, H4).
             _ => {
                 if spokes.len() > 8
                     && let Some(victim) = spokes.first().cloned()
                 {
-                    let _ = graph.delete_node(victim).await;
+                    if i % 2 == 0 {
+                        let _ = graph.delete_node(victim).await;
+                    } else {
+                        let mut tx = graph.begin_transaction().await.expect("begin");
+                        tx.delete_node(victim).expect("tx delete_node");
+                        let _ = tx.commit().await;
+                    }
                     spokes.remove(0);
                 }
             }
@@ -167,7 +206,14 @@ async fn assert_invariants(graph: &Graph) -> nopaldb::Result<()> {
         );
     }
 
-    // 5. El grafo sigue siendo escribible tras el recovery
+    // 5. Los commits condenados (rechazados en la prevalidación pre-WAL,
+    //    #65) jamás se materializan — ni por crash ni por redo.
+    assert!(
+        nodes.iter().all(|n| n.label != "Ghost"),
+        "a failed commit's write-set materialized after crash + reopen"
+    );
+
+    // 6. El grafo sigue siendo escribible tras el recovery
     let mut tx = graph.begin_transaction().await?;
     tx.add_node(Node::new("Probe")).await?;
     tx.commit().await?;

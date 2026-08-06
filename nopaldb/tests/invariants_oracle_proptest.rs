@@ -25,41 +25,18 @@
 // layout_v2_migration_test + el soak nightly; el valor de este test es el
 // oráculo sobre operaciones vivas del layout v2.
 //
-// ⚠️ HUECOS CONOCIDOS descubiertos por este oráculo (reproducidos
-// determinísticamente durante su desarrollo; se esquivan aquí para que el
-// nightly vigile todo lo demás en verde — quitar el dodge al cerrarlos):
-//
-//   H1. `add_nodes_batch` sobre un id EXISTENTE pisa su adyacencia RAM con
-//       `Vec::new()` (el mismo bug que `apply_add_node` ya arregló con
-//       `or_default`): RAM ≠ disco hasta el próximo open. Dodge: el
-//       intérprete solo batchea slots frescos (ver `BatchNodes`).
-//
-//   H2. El path de update del commit transaccional exige cadena MVCC
-//       (`get_current_version`), pero ni `add_node` directo ni
-//       `add_nodes_batch` la crean: comitear un update sobre un nodo nacido
-//       por esos paths falla con NodeNotFound a MEDIO apply.
-//
-//   H3. Un commit que falla a medias en el apply (H2, o una arista a nodo
-//       inexistente) ya dejó su write-set en el WAL: el redo del próximo
-//       open lo MATERIALIZA aunque `commit()` devolvió Err. (El path
-//       directo no lo padece: un `add_edge` directo fallido no deja rastro
-//       tras reopen — verificado.)
-//
-//   H4. El redo del WAL no es consistente entre registros: DeleteNode se
-//       re-aplica con la única guarda "el nodo existe", mientras InsertNode
-//       se guarda por timestamp de la historia. Secuencia mínima: alta
-//       directa → delete por tx → re-alta por tx → reopen: el redo
-//       re-aplica el delete viejo (el nodo "existe") y NO re-aplica la
-//       re-alta ("ya aplicada" según su historia) — un nodo commiteado
-//       desaparece al reabrir la base.
-//
-// Dodge de H2/H3/H4: los tres se manifiestan vía el redo del WAL sobre
-// mundos mixtos directo/tx, así que el test hace `checkpoint()` (trunca el
-// WAL) como ÚLTIMO paso antes de comparar y reabrir — la invariante B mide
-// el rebuild de adyacencia puro, que es su objetivo, y los errores de
-// commit esperados por H2/H3 se toleran en el intérprete. Los huecos van
-// reportados aparte con sus repros; este archivo no los arregla ni los
-// pinnea en rojo.
+// HUECOS H1–H4 descubiertos por este oráculo: TODOS CERRADOS, dodges
+// retirados. H2 lo cerró #62 (la clasificación update/create del commit
+// mira la cadena MVCC, no el registro base). H1/H3/H4 los cerró #65:
+// `add_nodes_batch` ya no pisa adyacencia RAM (or_default), un commit con
+// Err se rechaza en la prevalidación pre-WAL o queda abortado con registro
+// `Abort` (el redo lo salta), la marca `wal_applied_upto` hace el redo
+// idempotente por orden del log (y las guardas heurísticas quedan como
+// defensa del sufijo no marcado), y los deleted_edges de una tx generan
+// registro `DeleteEdge`. Las secuencias que antes se esquivaban (reopen
+// con WAL vivo sobre mundos mixtos directo/tx, batch-upsert de ids
+// existentes) ahora corren de lleno; sus repros mínimos viven como
+// regresiones deterministas en wal_redo_integrity_test.rs.
 //
 // Nightly-only (`#[ignore]`): cada caso hace IO real de sled + un reopen.
 // Casos por corrida: 32 por default (PROPTEST_CASES lo sube/baja) con
@@ -94,9 +71,8 @@ fn edge(src: u128, tgt: u128, etype: usize) -> Edge {
 enum Op {
     /// `add_node` directo — alta o update (upsert) según exista el slot.
     AddNode { slot: u128, riego: i64 },
-    /// Alta/update vía transacción. El commit puede fallar por H2 (update
-    /// de un nodo sin cadena MVCC) — tolerado; el residuo WAL lo neutraliza
-    /// el checkpoint final (H3).
+    /// Alta/update vía transacción. Siempre debe commitear: el update sobre
+    /// nodos sin cadena MVCC (nacidos por paths directos) lo sanó #62.
     AddNodeTx { slot: u128, riego: i64 },
     /// `delete_node` directo (purga aristas incidentes por chunks).
     DeleteNode { slot: u128 },
@@ -105,16 +81,18 @@ enum Op {
     DeleteNodeTx { slot: u128 },
     /// `add_edge` directo (falla limpio si faltan extremos — tolerado).
     AddEdge { src: u128, tgt: u128, etype: usize },
-    /// Nodo + arista en LA MISMA transacción (commit multi-op). Puede
-    /// fallar por H2/H3 — tolerado; ver el checkpoint final.
+    /// Nodo + arista en LA MISMA transacción (commit multi-op). Si el
+    /// target no existe, la prevalidación pre-WAL (#65) rechaza el commit
+    /// SIN residuo — Err tolerado, sin rastro que verificar aparte.
     AddEdgeTx { src: u128, tgt: u128, etype: usize, riego: i64 },
     /// `delete_edge` directo sobre una arista creada antes (puede ya no
     /// existir si un delete_node la purgó — tolerado).
     DeleteEdge { pick: usize },
     /// Borrado de arista vía transacción (commit falla si ya murió — tolerado).
     DeleteEdgeTx { pick: usize },
-    /// `add_nodes_batch` — SOLO slots nuevos (dodge de H1: el batch-upsert
-    /// de un id existente pisa su adyacencia RAM con `Vec::new()`).
+    /// `add_nodes_batch` — upsert de CUALQUIER slot, exista o no (H1
+    /// cerrado en #65: el batch ya no pisa la adyacencia RAM de ids
+    /// existentes). Solo se deduplican ids repetidos dentro del lote.
     BatchNodes { slots: Vec<u128>, riego: i64 },
     /// `add_edges_batch` — solo entre slots existentes: el path batch no
     /// valida extremos (hueco semántico menor, distinto de H1–H4) y las
@@ -158,11 +136,11 @@ async fn exists(graph: &Graph, slot: u128) -> bool {
     graph.node_exists(nid(slot)).await.unwrap_or(false)
 }
 
-/// Aplica una op. Los errores ESPERADOS (extremos inexistentes, nodo/arista
-/// ya borrados, commits H2/H3) se TOLERAN — el punto del oráculo es que,
-/// falle o no la op, las invariantes estructurales se conserven. Lo que
-/// jamás debe fallar (altas directas/batch gateado, rollback, checkpoint)
-/// lleva `expect`.
+/// Aplica una op. Los errores ESPERADOS (extremos inexistentes — rechazados
+/// pre-WAL —, nodo/arista ya borrados) se TOLERAN — el punto del oráculo es
+/// que, falle o no la op, las invariantes estructurales se conserven. Lo que
+/// jamás debe fallar (altas directas/batch/tx de upsert, rollback,
+/// checkpoint) lleva `expect`.
 async fn apply(graph: &Graph, edge_ids: &mut Vec<EdgeId>, op: &Op) {
     match op {
         Op::AddNode { slot, riego } => {
@@ -171,7 +149,7 @@ async fn apply(graph: &Graph, edge_ids: &mut Vec<EdgeId>, op: &Op) {
         Op::AddNodeTx { slot, riego } => {
             let mut tx = graph.begin_transaction().await.expect("begin");
             tx.add_node(node(*slot, *riego)).await.expect("tx add_node");
-            let _ = tx.commit().await; // H2 tolerado
+            tx.commit().await.expect("tx commit de upsert (H2 cerrado en #62)");
         }
         Op::DeleteNode { slot } => {
             let _ = graph.delete_node(nid(*slot)).await; // NodeNotFound tolerado
@@ -209,11 +187,12 @@ async fn apply(graph: &Graph, edge_ids: &mut Vec<EdgeId>, op: &Op) {
             }
         }
         Op::BatchNodes { slots, riego } => {
-            // Dodge de H1 (ver doc de la variante): solo slots que NO existen.
+            // H1 cerrado (#65): el batch-upsert de ids existentes ya no pisa
+            // su adyacencia RAM. Solo se deduplica dentro del lote.
             let mut nodes = Vec::new();
             let mut seen = BTreeSet::new();
             for slot in slots {
-                if seen.insert(*slot) && !exists(graph, *slot).await {
+                if seen.insert(*slot) {
                     nodes.push(node(*slot, *riego));
                 }
             }
@@ -402,13 +381,10 @@ proptest! {
                     apply(&graph, &mut edge_ids, op).await;
                 }
 
-                // Checkpoint FINAL deliberado (dodge de H2/H3/H4, ver la
-                // cabecera): trunca el WAL para que el reopen mida el
-                // rebuild de adyacencia puro y no el redo del WAL, que hoy
-                // re-aplica deletes viejos y materializa commits fallidos
-                // sobre mundos mixtos directo/tx.
-                graph.checkpoint().await.expect("checkpoint final");
-
+                // SIN checkpoint final (#65): el reopen ejercita el redo del
+                // WAL de lleno — la marca `wal_applied_upto` + el registro
+                // Abort deben dejarlo idempotente sobre mundos mixtos
+                // directo/tx (los dodges de H2/H3/H4 se retiraron).
                 check_structural_invariants(&graph).await;
                 before = neighbors_snapshot(&graph).await;
             } // drop: cierra sled y suelta el lock
