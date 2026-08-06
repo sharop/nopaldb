@@ -24,7 +24,30 @@ use std::collections::HashMap;
 const DEFAULT_MAX_NB_CONNECTION: usize = 24;
 const DEFAULT_EF_CONSTRUCTION: usize = 400;
 const DEFAULT_MAX_LAYER: usize = 16;
-const DEFAULT_EF_SEARCH: usize = 30;
+
+/// `ef_search` por defecto cuando el llamador no lo especifica
+/// (`search_knn`). Controla el tamaño de la lista de candidatos que HNSW
+/// explora: más alto = mejor recall, más lento. Solo aplica cuando la
+/// búsqueda va por el grafo HNSW (N > `EXACT_SEARCH_THRESHOLD`); el camino
+/// exacto lo ignora porque no hay aproximación que compensar.
+pub const DEFAULT_EF_SEARCH: usize = 30;
+
+/// Con `N ≤ EXACT_SEARCH_THRESHOLD` puntos, `search_knn*` responde con un
+/// scan lineal exacto (distancia coseno contra todos los puntos) en lugar de
+/// consultar el grafo HNSW.
+///
+/// Razón principal: determinismo. El grafo HNSW depende de la asignación
+/// aleatoria de niveles por punto, así que dos builds con los mismos datos
+/// pueden rankear distinto (y con recall < 1 hasta omitir vecinos), lo que
+/// producía tests flaky en índices chicos. El costo es competitivo: el scan
+/// lineal es cache-friendly y en el borde del umbral queda a la par de HNSW
+/// (medido: ~69µs vs ~62µs por query con N=1000, dim=64, k=10, release);
+/// muy por debajo del umbral el scan gana claramente.
+///
+/// Se descartó la alternativa de "no construir el grafo HNSW bajo el
+/// umbral": cruzar el umbral exigiría un rebuild completo en medio de un
+/// `insert`. El grafo se construye siempre; solo cambia el camino de LECTURA.
+pub const EXACT_SEARCH_THRESHOLD: usize = 1024;
 
 /// Debajo de este tamaño, `build_batch` inserta en serie para que la
 /// construcción del grafo HNSW sea determinista (independiente del número de
@@ -48,6 +71,13 @@ pub struct HnswIndex {
     dimension: usize,
     /// Siguiente DataId disponible para asignar.
     next_data_id: usize,
+    /// Copia de los vectores para el camino de búsqueda exacta.
+    ///
+    /// Se mantiene solo mientras `len() ≤ EXACT_SEARCH_THRESHOLD`; al cruzar
+    /// el umbral se libera (la búsqueda pasa a HNSW y no vuelve atrás porque
+    /// el índice no soporta remociones). El costo de memoria es acotado:
+    /// a lo sumo `EXACT_SEARCH_THRESHOLD` vectores duplicados.
+    exact_store: Vec<(NodeId, Vec<f32>)>,
 }
 
 impl HnswIndex {
@@ -73,6 +103,7 @@ impl HnswIndex {
             model: model.into(),
             dimension,
             next_data_id: 0,
+            exact_store: Vec::new(),
         }
     }
 
@@ -99,6 +130,7 @@ impl HnswIndex {
             model: model.into(),
             dimension,
             next_data_id: 0,
+            exact_store: Vec::new(),
         }
     }
 
@@ -162,6 +194,18 @@ impl HnswIndex {
             }
         }
         index.inner.set_searching_mode(true);
+        drop(insert_data); // libera los préstamos sobre owned_vectors
+
+        // Poblar el store del camino exacto solo si el índice queda bajo el
+        // umbral (con N grande la copia sería memoria muerta: la lectura irá
+        // por HNSW de todos modos).
+        if nb_elements <= EXACT_SEARCH_THRESHOLD {
+            index.exact_store = data_ids
+                .iter()
+                .zip(owned_vectors)
+                .map(|(data_id, vec)| (index.id_map[data_id], vec))
+                .collect();
+        }
 
         Ok(index)
     }
@@ -191,6 +235,15 @@ impl HnswIndex {
         self.id_map.insert(data_id, node_id);
         self.reverse_map.insert(node_id, data_id);
 
+        // Mantener el store exacto mientras estemos bajo el umbral; al
+        // cruzarlo, liberarlo — la lectura pasa a HNSW y no hay vuelta atrás
+        // (el índice no soporta remociones).
+        if self.id_map.len() <= EXACT_SEARCH_THRESHOLD {
+            self.exact_store.push((node_id, vector));
+        } else if !self.exact_store.is_empty() {
+            self.exact_store = Vec::new();
+        }
+
         Ok(())
     }
 
@@ -198,6 +251,10 @@ impl HnswIndex {
     ///
     /// Retorna `Vec<(NodeId, f32)>` ordenado por distancia ascendente (más cercano primero).
     /// La distancia es coseno: 0 = idénticos, 1 = ortogonales, 2 = opuestos.
+    ///
+    /// Con `N ≤ EXACT_SEARCH_THRESHOLD` la búsqueda es exacta y determinista
+    /// (scan lineal); por encima usa HNSW con `ef_search = DEFAULT_EF_SEARCH`.
+    /// Para controlar `ef_search`, usar [`Self::search_knn_with_ef`].
     pub fn search_knn(
         &self,
         query: &[f32],
@@ -207,6 +264,10 @@ impl HnswIndex {
     }
 
     /// Busca KNN con parámetro `ef_search` custom (controla calidad vs velocidad).
+    ///
+    /// `ef_search` solo tiene efecto cuando la búsqueda va por el grafo HNSW
+    /// (`N > EXACT_SEARCH_THRESHOLD`); bajo el umbral el resultado es exacto
+    /// y el parámetro es irrelevante.
     pub fn search_knn_with_ef(
         &self,
         query: &[f32],
@@ -224,6 +285,10 @@ impl HnswIndex {
             return Ok(Vec::new());
         }
 
+        if self.uses_exact_path() {
+            return Ok(self.search_exact(query, k));
+        }
+
         let neighbors = self.inner.search(query, k, ef_search);
 
         let mut results = Vec::with_capacity(neighbors.len());
@@ -235,6 +300,33 @@ impl HnswIndex {
         }
 
         Ok(results)
+    }
+
+    /// `true` si la próxima búsqueda irá por el camino exacto (scan lineal).
+    ///
+    /// Requiere que el store cubra TODOS los puntos del índice: si por
+    /// cualquier razón está incompleto (p. ej. un índice grande que nunca lo
+    /// pobló), se cae al camino HNSW en vez de responder con resultados
+    /// parciales.
+    fn uses_exact_path(&self) -> bool {
+        self.id_map.len() <= EXACT_SEARCH_THRESHOLD
+            && self.exact_store.len() == self.id_map.len()
+    }
+
+    /// Top-k exacto por scan lineal con distancia coseno (la misma
+    /// `DistCosine` de hnsw_rs, para que las distancias reportadas sean
+    /// idénticas entre ambos caminos). Empates se rompen por NodeId
+    /// ascendente — determinista entre corridas y entre builds.
+    fn search_exact(&self, query: &[f32], k: usize) -> Vec<(NodeId, f32)> {
+        let dist = DistCosine {};
+        let mut scored: Vec<(NodeId, f32)> = self
+            .exact_store
+            .iter()
+            .map(|(node_id, vec)| (*node_id, dist.eval(query, vec)))
+            .collect();
+        scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        scored.truncate(k);
+        scored
     }
 
     /// Busca KNN filtrando por un predicado sobre NodeId.
@@ -251,6 +343,22 @@ impl HnswIndex {
     where
         F: Fn(&NodeId) -> bool,
     {
+        if query.len() != self.dimension {
+            return Err(NopalError::custom(format!(
+                "HnswIndex({}): query dimension {} != index dimension {}",
+                self.model, query.len(), self.dimension
+            )));
+        }
+
+        // Camino exacto: filtrar sobre TODOS los puntos y tomar top-k — sin
+        // over-fetch, resultado exacto y determinista.
+        if self.uses_exact_path() {
+            let mut results = self.search_exact(query, self.exact_store.len());
+            results.retain(|(node_id, _)| filter(node_id));
+            results.truncate(k);
+            return Ok(results);
+        }
+
         // hnsw_rs no tiene search_with_filter nativo en la API pública,
         // así que hacemos over-fetch y filtramos.
         // Pedimos más candidatos para compensar los filtrados.
@@ -448,7 +556,7 @@ mod tests {
 
         // Filtrar: solo id_b y id_c. ef alto para forzar exploración exhaustiva
         // en un grafo diminuto (independiente de la asignación de niveles HNSW).
-        let allowed = vec![id_b, id_c];
+        let allowed = [id_b, id_c];
         let results = index
             .search_knn_filtered(&[1.0, 0.0, 0.0], 2, 200, |nid| allowed.contains(nid))
             .unwrap();
@@ -472,5 +580,98 @@ mod tests {
         let index = HnswIndex::new("minilm", 384, 100);
         assert_eq!(index.model(), "minilm");
         assert_eq!(index.dimension(), 384);
+    }
+
+    /// Vectores pseudoaleatorios reproducibles para tests de camino exacto.
+    fn seeded_vectors(n: usize, dim: usize, seed: u64) -> Vec<(Uuid, Vec<f32>)> {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        (0..n)
+            .map(|_| {
+                let v: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0f32..1.0)).collect();
+                (Uuid::new_v4(), v)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_small_batch_uses_exact_path() {
+        let index = HnswIndex::build_batch(seeded_vectors(100, 4, 1), "test", 4).unwrap();
+        assert!(index.uses_exact_path());
+        assert_eq!(index.exact_store.len(), 100);
+    }
+
+    #[test]
+    fn test_build_batch_above_threshold_uses_hnsw() {
+        let n = EXACT_SEARCH_THRESHOLD + 1;
+        let index = HnswIndex::build_batch(seeded_vectors(n, 4, 2), "test", 4).unwrap();
+        assert!(!index.uses_exact_path());
+        assert!(index.exact_store.is_empty(), "store no debe poblarse sobre el umbral");
+        let results = index.search_knn(&[0.5, -0.5, 0.5, -0.5], 3).unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn test_incremental_insert_crosses_threshold() {
+        let mut index = HnswIndex::new("test", 4, EXACT_SEARCH_THRESHOLD + 8);
+        let vectors = seeded_vectors(EXACT_SEARCH_THRESHOLD + 1, 4, 3);
+
+        for (i, (id, v)) in vectors.into_iter().enumerate() {
+            index.insert(id, v).unwrap();
+            if i < EXACT_SEARCH_THRESHOLD {
+                assert!(index.uses_exact_path(), "bajo el umbral debe usar camino exacto");
+            }
+        }
+        // Al cruzar el umbral: HNSW y store liberado.
+        assert_eq!(index.len(), EXACT_SEARCH_THRESHOLD + 1);
+        assert!(!index.uses_exact_path());
+        assert!(index.exact_store.is_empty(), "el store debe liberarse al cruzar el umbral");
+
+        // Y sigue respondiendo vía HNSW sin rebuild.
+        let results = index.search_knn(&[0.1, 0.2, 0.3, 0.4], 5).unwrap();
+        assert_eq!(results.len(), 5);
+    }
+
+    /// Benchmark manual (no corre en CI):
+    /// `cargo test --features embeddings-index bench_exact_vs_hnsw_n1000 -- --ignored --nocapture`
+    #[test]
+    #[ignore = "benchmark manual: correr con --ignored --nocapture"]
+    fn bench_exact_vs_hnsw_n1000() {
+        use std::time::Instant;
+
+        let dim = 64;
+        let n = 1000;
+        let vectors = seeded_vectors(n, dim, 42);
+        let query = vectors[500].1.clone();
+        let index = HnswIndex::build_batch(vectors, "bench", dim).unwrap();
+        assert!(index.uses_exact_path());
+
+        let iters = 200u32;
+        // Warmup
+        for _ in 0..20 {
+            let _ = index.search_exact(&query, 10);
+            let _ = index.inner.search(&query, 10, DEFAULT_EF_SEARCH);
+        }
+
+        let t0 = Instant::now();
+        for _ in 0..iters {
+            let _ = index.search_exact(&query, 10);
+        }
+        let exact = t0.elapsed();
+
+        let t1 = Instant::now();
+        for _ in 0..iters {
+            let _ = index.inner.search(&query, 10, DEFAULT_EF_SEARCH);
+        }
+        let hnsw = t1.elapsed();
+
+        println!(
+            "N={n} dim={dim} k=10 iters={iters}: exacto={:?} ({:?}/query) vs hnsw(ef={})={:?} ({:?}/query)",
+            exact,
+            exact / iters,
+            DEFAULT_EF_SEARCH,
+            hnsw,
+            hnsw / iters,
+        );
     }
 }

@@ -15,10 +15,17 @@ async fn fixture() -> (Graph, std::collections::HashMap<String, nopaldb::types::
     let graph = Graph::open(dir.path()).await.unwrap();
 
     // (name, body, vector)
+    //
+    // d2 lleva un token extra a propósito: con "apple cherry" su score BM25
+    // para "apple" EMPATABA con d0 y tantivy rompe empates por doc id — que
+    // es el orden de inserción, que viene de iterar un HashMap → no
+    // determinista entre corridas (con ranks de texto intercambiados el RRF
+    // de d0 y d2 empata exacto y decide el UUID aleatorio). El body más
+    // largo hace que d0 gane siempre en el path de texto.
     let docs = [
         ("d0", "apple banana", [1.0f32, 0.0, 0.0]),
         ("d1", "banana cherry", [0.0, 1.0, 0.0]),
-        ("d2", "apple cherry", [0.9, 0.1, 0.0]),
+        ("d2", "apple cherry cherry", [0.9, 0.1, 0.0]),
         ("d3", "durian", [0.0, 0.0, 1.0]),
     ];
     let mut ids = std::collections::HashMap::new();
