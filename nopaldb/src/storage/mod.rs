@@ -50,6 +50,19 @@ const CATALOG_TREE: &str = "catalog";
 /// Nombre meta con la cota superior persistida del contador de transaction
 /// ids. Vive en `catalog` (F5.4); legacy: `meta:next_tx_id` (F5.5).
 pub const META_NEXT_TX_ID: &str = "next_tx_id";
+/// Marca de progreso del redo del WAL (#65): todo commit con timestamp
+/// lógico ≤ este valor ya quedó totalmente aplicado (o abortado con registro
+/// `Abort`), así que el replay del open solo procesa el sufijo posterior.
+/// Vive en `catalog` con semántica de máximo (`put_meta_u64_max`).
+///
+/// Es un TIMESTAMP de commit y no una posición en bytes del archivo a
+/// propósito: `truncate_after_checkpoint` reescribe el WAL desde cero (las
+/// posiciones no sobreviven al truncado), mientras que los timestamps de
+/// commit son estables y crecen en orden-de-log (el applier los asigna
+/// FIFO, y orden-de-log == orden-de-apply). Bases sin la clave (WAL escrito
+/// por binarios previos a la marca): replay completo con las guardas
+/// heurísticas históricas de `replay_wal`.
+pub const META_WAL_APPLIED_UPTO: &str = "wal_applied_upto";
 
 /// Capa KV: el contrato `KvEngine`/`KvKeyspace` y las implementaciones por
 /// motor de almacenamiento. Vive en su propio módulo para no sombrear los
