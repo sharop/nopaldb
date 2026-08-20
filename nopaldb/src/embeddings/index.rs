@@ -54,6 +54,79 @@ pub const EXACT_SEARCH_THRESHOLD: usize = 1024;
 /// threads de rayon). Por encima, la inserción paralela sí rinde.
 const PARALLEL_INSERT_THRESHOLD: usize = 128;
 
+/// Tope de la escalada adaptativa de `ef_search` en la búsqueda filtrada.
+///
+/// Con un filtro selectivo el grafo HNSW puede necesitar explorar mucho más
+/// para juntar `k` vecinos permitidos. Escalar sin límite degeneraría en un
+/// recorrido completo del índice por query, así que la escalada se corta
+/// aquí y el resultado se marca como `underfilled` en vez de seguir pagando.
+/// Para conjuntos permitidos chicos el llamador debería usar el camino
+/// exacto ([`rank_exact`]), que además es más barato.
+pub const MAX_FILTERED_EF_SEARCH: usize = 4096;
+
+/// Factor de crecimiento de `ef_search` entre intentos de la escalada.
+const EF_ESCALATION_FACTOR: usize = 4;
+
+/// Qué camino de lectura resolvió una búsqueda filtrada.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilteredSearchPath {
+    /// Scan lineal exacto sobre TODOS los puntos del índice
+    /// (`N ≤ EXACT_SEARCH_THRESHOLD`). Recall = 1 por construcción.
+    Exact,
+    /// Grafo HNSW con el filtro aplicado DURANTE el recorrido
+    /// (`Hnsw::search_filter`): los candidatos se recorren completos pero
+    /// solo los permitidos entran al heap de resultados. Aproximado.
+    HnswFiltered,
+}
+
+/// Resultado de una búsqueda filtrada con la traza de cómo se resolvió.
+///
+/// Existe porque el llamador no puede distinguir "no hay más nodos
+/// permitidos" de "el índice aproximado no los encontró": ambos casos se ven
+/// como menos de `k` resultados. `path`, `ef_used` y `attempts` hacen esa
+/// diferencia observable (y alimentan el explain de la búsqueda híbrida).
+#[derive(Debug, Clone)]
+pub struct FilteredSearchOutcome {
+    /// Vecinos permitidos, ordenados por distancia ascendente.
+    pub hits: Vec<(NodeId, f32)>,
+    /// Camino que resolvió la búsqueda.
+    pub path: FilteredSearchPath,
+    /// `ef_search` efectivo del último intento; `None` en el camino exacto,
+    /// donde el parámetro no aplica.
+    pub ef_used: Option<usize>,
+    /// Intentos de la escalada adaptativa (1 = respondió al primero).
+    pub attempts: usize,
+    /// `true` si se devolvieron menos de `k` resultados. En el camino exacto
+    /// significa que genuinamente hay menos de `k` nodos permitidos; en el
+    /// camino HNSW puede significar eso O que la escalada llegó al tope.
+    pub underfilled: bool,
+}
+
+/// Top-k exacto por distancia coseno sobre un conjunto de vectores dado.
+///
+/// Es la referencia compartida de los dos caminos exactos: el interno del
+/// índice (bajo `EXACT_SEARCH_THRESHOLD`) y el que la búsqueda híbrida aplica
+/// sobre un conjunto permitido chico. Vive en un solo lugar a propósito —
+/// duplicar el cálculo dejaría que la distancia reportada o el desempate
+/// divergieran entre caminos que el usuario percibe como el mismo.
+///
+/// Usa la misma `DistCosine` de `hnsw_rs` para que las distancias sean
+/// idénticas a las del camino HNSW. Los empates se rompen por NodeId
+/// ascendente: determinista entre corridas y entre builds.
+pub fn rank_exact<'a, I>(query: &[f32], candidates: I, k: usize) -> Vec<(NodeId, f32)>
+where
+    I: IntoIterator<Item = (NodeId, &'a [f32])>,
+{
+    let dist = DistCosine {};
+    let mut scored: Vec<(NodeId, f32)> = candidates
+        .into_iter()
+        .map(|(node_id, vec)| (node_id, dist.eval(query, vec)))
+        .collect();
+    scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    scored.truncate(k);
+    scored
+}
+
 /// Índice HNSW para búsqueda aproximada de vecinos más cercanos (ANN) sobre embeddings.
 ///
 /// Usa `hnsw_rs` con distancia coseno. Soporta inserciones incrementales (sin rebuild),
@@ -318,21 +391,20 @@ impl HnswIndex {
     /// idénticas entre ambos caminos). Empates se rompen por NodeId
     /// ascendente — determinista entre corridas y entre builds.
     fn search_exact(&self, query: &[f32], k: usize) -> Vec<(NodeId, f32)> {
-        let dist = DistCosine {};
-        let mut scored: Vec<(NodeId, f32)> = self
-            .exact_store
-            .iter()
-            .map(|(node_id, vec)| (*node_id, dist.eval(query, vec)))
-            .collect();
-        scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-        scored.truncate(k);
-        scored
+        rank_exact(
+            query,
+            self.exact_store.iter().map(|(id, v)| (*id, v.as_slice())),
+            k,
+        )
     }
 
     /// Busca KNN filtrando por un predicado sobre NodeId.
     ///
     /// Útil para combinar búsqueda vectorial con predicados de grafo:
     /// solo retorna vecinos cuyo NodeId pasa el filtro.
+    ///
+    /// Ver [`Self::search_knn_filtered_explained`] para el detalle de cómo se
+    /// resolvió la búsqueda (camino, `ef_search` efectivo, underfill).
     pub fn search_knn_filtered<F>(
         &self,
         query: &[f32],
@@ -340,6 +412,56 @@ impl HnswIndex {
         ef_search: usize,
         filter: F,
     ) -> Result<Vec<(NodeId, f32)>, NopalError>
+    where
+        F: Fn(&NodeId) -> bool,
+    {
+        Ok(self
+            .search_knn_filtered_explained(query, k, ef_search, filter)?
+            .hits)
+    }
+
+    /// Igual que [`Self::search_knn_filtered`], pero devuelve además cómo se
+    /// resolvió la búsqueda.
+    ///
+    /// # Garantía
+    ///
+    /// Ningún NodeId que no pase `filter` aparece en el resultado — en los dos
+    /// caminos, y con un post-filtro propio como red de seguridad
+    /// independiente del filtro nativo del motor HNSW.
+    ///
+    /// # Caminos
+    ///
+    /// - **Exacto** (`N ≤ EXACT_SEARCH_THRESHOLD`): distancia contra todos los
+    ///   puntos, filtro, top-k. Recall = 1.
+    /// - **HNSW filtrado**: `Hnsw::search_filter` aplica el predicado DURANTE
+    ///   el recorrido — los candidatos se exploran completos pero solo los
+    ///   permitidos entran al heap de resultados. Si aun así se juntan menos
+    ///   de `k`, se reintenta con `ef_search` multiplicado por
+    ///   `EF_ESCALATION_FACTOR` hasta [`MAX_FILTERED_EF_SEARCH`].
+    ///
+    /// Se descartó el diseño anterior —pedir `k × 4` vecinos GLOBALES y
+    /// filtrarlos después— porque con un predicado selectivo los vecinos
+    /// permitidos simplemente no estaban entre esos candidatos: el resultado
+    /// seguía siendo fail-closed, pero perdía recall silenciosamente. El
+    /// filtro nativo existe en la API pública de `hnsw_rs` desde 0.3
+    /// (`search_filter`); el comentario que decía lo contrario estaba obsoleto.
+    ///
+    /// # Cuándo NO usar este método
+    ///
+    /// Con un conjunto permitido chico dentro de un índice grande, el recorrido
+    /// filtrado puede acercarse a explorar el grafo entero sin garantía de
+    /// recall. Ahí conviene el camino exacto sobre el conjunto permitido
+    /// ([`rank_exact`]), que es a la vez exacto y más barato; el índice no
+    /// puede tomar esa decisión solo porque `filter` es opaco — no conoce la
+    /// cardinalidad de lo permitido. `Graph::search_hybrid` sí la conoce y
+    /// elige por ella.
+    pub fn search_knn_filtered_explained<F>(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef_search: usize,
+        filter: F,
+    ) -> Result<FilteredSearchOutcome, NopalError>
     where
         F: Fn(&NodeId) -> bool,
     {
@@ -353,20 +475,60 @@ impl HnswIndex {
         // Camino exacto: filtrar sobre TODOS los puntos y tomar top-k — sin
         // over-fetch, resultado exacto y determinista.
         if self.uses_exact_path() {
-            let mut results = self.search_exact(query, self.exact_store.len());
-            results.retain(|(node_id, _)| filter(node_id));
-            results.truncate(k);
-            return Ok(results);
+            let mut hits = self.search_exact(query, self.exact_store.len());
+            hits.retain(|(node_id, _)| filter(node_id));
+            hits.truncate(k);
+            return Ok(FilteredSearchOutcome {
+                underfilled: hits.len() < k,
+                hits,
+                path: FilteredSearchPath::Exact,
+                ef_used: None,
+                attempts: 1,
+            });
         }
 
-        // hnsw_rs no tiene search_with_filter nativo en la API pública,
-        // así que hacemos over-fetch y filtramos.
-        // Pedimos más candidatos para compensar los filtrados.
-        let over_fetch = k * 4;
-        let mut results = self.search_knn_with_ef(query, over_fetch, ef_search)?;
-        results.retain(|(node_id, _)| filter(node_id));
-        results.truncate(k);
-        Ok(results)
+        // Camino HNSW con filtro nativo + escalada adaptativa de ef_search.
+        let mut ef = ef_search.max(k).min(MAX_FILTERED_EF_SEARCH);
+        let mut attempts = 0usize;
+        let mut hits;
+        loop {
+            attempts += 1;
+            // El filtro nativo razona sobre DataId; traducimos a NodeId.
+            // Un DataId sin entrada en id_map no puede autorizarse.
+            let by_data_id = |data_id: &usize| {
+                self.id_map.get(data_id).is_some_and(&filter)
+            };
+            let neighbors = self
+                .inner
+                .search_filter(query, k, ef, Some(&by_data_id as &dyn FilterT));
+
+            hits = Vec::with_capacity(neighbors.len());
+            for neighbor in neighbors {
+                if let Some(&node_id) = self.id_map.get(&neighbor.d_id) {
+                    // Red de seguridad: el contrato "nada fuera del filtro"
+                    // no debe depender del filtrado interno del motor.
+                    if filter(&node_id) {
+                        hits.push((node_id, neighbor.distance));
+                    }
+                }
+            }
+            hits.truncate(k);
+
+            if hits.len() >= k || ef >= MAX_FILTERED_EF_SEARCH {
+                break;
+            }
+            ef = ef
+                .saturating_mul(EF_ESCALATION_FACTOR)
+                .min(MAX_FILTERED_EF_SEARCH);
+        }
+
+        Ok(FilteredSearchOutcome {
+            underfilled: hits.len() < k,
+            hits,
+            path: FilteredSearchPath::HnswFiltered,
+            ef_used: Some(ef),
+            attempts,
+        })
     }
 
     /// Retorna cuántos puntos hay en el índice.

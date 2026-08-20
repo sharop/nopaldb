@@ -8,9 +8,9 @@
 #![cfg(feature = "embeddings-index")]
 
 use nopaldb::embeddings::{HnswIndex, EXACT_SEARCH_THRESHOLD};
+use nopaldb::types::NodeId;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use uuid::Uuid;
 
 /// Distancia coseno de referencia, implementada de forma independiente al
 /// índice (acumulación f64, como DistCosine de hnsw_rs).
@@ -28,11 +28,11 @@ fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
-fn seeded_vectors(n: usize, dim: usize, rng: &mut StdRng) -> Vec<(Uuid, Vec<f32>)> {
+fn seeded_vectors(n: usize, dim: usize, rng: &mut StdRng) -> Vec<(NodeId, Vec<f32>)> {
     (0..n)
         .map(|_| {
             let v: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0f32..1.0)).collect();
-            (Uuid::new_v4(), v)
+            (NodeId::new_v4(), v)
         })
         .collect()
 }
@@ -52,15 +52,15 @@ fn exact_matches_brute_force_reference() {
             let query: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0f32..1.0)).collect();
             let got = index.search_knn(&query, k).unwrap();
 
-            let mut expected: Vec<(Uuid, f32)> = vectors
+            let mut expected: Vec<(NodeId, f32)> = vectors
                 .iter()
                 .map(|(id, v)| (*id, cosine_dist(&query, v)))
                 .collect();
             expected.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
             expected.truncate(k);
 
-            let got_ids: Vec<Uuid> = got.iter().map(|(id, _)| *id).collect();
-            let expected_ids: Vec<Uuid> = expected.iter().map(|(id, _)| *id).collect();
+            let got_ids: Vec<NodeId> = got.iter().map(|(id, _)| *id).collect();
+            let expected_ids: Vec<NodeId> = expected.iter().map(|(id, _)| *id).collect();
             assert_eq!(got_ids, expected_ids, "ranking difiere (seed {seed}, query {q})");
             for ((_, gd), (_, ed)) in got.iter().zip(&expected) {
                 assert!(
@@ -134,12 +134,12 @@ fn exact_filtered_search_sees_all_points() {
 
     // Permitir solo los 5 vectores MÁS LEJANOS según la referencia: un
     // over-fetch de k*4 no los alcanzaría, el scan exacto sí.
-    let mut ranked: Vec<(Uuid, f32)> = vectors
+    let mut ranked: Vec<(NodeId, f32)> = vectors
         .iter()
         .map(|(id, v)| (*id, cosine_dist(&query, v)))
         .collect();
     ranked.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-    let farthest: Vec<Uuid> = ranked.iter().rev().take(5).map(|(id, _)| *id).collect();
+    let farthest: Vec<NodeId> = ranked.iter().rev().take(5).map(|(id, _)| *id).collect();
 
     let index = HnswIndex::build_batch(vectors, "m", dim).unwrap();
     let results = index
@@ -147,6 +147,6 @@ fn exact_filtered_search_sees_all_points() {
         .unwrap();
 
     assert_eq!(results.len(), 5, "el filtro exacto debe encontrar los 5 permitidos");
-    let got: std::collections::HashSet<Uuid> = results.iter().map(|(id, _)| *id).collect();
+    let got: std::collections::HashSet<NodeId> = results.iter().map(|(id, _)| *id).collect();
     assert_eq!(got, farthest.iter().copied().collect());
 }
