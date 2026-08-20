@@ -136,7 +136,32 @@ async fn assert_invariants(graph: &Graph) -> nopaldb::Result<()> {
         assert!(node_ids.contains(id), "property index points to missing node {}", id);
     }
 
-    // 6. El grafo sigue siendo escribible (los relojes no colisionan)
+    // 6. El índice no conserva valores que el nodo YA NO tiene.
+    //
+    //    El hijo reescribe `v` del contador en cada commit, así que cada
+    //    ronda deja valores viejos que hay que retractar. El retract ocurre
+    //    ANTES de escribir la versión nueva —la única ventana en la que el
+    //    valor viejo aún existe— y ese orden es lo que hace converger al
+    //    redo: si el crash cae antes del retract, el replay lo recalcula
+    //    contra el nodo viejo; si cae después, lo viejo ya salió y el replay
+    //    solo reinserta lo nuevo.
+    if node_ids.contains(&counter_id) {
+        let counter = graph.get_node(counter_id).await?;
+        if let Some(PropertyValue::Int(current)) = counter.properties.get("v") {
+            for older in (0..*current).rev().take(5) {
+                let hits = graph
+                    .storage()
+                    .get_nodes_by_property("v", &PropertyValue::Int(older))
+                    .await?;
+                assert!(
+                    !hits.contains(&counter_id),
+                    "el índice conserva v={older} para el contador, que ahora vale {current}"
+                );
+            }
+        }
+    }
+
+    // 7. El grafo sigue siendo escribible (los relojes no colisionan)
     let mut tx = graph.begin_transaction().await?;
     let probe = tx
         .add_node(Node::new("Probe").with_property("ok", PropertyValue::Bool(true)))

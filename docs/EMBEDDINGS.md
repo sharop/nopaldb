@@ -176,7 +176,23 @@ serialized with MessagePack.
 | Key format | `UUID:model_name` |
 | Serialization | MessagePack (rmp-serde) |
 | Multiple models per node | Yes — one entry per `(node_id, model)` pair |
-| Referential integrity | `add_node_embedding` validates the node exists |
+| Referential integrity | `add_node_embedding` validates the node exists; `delete_node` purges every vector of that node |
+
+### Lifecycle: what the engine keeps in step, and what it does not
+
+Deleting a node deletes its vectors, for every model. This is not just space
+hygiene: the HNSW index is rebuilt from this keyspace, so a vector left behind
+would put the deleted node back into search results after the next rebuild.
+
+Overwriting a node's vector for the same model replaces it and invalidates the
+cached index, so the next query rebuilds.
+
+What the engine does **not** do is notice that the *text* changed. Nothing
+re-runs your embedding model, so a node whose content was rewritten keeps
+serving the vector of the old content until you replace it. Store what was
+embedded — a content hash and the model name, as node properties — and re-embed
+when they no longer match what you have; the pattern is written out in
+[ADOPTION.md](ADOPTION.md#re-ingesting-a-source-keeping-node-text-and-vector-in-step).
 
 ---
 

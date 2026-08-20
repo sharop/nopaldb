@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.6] - unreleased
+
+### ✨ Highlights
+
+- **Ciclo de vida del nodo indexado.** Sobrescribir un nodo añadía sus valores nuevos a los índices sin retirar los viejos, así que el nodo seguía apareciendo en búsquedas por valores que ya no tenía; borrarlo dejaba atrás su documento full-text y sus vectores. Los tres caminos de escritura —directo, commit transaccional y redo del WAL— ahora retractan lo que la sobrescritura invalida **antes** de pisar el nodo viejo, que es la única ventana en la que los valores viejos todavía existen. Ese orden es además lo que hace converger al redo tras un crash, sea cual sea el momento en que ocurrió.
+- **Las escrituras transaccionales ya indexan.** Un nodo creado con `tx.add_node`, `upsert_node` o NQL `CREATE` nunca entraba a los índices de usuario (hash/btree/full-text): el commit solo poblaba el índice de propiedades del storage, y el nodo era invisible a la búsqueda de texto hasta reabrir la base. Como `upsert_node` es la API de ingesta idempotente, esto afectaba justo al caso de uso de re-ingesta.
+- **Un nodo borrado ya no reaparece en la búsqueda vectorial.** No existía forma de borrar el embedding de un nodo; el vector quedaba huérfano y, como el índice HNSW se reconstruye desde ese keyspace, el nodo volvía a los resultados en el siguiente rebuild.
+
+### Added
+
+- `Storage::delete_node_embeddings`: purga todos los vectores de un nodo (todos los modelos). La llama `delete_node`, que además invalida el índice HNSW en caché.
+- Documentación del ciclo de re-ingesta (`content_hash` + modelo del embedding) en `docs/ADOPTION.md`, con la frontera explícita de qué mantiene el motor y qué le toca al llamador: el motor nunca re-ejecuta tu modelo de embeddings.
+- Invariante nuevo en el harness de crash: el índice no conserva valores que el nodo ya no tiene, tras SIGKILL + redo.
+
+### Fixed
+
+- `FullTextIndex::insert` añadía un documento sin borrar el anterior del mismo nodo: reindexar dejaba DOS documentos, el texto viejo seguía matcheando y el índice crecía sin techo. Ahora reemplaza (`delete_term` + `add_document` en el mismo commit).
+- `HashIndex`/`BTreeIndex::insert` acumulaban el mismo NodeId una vez por escritura; ahora son idempotentes por `(valor, nodo)`, como ya lo era el índice de propiedades.
+- `delete_node` no retiraba el nodo de los índices de usuario (`IndexManager::remove` no tenía un solo call site en el crate).
+- Un cambio de label en la sobrescritura dejaba colgadas las entradas del label viejo, que nombra los índices de usuario.
+
+### Changed
+
+- `Graph::rebuild_property_index` deja de ser el remedio de las sobrescrituras (el applier ya retracta); sigue siendo el `REINDEX` explícito y la reparación de las vías que no indexan a propósito (`add_nodes_batch`/`BulkLoader`).
+- `upsert_node` retira su reconciliación post-commit: era más estrecha que el bug (solo alcanzaba el índice de propiedades, nunca los de usuario) y el applier ya hace el trabajo completo.
+
 ## [0.5.5] - unreleased
 
 ### ✨ Highlights

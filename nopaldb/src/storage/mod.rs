@@ -1016,6 +1016,33 @@ impl Storage {
         Ok(out)
     }
 
+    /// Borra TODOS los embeddings de un nodo (todos los modelos). Devuelve
+    /// cuántos borró.
+    ///
+    /// Sin esto, borrar un nodo dejaba su vector en el keyspace para siempre —
+    /// y como el índice HNSW se reconstruye desde ahí, el nodo borrado
+    /// **reaparecía** en la búsqueda vectorial tras el siguiente rebuild.
+    ///
+    /// Las claves de nodo son `{node_id}:{model}` y las de arista
+    /// `e:{edge_id}:{model}`, así que el prefijo `{node_id}:` no puede
+    /// alcanzar aristas (un UUID nunca empieza con "e:").
+    #[cfg(feature = "embeddings")]
+    pub async fn delete_node_embeddings(&self, node_id: NodeId) -> Result<usize> {
+        let prefix = format!("{}:", node_id);
+        let tree = self.open_embeddings_tree_sync()?;
+
+        let mut keys: Vec<Vec<u8>> = Vec::new();
+        for item in tree.scan_prefix(prefix.as_bytes()) {
+            let (key_bytes, _) = item?;
+            keys.push(key_bytes.to_vec());
+        }
+
+        for key in &keys {
+            tree.remove(key)?;
+        }
+        Ok(keys.len())
+    }
+
     #[cfg(feature = "embeddings")]
     pub async fn save_edge_embedding(&self, embedding: &crate::embeddings::EdgeEmbedding) -> Result<()> {
         // Prefijo "e:" distingue aristas de nodos en el mismo keyspace

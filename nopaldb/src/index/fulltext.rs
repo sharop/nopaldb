@@ -90,6 +90,19 @@ impl Index for FullTextIndex {
         };
 
         if let Some(writer) = &mut self.writer {
+            // Un nodo tiene UN documento en este índice: el índice es por
+            // (label, propiedad), así que hay un solo valor por nodo — y
+            // `remove` ya borra por node_id ignorando el valor, es decir, ya
+            // trata el documento como identificado por el nodo.
+            //
+            // Sin este delete previo, reindexar un nodo (re-ingesta de la
+            // misma fuente, corrección de un texto) AÑADE un segundo
+            // documento: el texto viejo sigue matcheando y el índice crece
+            // sin techo. Ambos deletes y el add se publican en el mismo
+            // commit de abajo, así que una consulta nunca ve los dos.
+            let term = Term::from_field_text(self.node_id_field, &node_id.to_string());
+            writer.delete_term(term);
+
             // Create document using tantivy's doc! macro
             let doc = doc!(
                 self.node_id_field => node_id.to_string(),
@@ -263,5 +276,58 @@ mod tests {
 
         let results = index.query(&IndexQuery::FullText("test".to_string())).unwrap();
         assert_eq!(results.len(), 0);
+    }
+
+    /// Reindexar un nodo REEMPLAZA su documento en vez de añadir otro.
+    ///
+    /// Se afirma sobre `size()` (los documentos que tantivy realmente guarda)
+    /// y no sobre `query()`: los llamadores de arriba deduplican por NodeId,
+    /// así que una consulta devuelve un solo hit tenga el índice uno o cinco
+    /// documentos — el crecimiento sería invisible hasta que el disco lo grite.
+    #[test]
+    fn reindexing_a_node_replaces_its_document() {
+        let mut index = FullTextIndex::new(None).unwrap();
+        let node = uuid::Uuid::new_v4();
+
+        for i in 0..5 {
+            index
+                .insert(PropertyValue::String(format!("revision {i} del texto")), node)
+                .unwrap();
+            assert_eq!(index.size(), 1, "tras {} escrituras debe haber 1 documento", i + 1);
+        }
+
+        // Solo la última revisión matchea.
+        assert_eq!(
+            index.query(&IndexQuery::FullText("4".to_string())).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            index.query(&IndexQuery::FullText("0".to_string())).unwrap().len(),
+            0,
+            "el texto de una revisión anterior no puede seguir matcheando"
+        );
+    }
+
+    /// Dos nodos distintos conviven: el delete previo del reindexado borra por
+    /// node_id, así que no puede llevarse por delante el documento de otro.
+    #[test]
+    fn reindexing_one_node_does_not_touch_another() {
+        let mut index = FullTextIndex::new(None).unwrap();
+        let (a, b) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+
+        index.insert(PropertyValue::String("alfa comun".into()), a).unwrap();
+        index.insert(PropertyValue::String("beta comun".into()), b).unwrap();
+        index.insert(PropertyValue::String("gamma comun".into()), a).unwrap();
+
+        assert_eq!(index.size(), 2, "un documento por nodo");
+        assert_eq!(
+            index.query(&IndexQuery::FullText("comun".to_string())).unwrap().len(),
+            2
+        );
+        assert_eq!(
+            index.query(&IndexQuery::FullText("beta".to_string())).unwrap(),
+            vec![b],
+            "el documento del otro nodo sigue intacto"
+        );
     }
 }

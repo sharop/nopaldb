@@ -105,3 +105,59 @@ https://github.com/Anxious-Mind-Group/ndbstudio.
 6. **Update-heavy datasets:** enable MVCC garbage collection
    (`graph.start_auto_gc(config)`), or old versions accumulate. GC never
    removes versions still readable by open transactions.
+
+## Re-ingesting a source: keeping node, text and vector in step
+
+The common shape for a derived, rebuildable index is: read a source, write one
+node per item, re-run whenever the source changes. Two rules make that cheap
+and correct.
+
+**1. Address nodes by a business key, not by id.** `upsert_node` keys on
+`(label, key_property, value)` — it creates when absent, updates when changed,
+and does nothing when identical. Re-running over unchanged data costs zero
+writes, so re-ingestion is safe to run on a timer.
+
+**2. Tie the embedding to the content it came from.** The engine keeps the
+node's properties, its full-text document and its vector consistent on every
+overwrite and delete: a value the node no longer has is retracted from the
+indexes, and a deleted node leaves nothing behind. What the engine cannot know
+is whether a vector is still *semantically* current — it never re-runs your
+embedding model. Record what was embedded:
+
+```python
+import hashlib
+
+content = fragment.text
+digest = hashlib.sha256(content.encode()).hexdigest()
+
+outcome, node_id = graph.upsert(
+    "Fragment", "ref",
+    {
+        "ref": fragment.ref,
+        "body": content,
+        "content_hash": digest,
+        "embedded_hash": digest,        # what the stored vector was built from
+        "embed_model": "e5-large-v2",   # and by which model
+    },
+    vector=embed(content), model="e5-large-v2",
+)
+# outcome is "created" | "updated" | "unchanged" — an unchanged re-run writes
+# nothing at all, so you can skip embedding entirely when nothing moved.
+```
+
+On the next run, re-embed only when `content_hash != embedded_hash` or when
+`embed_model` differs from the model you are using now — a plain property
+lookup finds the stale ones. Both fields live on the node, so the check
+survives a restart and needs no side table.
+
+Changing the embedding model is the same operation with a different trigger:
+write vectors under the new model name, and query with that name. Vectors are
+stored per `(node, model)`, so both generations coexist until you drop the old
+one.
+
+**What the engine does not do:** it does not decide when your content changed,
+and it does not re-embed. Everything else in the cycle — retracting stale index
+entries on overwrite, replacing the full-text document rather than adding a
+second one, purging a deleted node's vectors so a rebuilt HNSW index cannot
+resurrect it — is the engine's job and happens on every write path, including
+transactional commits and WAL replay after a crash.

@@ -9,11 +9,12 @@
 // Design notes (see the module tests and issue M1-4):
 //   * Identity lookup uses `Transaction::get_nodes_by_label_and_property`.
 //   * Update overwrites the node under its existing NodeId (re-adding the same
-//     id in a tx overwrites on commit). The commit applier re-indexes the NEW
-//     property values but does NOT drop stale entries for changed/removed keys
-//     (`Storage::insert_node` is index-blind) — so we reconcile the index diff
-//     here. This caller-side reconciliation is the interim fix; the structural
-//     fix is to make the applier reindex on overwrite (follow-up M1-9).
+//     id in a tx overwrites on commit). Retracting the entries the overwrite
+//     invalidates is the applier's job — it reads the previous node before
+//     `insert_node` replaces it, which is the only moment the old values still
+//     exist. This module used to reconcile the diff itself, post-commit; that
+//     workaround was narrower than the bug (it only reached the property index,
+//     never the user indexes) and is gone now that the applier does it.
 //   * A process-global per-key lock serializes concurrent upserts of the SAME
 //     key so two racing creates cannot both insert. This is best-effort, not a
 //     transactional unique constraint (follow-up M1-8).
@@ -114,13 +115,13 @@ impl Graph {
             .get_nodes_by_label_and_property(&req.label, &req.key, &key_value)
             .await?;
 
-        let (outcome, node_id, stale_index_entries) = match existing.len() {
+        let (outcome, node_id) = match existing.len() {
             0 => {
                 let node = Node::with_id(NodeId::new_v4(), req.label.clone())
                     .with_properties(req.props.clone());
                 let id = node.id;
                 tx.add_node(node).await?;
-                (UpsertOutcome::Created, id, Vec::new())
+                (UpsertOutcome::Created, id)
             }
             1 => {
                 let old = &existing[0];
@@ -128,20 +129,12 @@ impl Graph {
                 let props_same = old.properties == req.props;
 
                 if props_same {
-                    (UpsertOutcome::Unchanged, id, Vec::new())
+                    (UpsertOutcome::Unchanged, id)
                 } else {
-                    // Stale index entries: old (key,value) pairs whose value is
-                    // gone or changed. The commit applier re-adds the new ones.
-                    let stale: Vec<(String, PropertyValue)> = old
-                        .properties
-                        .iter()
-                        .filter(|(k, v)| req.props.get(*k) != Some(*v))
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
                     let node = Node::with_id(id, req.label.clone())
                         .with_properties(req.props.clone());
                     tx.add_node(node).await?;
-                    (UpsertOutcome::Updated, id, stale)
+                    (UpsertOutcome::Updated, id)
                 }
             }
             n => {
@@ -187,12 +180,6 @@ impl Graph {
         }
 
         tx.commit().await?;
-
-        // Reconcile stale property-index entries for updated nodes (post-commit,
-        // so the applier's re-add of new values has already run).
-        for (prop, old_val) in &stale_index_entries {
-            self.storage_remove_property_index(prop, old_val, node_id).await?;
-        }
 
         // Attach/refresh the embedding if provided and changed.
         #[cfg(feature = "embeddings")]
