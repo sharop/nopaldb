@@ -55,10 +55,11 @@ impl BTreeIndex {
 
 impl Index for BTreeIndex {
     fn insert(&mut self, value: PropertyValue, node_id: NodeId) -> Result<()> {
-        self.map
-            .entry(value)
-            .or_default()
-            .push(node_id);
+        // Idempotente por (valor, nodo) — ver la nota equivalente en HashIndex.
+        let nodes = self.map.entry(value).or_default();
+        if !nodes.contains(&node_id) {
+            nodes.push(node_id);
+        }
         Ok(())
     }
 

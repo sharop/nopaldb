@@ -429,6 +429,15 @@ impl Graph {
         let node_id = node.id;
         let existed = self.storage.node_exists(node_id).await?;
 
+        // Retirar lo que la sobrescritura invalida, mientras el nodo viejo
+        // todavía existe en storage. Solo en el camino directo: con
+        // `skip_indexing` el llamador es el commit transaccional, que ya
+        // retractó ANTES de escribir su versión MVCC (para cuando llegamos
+        // aquí el nodo viejo ya fue pisado y sería tarde).
+        if !skip_indexing {
+            self.retract_overwritten_index_entries(&node).await?;
+        }
+
         // Guardar en storage
         self.storage.insert_node(&node).await?;
 
@@ -446,21 +455,10 @@ impl Graph {
         drop(adj_out);
         drop(adj_in);
 
-        // Indexar propiedades SOLO si no se debe skip
+        // Indexar propiedades SOLO si no se debe skip (el commit transaccional
+        // indexa sus nodos al final, una sola vez).
         if !skip_indexing {
             self.apply_index_node_properties(&node).await?;
-
-            // actualizar índices secundarios
-            for(property_key, property_value) in &node.properties {
-                if let Some(index_name) = self.index_manager
-                    .find_index(&node.label, property_key)
-                    .await
-                {
-                    self.index_manager
-                        .insert(&index_name, property_value.clone(), node_id)
-                        .await?;
-                }
-            }
         }
 
         // Visibilidad para la validación Serializable: las escrituras directas
@@ -479,9 +477,92 @@ impl Graph {
 
     /// Indexa las propiedades de un nodo (uso interno)
     /// Aplicación física de la indexación. Solo el single-writer apply debe llamarla.
+    ///
+    /// Cubre las DOS capas de índice: el índice de propiedades del storage y
+    /// los índices de usuario del `IndexManager` (hash/btree/full-text). Antes
+    /// vivían en llamadores distintos, y el resultado fue que el camino
+    /// transaccional poblaba solo la primera — un nodo creado por `tx`,
+    /// `upsert_node` o NQL `CREATE` era invisible al full-text hasta reabrir
+    /// la base.
     async fn apply_index_node_properties(&self, node: &Node) -> Result<()> {
         for (key, value) in &node.properties {
             self.storage.save_property_index(key, value, node.id).await?;
+
+            if let Some(index_name) = self.index_manager.find_index(&node.label, key).await {
+                self.index_manager
+                    .insert(&index_name, value.clone(), node.id)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Retira las entradas de índice que una sobrescritura deja inválidas.
+    ///
+    /// **Debe llamarse ANTES de que `incoming` pise al nodo viejo en storage**:
+    /// esa es la única ventana en la que los valores viejos —los que hay que
+    /// retirar— todavía existen. Después de la escritura ya no hay forma de
+    /// saber qué había, y el índice queda con entradas que devuelven el nodo
+    /// por un valor que ya no tiene.
+    ///
+    /// Retira solo lo que cambió o desapareció: una propiedad cuyo valor no se
+    /// movió no se toca, así nunca hay un instante en que deje de estar
+    /// indexada.
+    async fn retract_overwritten_index_entries(&self, incoming: &Node) -> Result<()> {
+        let Ok(old) = self.storage.get_node(incoming.id).await else {
+            return Ok(()); // Nodo nuevo: nada que retirar.
+        };
+
+        // Un cambio de label mueve el nodo a otros índices de usuario (se
+        // nombran por label), así que las entradas del label viejo quedan
+        // colgadas aunque el valor no haya cambiado: se retiran todas.
+        if old.label != incoming.label {
+            return self
+                .apply_retract_index_entries(&old.label, old.id, old.properties.iter())
+                .await;
+        }
+
+        let stale: Vec<(&String, &PropertyValue)> = old
+            .properties
+            .iter()
+            .filter(|(k, v)| incoming.properties.get(*k) != Some(*v))
+            .collect();
+        if stale.is_empty() {
+            return Ok(());
+        }
+        self.apply_retract_index_entries(&old.label, old.id, stale)
+            .await
+    }
+
+    /// Retira del índice las entradas `(propiedad, valor)` indicadas.
+    ///
+    /// Se le pasan pares explícitos —y no un nodo— porque los dos llamadores
+    /// quieren cosas distintas: el borrado retira TODAS las propiedades del
+    /// nodo, y la sobrescritura solo las que dejaron de ser válidas.
+    ///
+    /// Retira de las dos capas: una entrada que sobreviva en cualquiera de
+    /// ellas sigue devolviendo el nodo por un valor que ya no tiene. Para los
+    /// índices hash/btree el valor VIEJO es obligatorio (indexan por valor);
+    /// el full-text lo ignora porque su documento se identifica por nodo.
+    async fn apply_retract_index_entries<'a, I>(
+        &self,
+        label: &str,
+        node_id: NodeId,
+        entries: I,
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = (&'a String, &'a PropertyValue)>,
+    {
+        for (key, value) in entries {
+            self.storage
+                .remove_from_property_index(key, value, node_id)
+                .await?;
+
+            if let Some(index_name) = self.index_manager.find_index(label, key).await {
+                self.index_manager
+                    .remove(&index_name, value, node_id)
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -489,9 +570,15 @@ impl Graph {
     /// Reconstruye el índice de propiedades COMPLETO desde los nodos (fuente
     /// de verdad), en chunks de memoria acotada. Devuelve nodos procesados.
     ///
-    /// Sirve para: (1) la migración v1→v2 al abrir; (2) reparar un índice
-    /// desactualizado (p. ej. tras sobreescrituras con `insert_node`, que es
-    /// index-blind — el gap conocido M1-9); (3) base de un futuro `REINDEX`.
+    /// Sirve para: (1) la migración v1→v2 al abrir; (2) `REINDEX` explícito;
+    /// (3) reparar un índice que quedó desalineado por una vía que no pasa por
+    /// el applier — hoy `add_nodes_batch`/`BulkLoader`, que no indexan a
+    /// propósito.
+    ///
+    /// Ya NO es el remedio de las sobrescrituras: el applier retracta las
+    /// entradas que un overwrite invalida antes de pisar el nodo viejo, en los
+    /// tres caminos de escritura (directo, commit transaccional y redo del
+    /// WAL).
     pub async fn rebuild_property_index(&self) -> Result<usize> {
         self.storage.clear_property_index_v2().await?;
 
@@ -1325,13 +1412,29 @@ impl Graph {
             }
         }
 
-        // 2. Índice de propiedades: después de las aristas — mientras el nodo
-        //    exista debe seguir siendo consultable por sus propiedades.
-        for (key, value) in &node.properties {
-            self.storage.remove_from_property_index(key, value, id).await?;
+        // 2. Índices: después de las aristas — mientras el nodo exista debe
+        //    seguir siendo consultable por sus propiedades. Cubre el índice de
+        //    propiedades Y los índices de usuario (hash/btree/full-text);
+        //    estos últimos no se limpiaban, así que un nodo borrado seguía
+        //    apareciendo en búsquedas de texto hasta reabrir la base.
+        self.apply_retract_index_entries(&node.label, id, node.properties.iter())
+            .await?;
+
+        // 3. Embeddings del nodo. No es solo higiene de espacio: el índice
+        //    HNSW se reconstruye desde este keyspace, así que un vector
+        //    huérfano RESUCITA al nodo borrado en la búsqueda vectorial.
+        #[cfg(feature = "embeddings")]
+        {
+            let purged = self.storage.delete_node_embeddings(id).await?;
+            #[cfg(feature = "embeddings-index")]
+            if purged > 0 {
+                // El índice en caché todavía contiene el vector; invalidarlo
+                // fuerza el rebuild, igual que hace `add_node_embedding`.
+                self.embedding_indices.write().await.clear();
+            }
         }
 
-        // 3. La entidad, al final.
+        // 4. La entidad, al final.
         self.storage.delete_node(id).await?;
 
         #[cfg(feature = "full-isolation")]
@@ -2084,6 +2187,12 @@ impl Graph {
                     // Esta versión (o una posterior) ya fue aplicada.
                     return Ok(false);
                 }
+                // Retractar ANTES del write, y solo si de verdad vamos a
+                // aplicar: el batch de abajo pisa al nodo viejo, y con él la
+                // única fuente de qué valores había que retirar. Va después
+                // de la guarda de idempotencia a propósito — retractar sobre
+                // un registro ya superado borraría los valores VIGENTES.
+                self.retract_overwritten_index_entries(&node).await?;
                 let mut invalidated = cur.clone();
                 invalidated.invalidate(commit_ts);
                 let new_version = VersionedNode::new_version(&cur, node.clone(), commit_ts);
@@ -2094,7 +2203,11 @@ impl Graph {
                 Ok(true)
             }
             Err(_) => {
-                // Sin cadena: primera versión con el timestamp del commit
+                // Sin cadena MVCC, pero el registro legacy `entities` puede
+                // existir igual (nodo creado con `add_node` directo), y con
+                // él entradas de índice viejas que este write invalida.
+                self.retract_overwritten_index_entries(&node).await?;
+                // Primera versión con el timestamp del commit
                 let first = VersionedNode::new(node.clone(), commit_ts);
                 self.commit_node_atomic(&node, None, &first).await?;
                 self.add_node_internal(node, false).await?;
@@ -2695,6 +2808,14 @@ impl Graph {
         //    NodeNotFound en el primer commit que lo tocaba. Mismo patrón que
         //    `replay_node_upsert` — sin cadena → primera versión con el ts
         //    del commit (sana lazy los nodos directos preexistentes).
+        // 2a. Retractar el índice ANTES de escribir las versiones nuevas: el
+        //     write de abajo pisa el nodo viejo, y con él la única fuente de
+        //     qué valores había que retirar. La inserción de los nuevos va al
+        //     final (paso 4), por eso `apply_add_node` recibe skip_indexing.
+        for node in &set.pending_nodes {
+            self.retract_overwritten_index_entries(node).await?;
+        }
+
         for node in &set.pending_nodes {
             match self.storage.get_current_version(node.id).await {
                 Ok(current_version_num) => {

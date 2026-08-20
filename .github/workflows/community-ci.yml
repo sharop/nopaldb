@@ -55,6 +55,9 @@ jobs:
       - name: Test filtered KNN recall (exact path + native HNSW filter)
         run: cargo test -p nopaldb --features core --test knn_filtered_recall_test --test knn_exact_test
 
+      - name: Test indexed-node lifecycle (overwrite retracts, delete purges)
+        run: cargo test -p nopaldb --features core --test index_lifecycle_test
+
       - name: Test sack traversal (accumulator)
         run: cargo test -p nopaldb --features core --test sack_traversal_test
 

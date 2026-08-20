@@ -29,10 +29,14 @@ impl HashIndex {
 
 impl Index for HashIndex {
     fn insert(&mut self, value: PropertyValue, node_id: NodeId) -> Result<()> {
-        self.map
-            .entry(value)
-            .or_default()
-            .push(node_id);
+        // Idempotente por (valor, nodo): reindexar el mismo par —re-ingesta de
+        // una fuente sin cambios, sobrescritura que no toca esta propiedad—
+        // no puede acumular el nodo N veces en el bucket. Es la misma garantía
+        // que ya da el índice de propiedades del storage.
+        let nodes = self.map.entry(value).or_default();
+        if !nodes.contains(&node_id) {
+            nodes.push(node_id);
+        }
         Ok(())
     }
 
