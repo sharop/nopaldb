@@ -81,9 +81,14 @@ solo si hace falta) o reconstruir manualmente.
 let procesados = graph.rebuild_property_index().await?;
 ```
 
-Vacía el índice v2 y lo reconstruye completo desde los nodos. Sirve para
-reparar un índice desactualizado (p. ej. tras escrituras index-blind con
-`Storage::insert_node` directo) y es la base de un futuro `REINDEX`.
+Vacía el índice v2 y lo reconstruye completo desde los nodos. Es la base de
+un futuro `REINDEX` y repara un índice desalineado por las vías que **no**
+indexan a propósito: `add_nodes_batch` / `BulkLoader`, o escrituras directas
+contra `Storage::insert_node`.
+
+Ya no hace falta tras una sobrescritura normal: desde 0.5.6 el applier retira
+las entradas que un overwrite invalida antes de pisar el nodo viejo, en los
+tres caminos de escritura (directo, commit transaccional y redo del WAL).
 
 ## Semántica de lookup
 
