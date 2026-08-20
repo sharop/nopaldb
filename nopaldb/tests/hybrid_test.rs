@@ -180,3 +180,102 @@ async fn nql_hybrid_function_filters_to_topk() {
     // The Other-label node is excluded by the (n:Doc) pattern.
     assert!(!names.contains(&"x0".to_string()));
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Recall del camino vectorial con filtro selectivo sobre un índice grande.
+//
+// Por encima de EXACT_SEARCH_THRESHOLD el índice responde por HNSW, que es
+// aproximado. Cuando el filtro deja un conjunto permitido CHICO, la búsqueda
+// híbrida no lo consulta por el grafo: puntúa exactamente esos vectores. El
+// resultado es exacto — y más barato que recorrer el grafo entero.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Distancia coseno de referencia, independiente del motor.
+fn cosine_dist_ref(a: &[f32], b: &[f32]) -> f32 {
+    let (mut dot, mut na, mut nb) = (0f64, 0f64, 0f64);
+    for (x, y) in a.iter().zip(b) {
+        dot += (*x as f64) * (*y as f64);
+        na += (*x as f64) * (*x as f64);
+        nb += (*y as f64) * (*y as f64);
+    }
+    if na > 0.0 && nb > 0.0 {
+        (1.0 - dot / (na * nb).sqrt()).max(0.0) as f32
+    } else {
+        0.0
+    }
+}
+
+/// Con el índice POR ENCIMA del umbral exacto y un conjunto permitido chico,
+/// el top-k filtrado coincide exactamente con la fuerza bruta sobre ese
+/// conjunto — incluido el caso adverso en que los permitidos son los vectores
+/// MÁS LEJANOS a la query (los que un over-fetch global nunca alcanzaría).
+#[tokio::test]
+async fn small_allowed_set_over_large_index_is_exact() {
+    use nopaldb::embeddings::EXACT_SEARCH_THRESHOLD;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    let dir = tempfile::tempdir().unwrap();
+    let graph = Graph::open(dir.path()).await.unwrap();
+
+    let dim = 8;
+    let n = EXACT_SEARCH_THRESHOLD + 200; // fuerza el camino HNSW
+    let mut rng = StdRng::seed_from_u64(2026);
+
+    // 1 de cada 40 nodos lleva tier="gold": el conjunto permitido queda muy
+    // por debajo del umbral mientras el índice queda muy por encima.
+    let mut vectors: Vec<(nopaldb::types::NodeId, Vec<f32>, bool)> = Vec::with_capacity(n);
+    for i in 0..n {
+        let gold = i % 40 == 0;
+        let v: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0f32..1.0)).collect();
+        let node = Node::new("Frag")
+            .with_property("tier", s(if gold { "gold" } else { "plain" }));
+        let id = graph.add_node(node).await.unwrap();
+        graph.add_node_embedding(id, v.clone(), "m").await.unwrap();
+        vectors.push((id, v, gold));
+    }
+
+    let gold_count = vectors.iter().filter(|(_, _, g)| *g).count();
+    assert!(
+        gold_count < EXACT_SEARCH_THRESHOLD && n > EXACT_SEARCH_THRESHOLD,
+        "el escenario requiere índice grande ({n}) con conjunto permitido chico ({gold_count})"
+    );
+
+    for query_seed in 0..5 {
+        let mut qrng = StdRng::seed_from_u64(700 + query_seed);
+        let query: Vec<f32> = (0..dim).map(|_| qrng.gen_range(-1.0f32..1.0)).collect();
+
+        let k = 10;
+        let mut q = HybridQuery::new();
+        q.vector = Some((query.clone(), "m".into()));
+        q.k = k;
+        q.filter = Some(HybridFilter {
+            label: None,
+            props: vec![("tier".into(), s("gold"))],
+        });
+        let hits = graph.search_hybrid(q).await.unwrap();
+
+        // Verdad de referencia: fuerza bruta sobre SOLO los permitidos.
+        let mut expected: Vec<(nopaldb::types::NodeId, f32)> = vectors
+            .iter()
+            .filter(|(_, _, gold)| *gold)
+            .map(|(id, v, _)| (*id, cosine_dist_ref(&query, v)))
+            .collect();
+        expected.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        expected.truncate(k);
+
+        let got: Vec<nopaldb::types::NodeId> = hits.iter().map(|h| h.node_id).collect();
+        let want: Vec<nopaldb::types::NodeId> = expected.iter().map(|(id, _)| *id).collect();
+
+        assert_eq!(
+            got.len(),
+            k,
+            "query {query_seed}: debe devolver k resultados (hay {gold_count} permitidos)"
+        );
+        assert_eq!(
+            got.iter().collect::<std::collections::HashSet<_>>(),
+            want.iter().collect::<std::collections::HashSet<_>>(),
+            "query {query_seed}: el top-k filtrado debe ser EXACTO sobre el conjunto permitido"
+        );
+    }
+}

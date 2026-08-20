@@ -200,7 +200,39 @@ let results: Vec<(NodeId, f32)> = index.search_knn(&query_vector, 10)?;
 let results = index.search_knn_filtered(&query_vector, 10, 30, |nid| {
     allowed_node_ids.contains(nid)
 })?;
+
+// Same search, with the trace of how it was resolved
+let outcome = index.search_knn_filtered_explained(&query_vector, 10, 30, |nid| {
+    allowed_node_ids.contains(nid)
+})?;
+println!("{:?} ef={:?} attempts={} underfilled={}",
+    outcome.path, outcome.ef_used, outcome.attempts, outcome.underfilled);
 ```
+
+#### Filtered search: guarantee vs. recall
+
+Nothing that fails the predicate is ever returned — that holds on every path.
+How *completely* the allowed neighbours are found depends on the path:
+
+- **N ≤ `EXACT_SEARCH_THRESHOLD` (1024):** distances against every point, then
+  filter. Exact and deterministic.
+- **Above the threshold:** the predicate is pushed into the HNSW traversal
+  (`hnsw_rs`' native filter), so candidates are explored broadly but only
+  allowed points enter the result heap. If fewer than `k` are collected,
+  `ef_search` is multiplied by 4 and retried, up to `MAX_FILTERED_EF_SEARCH`
+  (4096). Approximate.
+
+`search_knn_filtered_explained` reports which path ran, the effective
+`ef_search`, how many escalation attempts happened, and whether the result was
+`underfilled` (fewer than `k` hits) — a short result cannot otherwise be told
+apart from "there are no more allowed neighbours".
+
+**When the allowed set is small and the index is large**, prefer scoring those
+vectors directly (`nopaldb::embeddings::rank_exact`) over a filtered walk: it
+is exact and cheaper. The index cannot make that call itself — the predicate is
+an opaque closure, so it does not know the allowed cardinality. `search_hybrid`
+does know it, and switches automatically; see
+[HYBRID_SEARCH.md](HYBRID_SEARCH.md).
 
 ### Incremental inserts
 

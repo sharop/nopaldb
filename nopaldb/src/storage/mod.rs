@@ -990,6 +990,32 @@ impl Storage {
         Ok(embedding)
     }
 
+    /// Carga los embeddings de `model` para un conjunto ACOTADO de nodos,
+    /// omitiendo en silencio los que no tienen uno.
+    ///
+    /// A diferencia de [`Self::load_node_embedding`], la ausencia no es error:
+    /// el llamador típico es un camino de búsqueda sobre un conjunto de nodos
+    /// que pasaron un filtro de grafo, donde tener embedding es opcional.
+    /// A diferencia de [`Self::load_all_node_embeddings_for_model`], no
+    /// escanea el keyspace: hace un get por id, así que el costo lo acota el
+    /// llamador y no el tamaño del índice.
+    #[cfg(feature = "embeddings")]
+    pub async fn load_node_embeddings_for(
+        &self,
+        node_ids: impl IntoIterator<Item = NodeId>,
+        model: &str,
+    ) -> Result<Vec<crate::embeddings::Embedding>> {
+        let tree = self.open_embeddings_tree_sync()?;
+        let mut out = Vec::new();
+        for node_id in node_ids {
+            let key = format!("{}:{}", node_id, model);
+            if let Some(value) = tree.get(key.as_bytes())? {
+                out.push(deserialize::<crate::embeddings::Embedding>(&value)?);
+            }
+        }
+        Ok(out)
+    }
+
     #[cfg(feature = "embeddings")]
     pub async fn save_edge_embedding(&self, embedding: &crate::embeddings::EdgeEmbedding) -> Result<()> {
         // Prefijo "e:" distingue aristas de nodos en el mismo keyspace

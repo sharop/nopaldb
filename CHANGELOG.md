@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.5] - unreleased
+
+### ✨ Highlights
+
+- **Recall de la búsqueda vectorial filtrada.** Por encima del umbral exacto (1024 vectores), el filtro por label/propiedad se resolvía pidiendo `k × 4` vecinos GLOBALES al grafo HNSW y descartando después los no permitidos. Con un filtro selectivo los vecinos permitidos simplemente no estaban entre esos candidatos: la búsqueda devolvía menos de `k` —a veces cero— aunque existieran de sobra. La salida nunca fue incorrecta (nada no permitido se filtraba hacia afuera), pero perdía resultados en silencio. Medido sobre un índice de 5.000 vectores con ~1% de selectividad: **recall 0.00 antes, 1.00 ahora**.
+
+### Added
+
+- `HnswIndex::search_knn_filtered_explained`: además de los vecinos, devuelve cómo se resolvió la búsqueda (`FilteredSearchPath`, `ef_search` efectivo, intentos de escalada y si el resultado quedó `underfilled`). Un resultado con menos de `k` hits no se distinguía de "no hay más nodos permitidos"; ahora sí.
+- `nopaldb::embeddings::rank_exact`: top-k exacto por coseno sobre un conjunto de vectores dado, con el desempate determinista por NodeId. Es la referencia compartida de los caminos exactos, para que la distancia reportada no pueda divergir entre ellos.
+- `Storage::load_node_embeddings_for`: carga los embeddings de un conjunto acotado de nodos (omite los que no tienen), sin escanear el keyspace completo.
+
+### Changed
+
+- La búsqueda KNN filtrada usa el **filtro nativo de `hnsw_rs`** (`search_filter`), que aplica el predicado DURANTE el recorrido del grafo en vez de después, con escalada adaptativa de `ef_search` (×4 hasta `MAX_FILTERED_EF_SEARCH` = 4096) cuando no junta `k` permitidos. El comentario del código que afirmaba que ese filtro no existía en la API pública estaba obsoleto.
+- `search_hybrid` elige camino según la cardinalidad de lo permitido: con un conjunto permitido chico (≤ 1024) dentro de un índice grande puntúa exactamente esos vectores en vez de recorrer el grafo — exacto y más barato. El índice no puede tomar esa decisión solo porque el predicado le llega como closure opaca.
+- La garantía de que nada fuera del filtro aparece en el resultado se mantiene con un post-filtro propio, independiente del filtrado interno del motor HNSW.
+
 ## [0.5.4] - unreleased
 
 ### ✨ Highlights
