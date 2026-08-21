@@ -1,8 +1,13 @@
 name: Release Python
 
 # Construye wheels multiplataforma con maturin y los publica en PyPI.
-# Los builds corren en cada push (a tag o no) para validar; la publicación
-# SOLO ocurre en tags `v*` (job `release`).
+# Los builds y la publicación corren SOLO en tags `v*` (más disparo manual).
+#
+# ⚠️ LAS FEATURES NO SE PASAN AQUÍ. Ningún `args:` de abajo lleva `--features`:
+# maturin las toma de `[tool.maturin] features` en `nopaldb/pyproject.toml`
+# (hoy `python-full`, que arrastra `storage-sled` y NO `storage-redb`). Si
+# alguna vez hay que cambiar qué backend viaja en la wheel, se cambia allí —
+# leer este archivo no basta para saber con qué se compila lo publicado.
 on:
   push:
     tags:

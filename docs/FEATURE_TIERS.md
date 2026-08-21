@@ -123,7 +123,8 @@ cargo clippy -p nopaldb --features full -- -D warnings
 
 | Feature | Dependencies |
 |---------|--------------|
-| `storage-sled` | none |
+| `storage-sled` | `sled` — default backend; the one the PyPI wheels ship |
+| `storage-redb` | `redb` — **experimental**, opt-in, not in the PyPI wheels |
 | `analytics` | `arrow`, `parquet` |
 | `ml` | `analytics` |
 | `algorithms` | none |
@@ -132,13 +133,15 @@ cargo clippy -p nopaldb --features full -- -D warnings
 | `embeddings-index` | `embeddings`, `hnsw_rs` |
 | `hnsw-simd` | `embeddings-index`, `hnsw_rs/simdeez_f` |
 | `fulltext` | `tantivy` |
+| `hybrid` | `fulltext`, `embeddings-index` |
+| `full-isolation` | none |
 | `reasoner` | none |
 | `owl-import` | `reasoner` |
 | `shacl` | `regex` |
 | `python` | `pyo3` |
 | `python-reasoner` | `python`, `reasoner` |
 | `python-owl` | `python`, `owl-import` |
-| `python-full` | `python`, `python-reasoner`, `python-owl`, `analytics` |
+| `python-full` | `python`, `python-reasoner`, `python-owl`, `full` |
 
 ---
 
