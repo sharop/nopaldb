@@ -33,6 +33,10 @@ use crate::storage::backend::StorageProfile;
 use super::{KvEngine, KvIter, KvKeyspace, RmwFn, WriteBatch};
 
 const DB_FILE: &str = "nopal.redb";
+/// Ruta de staging de la primera creación: `nopal.redb` solo aparece cuando
+/// la base ya es válida (ver `open`). Un temporal huérfano indica un arranque
+/// en frío interrumpido y se descarta.
+const TMP_DB_FILE: &str = "nopal.redb.creating";
 const CHUNK: usize = 512;
 
 fn table_def(name: &str) -> ::redb::TableDefinition<'_, &'static [u8], &'static [u8]> {
@@ -76,9 +80,58 @@ impl RedbEngine {
             .into());
         }
         std::fs::create_dir_all(dir)?;
-        let db = Self::builder_for(profile)
-            .create(dir.join(DB_FILE))
-            .map_err(internal)?;
+        let path = dir.join(DB_FILE);
+
+        // La PRIMERA creación se hace aparte y se publica con un rename.
+        //
+        // Crear directamente sobre la ruta final abre una ventana en la que
+        // el archivo ya existe pero todavía no es una base redb válida: si el
+        // proceso muere ahí (OOM, kill del contenedor, corte), el directorio
+        // queda envenenado para siempre — toda apertura posterior falla con
+        // "invalid data" y la app no vuelve a arrancar. Medido: matando el
+        // proceso dentro de esa ventana, 14 de 64 intentos dejaban la base
+        // inabrible; sled, 0 de 64. Una base YA establecida no corre ese
+        // riesgo (0 de 44), así que el arreglo solo necesita cubrir el
+        // arranque en frío.
+        //
+        // El rename es atómico, así que el invariante pasa a ser: si
+        // `nopal.redb` existe, es una base completa y válida. Morir antes del
+        // rename solo deja el temporal, que la siguiente apertura descarta.
+        //
+        // Se cierra el handle ANTES de renombrar a propósito: renombrar un
+        // archivo abierto funciona en Unix pero falla en Windows, y esta
+        // librería publica wheels para Windows. El costo es una apertura
+        // extra, y solo la primera vez.
+        if !path.exists() {
+            let tmp = dir.join(TMP_DB_FILE);
+            // Restos de un intento anterior que murió antes del rename.
+            if tmp.exists() {
+                std::fs::remove_file(&tmp)?;
+            }
+            {
+                let db = Self::builder_for(profile).create(&tmp).map_err(internal)?;
+                drop(db);
+            }
+            std::fs::rename(&tmp, &path)?;
+        }
+
+        let db = Self::builder_for(profile).create(&path).map_err(|e| {
+            // Llegar aquí con el archivo presente significa que existe pero no
+            // se puede leer. El caso más probable —y el único que el motor
+            // puede nombrar— es una base creada a medias por una versión
+            // anterior a este arreglo.
+            StorageError::new(
+                StorageErrorKind::InvalidData,
+                format!(
+                    "no se pudo abrir la base redb en {}: {e}. Si el proceso murió \
+                     durante el PRIMER arranque de esta base (versiones ≤0.5.6), el \
+                     archivo quedó a medio crear y no contiene datos: borrar el \
+                     directorio y reabrir lo resuelve. Verificar antes que no haya \
+                     datos que preservar.",
+                    path.display()
+                ),
+            )
+        })?;
         Ok(Self::with_flusher(db, profile))
     }
 

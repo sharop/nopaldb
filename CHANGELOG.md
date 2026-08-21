@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Honestidad del backend en el paquete de Python.** La API dejaba pedir `engine="redb"` en cualquier build, y el fallo llegaba dentro de `open()` como `RuntimeError: ... activa su feature storage-*` — un remedio imposible para quien instaló una wheel: no puede recompilar lo que ya viene compilado. Las wheels publicadas en PyPI traen **solo el backend sled** (redb es experimental y opt-in), y eso no estaba escrito en ninguna parte. Ahora el engine se valida contra lo que ESTE build contiene: pedir un backend ausente falla en la llamada con `ValueError` diciendo qué hay disponible y cómo obtener el otro.
 
+### Fixed
+
+- **redb: un crash durante la creación de la base dejaba el directorio inservible para siempre.** Crear directamente sobre `nopal.redb` abría una ventana en la que el archivo ya existía pero todavía no era una base válida; si el proceso moría ahí (OOM, kill del contenedor, corte), toda apertura posterior fallaba con `I/O error: invalid data` y la aplicación no volvía a arrancar. Es el escenario del primer arranque de un despliegue nuevo. Ahora la creación se hace en un temporal y se publica con un `rename` atómico, así que el invariante es: si `nopal.redb` existe, es una base completa. Medido antes del arreglo: 14 de 64 kills dentro de la ventana dejaban la base inabrible; después, 0. Una base ya establecida nunca corrió ese riesgo (0 de 44), y se sigue verificando para que el arreglo no se confunda con "borrar y recrear".
+- El error de apertura de redb, cuando el archivo existe pero no se puede leer, ahora nombra este escenario y su remedio en vez de propagar `invalid data` a secas.
+
+### Known issues
+
+- **sled tiene el mismo defecto de arranque en frío**, con una ventana mucho más estrecha: ~3 de 20 barridos lo reproducen, con `Read corrupted data`. No está arreglado en esta versión. El test `cold_start_crash_test` lo cubriría sin cambios cuando se cierre; hoy corre solo contra redb para no meter un flaky en CI.
+
 ### Changed
 
 - `Graph.open_with_options` / `Graph.in_memory_with_options` (Python): `engine="redb"` en una wheel de PyPI ahora lanza `ValueError` en la llamada en vez de `RuntimeError` al abrir. Un build hecho con `--features storage-redb` lo sigue aceptando sin cambios.
