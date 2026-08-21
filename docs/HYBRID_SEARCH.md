@@ -13,14 +13,18 @@ Each path returns candidates in rank order. A document's fused score is:
 score(d) = Σ_path 1 / (rrf_k + rank_path(d))        # rrf_k default 60
 ```
 
-RRF is **rank-based**, which fits both indexes: the full-text index returns node
-ids ordered by relevance (no raw scores), and HNSW returns them ordered by
-distance. A node that ranks well in *both* paths outranks one strong in only one.
+RRF is **rank-based**, which is what lets it fuse two branches whose numbers
+are not comparable: a BM25 score and a cosine distance live on different
+scales, but their rank orders do not. A node that ranks well in *both* paths
+outranks one strong in only one. The raw scores are still available for
+inspection — see [Explaining a result](#explaining-a-result).
 
 ## API
 
 - **Rust:** `Graph::search_hybrid(HybridQuery) -> Vec<HybridHit>`.
 - **Python:** `graph.search_hybrid(text=None, vector=None, model=None, k=10, ef=None, label=None, props=None, text_index=None, rrf_k=60.0)` → `list[dict]` of `{node_id, score, text_rank, vector_rank}`.
+- **Rust:** `Graph::search_hybrid_explain(HybridQuery) -> HybridExplain` — same search, plus why each hit ranked where it did.
+- **Python:** `graph.search_hybrid_explain(...)` with the same arguments → `dict`.
 - **MCP:** the `search_hybrid` tool (read-only).
 - **NQL:** `where hybrid(n, "text", "ref_name", "model")` — see below.
 
@@ -97,6 +101,44 @@ by the filtering property is the answer there.
 > **0** at ~1% selectivity while the exact answer had `k` hits available.
 > Output was never wrong (nothing disallowed leaked), just incomplete.
 
+## Explaining a result
+
+The RRF score orders results but does not explain them. It is a sum of
+reciprocal *ranks*, so it cannot tell you whether a document rose through
+text, through vectors, or both — nor how strongly. `search_hybrid_explain`
+runs the same search and keeps the raw numbers the fusion consumes and throws
+away.
+
+```python
+e = graph.search_hybrid_explain(text="cactus", vector=[...], model="e5-large", k=5)
+
+for h in e["hits"]:
+    print(h["node_id"], h["text_rank"], h["text_score"], h["vector_rank"], h["vector_distance"])
+
+print(e["vector_path"], e["text"], e["vector"])
+```
+
+Per hit: `text_score` is the raw BM25 score, `vector_distance` the cosine
+distance (0 = identical). Each is `None` when the hit did not come through
+that branch — "no score" rather than a zero that would read as "scored badly".
+
+Globally it reports the configuration that was actually **used**, including
+what you did not choose: the resolved `text_index`, the effective `ef_search`,
+`candidates` (= `k × overfetch`) and `allowed_set_size` when a filter applied.
+
+Each branch reports `{requested, returned, underfilled}`. Underfill is the
+question a short result cannot answer on its own — and `vector_path` is what
+decides how to read it:
+
+| `vector_path` | Meaning of a short result |
+|---|---|
+| `unfiltered` / `exact_over_allowed` | exact: there genuinely are no more |
+| `hnsw_filtered` | approximate: no more were *found*, which is not the same |
+
+`search_hybrid` is the same computation with the trace dropped — it delegates
+to the explaining version rather than duplicating it, so asking for the
+explanation cannot change the result.
+
 ## NQL `hybrid()`
 
 `hybrid(n, "text", "ref_name", "model")` in a WHERE clause filters the pattern to
@@ -114,9 +156,11 @@ limit 10
 
 ## Limits & notes (v1)
 
-- Full-text exposes rank, not raw score — RRF only needs rank, so this is fine,
-  but choose the right property when creating the index (it is per-property).
+- The fusion itself uses rank, not score — that is what makes RRF work across
+  two branches whose numbers are not comparable. The raw scores are still
+  available for inspection via `search_hybrid_explain`. Choose the right
+  property when creating the full-text index (it is per-property).
 - `search_hybrid` sees **committed** state; a freshly added embedding is visible
   after its `add_node_embedding` invalidates the cached HNSW index.
-- Follow-ups: per-path weights + raw full-text score (M1-5b); range/OR filters
-  (M1-5c).
+- Follow-ups: per-path weights; range/OR filters; wiring `hybrid()`'s
+  parameters in NQL, which are still hardcoded.
