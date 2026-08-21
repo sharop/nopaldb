@@ -23,15 +23,40 @@ fn parse_profile(profile: &str) -> PyResult<StorageProfile> {
     }
 }
 
+/// Traduce el nombre del engine, rechazando los que ESTE build no trae.
+///
+/// El engine se valida contra lo compilado, no contra lo que el enum sabe
+/// nombrar. Antes se aceptaba cualquiera de los dos y el fallo llegaba dentro
+/// de `open()` como `RuntimeError: ... activa su feature storage-*` — un
+/// remedio imposible para quien instaló una wheel: no puede recompilar lo que
+/// ya viene compilado. Ahora el rechazo ocurre en la llamada, con un
+/// `ValueError` que dice qué backends tiene ESTE build y qué hacer.
 fn parse_engine(engine: &str) -> PyResult<StorageEngine> {
     match engine.to_ascii_lowercase().as_str() {
+        #[cfg(feature = "storage-sled")]
         "sled" => Ok(StorageEngine::Sled),
-        // Experimental: requiere compilar con la feature `storage-redb`
-        // (si no, abrir falla con un error claro, no un panic).
+        #[cfg(feature = "storage-redb")]
         "redb" => Ok(StorageEngine::Redb),
-        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            format!("Invalid engine '{}'. Use 'sled' or 'redb'", engine)
+
+        // Nombre conocido, pero sin backend en este build.
+        #[cfg(not(feature = "storage-redb"))]
+        "redb" => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "engine 'redb' is not available in this build. The wheels published on PyPI ship \
+             the sled backend only; redb is experimental and must be built from source with \
+             `--features storage-redb`. This build supports: 'sled'."
+                .to_string(),
         )),
+        #[cfg(not(feature = "storage-sled"))]
+        "sled" => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "engine 'sled' is not available in this build (compiled without `storage-sled`). \
+             This build supports: 'redb'."
+                .to_string(),
+        )),
+
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Invalid engine '{}'. Use 'sled' or 'redb'",
+            engine
+        ))),
     }
 }
 
@@ -88,7 +113,10 @@ impl PyGraph {
 
     /// Open a graph database with explicit storage options.
     ///
-    /// engine: "sled"
+    /// engine: "sled" (the only backend in the wheels published on PyPI) or
+    ///     "redb" (experimental; requires building from source with
+    ///     `--features storage-redb`). Asking for a backend this build does
+    ///     not have raises ValueError.
     /// profile: "default" | "mobile" | "server"
     #[staticmethod]
     #[pyo3(signature = (path, engine="sled", profile="default"))]
@@ -130,7 +158,8 @@ impl PyGraph {
 
     /// Create in-memory graph with explicit storage options.
     ///
-    /// engine: "sled"
+    /// engine: same values and build-dependent availability as
+    ///     `open_with_options`.
     /// profile: "default" | "mobile" | "server"
     #[staticmethod]
     #[pyo3(signature = (engine="sled", profile="default"))]
