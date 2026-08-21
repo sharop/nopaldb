@@ -13,19 +13,16 @@
 // Patrón self-exec, como el resto de harnesses de crash: el padre relanza
 // este binario filtrando el hijo (#[ignore]) y lo mata con SIGKILL.
 //
-// ⚠️ ALCANCE: hoy esto se corre contra redb, que es donde el agujero estaba
-// abierto de par en par (determinista dentro de la ventana). **sled tiene el
-// MISMO defecto**, solo que su ventana es mucho más estrecha: medido, ~3 de
-// 20 corridas de este barrido lo pescan, con `Read corrupted data` en vez de
-// `invalid data`, y siempre en los mismos 3-4 ms iniciales. Ese caso NO está
-// arreglado, así que el test no se habilita para sled todavía — habilitarlo
-// sería meter un flaky del 15% en CI. Cuando se cierre el de sled, este mismo
-// test lo cubre sin cambios: no sabe de motores, usa el que el build traiga.
+// El test no sabe de motores: usa el que el build traiga, y los DOS tenían
+// el agujero. redb de par en par (determinista dentro de la ventana) y sled
+// con una ventana mucho más estrecha —~3 de 20 barridos lo pescaban, con
+// `Read corrupted data` en vez de `invalid data`— que casi pasa por sano en
+// una primera medición de 64 intentos. Cada motor lo cierra a su manera
+// (rename atómico en redb, descarte de la creación incompleta en sled)
+// porque su layout en disco es distinto; el invariante que se exige aquí es
+// el mismo para ambos.
 
-// La condición es del ARCHIVO y no de un paso de CI a propósito: así
-// `cargo test` local tampoco arrastra el flaky de sled, y el día que se
-// arregle basta con quitar esta línea.
-#![cfg(all(unix, feature = "storage-redb", not(feature = "storage-sled")))]
+#![cfg(unix)]
 
 use nopaldb::{Graph, Node, PropertyValue};
 use std::path::Path;

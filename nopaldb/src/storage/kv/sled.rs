@@ -34,6 +34,73 @@ impl From<::sled::Error> for NopalError {
 
 // ─── Engine ─────────────────────────────────────────────────────────────────
 
+/// `true` si el error es "el directorio ya está lockeado", que es lo único
+/// que tiene sentido reintentar: cualquier otro fallo de apertura no mejora
+/// esperando.
+fn es_lock_ocupado(e: &::sled::Error) -> bool {
+    matches!(e, ::sled::Error::Io(io) if io.kind() == std::io::ErrorKind::WouldBlock)
+}
+
+/// Descarta los restos de una creación que nunca terminó.
+///
+/// Si el proceso muere mientras sled crea la base —el primer arranque de un
+/// despliegue nuevo: OOM, kill del contenedor, corte— el directorio queda con
+/// un `conf` a medio escribir y sin `db`. A partir de ahí TODA apertura falla
+/// con `Read corrupted data`, para siempre: la aplicación no vuelve a
+/// arrancar y el mensaje sugiere corrupción de datos cuando en realidad no
+/// llegó a existir ninguno.
+///
+/// La firma es inequívoca porque `db` **es** el archivo de datos de sled: un
+/// directorio con `conf` y sin `db` no puede contener nada que perder. Aun
+/// así se exige que no haya ningún otro rastro de uso (blobs con contenido,
+/// snapshots, el WAL del grafo — que se crea DESPUÉS de abrir el storage, así
+/// que su ausencia confirma que nunca se pasó de aquí). Ante cualquier duda no
+/// se toca nada y se deja hablar a sled: preferimos un error críptico a borrar
+/// datos ajenos.
+///
+/// La alternativa —crear en un temporal y publicar con un rename, como hace
+/// el backend redb— no sirve aquí: la base de sled son varias entradas
+/// sueltas dentro del directorio del grafo (`conf`, `db`, `blobs/`), no un
+/// archivo único, y mover varias entradas no es atómico.
+fn discard_incomplete_creation(path: &std::path::Path) -> Result<()> {
+    let conf = path.join("conf");
+    let db = path.join("db");
+
+    // O no hay nada que limpiar, o la base existe de verdad.
+    if !conf.exists() || db.exists() {
+        return Ok(());
+    }
+
+    let blobs = path.join("blobs");
+    let blobs_vacio = match std::fs::read_dir(&blobs) {
+        Ok(mut entradas) => entradas.next().is_none(),
+        Err(_) => true, // no existe
+    };
+    if !blobs_vacio || path.join("nopal.wal").exists() {
+        return Ok(());
+    }
+    // Snapshots de sled: si hay alguno, hubo una base viva en algún momento.
+    if let Ok(entradas) = std::fs::read_dir(path) {
+        for entrada in entradas.flatten() {
+            if entrada.file_name().to_string_lossy().starts_with("snap.") {
+                return Ok(());
+            }
+        }
+    }
+
+    log::warn!(
+        "descartando una creación de base incompleta en {} (hay `conf` pero no `db`): \
+         un arranque anterior murió antes de terminar de crearla y no llegó a \
+         guardarse ningún dato",
+        path.display()
+    );
+    std::fs::remove_file(&conf)?;
+    if blobs.exists() {
+        std::fs::remove_dir_all(&blobs)?;
+    }
+    Ok(())
+}
+
 pub(crate) struct SledEngine {
     db: ::sled::Db,
 }
@@ -73,11 +140,40 @@ impl SledEngine {
             )
             .into());
         }
-        let db = Self::config_for(profile)
-            .path(path)
-            .open()
-            .map_err(NopalError::from)?;
-        Ok(Self { db })
+        discard_incomplete_creation(path)?;
+
+        // El lock del directorio se reintenta durante un tiempo acotado.
+        //
+        // sled lo pide sin bloquear: si el proceso anterior acaba de morir
+        // —o su handle acaba de dropearse— el kernel todavía no liberó el
+        // flock y la apertura falla con WouldBlock aunque nadie lo tenga ya.
+        // Le pasa a cualquiera que cierre y reabra al vuelo (supervisores que
+        // reinician, tests de recuperación) y produce fallos que parecen
+        // aleatorios. Si de verdad hay otro proceso, el error llega igual,
+        // un instante después.
+        const ESPERA_LOCK: std::time::Duration = std::time::Duration::from_millis(1500);
+        let inicio = std::time::Instant::now();
+        loop {
+            match Self::config_for(profile).path(path).open() {
+                Ok(db) => return Ok(Self { db }),
+                Err(e) if es_lock_ocupado(&e) && inicio.elapsed() < ESPERA_LOCK => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(e) if es_lock_ocupado(&e) => {
+                    return Err(StorageError::new(
+                        StorageErrorKind::Unsupported,
+                        format!(
+                            "la base sled en {} ya está abierta por otro proceso \
+                             (NopalDB admite un solo escritor por directorio). \
+                             Cerrar el otro proceso, o abrir una copia.",
+                            path.display()
+                        ),
+                    )
+                    .into());
+                }
+                Err(e) => return Err(NopalError::from(e)),
+            }
+        }
     }
 
     pub(crate) fn open_temporary(profile: StorageProfile) -> Result<Self> {

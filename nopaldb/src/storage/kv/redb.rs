@@ -115,24 +115,63 @@ impl RedbEngine {
             std::fs::rename(&tmp, &path)?;
         }
 
-        let db = Self::builder_for(profile).create(&path).map_err(|e| {
-            // Llegar aquí con el archivo presente significa que existe pero no
-            // se puede leer. El caso más probable —y el único que el motor
-            // puede nombrar— es una base creada a medias por una versión
-            // anterior a este arreglo.
-            StorageError::new(
-                StorageErrorKind::InvalidData,
-                format!(
-                    "no se pudo abrir la base redb en {}: {e}. Si el proceso murió \
-                     durante el PRIMER arranque de esta base (versiones ≤0.5.6), el \
-                     archivo quedó a medio crear y no contiene datos: borrar el \
-                     directorio y reabrir lo resuelve. Verificar antes que no haya \
-                     datos que preservar.",
-                    path.display()
-                ),
-            )
-        })?;
+        let db = Self::open_existing(&path, profile)?;
         Ok(Self::with_flusher(db, profile))
+    }
+
+    /// Abre una base que ya existe, distinguiendo las dos formas de fallar.
+    ///
+    /// Importa mantenerlas separadas: el remedio de una es borrar el
+    /// directorio y el de la otra es cerrar el otro proceso. Confundirlas
+    /// manda a alguien a destruir una base sana.
+    fn open_existing(path: &Path, profile: StorageProfile) -> Result<::redb::Database> {
+        // El lock de redb es `try_lock` — no bloqueante y sin reintento. Tras
+        // un SIGKILL el kernel libera el flock del proceso muerto, pero no
+        // necesariamente antes de que el siguiente intento lo pida: quien
+        // reabre inmediatamente después de matar (harnesses de crash,
+        // supervisores que reinician al vuelo) se topa con un "already open"
+        // que se resuelve solo en milisegundos. Se reintenta con una espera
+        // acotada; si de verdad hay otro proceso, el error llega igual, solo
+        // que un instante después y diciendo lo que pasa.
+        const ESPERA_LOCK: std::time::Duration = std::time::Duration::from_millis(1500);
+        let inicio = std::time::Instant::now();
+        loop {
+            match Self::builder_for(profile).create(path) {
+                Ok(db) => return Ok(db),
+                Err(::redb::DatabaseError::DatabaseAlreadyOpen) => {
+                    if inicio.elapsed() >= ESPERA_LOCK {
+                        return Err(StorageError::new(
+                            StorageErrorKind::Unsupported,
+                            format!(
+                                "la base redb en {} ya está abierta por otro proceso \
+                                 (NopalDB admite un solo escritor por directorio). \
+                                 Cerrar el otro proceso, o abrir una copia.",
+                                path.display()
+                            ),
+                        )
+                        .into());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(e) => {
+                    // El archivo existe pero no se puede leer. El caso que el
+                    // motor sí puede nombrar es una base creada a medias por
+                    // una versión anterior al rename atómico.
+                    return Err(StorageError::new(
+                        StorageErrorKind::InvalidData,
+                        format!(
+                            "no se pudo abrir la base redb en {}: {e}. Si el proceso \
+                             murió durante el PRIMER arranque de esta base (versiones \
+                             ≤0.5.6), el archivo quedó a medio crear y no contiene \
+                             datos: borrar el directorio y reabrir lo resuelve. \
+                             Verificar antes que no haya datos que preservar.",
+                            path.display()
+                        ),
+                    )
+                    .into());
+                }
+            }
+        }
     }
 
     pub(crate) fn open_temporary(profile: StorageProfile) -> Result<Self> {

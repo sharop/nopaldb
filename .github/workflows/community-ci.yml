@@ -85,8 +85,11 @@ jobs:
       - name: Layout v2 migration with redb as only backend
         run: cargo test -p nopaldb --no-default-features --features storage-redb --test layout_v2_migration_test
 
-      # Solo redb: sled tiene el mismo agujero sin arreglar y correrlo ahí
-      # sería un flaky. Ver la cabecera del test.
+      # Los dos motores: el agujero estaba en ambos y cada uno lo cierra a su
+      # manera, así que el invariante se exige por separado en cada backend.
+      - name: Cold-start crash (kill while creating the database) — sled
+        run: cargo test -p nopaldb --features core --test cold_start_crash_test
+
       - name: Cold-start crash (kill while creating the database) — redb
         run: cargo test -p nopaldb --no-default-features --features storage-redb --test cold_start_crash_test
 
