@@ -31,6 +31,53 @@ graph = nopaldb.Graph.open("data/my_graph.db")
 
 ---
 
+##### `Graph.open_with_options(path: str, engine: str = "sled", profile: str = "default") -> Graph`
+
+Open a database with an explicit storage backend and tuning profile.
+
+```python
+graph = nopaldb.Graph.open_with_options("data/my_graph.db", engine="sled", profile="default")
+```
+
+**Parameters:**
+- `path` (str): Path to database directory
+- `engine` (str): storage backend — see the table below
+- `profile` (str): `"default"` | `"mobile"` | `"server"`
+
+**Backends and availability:**
+
+| `engine` | In the PyPI wheel? | Status |
+|---|---|---|
+| `"sled"` | yes — the only one | supported; what `Graph.open` uses |
+| `"redb"` | **no** | experimental; requires building from source |
+
+Asking for a backend this build does not contain raises `ValueError` at the
+call, naming what is available:
+
+```python
+>>> nopaldb.Graph.open_with_options("data/g.db", engine="redb")
+ValueError: engine 'redb' is not available in this build. The wheels published
+on PyPI ship the sled backend only; redb is experimental and must be built from
+source with `--features storage-redb`. This build supports: 'sled'.
+```
+
+To evaluate redb, build the wheel yourself — and treat it as an experiment, not
+a supported configuration:
+
+```bash
+maturin build --release --features python-full,storage-redb -m nopaldb/Cargo.toml
+```
+
+**Returns:** Graph instance
+
+---
+
+##### `Graph.in_memory_with_options(engine: str = "sled", profile: str = "default") -> Graph`
+
+Same options as `open_with_options`, without persistence.
+
+---
+
 ##### `Graph.in_memory() -> Graph`
 
 Create an in-memory graph (non-persistent).

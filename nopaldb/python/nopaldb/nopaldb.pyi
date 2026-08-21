@@ -15,6 +15,10 @@ class Graph:
     def open(path: str) -> "Graph": ...
     @staticmethod
     def open_with_profile(path: str, profile: str = "default") -> "Graph": ...
+    # `engine` is "sled" or "redb", but availability depends on how the package
+    # was BUILT, not on the type: the wheels on PyPI ship sled only, so
+    # engine="redb" raises ValueError there. redb is experimental and needs a
+    # source build with `--features storage-redb`.
     @staticmethod
     def open_with_options(path: str, engine: str = "sled", profile: str = "default") -> "Graph": ...
     @staticmethod

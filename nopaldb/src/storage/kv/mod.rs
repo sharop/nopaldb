@@ -183,9 +183,69 @@ pub(crate) fn open_in_memory(
 /// Error claro (no panic) cuando piden un engine cuyo backend no se compiló:
 /// el enum es público y non_exhaustive — el valor puede llegar por API.
 fn engine_not_compiled(engine: crate::storage::backend::StorageEngine) -> crate::error::NopalError {
+    use crate::storage::backend::StorageEngine;
+    // Nombrar la feature EXACTA, no el comodín `storage-*`: quien recibe este
+    // error está a una línea de Cargo.toml de arreglarlo, y adivinar el
+    // nombre es trabajo innecesario.
+    // `StorageEngine` es `non_exhaustive` de puertas afuera, pero aquí dentro
+    // el match es exhaustivo: una variante nueva rompe la compilación y obliga
+    // a nombrar su feature, que es justo lo que queremos.
+    let feature = match engine {
+        StorageEngine::Sled => "storage-sled",
+        StorageEngine::Redb => "storage-redb",
+    };
     crate::error::StorageError::new(
         crate::error::StorageErrorKind::Unsupported,
-        format!("engine {engine:?} sin backend compilado; activa su feature storage-*"),
+        format!(
+            "storage engine {engine:?} was not compiled into this build; \
+             rebuild with the `{feature}` Cargo feature enabled"
+        ),
     )
     .into()
+}
+
+#[cfg(test)]
+mod engine_availability_tests {
+    use super::*;
+    use crate::storage::backend::StorageEngine;
+
+    /// El error nombra la feature EXACTA que falta, no un comodín: quien lo
+    /// recibe está a una línea de Cargo.toml de arreglarlo.
+    #[test]
+    fn not_compiled_error_names_the_exact_feature() {
+        let msg = format!("{}", engine_not_compiled(StorageEngine::Redb));
+        assert!(msg.contains("storage-redb"), "debe nombrar la feature: {msg}");
+        assert!(!msg.contains("storage-*"), "sin comodines: {msg}");
+
+        let msg = format!("{}", engine_not_compiled(StorageEngine::Sled));
+        assert!(msg.contains("storage-sled"), "debe nombrar la feature: {msg}");
+    }
+
+    /// El engine que SÍ está compilado abre; el dispatch no cae al error.
+    #[test]
+    fn compiled_engine_opens_temporary() {
+        let opts = crate::storage::backend::StorageOptions::default();
+        assert!(
+            open_in_memory(crate::storage::backend::StorageProfile::Default, &opts).is_ok(),
+            "el engine por defecto de este build debe abrir"
+        );
+    }
+
+    /// Un engine cuyo backend NO se compiló falla con el error accionable en
+    /// vez de con un panic. Solo se puede afirmar cuando falta exactamente
+    /// uno de los dos.
+    #[cfg(all(feature = "storage-sled", not(feature = "storage-redb")))]
+    #[test]
+    fn missing_backend_is_an_error_not_a_panic() {
+        let opts = crate::storage::backend::StorageOptions {
+            engine: StorageEngine::Redb,
+            profile: crate::storage::backend::StorageProfile::Default,
+        };
+        let Err(err) = open_in_memory(crate::storage::backend::StorageProfile::Default, &opts)
+        else {
+            panic!("redb no está compilado en este build: abrir debe fallar");
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("storage-redb"), "mensaje accionable: {msg}");
+    }
 }

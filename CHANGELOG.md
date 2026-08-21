@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.7] - unreleased
+
+### ✨ Highlights
+
+- **Honestidad del backend en el paquete de Python.** La API dejaba pedir `engine="redb"` en cualquier build, y el fallo llegaba dentro de `open()` como `RuntimeError: ... activa su feature storage-*` — un remedio imposible para quien instaló una wheel: no puede recompilar lo que ya viene compilado. Las wheels publicadas en PyPI traen **solo el backend sled** (redb es experimental y opt-in), y eso no estaba escrito en ninguna parte. Ahora el engine se valida contra lo que ESTE build contiene: pedir un backend ausente falla en la llamada con `ValueError` diciendo qué hay disponible y cómo obtener el otro.
+
+### Changed
+
+- `Graph.open_with_options` / `Graph.in_memory_with_options` (Python): `engine="redb"` en una wheel de PyPI ahora lanza `ValueError` en la llamada en vez de `RuntimeError` al abrir. Un build hecho con `--features storage-redb` lo sigue aceptando sin cambios.
+- El error de Rust para un backend no compilado nombra la feature exacta (`storage-sled` / `storage-redb`) en vez del comodín `storage-*`, y está en inglés como el resto de la superficie pública.
+
+### Docs
+
+- `README.pypi.md`: qué backend trae la wheel, que redb es experimental y el comando de build desde fuente para evaluarlo.
+- `docs/python/API_REFERENCE.md`: `open_with_options` / `in_memory_with_options` documentados en inglés por primera vez (solo existían en la referencia en español), con la tabla de disponibilidad por backend.
+- `docs/FEATURE_TIERS.md`: fila `storage-redb` (faltaba desde 0.5.1), más `hybrid` y `full-isolation`; corregida la composición de `python-full`, que decía `analytics` cuando el manifiesto dice `full` — la doc subrepresentaba lo que la wheel incluye.
+- `release-python.yml`: nota de que las features de la wheel salen de `pyproject.toml` y no del workflow. Corregido también el comentario del disparo, que decía que los builds corren en cada push.
+
 ## [0.5.6] - unreleased
 
 ### ✨ Highlights
