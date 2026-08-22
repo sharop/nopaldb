@@ -34,11 +34,26 @@ impl From<::sled::Error> for NopalError {
 
 // ─── Engine ─────────────────────────────────────────────────────────────────
 
+/// Marca con la que sled anuncia que el lock del directorio está tomado.
+///
+/// Se compara contra el TEXTO porque sled descarta el tipo: envuelve el
+/// `WouldBlock` original en un `io::Error` nuevo de kind `Other` y mete el
+/// error real dentro del mensaje formateado (`config.rs`, `try_lock`). Mirar
+/// `io.kind()` devuelve `Other` y no distingue nada.
+///
+/// Es frágil —si sled cambia la frase, el reintento deja de activarse en
+/// silencio— y por eso existe `retry_engages_on_a_locked_directory`: ese test
+/// falla en cuanto la detección deja de funcionar, que es exactamente el modo
+/// en que este código puede morir sin avisar. Ya pasó una vez: la primera
+/// versión comparaba `io.kind() == WouldBlock`, nunca coincidía, y el
+/// reintento estuvo muerto sin que ningún test lo notara.
+const MARCA_LOCK_SLED: &str = "could not acquire lock";
+
 /// `true` si el error es "el directorio ya está lockeado", que es lo único
 /// que tiene sentido reintentar: cualquier otro fallo de apertura no mejora
 /// esperando.
 fn es_lock_ocupado(e: &::sled::Error) -> bool {
-    matches!(e, ::sled::Error::Io(io) if io.kind() == std::io::ErrorKind::WouldBlock)
+    matches!(e, ::sled::Error::Io(io) if io.to_string().contains(MARCA_LOCK_SLED))
 }
 
 /// Descarta los restos de una creación que nunca terminó.
@@ -352,5 +367,42 @@ mod tests {
             }
             other => panic!("expected StorageError, got {other:?}"),
         }
+    }
+
+    /// El reintento del lock SE ACTIVA de verdad.
+    ///
+    /// Este test existe porque la primera versión de la detección no
+    /// funcionaba: comparaba `io.kind() == WouldBlock`, pero sled envuelve
+    /// ese error en uno de kind `Other` y deja el original solo en el texto.
+    /// La guarda nunca coincidía, el reintento estaba muerto, y como el flake
+    /// que debía cubrir es probabilístico, la suite pasó igual y el fallo se
+    /// vio hasta CI — con el error CRUDO de sled, que fue la pista.
+    ///
+    /// Se afirma sobre el error TRADUCIDO y sobre el tiempo: si la detección
+    /// deja de funcionar (p. ej. sled cambia la frase), el error vuelve a ser
+    /// el crudo y la espera desaparece. Cualquiera de las dos cosas rompe
+    /// este test.
+    #[test]
+    fn retry_engages_on_a_locked_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let Ok(_ocupante) = SledEngine::open(dir.path(), StorageProfile::Default) else {
+            panic!("la primera apertura debe tomar el lock");
+        };
+
+        let inicio = std::time::Instant::now();
+        let Err(err) = SledEngine::open(dir.path(), StorageProfile::Default) else {
+            panic!("la segunda apertura no puede tomar el lock");
+        };
+        let esperado = inicio.elapsed();
+
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ya está abierta por otro proceso"),
+            "el error debe estar traducido, no ser el crudo de sled: {msg}"
+        );
+        assert!(
+            esperado >= std::time::Duration::from_millis(500),
+            "debe haber reintentado antes de rendirse; se rindió en {esperado:?}"
+        );
     }
 }
