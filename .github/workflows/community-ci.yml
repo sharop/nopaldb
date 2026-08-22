@@ -50,7 +50,7 @@ jobs:
         run: cargo test -p nopaldb --features core --test delete_by_key_test
 
       - name: Test hybrid search (M1-5)
-        run: cargo test -p nopaldb --features core --test hybrid_test
+        run: cargo test -p nopaldb --features core --test hybrid_test --test hybrid_explain_test
 
       - name: Test filtered KNN recall (exact path + native HNSW filter)
         run: cargo test -p nopaldb --features core --test knn_filtered_recall_test --test knn_exact_test
