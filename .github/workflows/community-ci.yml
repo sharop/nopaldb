@@ -87,6 +87,12 @@ jobs:
 
       # Los dos motores: el agujero estaba en ambos y cada uno lo cierra a su
       # manera, así que el invariante se exige por separado en cada backend.
+      - name: Read-only mode + cold backup — sled
+        run: cargo test -p nopaldb --features core --test read_only_and_backup_test
+
+      - name: Read-only mode + cold backup — redb
+        run: cargo test -p nopaldb --no-default-features --features storage-redb --test read_only_and_backup_test
+
       - name: Cold-start crash (kill while creating the database) — sled
         run: cargo test -p nopaldb --features core --test cold_start_crash_test
 

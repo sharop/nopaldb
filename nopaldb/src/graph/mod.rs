@@ -78,6 +78,8 @@ pub struct Graph {
     index_manager: Arc<IndexManager>,
 
     auto_gc_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// Sello de solo-lectura. `None` en una apertura normal de escritura.
+    read_only_seal: Option<crate::storage::kv::WriteSeal>,
     auto_gc_stop_tx: Arc<Mutex<Option<watch::Sender<bool>>>>,
     auto_gc_config: Arc<RwLock<Option<AutoGcConfig>>>,
 
@@ -210,6 +212,69 @@ impl Graph {
         Self::open_with_options(path, options).await
     }
 
+    /// Abre la base SIN permitir escrituras desde este handle.
+    ///
+    /// # Qué garantiza, y qué NO
+    ///
+    /// Garantiza que **este proceso no puede modificar los datos**: toda
+    /// mutación falla con un error tipado en vez de escribir. Sirve para un
+    /// explorador, un servidor de consultas o cualquier cosa que no deba
+    /// tocar la base por accidente.
+    ///
+    /// **No permite abrir una base que otro proceso tiene abierta.** NopalDB
+    /// es de un solo escritor por directorio y esto lo sigue siendo: toma el
+    /// mismo lock exclusivo. No es un modo de acceso concurrente, y ningún
+    /// motor embebido de los que soporta puede darlo hoy — sled no tiene
+    /// modo de solo lectura, y el de redb tampoco convive con un escritor
+    /// abierto. Para leer sin tocar la base viva, hacer un backup en frío
+    /// (`Storage::copy_database`) y abrir la copia.
+    ///
+    /// La apertura sí escribe: se aplican migraciones pendientes y se
+    /// reproduce el WAL, porque una base a medio recuperar no es legible de
+    /// forma coherente. El sello se cierra en cuanto eso termina.
+    pub async fn open_read_only(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::open_read_only_with_options(path, crate::storage::StorageOptions::default()).await
+    }
+
+    /// [`Graph::open_read_only`] con opciones de storage explícitas.
+    pub async fn open_read_only_with_options(
+        path: impl AsRef<std::path::Path>,
+        options: crate::storage::StorageOptions,
+    ) -> Result<Self> {
+        let (storage, seal) =
+            Storage::new_sealable(path.as_ref(), options).await?;
+        let mut graph = Self::init_from_storage(path.as_ref(), storage, options).await?;
+        // Sellar DESPUÉS del init: migraciones y replay del WAL ya corrieron.
+        seal.close();
+        graph.read_only_seal = Some(seal);
+        Ok(graph)
+    }
+
+    /// `true` si este handle se abrió en modo solo-lectura.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only_seal.as_ref().is_some_and(|s| s.is_sealed())
+    }
+
+    /// Rechaza una operación de escritura en modo solo-lectura.
+    ///
+    /// Hace falta explícitamente en las operaciones que NO pasan ni por el
+    /// applier ni por la capa KV: los índices de usuario escriben su
+    /// metadata y sus directorios de tantivy directo al filesystem, así que
+    /// ninguno de los dos sellos los ve.
+    fn deny_if_read_only(&self, que: &str) -> Result<()> {
+        if self.is_read_only() {
+            return Err(crate::error::StorageError::new(
+                crate::error::StorageErrorKind::Unsupported,
+                format!(
+                    "esta base se abrió en modo solo-lectura; `{que}` no está \
+                     permitido. Abrirla con `Graph::open` para escribir."
+                ),
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     /// Crea un nuevo grafo con storage persistente y opciones completas.
     pub async fn open_with_options(
         path: impl AsRef<std::path::Path>,
@@ -217,6 +282,19 @@ impl Graph {
     ) -> Result<Self> {
         let path_ref = path.as_ref();
         let storage = Storage::new_with_options(path_ref, options).await?;
+        Self::init_from_storage(path_ref, storage, options).await
+    }
+
+    /// Inicialización común del open: migraciones, WAL, índices, adyacencia
+    /// y relojes. Compartida por la apertura normal y la de solo-lectura —
+    /// ambas necesitan exactamente el mismo trabajo, y duplicarlo dejaría que
+    /// una de las dos se quedara atrás.
+    async fn init_from_storage(
+        path_ref: &std::path::Path,
+        storage: Storage,
+        options: crate::storage::StorageOptions,
+    ) -> Result<Self> {
+        let _ = &options;
 
         // F5.5: migración automática del layout v1→v2. Corre ANTES que
         // cualquier otro lector del open — índices secundarios, adyacencia,
@@ -324,6 +402,7 @@ impl Graph {
             index_manager: Arc::new(index_manager),
 
             auto_gc_task: Arc::new(Mutex::new(None)),
+            read_only_seal: None,
             auto_gc_stop_tx: Arc::new(Mutex::new(None)),
             auto_gc_config: Arc::new(RwLock::new(None)),
             write_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -714,6 +793,7 @@ impl Graph {
             wal: Arc::new(wal),
 
             auto_gc_task: Arc::new(Mutex::new(None)),
+            read_only_seal: None,
             auto_gc_stop_tx: Arc::new(Mutex::new(None)),
             auto_gc_config: Arc::new(RwLock::new(None)),
             write_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -806,6 +886,23 @@ impl Graph {
     /// el Graph fue destruido), aplica inline bajo el gate — misma semántica,
     /// sin agrupamiento.
     pub(crate) async fn submit_write(&self, op: applier::WriteOp) -> Result<()> {
+        // Rechazo temprano en modo solo-lectura, ANTES del applier.
+        //
+        // El sello del engine ya bloquearía la escritura, pero demasiado
+        // tarde: el applier escribe el registro al WAL antes de aplicarlo al
+        // KV, así que un commit rechazado abajo dejaría en el WAL una
+        // operación que nunca se aplicó — y el redo del próximo open la
+        // materializaría. Una base abierta para no tocarla no puede acabar
+        // mutando por el camino de recuperación.
+        if self.is_read_only() {
+            return Err(crate::error::StorageError::new(
+                crate::error::StorageErrorKind::Unsupported,
+                "esta base se abrió en modo solo-lectura; la operación de escritura \
+                 fue rechazada. Abrirla con `Graph::open` para escribir."
+                    .to_string(),
+            )
+            .into());
+        }
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
         let msg = applier::ApplierMsg {
             graph: self.clone(),
@@ -3288,6 +3385,7 @@ impl Graph {
         property: &str,
         index_type: IndexType,
     ) -> Result<String> {
+        self.deny_if_read_only("create_index")?;
         log::info!("Creating index on {}.{}", label, property);
 
         // Step 1: Create index metadata
@@ -3346,6 +3444,7 @@ impl Graph {
     }
     /// Drop an index
     pub async fn drop_index(&self, index_name: &str) -> Result<()> {
+        self.deny_if_read_only("drop_index")?;
         self.index_manager.drop_index(index_name).await
     }
     /// List all indexes

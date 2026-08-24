@@ -249,3 +249,144 @@ mod engine_availability_tests {
         assert!(msg.contains("storage-redb"), "mensaje accionable: {msg}");
     }
 }
+
+// ─── Sello de solo-lectura ──────────────────────────────────────────────────
+
+/// Interruptor compartido que convierte un engine en solo-lectura.
+///
+/// Empieza ABIERTO porque abrir la base escribe: se crean tablas y keyspaces,
+/// se aplican migraciones de layout y se reproduce el WAL. Un engine que
+/// rechazara escrituras desde el principio no daría una apertura de solo
+/// lectura — haría fallar el `open`. El sello se cierra cuando la
+/// inicialización terminó y la base ya está consistente.
+#[derive(Clone, Default)]
+pub(crate) struct WriteSeal(Arc<std::sync::atomic::AtomicBool>);
+
+impl WriteSeal {
+    pub(crate) fn open() -> Self {
+        Self(Arc::new(std::sync::atomic::AtomicBool::new(false)))
+    }
+
+    /// Cierra el sello: a partir de aquí toda escritura falla.
+    pub(crate) fn close(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn is_sealed(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn deny(&self, que: &str) -> crate::error::NopalError {
+        crate::error::StorageError::new(
+            crate::error::StorageErrorKind::Unsupported,
+            format!(
+                "esta base se abrió en modo solo-lectura; `{que}` no está permitido. \
+                 Abrirla con `Graph::open` para escribir."
+            ),
+        )
+        .into()
+    }
+}
+
+/// Engine que deja de aceptar escrituras cuando su sello se cierra.
+///
+/// Envuelve al ENGINE y no a los keyspaces ya abiertos a propósito: hay
+/// keyspaces que se piden bajo demanda —`embeddings` es uno— y sellar solo
+/// los cacheados dejaría esa puerta abierta. Todo keyspace nace de
+/// `keyspace()`, así que interceptarlo ahí los cubre a todos.
+pub(crate) struct SealedEngine {
+    inner: Arc<dyn KvEngine>,
+    seal: WriteSeal,
+}
+
+impl SealedEngine {
+    pub(crate) fn new(inner: Arc<dyn KvEngine>, seal: WriteSeal) -> Self {
+        Self { inner, seal }
+    }
+}
+
+impl KvEngine for SealedEngine {
+    fn engine_name(&self) -> &'static str {
+        self.inner.engine_name()
+    }
+
+    fn keyspace(&self, name: &str) -> Result<Arc<dyn KvKeyspace>> {
+        // Abrir un keyspace CREA la tabla si no existe, así que también es
+        // una escritura una vez sellado.
+        if self.seal.is_sealed() {
+            // Ya sellado: el keyspace debe existir; se envuelve igual para
+            // que sus escrituras se rechacen.
+            let inner = self.inner.keyspace(name)?;
+            return Ok(Arc::new(SealedKeyspace { inner, seal: self.seal.clone() }));
+        }
+        let inner = self.inner.keyspace(name)?;
+        Ok(Arc::new(SealedKeyspace { inner, seal: self.seal.clone() }))
+    }
+
+    fn apply_multi(&self, batches: Vec<(String, WriteBatch)>) -> Result<()> {
+        if self.seal.is_sealed() {
+            return Err(self.seal.deny("apply_multi"));
+        }
+        self.inner.apply_multi(batches)
+    }
+
+    fn flush(&self) -> Result<()> {
+        // El flush no muta datos: fuerza a disco lo ya escrito. Se permite
+        // siempre para que cerrar limpio siga funcionando.
+        self.inner.flush()
+    }
+}
+
+struct SealedKeyspace {
+    inner: Arc<dyn KvKeyspace>,
+    seal: WriteSeal,
+}
+
+impl KvKeyspace for SealedKeyspace {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        self.inner.get(key)
+    }
+    fn contains_key(&self, key: &[u8]) -> Result<bool> {
+        self.inner.contains_key(key)
+    }
+    fn iter(&self) -> KvIter<'_> {
+        self.inner.iter()
+    }
+    fn scan_prefix(&self, prefix: &[u8]) -> KvIter<'_> {
+        self.inner.scan_prefix(prefix)
+    }
+    fn range_from(&self, start: &[u8]) -> KvIter<'_> {
+        self.inner.range_from(start)
+    }
+
+    fn insert(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        if self.seal.is_sealed() {
+            return Err(self.seal.deny("insert"));
+        }
+        self.inner.insert(key, value)
+    }
+    fn remove(&self, key: &[u8]) -> Result<()> {
+        if self.seal.is_sealed() {
+            return Err(self.seal.deny("remove"));
+        }
+        self.inner.remove(key)
+    }
+    fn apply_batch(&self, batch: WriteBatch) -> Result<()> {
+        if self.seal.is_sealed() {
+            return Err(self.seal.deny("apply_batch"));
+        }
+        self.inner.apply_batch(batch)
+    }
+    fn rmw(&self, key: &[u8], f: &mut RmwFn<'_>) -> Result<()> {
+        if self.seal.is_sealed() {
+            return Err(self.seal.deny("rmw"));
+        }
+        self.inner.rmw(key, f)
+    }
+    fn clear(&self) -> Result<()> {
+        if self.seal.is_sealed() {
+            return Err(self.seal.deny("clear"));
+        }
+        self.inner.clear()
+    }
+}

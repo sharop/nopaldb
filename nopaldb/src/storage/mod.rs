@@ -67,7 +67,7 @@ pub const META_WAL_APPLIED_UPTO: &str = "wal_applied_upto";
 /// Capa KV: el contrato `KvEngine`/`KvKeyspace` y las implementaciones por
 /// motor de almacenamiento. Vive en su propio módulo para no sombrear los
 /// crates de los motores (`mod sled` aquí ocultaría al crate `sled`).
-mod kv;
+pub(crate) mod kv;
 
 /// Codec de claves compuestas en disco: el codec binario del layout v2 en
 /// `keys::v2` (F5) + versiones de aristas + la sección LEGACY del keyspace
@@ -322,6 +322,23 @@ impl Storage {
     ) -> Result<Self> {
         let engine = kv::open_engine(path.as_ref(), options.profile, &options)?;
         Self::from_engine(engine, options.profile)
+    }
+
+    /// Como `new_with_options`, pero con un sello de solo-lectura que el
+    /// llamador cierra cuando la inicialización termina.
+    ///
+    /// El sello nace ABIERTO porque abrir la base escribe (crea tablas,
+    /// migra layout, reproduce el WAL). Devuelve el `Storage` y el sello;
+    /// quien lo cierre decide a partir de qué momento la base es inmutable.
+    pub(crate) async fn new_sealable(
+        path: impl AsRef<Path>,
+        options: StorageOptions,
+    ) -> Result<(Self, kv::WriteSeal)> {
+        let engine = kv::open_engine(path.as_ref(), options.profile, &options)?;
+        let seal = kv::WriteSeal::open();
+        let engine: Arc<dyn kv::KvEngine> =
+            Arc::new(kv::SealedEngine::new(engine, seal.clone()));
+        Ok((Self::from_engine(engine, options.profile)?, seal))
     }
 
     /// Crea una nueva instancia de storage con perfil de tuning.
