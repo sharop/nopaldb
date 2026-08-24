@@ -11,7 +11,7 @@ CARGO_VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(CRATE_DIR)/Cargo.
 PY_VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(CRATE_DIR)/pyproject.toml | head -1)
 WORKSPACE_VERSION := $(shell awk '/^\[workspace.package\]/{flag=1;next}/^\[/{flag=0}flag && /^version = /{gsub(/"/,""); sub(/^version = /,""); print; exit}' Cargo.toml)
 
-.PHONY: help check-tools check-clean check-version-sync \
+.PHONY: help check-tools check-clean check-version-sync check-changelog-dates \
 	test test-core test-semantic test-full \
 	clippy clippy-core clippy-semantic clippy-full \
 	build-rust build-wheel build-wheel-all \
@@ -50,6 +50,30 @@ check-version-sync:
 	@echo "workspace version: $(WORKSPACE_VERSION)"
 	@[ "$(CARGO_VERSION)" = "$(PY_VERSION)" ] || (echo "Version mismatch entre nopaldb/Cargo.toml y nopaldb/pyproject.toml" && exit 1)
 	@[ "$(CARGO_VERSION)" = "$(WORKSPACE_VERSION)" ] || (echo "Version mismatch entre nopaldb y el workspace" && exit 1)
+
+check-changelog-dates:
+	@# Toda versión con tag debe tener FECHA en el CHANGELOG, no "unreleased".
+	@# El chore del bump escribe "unreleased" y hasta 0.5.7 nadie ponía la
+	@# fecha al publicar: cinco releases quedaron rotuladas como no liberadas
+	@# en el artefacto que la gente lee. Lo reportó un integrador externo, no
+	@# nosotros — de ahí que esto sea un check y no una nota en el runbook.
+	@#
+	@# Solo se exige fecha a las versiones que TIENEN entrada: el CHANGELOG
+	@# empieza en 0.4.28 y los tags anteriores nunca tuvieron una.
+	@fail=0; \
+	for tag in $$(git tag --list 'v*'); do \
+	  ver=$${tag#v}; \
+	  if grep -q "^## \[$$ver\]" CHANGELOG.md && \
+	     ! grep -q "^## \[$$ver\] - [0-9]" CHANGELOG.md; then \
+	    echo "  ✗ $$ver tiene tag pero su entrada del CHANGELOG no tiene fecha"; \
+	    fail=1; \
+	  fi; \
+	done; \
+	if [ $$fail -eq 1 ]; then \
+	  echo "Corregir: '## [X.Y.Z] - unreleased' → la fecha real de publicación."; \
+	  exit 1; \
+	fi; \
+	echo "CHANGELOG: todas las versiones con tag y entrada tienen fecha"
 
 # --- Tests por tier ---
 # semantic/full son tiers Rust-only. Los bindings PyO3 se validan
@@ -122,7 +146,7 @@ checksums:
 	@mkdir -p $(DIST_DIR)
 	@find $(DIST_DIR) -type f ! -name SHA256SUMS.txt -print0 | xargs -0 shasum -a 256 > $(DIST_DIR)/SHA256SUMS.txt
 
-package-qa: check-tools check-clean check-version-sync test-full clippy-full package-bin build-wheel checksums
+package-qa: check-tools check-clean check-version-sync check-changelog-dates test-full clippy-full package-bin build-wheel checksums
 	@echo "Artefactos QA generados en $(DIST_DIR)/"
 
 clean:
