@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.7] - unreleased
+## [0.5.7] - 2026-08-24
 
 ### ✨ Highlights
 
@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/FEATURE_TIERS.md`: fila `storage-redb` (faltaba desde 0.5.1), más `hybrid` y `full-isolation`; corregida la composición de `python-full`, que decía `analytics` cuando el manifiesto dice `full` — la doc subrepresentaba lo que la wheel incluye.
 - `release-python.yml`: nota de que las features de la wheel salen de `pyproject.toml` y no del workflow. Corregido también el comentario del disparo, que decía que los builds corren en cada push.
 
-## [0.5.6] - unreleased
+## [0.5.6] - 2026-08-20
 
 ### ✨ Highlights
 
@@ -65,7 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Graph::rebuild_property_index` deja de ser el remedio de las sobrescrituras (el applier ya retracta); sigue siendo el `REINDEX` explícito y la reparación de las vías que no indexan a propósito (`add_nodes_batch`/`BulkLoader`).
 - `upsert_node` retira su reconciliación post-commit: era más estrecha que el bug (solo alcanzaba el índice de propiedades, nunca los de usuario) y el applier ya hace el trabajo completo.
 
-## [0.5.5] - unreleased
+## [0.5.5] - 2026-08-20
 
 ### ✨ Highlights
 
@@ -83,7 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `search_hybrid` elige camino según la cardinalidad de lo permitido: con un conjunto permitido chico (≤ 1024) dentro de un índice grande puntúa exactamente esos vectores en vez de recorrer el grafo — exacto y más barato. El índice no puede tomar esa decisión solo porque el predicado le llega como closure opaca.
 - La garantía de que nada fuera del filtro aparece en el resultado se mantiene con un post-filtro propio, independiente del filtrado interno del motor HNSW.
 
-## [0.5.4] - unreleased
+## [0.5.4] - 2026-08-06
 
 ### ✨ Highlights
 
@@ -181,7 +181,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.2] - unreleased
+## [0.5.2] - 2026-08-04
 
 ### ✨ Highlights
 
