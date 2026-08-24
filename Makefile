@@ -11,7 +11,7 @@ CARGO_VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(CRATE_DIR)/Cargo.
 PY_VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(CRATE_DIR)/pyproject.toml | head -1)
 WORKSPACE_VERSION := $(shell awk '/^\[workspace.package\]/{flag=1;next}/^\[/{flag=0}flag && /^version = /{gsub(/"/,""); sub(/^version = /,""); print; exit}' Cargo.toml)
 
-.PHONY: help check-tools check-clean check-version-sync check-changelog-dates \
+.PHONY: help check-tools check-clean check-version-sync check-changelog-dates date-changelog \
 	test test-core test-semantic test-full \
 	clippy clippy-core clippy-semantic clippy-full \
 	build-rust build-wheel build-wheel-all \
@@ -50,6 +50,27 @@ check-version-sync:
 	@echo "workspace version: $(WORKSPACE_VERSION)"
 	@[ "$(CARGO_VERSION)" = "$(PY_VERSION)" ] || (echo "Version mismatch entre nopaldb/Cargo.toml y nopaldb/pyproject.toml" && exit 1)
 	@[ "$(CARGO_VERSION)" = "$(WORKSPACE_VERSION)" ] || (echo "Version mismatch entre nopaldb y el workspace" && exit 1)
+
+date-changelog:
+	@# Pone en el CHANGELOG la fecha REAL de publicación, tomada de
+	@# crates.io. Existe porque el paso manual falla de dos formas: se
+	@# olvida (cinco releases quedaron como "unreleased" hasta que lo
+	@# reportó alguien de fuera) o se pega el marcador literal en vez de
+	@# la fecha. Ninguna de las dos puede pasar si el dato lo trae el make.
+	@test -n "$(VERSION)" || { echo "uso: make date-changelog VERSION=0.5.8"; exit 1; }
+	@fecha=$$(curl -s -H "User-Agent: nopaldb-release" \
+	    https://crates.io/api/v1/crates/nopaldb \
+	  | python3 -c "import json,sys; v=[x for x in json.load(sys.stdin)['versions'] if x['num']=='$(VERSION)']; print(v[0]['created_at'][:10] if v else '')"); \
+	if [ -z "$$fecha" ]; then \
+	  echo "$(VERSION) no está publicada en crates.io todavía; publicar antes de fechar."; \
+	  exit 1; \
+	fi; \
+	if ! grep -q "^## \[$(VERSION)\]" CHANGELOG.md; then \
+	  echo "no hay entrada '## [$(VERSION)]' en CHANGELOG.md"; exit 1; \
+	fi; \
+	sed -i '' -E "s/^## \[$(VERSION)\] - .*/## [$(VERSION)] - $$fecha/" CHANGELOG.md; \
+	echo "CHANGELOG: $(VERSION) fechada $$fecha"
+	@$(MAKE) --no-print-directory check-changelog-dates
 
 check-changelog-dates:
 	@# Toda versión con tag debe tener FECHA en el CHANGELOG, no "unreleased".
