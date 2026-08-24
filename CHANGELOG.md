@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Honestidad del backend en el paquete de Python.** La API dejaba pedir `engine="redb"` en cualquier build, y el fallo llegaba dentro de `open()` como `RuntimeError: ... activa su feature storage-*` — un remedio imposible para quien instaló una wheel: no puede recompilar lo que ya viene compilado. Las wheels publicadas en PyPI traen **solo el backend sled** (redb es experimental y opt-in), y eso no estaba escrito en ninguna parte. Ahora el engine se valida contra lo que ESTE build contiene: pedir un backend ausente falla en la llamada con `ValueError` diciendo qué hay disponible y cómo obtener el otro.
 
+### Added
+
+- **`search_hybrid_explain`: por qué cada hit quedó donde quedó.** El score RRF ordena pero no explica — es una suma de recíprocos de RANGOS, así que no dice si un documento subió por texto, por vector o por ambos, ni con qué fuerza. La variante nueva conserva los números crudos que la fusión consume y descarta (score BM25, distancia coseno), la configuración que realmente se usó (índice full-text resuelto, `ef_search` efectivo, `candidates`, cardinalidad del filtro) y el underfill por rama, junto al camino vectorial —exacto o aproximado— que es lo que decide cómo leer un resultado corto. `search_hybrid` pasa a ser la vista reducida del MISMO cómputo: delega en vez de duplicar, así que pedir la explicación no puede alterar el resultado. Disponible en Rust y Python.
+- `Index::query_scored` / `IndexManager::query_scored`: consulta conservando el score crudo de los índices que puntúan. El full-text ya calculaba el BM25 y lo tiraba; los índices sin score devuelven `None`, que es la respuesta honesta para una búsqueda exacta —no un cero, ni un número derivado del rango.
+
 ### Fixed
 
 - **Un crash durante la creación de la base dejaba el directorio inservible para siempre — en LOS DOS motores.** Es el escenario del primer arranque de un despliegue nuevo (OOM, kill del contenedor, corte): la aplicación no volvía a arrancar y el mensaje se leía como corrupción de datos cuando en realidad la creación nunca terminó. No había datos que perder; lo que se perdía era poder arrancar. Cada motor lo cierra según su layout en disco:

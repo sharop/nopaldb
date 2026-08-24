@@ -129,6 +129,20 @@ impl Index for FullTextIndex {
     }
 
     fn query(&self, query: &IndexQuery) -> Result<Vec<NodeId>> {
+        Ok(self
+            .query_scored(query)?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect())
+    }
+
+    /// Igual que `query`, conservando el score BM25 que tantivy ya calcula.
+    ///
+    /// El ranking se ordenaba por score y luego se tiraba el número, así que
+    /// quien quisiera saber POR QUÉ un documento quedó arriba tenía que
+    /// reconstruirlo por fuera. `query` delega aquí para que no existan dos
+    /// recorridos del índice que puedan divergir.
+    fn query_scored(&self, query: &IndexQuery) -> Result<Vec<(NodeId, Option<f32>)>> {
         let query_text = match query {
             IndexQuery::FullText(text) => text,
             _ => return Err(NopalError::index_error(
@@ -149,7 +163,7 @@ impl Index for FullTextIndex {
 
         // Extract node IDs
         let mut node_ids = Vec::new();
-        for (_score, doc_address) in top_docs {
+        for (score, doc_address) in top_docs {
             // Use turbofish to specify TantivyDocument type
             let retrieved_doc = searcher.doc::<tantivy::TantivyDocument>(doc_address)
                 .map_err(|e| NopalError::index_error(format!("Failed to retrieve document: {}", e)))?;
@@ -159,7 +173,7 @@ impl Index for FullTextIndex {
                 // CompactDocValue tiene as_str() method
                 if let Some(text) = field_value.as_str()
                     && let Ok(node_id) = uuid::Uuid::parse_str(text) {
-                        node_ids.push(node_id);
+                        node_ids.push((node_id, Some(score)));
                         break; // Solo necesitamos el primer valor
                 }
             }

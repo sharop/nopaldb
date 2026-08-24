@@ -68,7 +68,9 @@ pub use storage::{MigrationReport, Storage};
 pub use storage::{StorageEngine, StorageOptions, StorageProfile, StorageTuning};
 pub use graph::{Graph, Direction, BulkLoader, BulkLoadStats, AutoGcConfig, AutoGcStatus, GraphView, Subgraph, LinkSpec, UpsertOutcome, UpsertRequest};
 #[cfg(feature = "hybrid")]
-pub use graph::{HybridFilter, HybridHit, HybridQuery};
+pub use graph::{
+    BranchReport, ExplainedHit, HybridExplain, HybridFilter, HybridHit, HybridQuery, VectorPath,
+};
 pub use traversal::{TraversalResult, TraversalConfig, NodeFilter};
 pub use query::{TraverseBuilder, SackBuilder, SackBlock, SackResult, SackItem, CycleMode, Truncation};
 pub use transaction::Transaction;

@@ -70,6 +70,20 @@ pub trait Index: Send + Sync {
     /// Query the index
     fn query(&self, query: &IndexQuery) -> Result<Vec<NodeId>>;
 
+    /// Query returning each hit's raw relevance score, when the index has one.
+    ///
+    /// Only scoring indexes (full-text) override this; for the rest the
+    /// default returns the same ids with `None`, because "no score" is the
+    /// honest answer for an exact-match index — not a zero, and not a
+    /// fabricated rank-derived number.
+    ///
+    /// Kept separate from [`Index::query`] so the ordinary path stays free of
+    /// an `Option` nobody reads: scores exist for explaining a result, not for
+    /// producing it.
+    fn query_scored(&self, query: &IndexQuery) -> Result<Vec<(NodeId, Option<f32>)>> {
+        Ok(self.query(query)?.into_iter().map(|id| (id, None)).collect())
+    }
+
     /// Clear all entries
     fn clear(&mut self) -> Result<()>;
 
@@ -476,6 +490,25 @@ impl IndexManager {
             Err(crate::error::NopalError::index_error(
                 format!("Index not found: {}", index_name)
             ))
+        }
+    }
+
+    /// Como [`IndexManager::query`], pero conservando el score crudo de los
+    /// índices que puntúan (full-text). Ver [`Index::query_scored`].
+    pub async fn query_scored(
+        &self,
+        index_name: &str,
+        query: &IndexQuery,
+    ) -> Result<Vec<(NodeId, Option<f32>)>> {
+        let indexes = self.indexes.read().await;
+
+        if let Some(index) = indexes.get(index_name) {
+            index.query_scored(query)
+        } else {
+            Err(crate::error::NopalError::index_error(format!(
+                "Index not found: {}",
+                index_name
+            )))
         }
     }
 

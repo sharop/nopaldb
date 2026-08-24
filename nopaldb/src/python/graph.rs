@@ -959,30 +959,7 @@ impl PyGraph {
         rrf_k: f32,
     ) -> PyResult<Vec<Py<PyDict>>> {
         let graph = self.graph()?;
-
-        let embedding = build_embedding(vector, model)?;
-        let filter = if label.is_some() || props.is_some() {
-            let mut f = crate::HybridFilter { label, props: Vec::new() };
-            if let Some(p) = props {
-                for (key, value) in p.iter() {
-                    f.props.push((key.extract()?, pyany_to_property(&value)?));
-                }
-            }
-            Some(f)
-        } else {
-            None
-        };
-
-        let hq = crate::HybridQuery {
-            text,
-            text_index,
-            vector: embedding,
-            k,
-            ef_search: ef,
-            rrf_k,
-            overfetch: 4,
-            filter,
-        };
+        let hq = build_hybrid_query(text, vector, model, k, ef, label, props, text_index, rrf_k)?;
 
         let hits = to_py_result(crate::python::runtime::block_on(py, async move {
             graph.search_hybrid(hq).await
@@ -998,6 +975,102 @@ impl PyGraph {
                 Ok(d.unbind())
             })
             .collect()
+    }
+
+    /// Same search as `search_hybrid`, plus why each hit ranked where it did.
+    ///
+    /// The RRF score orders results but does not explain them: it is a sum of
+    /// reciprocal *ranks*, so it cannot tell you whether a document rose
+    /// through text, through vectors, or both. This returns the raw numbers
+    /// the fusion consumes and discards.
+    ///
+    /// Args: same as `search_hybrid`.
+    ///
+    /// Returns:
+    ///     dict with:
+    ///       - `hits`: list[dict] {node_id, score, text_rank, text_score,
+    ///         vector_rank, vector_distance}, best first. `text_score` is the
+    ///         raw BM25 score and `vector_distance` the cosine distance
+    ///         (0 = identical); each is None when the hit did not come
+    ///         through that branch.
+    ///       - `k`, `rrf_k`, `overfetch`, `candidates`: effective config.
+    ///       - `ef_search`, `text_index`, `allowed_set_size`: what was
+    ///         actually used — including values the caller did not pick.
+    ///       - `text`, `vector`: {requested, returned, underfilled} per
+    ///         branch, or None if that branch did not run.
+    ///       - `vector_path`: "unfiltered" | "exact_over_allowed" |
+    ///         "hnsw_filtered". Only the last is approximate, which is what
+    ///         decides how to read a short result.
+    ///
+    /// Example:
+    ///     >>> e = graph.search_hybrid_explain(text="cactus", k=5)
+    ///     >>> e["hits"][0]["text_score"], e["vector_path"]
+    #[cfg(feature = "hybrid")]
+    #[pyo3(signature = (text=None, vector=None, model=None, k=10, ef=None, label=None, props=None, text_index=None, rrf_k=60.0))]
+    #[allow(clippy::too_many_arguments)]
+    fn search_hybrid_explain(
+        &self,
+        py: Python<'_>,
+        text: Option<String>,
+        vector: Option<Vec<f32>>,
+        model: Option<String>,
+        k: usize,
+        ef: Option<usize>,
+        label: Option<String>,
+        props: Option<&Bound<'_, PyDict>>,
+        text_index: Option<String>,
+        rrf_k: f32,
+    ) -> PyResult<Py<PyDict>> {
+        let graph = self.graph()?;
+        let hq = build_hybrid_query(text, vector, model, k, ef, label, props, text_index, rrf_k)?;
+
+        let e = to_py_result(crate::python::runtime::block_on(py, async move {
+            graph.search_hybrid_explain(hq).await
+        }))?;
+
+        let branch = |b: Option<crate::BranchReport>| -> PyResult<Option<Py<PyDict>>> {
+            b.map(|b| {
+                let d = PyDict::new(py);
+                d.set_item("requested", b.requested)?;
+                d.set_item("returned", b.returned)?;
+                d.set_item("underfilled", b.underfilled())?;
+                Ok(d.unbind())
+            })
+            .transpose()
+        };
+
+        let hits = pyo3::types::PyList::empty(py);
+        for h in &e.hits {
+            let d = PyDict::new(py);
+            d.set_item("node_id", h.node_id.to_string())?;
+            d.set_item("score", h.score)?;
+            d.set_item("text_rank", h.text_rank)?;
+            d.set_item("text_score", h.text_score)?;
+            d.set_item("vector_rank", h.vector_rank)?;
+            d.set_item("vector_distance", h.vector_distance)?;
+            hits.append(d)?;
+        }
+
+        let out = PyDict::new(py);
+        out.set_item("hits", hits)?;
+        out.set_item("k", e.k)?;
+        out.set_item("rrf_k", e.rrf_k)?;
+        out.set_item("overfetch", e.overfetch)?;
+        out.set_item("candidates", e.candidates)?;
+        out.set_item("ef_search", e.ef_search)?;
+        out.set_item("text_index", e.text_index.clone())?;
+        out.set_item("allowed_set_size", e.allowed_set_size)?;
+        out.set_item("text", branch(e.text)?)?;
+        out.set_item("vector", branch(e.vector)?)?;
+        out.set_item(
+            "vector_path",
+            e.vector_path.map(|p| match p {
+                crate::VectorPath::Unfiltered => "unfiltered",
+                crate::VectorPath::ExactOverAllowed => "exact_over_allowed",
+                crate::VectorPath::HnswFiltered => "hnsw_filtered",
+            }),
+        )?;
+        Ok(out.unbind())
     }
 
     /// Delete the node identified by a business key `(label, key, value)` — the
@@ -1064,6 +1137,49 @@ fn build_link(dict: &Bound<'_, PyDict>) -> PyResult<LinkSpec> {
         target_key_value,
         props,
         create_target_stub,
+    })
+}
+
+/// Arma la `HybridQuery` desde los argumentos de Python.
+///
+/// Compartida por `search_hybrid` y `search_hybrid_explain`: si cada uno
+/// armara la suya, podrían divergir en un default —el `overfetch`, por
+/// ejemplo— y la explicación describiría una búsqueda distinta de la que el
+/// usuario obtiene.
+#[cfg(feature = "hybrid")]
+#[allow(clippy::too_many_arguments)]
+fn build_hybrid_query(
+    text: Option<String>,
+    vector: Option<Vec<f32>>,
+    model: Option<String>,
+    k: usize,
+    ef: Option<usize>,
+    label: Option<String>,
+    props: Option<&Bound<'_, PyDict>>,
+    text_index: Option<String>,
+    rrf_k: f32,
+) -> PyResult<crate::HybridQuery> {
+    let embedding = build_embedding(vector, model)?;
+    let filter = if label.is_some() || props.is_some() {
+        let mut f = crate::HybridFilter { label, props: Vec::new() };
+        if let Some(p) = props {
+            for (key, value) in p.iter() {
+                f.props.push((key.extract()?, pyany_to_property(&value)?));
+            }
+        }
+        Some(f)
+    } else {
+        None
+    };
+    Ok(crate::HybridQuery {
+        text,
+        text_index,
+        vector: embedding,
+        k,
+        ef_search: ef,
+        rrf_k,
+        overfetch: 4,
+        filter,
     })
 }
 

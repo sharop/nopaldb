@@ -8,7 +8,9 @@ pub(crate) mod applier;
 pub use view::{GraphView, Subgraph};
 pub use upsert::{LinkSpec, UpsertOutcome, UpsertRequest};
 #[cfg(feature = "hybrid")]
-pub use hybrid::{HybridFilter, HybridHit, HybridQuery};
+pub use hybrid::{
+    BranchReport, ExplainedHit, HybridExplain, HybridFilter, HybridHit, HybridQuery, VectorPath,
+};
 
 use std::collections::{HashMap, BinaryHeap, VecDeque, HashSet};
 use std::cmp::Ordering;

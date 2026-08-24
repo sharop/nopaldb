@@ -84,20 +84,96 @@ impl Default for HybridQuery {
 
 /// Which branch resolved the vector path of a hybrid search.
 ///
-/// Internal for now: it exists so the planner's choice is testable instead of
-/// merely plausible — a filtered search that returns the right nodes says
-/// nothing about *how* it got them, and the exact branch would rot unnoticed.
-/// Surfacing it to callers belongs to the retrieval-explain work.
+/// Matters to a caller because the three differ in *recall*, not just in
+/// speed: the first two are exact, the third is approximate. A short result
+/// means something different in each.
 #[cfg(feature = "hybrid")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VectorPath {
+pub enum VectorPath {
     /// No filter: plain KNN over the whole index.
     Unfiltered,
     /// Small allowed set over a large index: exact cosine over just those
     /// vectors, read from storage. Recall = 1 by construction.
     ExactOverAllowed,
     /// HNSW walk with the predicate applied natively during traversal.
+    /// Approximate: a short result may mean "found no more", not "there are
+    /// no more".
     HnswFiltered,
+}
+
+/// Qué pidió y qué obtuvo una de las dos ramas.
+///
+/// `returned < requested` es la señal de underfill. En la rama de texto
+/// significa que el índice no tenía más coincidencias; en la vectorial
+/// depende del camino (ver [`VectorPath`]).
+#[cfg(feature = "hybrid")]
+#[derive(Debug, Clone, Copy)]
+pub struct BranchReport {
+    /// Candidatos pedidos a la rama (`k × overfetch`).
+    pub requested: usize,
+    /// Candidatos que la rama entregó, ya intersectados con el filtro.
+    pub returned: usize,
+}
+
+#[cfg(feature = "hybrid")]
+impl BranchReport {
+    /// `true` si la rama entregó menos de lo que se le pidió.
+    pub fn underfilled(&self) -> bool {
+        self.returned < self.requested
+    }
+}
+
+/// Un hit con la traza de por qué quedó donde quedó.
+///
+/// El score RRF ordena, pero no explica: dos documentos con el mismo score
+/// pueden haber llegado por ramas distintas. Aquí están los números crudos
+/// que la fusión consumió y descartaba.
+#[cfg(feature = "hybrid")]
+#[derive(Debug, Clone)]
+pub struct ExplainedHit {
+    pub node_id: NodeId,
+    /// Score RRF fusionado — el mismo que devuelve `search_hybrid`.
+    pub score: f32,
+    /// Posición 0-based en la rama de texto, si apareció en ella.
+    pub text_rank: Option<usize>,
+    /// Score BM25 crudo de tantivy. `None` si el nodo no vino por texto.
+    pub text_score: Option<f32>,
+    /// Posición 0-based en la rama vectorial, si apareció en ella.
+    pub vector_rank: Option<usize>,
+    /// Distancia coseno cruda (0 = idénticos). `None` si no vino por vector.
+    pub vector_distance: Option<f32>,
+}
+
+/// El resultado de una búsqueda híbrida con todo lo que el motor supo.
+///
+/// Lo produce [`Graph::search_hybrid_explain`]; `search_hybrid` es la vista
+/// reducida del MISMO cómputo, no un segundo camino — por eso el explain no
+/// puede alterar el resultado.
+#[cfg(feature = "hybrid")]
+#[derive(Debug, Clone)]
+pub struct HybridExplain {
+    /// Los hits finales, ordenados como los devuelve `search_hybrid`.
+    pub hits: Vec<ExplainedHit>,
+    /// `k` solicitado.
+    pub k: usize,
+    /// Constante RRF efectiva.
+    pub rrf_k: f32,
+    /// Multiplicador de over-fetch efectivo.
+    pub overfetch: usize,
+    /// Candidatos pedidos por rama = `k × overfetch` (mínimo `k`).
+    pub candidates: usize,
+    /// `ef_search` efectivo del índice vectorial; `None` si no hubo rama vectorial.
+    pub ef_search: Option<usize>,
+    /// Índice full-text resuelto; `None` si no hubo rama de texto.
+    pub text_index: Option<String>,
+    /// Tamaño del conjunto permitido por el filtro; `None` = sin filtro.
+    pub allowed_set_size: Option<usize>,
+    /// Traza de la rama de texto; `None` si la query no traía texto.
+    pub text: Option<BranchReport>,
+    /// Traza de la rama vectorial; `None` si la query no traía vector.
+    pub vector: Option<BranchReport>,
+    /// Cómo se resolvió la rama vectorial.
+    pub vector_path: Option<VectorPath>,
 }
 
 /// One fused result. `score` is the RRF score (ordering only, not a probability).
@@ -113,8 +189,37 @@ pub struct HybridHit {
 
 impl Graph {
     /// Fuse full-text and vector retrieval with Reciprocal Rank Fusion.
+    ///
+    /// Vista reducida de [`Graph::search_hybrid_explain`]: mismo cómputo, con
+    /// la traza descartada. Delegar en vez de duplicar es lo que hace que el
+    /// explain no pueda alterar el resultado — no hay un segundo camino que
+    /// pueda divergir.
     #[cfg(feature = "hybrid")]
     pub async fn search_hybrid(&self, q: HybridQuery) -> Result<Vec<HybridHit>> {
+        Ok(self
+            .search_hybrid_explain(q)
+            .await?
+            .hits
+            .into_iter()
+            .map(|h| HybridHit {
+                node_id: h.node_id,
+                score: h.score,
+                text_rank: h.text_rank,
+                vector_rank: h.vector_rank,
+            })
+            .collect())
+    }
+
+    /// Como [`Graph::search_hybrid`], devolviendo además por qué cada hit
+    /// quedó donde quedó y cómo se resolvió cada rama.
+    ///
+    /// El score RRF ordena pero no explica: es una suma de recíprocos de
+    /// RANGOS, así que no dice si un documento subió por texto, por vector o
+    /// por ambos, ni con qué fuerza. Esta variante conserva los números
+    /// crudos que la fusión consume y descarta — score BM25, distancia
+    /// coseno — más la configuración efectiva y el underfill por rama.
+    #[cfg(feature = "hybrid")]
+    pub async fn search_hybrid_explain(&self, q: HybridQuery) -> Result<HybridExplain> {
         if q.text.is_none() && q.vector.is_none() {
             return Err(NopalError::Custom(
                 "search_hybrid: provide at least one of `text` or `vector`".into(),
@@ -127,32 +232,56 @@ impl Graph {
 
         // 2. Full-text path → node ids ranked by relevance.
         let mut text_ranks: HashMap<NodeId, usize> = HashMap::new();
+        let mut text_scores: HashMap<NodeId, f32> = HashMap::new();
+        let mut text_index_used: Option<String> = None;
+        let mut text_report: Option<BranchReport> = None;
         if let Some(text) = &q.text {
             let index_name = self.resolve_fulltext_index(q.text_index.as_deref(), q.filter.as_ref()).await?;
-            let ids = self
+            let scored = self
                 .index_manager
-                .query(&index_name, &IndexQuery::FullText(text.clone()))
+                .query_scored(&index_name, &IndexQuery::FullText(text.clone()))
                 .await?;
-            for id in ids
+            for (id, score) in scored
                 .into_iter()
-                .filter(|id| allowed.as_ref().is_none_or(|s| s.contains(id)))
+                .filter(|(id, _)| allowed.as_ref().is_none_or(|s| s.contains(id)))
                 .take(candidates)
             {
                 let n = text_ranks.len();
-                text_ranks.entry(id).or_insert(n);
+                if text_ranks.insert(id, n).is_none()
+                    && let Some(s) = score
+                {
+                    text_scores.insert(id, s);
+                }
             }
+            text_report = Some(BranchReport {
+                requested: candidates,
+                returned: text_ranks.len(),
+            });
+            text_index_used = Some(index_name);
         }
 
         // 3. Vector path → node ids ranked by distance.
         let mut vector_ranks: HashMap<NodeId, usize> = HashMap::new();
+        let mut vector_distances: HashMap<NodeId, f32> = HashMap::new();
+        let mut vector_report: Option<BranchReport> = None;
+        let mut vector_path_used: Option<VectorPath> = None;
+        let mut ef_used: Option<usize> = None;
         if let Some((vector, model)) = &q.vector {
             let index = self.get_or_build_embedding_index(model).await?;
             let ef = q.ef_search.unwrap_or(DEFAULT_EF_SEARCH);
-            let (hits, _path) = self
+            let (hits, path) = self
                 .vector_path(&index, vector, model, allowed.as_ref(), candidates, ef)
                 .await?;
-            for (rank, (id, _dist)) in hits.into_iter().enumerate() {
-                vector_ranks.entry(id).or_insert(rank);
+            vector_report = Some(BranchReport {
+                requested: candidates,
+                returned: hits.len(),
+            });
+            vector_path_used = Some(path);
+            ef_used = Some(ef);
+            for (rank, (id, dist)) in hits.into_iter().enumerate() {
+                if vector_ranks.insert(id, rank).is_none() {
+                    vector_distances.insert(id, dist);
+                }
             }
         }
 
@@ -161,7 +290,7 @@ impl Graph {
         ids.extend(text_ranks.keys().copied());
         ids.extend(vector_ranks.keys().copied());
 
-        let mut hits: Vec<HybridHit> = ids
+        let mut hits: Vec<ExplainedHit> = ids
             .into_iter()
             .map(|id| {
                 let tr = text_ranks.get(&id).copied();
@@ -173,7 +302,14 @@ impl Graph {
                 if let Some(r) = vr {
                     score += 1.0 / (q.rrf_k + r as f32);
                 }
-                HybridHit { node_id: id, score, text_rank: tr, vector_rank: vr }
+                ExplainedHit {
+                    node_id: id,
+                    score,
+                    text_rank: tr,
+                    text_score: text_scores.get(&id).copied(),
+                    vector_rank: vr,
+                    vector_distance: vector_distances.get(&id).copied(),
+                }
             })
             .collect();
 
@@ -184,7 +320,20 @@ impl Graph {
                 .then_with(|| a.node_id.cmp(&b.node_id))
         });
         hits.truncate(q.k);
-        Ok(hits)
+
+        Ok(HybridExplain {
+            hits,
+            k: q.k,
+            rrf_k: q.rrf_k,
+            overfetch: q.overfetch,
+            candidates,
+            ef_search: ef_used,
+            text_index: text_index_used,
+            allowed_set_size: allowed.as_ref().map(|s| s.len()),
+            text: text_report,
+            vector: vector_report,
+            vector_path: vector_path_used,
+        })
     }
 
     /// Run the vector path, choosing between an exact scan over the allowed set

@@ -56,6 +56,21 @@ class Graph:
         text_index: Optional[str] = None,
         rrf_k: float = 60.0,
     ) -> list[dict[str, Any]]: ...
+    # Misma búsqueda que search_hybrid, más la traza de por qué cada hit
+    # quedó donde quedó: scores crudos por rama, configuración efectiva y
+    # underfill. Ver docs/HYBRID_SEARCH.md.
+    def search_hybrid_explain(
+        self,
+        text: Optional[str] = None,
+        vector: Optional[list[float]] = None,
+        model: Optional[str] = None,
+        k: int = 10,
+        ef: Optional[int] = None,
+        label: Optional[str] = None,
+        props: Optional[Props] = None,
+        text_index: Optional[str] = None,
+        rrf_k: float = 60.0,
+    ) -> dict[str, Any]: ...
 
     # ── Schema & stats ──────────────────────────────────────────────
     def node_count(self) -> int: ...
