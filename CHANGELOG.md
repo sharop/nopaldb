@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.8] - unreleased
+
+### Added
+
+- **`Graph::open_read_only`: un handle que no puede modificar la base.** Toda vía de escritura falla con error tipado —escrituras directas, commits de transacción, embeddings y creación de índices— y la base queda intacta en disco. El rechazo ocurre ANTES de que el applier escriba al WAL, porque un registro de una operación rechazada lo materializaría el redo del próximo arranque. Funciona en los dos motores.
+- **`docs/BACKUP_AND_READ_ONLY.md`**: el flujo de backup en frío con `copy_database` (copiar → abrir la copia), sus reglas, y qué NO hacer — copiar los archivos con la base abierta puede capturar un estado roto que parece válido.
+- Test del error de doble apertura en redb, que existía sin cobertura desde 0.5.1 (el de sled llegó en 0.5.7).
+
+### Changed
+
+- La regla operativa de "un proceso por directorio" en `ADOPTION.md` ahora dice qué hacer cuando lo que quieres es leer, en vez de solo "cierra el otro proceso".
+
+### Notas
+
+- `open_read_only` **no da acceso concurrente**: toma el mismo lock exclusivo. No es una limitación temporal — sled no tiene modo de solo lectura y el de redb tampoco convive con un escritor abierto. Para leer sin tocar la base viva, backup en frío y abrir la copia.
+
 ## [0.5.7] - 2026-08-24
 
 ### ✨ Highlights

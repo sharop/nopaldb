@@ -496,3 +496,43 @@ impl RedbKeyspace {
 pub(crate) fn sled_dir_has_redb(dir: &Path) -> bool {
     dir.join(DB_FILE).exists()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// El error de doble apertura está TRADUCIDO, no es el crudo de redb.
+    ///
+    /// El de sled ya tenía test desde que su detección resultó estar rota;
+    /// este faltaba. Aquí la detección es por TIPO
+    /// (`DatabaseError::DatabaseAlreadyOpen`), no por texto, así que no
+    /// puede morir por un cambio de wording — pero sí por un cambio de
+    /// variante, y el retry podría dejar de engancharse igual.
+    #[test]
+    fn second_open_reports_an_actionable_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let Ok(_ocupante) = RedbEngine::open(dir.path(), StorageProfile::Default) else {
+            panic!("la primera apertura debe tomar el lock");
+        };
+
+        let inicio = std::time::Instant::now();
+        let Err(err) = RedbEngine::open(dir.path(), StorageProfile::Default) else {
+            panic!("la segunda apertura no puede tomar el lock");
+        };
+        let esperado = inicio.elapsed();
+
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ya está abierta por otro proceso"),
+            "el error debe estar traducido, no ser el crudo de redb: {msg}"
+        );
+        assert!(
+            msg.contains(&dir.path().display().to_string()),
+            "debe nombrar el directorio: {msg}"
+        );
+        assert!(
+            esperado >= std::time::Duration::from_millis(500),
+            "debe haber reintentado antes de rendirse; se rindió en {esperado:?}"
+        );
+    }
+}

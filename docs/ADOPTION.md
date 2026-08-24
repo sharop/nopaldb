@@ -84,9 +84,16 @@ https://github.com/Anxious-Mind-Group/ndbstudio.
 ## Operational rules (read before production)
 
 1. **One process per data directory.** The storage engine holds a file lock;
-   a second process opening the same path fails with "could not acquire lock".
-   Close the other consumer (app, MCP server, studio) first. To share one
-   database across clients, put the MCP server (or your own service) in front.
+   a second process opening the same path fails with an error naming the
+   directory and what to do. Close the other consumer (app, MCP server,
+   studio) first. To share one database across clients, put the MCP server
+   (or your own service) in front.
+
+   To read a database without disturbing its owner, take a cold backup and
+   open the copy — and to make sure a process cannot write, open it with
+   `Graph::open_read_only`. Both are covered in
+   [BACKUP_AND_READ_ONLY.md](BACKUP_AND_READ_ONLY.md); note that read-only
+   mode does **not** grant concurrent access.
 2. **Within a process, share by cloning.** `Graph` is `Clone + Send + Sync`
    (cheap, `Arc`-backed): clone the handle into every thread/task. All writes
    are serialized through a single-writer applier; concurrent commits share
