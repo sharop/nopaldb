@@ -276,8 +276,29 @@ La DB generada queda en `tutorials/test_dbs/biomedical_owl.db`.
 classes_added:        7
 subclass_edges_added: 5
 instances_added:      9
-triples_skipped:      18    (data properties: :name, :agent, :route — no son ontológicas)
+triples_skipped:      0     (las 18 data properties :name/:agent/:route quedan en los nodos)
 ```
+
+> Hasta 0.5.8 este mismo import reportaba `triples_skipped: 18` y esta página lo explicaba
+> como "no son ontológicas". Era un sobre-conteo del importer: la pasada 2 contaba como
+> descartado todo triple que no fuera `rdf:type`, incluidas las data properties que la pasada 3
+> importaba después. Nada de este TTL se pierde; el contador ahora dice exactamente eso.
+
+**Lo que este puente NO conserva** (importa antes de traer tu propia ontología):
+
+- Los prefijos se descartan: `ex:Disease` y `other:Disease` colapsan en un solo nodo `Disease`.
+- Un triple con objeto-recurso (`:Covid19 :treatedBy :Remdesivir`) **no crea arista**: el objeto
+  se guarda como string en la propiedad `treatedBy`. Las únicas aristas del puente son `subClassOf`.
+- Un individuo conserva solo su primer `rdf:type`; un predicado multivaluado conserva el último valor.
+- `rdfs:label`/`rdfs:comment` sobre clases, `owl:Ontology`, restricciones y axiomas de equivalencia
+  se descartan, y cada uno suma 1 a `triples_skipped`.
+- El parser no entiende `a`, lang tags, blank nodes ni `@base`, y **no falla** con Turtle malformado:
+  un error de sintaxis aparece como un conteo raro, no como `Err`.
+- El export solo escribe clases, `subClassOf` e individuos con propiedades escalares; cualquier otra
+  arista se omite.
+
+La lista completa, con lo que sí se conserva, está en el doc del módulo `nopaldb::rdf_owl`
+(docs.rs) y en la sección "Interoperating with an RDF store" de [`docs/ADOPTION.md`](../../ADOPTION.md).
 
 Al abrir la DB en una sesión nueva (`Graph::open()`), el método `rebuild_taxonomy_from_graph()`
 recorre los nodos Class y las aristas `subClassOf` y reconstruye la TaxonomyIndex en memoria.

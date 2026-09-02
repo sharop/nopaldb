@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.9] - unreleased
+
+### Fixed
+
+- **`ImportReport.triples_skipped` decía que se perdían triples que estaban en el grafo.** La pasada 2 del importer Turtle contaba como descartado todo triple que no fuera `rdf:type`, incluidas las data properties de individuos que la pasada 3 importaba después. El tutorial del acto 3 propagaba el número (`18`) y lo explicaba como pérdida; el valor real para ese TTL es `0`. El conteo ahora se decide una sola vez, al final, con el mismo criterio que usó cada pasada: cuenta exactamente lo que no dejó nada en el grafo. Tests con conteo exacto (antes la aserción era `skipped > 0 || instances > 0`, que no podía fallar) y el gate del tutorial exige `0`.
+- Una instancia cuya clase se declaró en un import **anterior** se descartaba en silencio, aunque el comentario del código prometía "o ya en el grafo": el importer solo miraba las clases del archivo actual. Ahora busca la clase en el grafo antes de descartar, así que ontología en un archivo e instancias en otro funciona.
+
+### Changed
+
+- **Los límites reales del puente Turtle están escritos donde se decide.** "Lossy" se quedaba corto: los prefijos se descartan (dos IRIs con el mismo local name colapsan), un triple con objeto-recurso NO crea arista, el parser no entiende `a`/lang tags/blank nodes y no falla con Turtle malformado, y el export omite toda arista que no sea `subClassOf`. Todo eso, con lo que SÍ se conserva, está ahora en el doc del módulo `rdf_owl` (docs.rs), en `docs/ADOPTION.md` y en el README del acto 3.
+- `docs/es/API_RUST.md` documentaba `Storage::insert_triple` y `Storage::get_object`, vestigios de un diseño triple-store que nunca existió en el crate (cero definiciones, cero call sites, y una firma con `sled::Error` que 0.5.0 sacó de la API pública). Eliminados.
+
 ## [0.5.8] - 2026-08-24
 
 ### Added

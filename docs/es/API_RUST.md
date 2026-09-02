@@ -36,20 +36,6 @@ Elimina un nodo por su clave.
     - `key`: Clave a eliminar.
 - **Retorna**: `Result` indicando éxito o error.
 
-#### `Storage::insert_triple(&self, triple: RDFTriple) -> Result<(), sled::Error>`
-Inserta una tripleta RDF en la base de datos.
-- **Argumentos**:
-    - `triple`: La estructura `RDFTriple` a insertar.
-- **Retorna**: `Result` indicando éxito o error.
-- **Detalle**: Genera una clave interna combinando Sujeto y Predicado.
-
-#### `Storage::get_object(&self, subject: &str, predicate: &str) -> Option<String>`
-Busca el objeto de una relación, dado un sujeto y un predicado.
-- **Argumentos**:
-    - `subject`: El nodo origen.
-    - `predicate`: La relación.
-- **Retorna**: `Option<String>` con el objeto (nodo destino) si existe.
-
 ---
 
 ## Módulo `transaction`
@@ -86,7 +72,9 @@ Estructuras de datos para representación semántica.
 
 ### `struct RDFTriple`
 
-Representa una tripleta semántica: Sujeto -> Predicado -> Objeto.
+Representa una tripleta semántica: Sujeto -> Predicado -> Objeto. Es el tipo intermedio del
+parser Turtle (`rdf_owl::importer`); el grafo no almacena tripletas — lo que el import conserva
+y lo que pierde está en el doc del módulo `rdf_owl`.
 
 #### Campos
 - `pub subject: String`

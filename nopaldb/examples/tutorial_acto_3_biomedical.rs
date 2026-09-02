@@ -157,10 +157,22 @@ fn gate(
     instance_count: usize,
 ) -> Result<(), Box<dyn Error>> {
     println!("--- Gate Acto 3 ---");
-    println!("Esperado: 7 classes_added, 5 subclass_edges_added, 9 instances_added");
-    println!("Real:     {} / {} / {}", report.classes_added, report.subclass_edges_added, report.instances_added);
+    println!("Esperado: 7 classes_added, 5 subclass_edges_added, 9 instances_added, 0 triples_skipped");
+    println!(
+        "Real:     {} / {} / {} / {}",
+        report.classes_added, report.subclass_edges_added, report.instances_added, report.triples_skipped
+    );
     if report.classes_added != 7 || report.subclass_edges_added != 5 || report.instances_added != 9 {
         return Err("Gate fallido: import_turtle reporto conteos inesperados".into());
+    }
+    // Las 18 data properties (:name, :agent, :route) terminan en los nodos, asi
+    // que nada se descarta. Antes el reporte decia 18 y el tutorial lo explicaba
+    // como perdida: era un sobre-conteo del importer, no una perdida.
+    if report.triples_skipped != 0 {
+        return Err(format!(
+            "Gate fallido: triples_skipped deberia ser 0 (nada del TTL se pierde), got {}",
+            report.triples_skipped
+        ).into());
     }
     println!("instanceOf(n, \"Disease\") retorno {} individuos (esperado 5)", instance_count);
     if instance_count != 5 {

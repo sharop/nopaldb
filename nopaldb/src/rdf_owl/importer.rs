@@ -1,6 +1,6 @@
 // src/rdf_owl/importer.rs
 //
-// OWL/Turtle Importer — Step 6 of the NopalDB ontological roadmap.
+// OWL/Turtle Importer.
 //
 // Mini-parser for a subset of Turtle (.ttl) syntax. Handles:
 //   - Prefix declarations: `@prefix owl: <http://www.w3.org/2002/07/owl#> .`
@@ -9,7 +9,9 @@
 //   - Individual declarations: `:Alice rdf:type :Person .` (Pass 3)
 //   - Data properties:    `:Alice :age "30" .` (Pass 3)
 //
-// Everything else is counted in `triples_skipped` and silently ignored.
+// Every triple that none of the passes consumed is counted in
+// `triples_skipped` and ignored. The full list of what survives the bridge
+// and what does not lives in the module docs (`rdf_owl/mod.rs`).
 //
 // Feature gate: compiled only when `owl-import` is enabled.
 
@@ -34,7 +36,17 @@ pub struct ImportReport {
     pub subclass_edges_added: usize,
     /// Number of individual (`rdf:type <non-Class>`) instances added to graph.
     pub instances_added: usize,
-    /// Number of triples that were not ontological and were skipped.
+    /// Number of triples that no pass consumed, i.e. that left nothing in the
+    /// graph: metadata on classes (`rdfs:label`, `rdfs:comment`), `rdf:type`
+    /// pointing at a class this import does not know, `owl:Ontology` headers,
+    /// and any other axiom the importer does not model.
+    ///
+    /// Data properties of individuals are **not** skipped — they become node
+    /// properties in pass 3 — so this count is exactly what was lost. It is
+    /// computed once, after all passes, from the same predicate each pass
+    /// used to decide; counting inside a pass over-reported (pass 2 used to
+    /// count every non-`type` triple, including the properties pass 3 then
+    /// imported).
     pub triples_skipped: usize,
 }
 
@@ -51,7 +63,9 @@ pub struct ImportReport {
 /// - `?s rdf:type :SomeClass`        → Individual node with label = SomeClass (Pass 3)
 /// - `?s :prop ?o` (where s is an individual)  → property on Individual node
 ///
-/// All other triples increment `triples_skipped`.
+/// Every other triple is counted in [`ImportReport::triples_skipped`] and
+/// dropped. What the bridge keeps and what it loses is spelled out in the
+/// [module docs](crate::rdf_owl).
 ///
 /// The function is idempotent: if a class or individual with the same IRI already
 /// exists, it is reused rather than duplicated.
@@ -121,7 +135,7 @@ pub async fn import_turtle(
             let super_label  = resolve(&triple.object);
 
             if sub_label.is_empty() || super_label.is_empty() {
-                report.triples_skipped += 1;
+                // Counted as skipped in the final tally below.
                 continue;
             }
 
@@ -143,9 +157,6 @@ pub async fn import_turtle(
             // Convention: add_subclass(parent, child) means child ⊑ parent.
             taxonomy.add_subclass(super_id, sub_id)?;
             report.subclass_edges_added += 1;
-        } else if pred != "type" {
-            // Not a Class declaration (handled in pass 1) and not a subClassOf → skip.
-            report.triples_skipped += 1;
         }
     }
 
@@ -169,9 +180,16 @@ pub async fn import_turtle(
             if class_iris.contains(&triple.subject) {
                 continue;
             }
-            // The object is a class label (e.g. "Person").
-            // Only add if the class is known (was declared as owl:Class in this file
-            // or already in the graph).
+            // The object is a class label (e.g. "Person"). Only add if the class
+            // is known: declared as owl:Class in this file, or already in the
+            // graph from an earlier import (ontology in one file, instances in
+            // another). Otherwise the triple is counted as skipped below.
+            if !label_to_id.contains_key(&obj)
+                && let Some(id) = find_class(graph, &obj).await?
+            {
+                taxonomy.register_class(id, &obj);
+                label_to_id.insert(obj.clone(), id);
+            }
             if label_to_id.contains_key(&obj) {
                 individuals.entry(triple.subject.clone()).or_insert_with(|| obj.clone());
             }
@@ -219,12 +237,47 @@ pub async fn import_turtle(
         }
     }
 
+    // Final tally: a triple is "skipped" when no pass consumed it. This is
+    // decided here, once, with the same tests the passes used — so the count
+    // is what actually left nothing in the graph, not a per-pass guess.
+    // Idempotent re-imports still count their triples as consumed: the data
+    // is in the graph, whether this call put it there or an earlier one did.
+    for triple in &triples {
+        let pred = resolve(&triple.predicate);
+        let obj = resolve(&triple.object);
+        let consumed = if pred == "type" {
+            // Pass 1 (class declaration) or pass 3a (individual of a known class).
+            (obj == "Class" && !resolve(&triple.subject).is_empty())
+                || individuals.get(&triple.subject) == Some(&obj)
+        } else if pred == "subClassOf" {
+            // Pass 2 — both endpoints had to resolve to a label.
+            !resolve(&triple.subject).is_empty() && !obj.is_empty()
+        } else {
+            // Pass 3b — data property of an individual.
+            !pred.is_empty() && individuals.contains_key(&triple.subject)
+        };
+        if !consumed {
+            report.triples_skipped += 1;
+        }
+    }
+
     Ok(report)
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Find the `NodeKind::Class` node labelled `label` already stored in the graph,
+/// if any. Labels are the identity of classes on this side of the bridge (see
+/// the module docs on why prefixes are dropped).
+async fn find_class(graph: &Graph, label: &str) -> Result<Option<NodeId>> {
+    let existing = graph.get_nodes_by_label(label).await?;
+    Ok(existing
+        .into_iter()
+        .find(|n| n.kind == NodeKind::Class)
+        .map(|n| n.id))
+}
 
 /// Ensure a class node with `label` exists in graph + taxonomy, creating it if
 /// necessary. Returns its `NodeId`.
@@ -239,9 +292,7 @@ async fn ensure_class(
     }
 
     // Look in graph.
-    let existing = graph.get_nodes_by_label(label).await?;
-    if let Some(node) = existing.into_iter().find(|n| n.kind == NodeKind::Class) {
-        let id = node.id;
+    if let Some(id) = find_class(graph, label).await? {
         taxonomy.register_class(id, label);
         cache.insert(label.to_string(), id);
         return Ok(id);
@@ -617,10 +668,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 3 — non-ontological triples are skipped
+    // Test 3 — data properties of an individual are imported, not skipped
     // -----------------------------------------------------------------------
     #[tokio::test]
-    async fn test_import_skips_data_triples() {
+    async fn test_import_data_properties_are_not_skipped() {
         let (graph, _dir) = open_temp_graph().await;
         let mut taxonomy = TaxonomyIndex::new();
 
@@ -637,8 +688,87 @@ mod tests {
         let report = import_turtle(&graph, &mut taxonomy, ttl).await.unwrap();
 
         assert_eq!(report.classes_added, 1);
-        assert!(report.triples_skipped > 0 || report.instances_added > 0,
-            "non-class triples should be processed or skipped");
+        assert_eq!(report.instances_added, 1);
+        assert_eq!(report.triples_skipped, 0, "both data properties end up on the node");
+
+        let fido = graph.get_nodes_by_label("Animal").await.unwrap()
+            .into_iter().find(|n| n.kind != NodeKind::Class).unwrap();
+        assert_eq!(fido.properties.get("label"), Some(&PropertyValue::String("Fido".into())));
+        assert_eq!(fido.properties.get("age"), Some(&PropertyValue::Int(5)));
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 3b — triples_skipped counts exactly what left nothing in the graph
+    // -----------------------------------------------------------------------
+    //
+    // Regression for the over-count: pass 2 used to add every non-`type`
+    // triple to the tally, so the two data properties below were reported as
+    // lost while they were sitting on the node.
+    #[tokio::test]
+    async fn test_triples_skipped_counts_only_discarded_triples() {
+        let (graph, _dir) = open_temp_graph().await;
+        let mut taxonomy = TaxonomyIndex::new();
+
+        // Everything here is consumed: one class, one individual, one data property.
+        let ttl = r#"
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+:Planta rdf:type owl:Class .
+:Rosa rdf:type :Planta .
+:Rosa :nombreComun "rosa" .
+"#;
+        let report = import_turtle(&graph, &mut taxonomy, ttl).await.unwrap();
+        assert_eq!(report.classes_added, 1);
+        assert_eq!(report.instances_added, 1);
+        assert_eq!(report.triples_skipped, 0);
+
+        // Now three triples that really are dropped, mixed with consumed ones:
+        //   - rdfs:label on a CLASS (pass 3 only takes properties of individuals)
+        //   - rdf:type pointing at a class nobody declared
+        //   - a data property whose subject is that undeclared-class individual
+        let ttl = r#"
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+:Planta rdfs:label "Planta" .
+:Cactus rdf:type :Suculenta .
+:Cactus :nombreComun "cactus" .
+:Tulipan rdf:type :Planta .
+:Tulipan :nombreComun "tulipán" .
+"#;
+        let report = import_turtle(&graph, &mut taxonomy, ttl).await.unwrap();
+        assert_eq!(report.classes_added, 0);
+        assert_eq!(
+            report.instances_added, 1,
+            "Tulipan is a Planta (declared by the previous import); Cactus has no known class"
+        );
+        assert_eq!(report.triples_skipped, 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 3c — re-importing the same file skips nothing (the data is there)
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_reimport_reports_no_skipped_triples() {
+        let (graph, _dir) = open_temp_graph().await;
+        let mut taxonomy = TaxonomyIndex::new();
+
+        let ttl = r#"
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+:Planta rdf:type owl:Class .
+:Arbol rdf:type owl:Class .
+:Arbol rdfs:subClassOf :Planta .
+:Rosa rdf:type :Planta .
+:Rosa :nombreComun "rosa" .
+"#;
+        let first = import_turtle(&graph, &mut taxonomy, ttl).await.unwrap();
+        let second = import_turtle(&graph, &mut taxonomy, ttl).await.unwrap();
+
+        assert_eq!(first.triples_skipped, 0);
+        assert_eq!(second.instances_added, 0, "idempotent: node already there");
+        assert_eq!(second.triples_skipped, 0, "already-present data is not 'lost'");
     }
 
     // -----------------------------------------------------------------------

@@ -113,6 +113,47 @@ https://github.com/Anxious-Mind-Group/ndbstudio.
    (`graph.start_auto_gc(config)`), or old versions accumulate. GC never
    removes versions still readable by open transactions.
 
+## Interoperating with an RDF store: what the Turtle bridge keeps
+
+`import_turtle` / `export_turtle` (feature `semantic`) are an **ontology
+loader**, not an RDF store. If you are deciding whether NopalDB can sit next
+to a triple store, this is the contract — the full version, with the parser's
+gaps, is in the `nopaldb::rdf_owl` module docs on docs.rs.
+
+**Kept:** `owl:Class` declarations (one node each), `rdfs:subClassOf` (one
+edge each, plus the taxonomy that powers `instanceOf`/`subClassOf` in NQL),
+individuals of a declared class (one node, with an `iri` property), and their
+literal-valued properties (typed by value: `"42"` → int, `"true"` → bool).
+Re-importing is idempotent, and instances may come in a later file than their
+classes.
+
+**Lost:**
+
+- **IRIs.** Terms are reduced to their local name; prefixes are dropped. Two
+  IRIs with the same local name in different namespaces collapse into one node.
+- **Relationships between individuals.** A triple whose object is a resource
+  (`:x :knows :y`) does not create an edge; the object lands as a string
+  property. The only edges the bridge creates are `subClassOf`.
+- A second `rdf:type` on an individual, all but the last value of a
+  multi-valued predicate, `rdfs:label`/`rdfs:comment` on classes,
+  `owl:Ontology` headers, restrictions and equivalence axioms. Each dropped
+  triple adds one to `ImportReport::triples_skipped`; imported properties do
+  not, so the count is exactly what was lost.
+- **Parser coverage.** No `a` keyword, language tags, blank nodes, `@base` or
+  collections, and malformed Turtle does not fail — it shows up as a wrong
+  count.
+- **On export:** every edge except `subClassOf`, nodes without an `iri`
+  property, non-scalar properties; local names are sanitized to ASCII and the
+  namespace is a fixed `http://example.org/ontology#`.
+
+**What to do with that:** keep the triple store as the system of record for
+RDF and materialize into NopalDB the subgraph you want to query, reason over
+or embed. NopalDB will not grow SPARQL or named graphs; a faithful bridge
+(real grammar with errors, IRI identity, edges for resource-valued triples, a
+symmetric exporter) is tracked in the public roadmap — issues
+[#69](https://github.com/sharop/nopaldb/issues/69) and
+[#70](https://github.com/sharop/nopaldb/issues/70).
+
 ## Re-ingesting a source: keeping node, text and vector in step
 
 The common shape for a derived, rebuildable index is: read a source, write one
