@@ -18,6 +18,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Antes de compilar: tres READMEs enlazaron meses a archivos inexistentes.
+      - name: Check doc links
+        run: python3 scripts/check_doc_links.py
+
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
 

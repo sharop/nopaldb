@@ -9,10 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.9] - unreleased
 
+### Added
+
+- **`ROADMAP.md` público**: dirección por temas (endurecimiento del storage, ciclo semántico, retrieval, durabilidad del índice vectorial) sin fechas comprometidas, y una sección explícita de **fuera del alcance** con la alternativa recomendada para cada punto: SPARQL/named graphs (triple store al lado, NopalDB materializa el subgrafo), servidor de red (MCP o tu servicio delante), multi-proceso sobre un data-dir (un directorio por tenant, backup en frío para leer).
+- `scripts/check_doc_links.py` + `make check-doc-links`, y corre en CI antes de compilar: los tres README de docs enlazaron durante meses a dos roadmaps que nunca existieron en el repo, y era lo primero que veía quien evaluaba contribuir.
+
 ### Fixed
 
 - **`ImportReport.triples_skipped` decía que se perdían triples que estaban en el grafo.** La pasada 2 del importer Turtle contaba como descartado todo triple que no fuera `rdf:type`, incluidas las data properties de individuos que la pasada 3 importaba después. El tutorial del acto 3 propagaba el número (`18`) y lo explicaba como pérdida; el valor real para ese TTL es `0`. El conteo ahora se decide una sola vez, al final, con el mismo criterio que usó cada pasada: cuenta exactamente lo que no dejó nada en el grafo. Tests con conteo exacto (antes la aserción era `skipped > 0 || instances > 0`, que no podía fallar) y el gate del tutorial exige `0`.
 - Una instancia cuya clase se declaró en un import **anterior** se descartaba en silencio, aunque el comentario del código prometía "o ya en el grafo": el importer solo miraba las clases del archivo actual. Ahora busca la clase en el grafo antes de descartar, así que ontología en un archivo e instancias en otro funciona.
+- Diez links rotos en `docs/**`: los seis al roadmap, tres a un `examples/` en la raíz (viven en `nopaldb/examples/`) y uno a un `TRANSACTIONS.md` que nunca existió (ahora apunta a `DURABILITY.md`).
 
 ### Changed
 

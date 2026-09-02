@@ -246,4 +246,4 @@ Probado con:
 ## Ver También
 
 - [ISOLATION_LEVELS.md](./ISOLATION_LEVELS.md) - Niveles de aislamiento
-- [TRANSACTIONS.md](./TRANSACTIONS.md) - Transacciones ACID
+- [DURABILITY.md](./DURABILITY.md) - Qué sobrevive a un crash: transacciones vs escrituras directas

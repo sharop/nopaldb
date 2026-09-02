@@ -27,6 +27,7 @@ help:
 	@echo "  make clippy-core        - clippy tier core"
 	@echo "  make clippy-semantic    - clippy tier semantic"
 	@echo "  make clippy-full        - clippy full public feature set"
+	@echo "  make check-doc-links    - links relativos de docs/ y READMEs apuntan a archivos que existen"
 	@echo "  make package-qa         - valida y empaqueta nopaldb (binario + wheel python)"
 	@echo "  make build-wheel        - wheel para PYTHON (default: python3), ej: PYTHON=python3.12"
 	@echo "  make build-wheel-all    - wheels para Python 3.10, 3.11, 3.12 y 3.13 (los que existan)"
@@ -71,6 +72,11 @@ date-changelog:
 	sed -i '' -E "s/^## \[$(VERSION)\] - .*/## [$(VERSION)] - $$fecha/" CHANGELOG.md; \
 	echo "CHANGELOG: $(VERSION) fechada $$fecha"
 	@$(MAKE) --no-print-directory check-changelog-dates
+
+check-doc-links:
+	@# Tres READMEs de docs enlazaron meses a dos roadmaps que no existían.
+	@# Un link roto en el índice es lo primero que ve quien evalúa contribuir.
+	@python3 scripts/check_doc_links.py
 
 check-changelog-dates:
 	@# Toda versión con tag debe tener FECHA en el CHANGELOG, no "unreleased".
@@ -167,7 +173,7 @@ checksums:
 	@mkdir -p $(DIST_DIR)
 	@find $(DIST_DIR) -type f ! -name SHA256SUMS.txt -print0 | xargs -0 shasum -a 256 > $(DIST_DIR)/SHA256SUMS.txt
 
-package-qa: check-tools check-clean check-version-sync check-changelog-dates test-full clippy-full package-bin build-wheel checksums
+package-qa: check-tools check-clean check-version-sync check-changelog-dates check-doc-links test-full clippy-full package-bin build-wheel checksums
 	@echo "Artefactos QA generados en $(DIST_DIR)/"
 
 clean:
