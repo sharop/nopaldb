@@ -2,18 +2,18 @@
 //
 // OWL/Turtle Importer.
 //
-// Parsing is delegated to `oxttl` (a real Turtle grammar: `a`, language tags,
-// blank nodes, `@base`, collections, comments inside literals, and a
-// positioned error on malformed input). This module decides what the parsed
-// triples MEAN for the property graph:
-//   - Class declarations:      `:Foo a owl:Class .`
-//   - Subclass axioms:         `:Foo rdfs:subClassOf :Bar .`
-//   - Individual declarations: `:alice a :Person .`            (pass 3)
-//   - Data properties:         `:alice :age "30"^^xsd:integer .` (pass 3)
+// Parsing is delegated to `oxttl` (a real Turtle grammar with a positioned
+// error on malformed input). This module decides what the parsed triples MEAN
+// for the property graph — the contract is in the module docs (`rdf_owl/mod.rs`):
+//   - `:X a owl:Class`          → Class node (identity: the IRI)
+//   - `:X rdfs:subClassOf :Y`   → `subClassOf` edge + taxonomy
+//   - `:x a :X`                 → individual node + `instanceOf` edge, one per type
+//   - `:x :p :y`                → edge `p` (placeholder for `:y` if unknown)
+//   - `:x :p "literal"`         → property `p`, typed by datatype
 //
 // Every triple that none of the passes consumed is counted in
-// `triples_skipped` and ignored. The full list of what survives the bridge
-// and what does not lives in the module docs (`rdf_owl/mod.rs`).
+// `triples_skipped`; what is assumed on the document's behalf goes to
+// `warnings`. Malformed input is an error and writes nothing.
 //
 // Feature gate: compiled only when `owl-import` is enabled.
 
@@ -33,9 +33,35 @@ use crate::types::{Edge, Node, NodeId, NodeKind, PropertyValue};
 // ---------------------------------------------------------------------------
 
 /// `owl:Class`. `oxrdf` ships `rdf`, `rdfs` and `xsd` vocabularies but not
-/// `owl`, so the one term this importer needs is declared here.
+/// `owl`, so the terms this importer needs are declared here.
 const OWL_CLASS: NamedNodeRef<'static> =
     NamedNodeRef::new_unchecked("http://www.w3.org/2002/07/owl#Class");
+/// `owl:NamedIndividual`: says "this is an individual" and nothing else. It is
+/// consumed as a no-op — the individual's real class is its other `rdf:type`.
+const OWL_NAMED_INDIVIDUAL: NamedNodeRef<'static> =
+    NamedNodeRef::new_unchecked("http://www.w3.org/2002/07/owl#NamedIndividual");
+
+const NS_RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+const NS_RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
+const NS_OWL: &str = "http://www.w3.org/2002/07/owl#";
+const NS_XSD: &str = "http://www.w3.org/2001/XMLSchema#";
+
+/// Edge type of `rdf:type`. Reserved: a user predicate whose local name is
+/// `instanceOf` or `subClassOf` is written with its qualified name instead,
+/// so the taxonomy never picks up a user edge.
+pub const EDGE_INSTANCE_OF: &str = "instanceOf";
+/// Edge type of `rdfs:subClassOf` (unchanged since the first importer).
+pub const EDGE_SUBCLASS_OF: &str = "subClassOf";
+
+/// Property carrying a node's IRI (classes and individuals alike).
+pub const PROP_IRI: &str = "iri";
+/// Set (to `true`) on a node created only because something pointed at it.
+/// Removed the moment the node gets a type.
+pub const PROP_PLACEHOLDER: &str = "rdf_placeholder";
+/// `rdfs:label` / `rdfs:comment` land here. Not `label`: that is the name of
+/// the `Node` field, and `n.label` in NQL must keep meaning the field.
+pub const PROP_RDFS_LABEL: &str = "rdfs_label";
+pub const PROP_RDFS_COMMENT: &str = "rdfs_comment";
 
 /// Namespace assumed for the empty prefix (`:Foo`) when the document does not
 /// declare one. It is the namespace `export_turtle` has always written, so a
@@ -54,35 +80,50 @@ pub const DEFAULT_NAMESPACE: &str = "http://example.org/ontology#";
 /// resolving against a fixed base keeps the import going and is reported.
 pub const DEFAULT_BASE: &str = "http://example.org/ontology/";
 
+fn is_reserved_namespace(iri: &str) -> bool {
+    iri.starts_with(NS_RDF) || iri.starts_with(NS_RDFS) || iri.starts_with(NS_OWL) || iri.starts_with(NS_XSD)
+}
+
 // ---------------------------------------------------------------------------
 // Public result type
 // ---------------------------------------------------------------------------
 
-/// Summary of a Turtle import operation.
+/// Summary of a Turtle import operation. Every counter counts what this call
+/// **created**; a second import of the same document reports zeros.
 #[derive(Debug, Clone, Default)]
 pub struct ImportReport {
-    /// Number of `owl:Class` declarations processed (new nodes added to graph).
+    /// `owl:Class` nodes created (declared, or created lazily because a
+    /// `rdfs:subClassOf` or an `rdf:type` named them first).
     pub classes_added: usize,
-    /// Number of `rdfs:subClassOf` edges added.
+    /// `subClassOf` edges created.
     pub subclass_edges_added: usize,
-    /// Number of individual (`rdf:type <non-Class>`) instances added to graph.
+    /// Individual nodes created (typed subjects; placeholders are counted in
+    /// `placeholders_created` instead, and move here only in spirit when a
+    /// later import types them).
     pub instances_added: usize,
-    /// Number of triples that no pass consumed, i.e. that left nothing in the
-    /// graph: metadata on classes (`rdfs:label`, `rdfs:comment`), `rdf:type`
-    /// pointing at a class this import does not know, `owl:Ontology` headers,
-    /// and any other axiom the importer does not model.
+    /// Edges created other than `subClassOf`: one `instanceOf` per
+    /// `rdf:type`, plus one per resource-valued triple (`:x :p :y`).
+    pub edges_created: usize,
+    /// Nodes created only because a triple pointed at them (`:x :p :y` with
+    /// `:y` never declared): they carry `iri` and `rdf_placeholder = true`
+    /// and nothing else until a later import types them.
+    pub placeholders_created: usize,
+    /// Triples that left nothing in the graph. With this importer that is
+    /// exactly the reserved vocabulary it does not model: `owl:Ontology`
+    /// headers, property declarations (`owl:ObjectProperty`, …),
+    /// `rdfs:domain`/`rdfs:range`, `owl:equivalentClass` and friends, and any
+    /// statement whose subject is such a vocabulary resource. Everything in a
+    /// user namespace is kept, so a non-zero count is a list of axioms, never
+    /// of data.
     ///
-    /// Data properties of individuals are **not** skipped — they become node
-    /// properties in pass 3 — so this count is exactly what was lost. It is
-    /// computed once, after all passes, from the same predicate each pass
-    /// used to decide; counting inside a pass over-reported (pass 2 used to
-    /// count every non-`type` triple, including the properties pass 3 then
-    /// imported).
+    /// Computed once, after all passes, from the same tests the passes used.
     pub triples_skipped: usize,
     /// Things the import did on the document's behalf that the author should
-    /// know about: an assumed default namespace, a literal typed
-    /// `xsd:integer` that did not parse as one, and so on. Empty means the
-    /// document was taken exactly as written.
+    /// know about: an assumed default namespace, a class it had to create
+    /// because a type named it without declaring it, a label it had to
+    /// qualify because two classes share a local name, nodes left over from
+    /// an import made before IRIs were kept. Empty means the document was
+    /// taken exactly as written.
     pub warnings: Vec<String>,
 }
 
@@ -90,11 +131,12 @@ pub struct ImportReport {
 // Parsed document
 // ---------------------------------------------------------------------------
 
-/// What `parse_turtle` hands to the passes: the triples and the parser-level
-/// warnings. (The document's prefix map is read from the parser too; it
-/// becomes part of this struct when the graph starts persisting prefixes.)
+/// What `parse_turtle` hands to the passes.
 pub(crate) struct ParsedDocument {
     pub triples: Vec<Triple>,
+    /// Prefixes the document ended up with (declared ones plus the seeded
+    /// empty prefix), persisted in the graph catalog by the import.
+    pub prefixes: BTreeMap<String, String>,
     pub warnings: Vec<String>,
     /// FNV-1a of the source text; the identity of this document's blank nodes.
     pub document_hash: u64,
@@ -142,8 +184,14 @@ pub(crate) fn parse_turtle(source: &str) -> Result<ParsedDocument> {
             ))
         })?;
 
+    let prefixes = parser
+        .prefixes()
+        .map(|(name, iri)| (name.to_string(), iri.to_string()))
+        .collect();
+
     Ok(ParsedDocument {
         triples,
+        prefixes,
         warnings,
         document_hash: fnv1a_64(source.as_bytes()),
     })
@@ -238,12 +286,9 @@ fn object_of(term: &Term, document_hash: u64) -> Object<'_> {
 }
 
 /// Local name of an IRI: the part after `#`, or after the last `/`. For a
-/// synthetic blank-node IRI the label after the hash.
-///
-/// This is the identity of classes on this side of the bridge for now: two
-/// IRIs with the same local name in different namespaces collapse into one
-/// node. Keeping IRI identity is the next step of the bridge (see the module
-/// docs); this function is where it will change.
+/// synthetic blank-node IRI the label after the hash. This is what becomes a
+/// node label, an edge type or a property name — the readable half of a
+/// term. Identity is the full IRI, never this.
 pub(crate) fn local_name(iri: &str) -> String {
     if let Some(rest) = iri.strip_prefix("_:") {
         return rest.split_once('-').map(|(_, l)| l).unwrap_or(rest).to_string();
@@ -257,6 +302,27 @@ pub(crate) fn local_name(iri: &str) -> String {
     iri.to_string()
 }
 
+/// `prefix:local` for an IRI, using the longest declared prefix that covers
+/// it; the full IRI when none does. Used for labels that would otherwise
+/// collide and for edge types that would otherwise shadow the reserved ones.
+fn qualified_name(iri: &str, prefixes: &BTreeMap<String, String>) -> String {
+    let best = prefixes
+        .iter()
+        .filter(|(_, ns)| !ns.is_empty() && iri.starts_with(ns.as_str()))
+        .max_by_key(|(_, ns)| ns.len());
+    match best {
+        Some((p, ns)) => format!("{p}:{}", &iri[ns.len()..]),
+        None => iri.to_string(),
+    }
+}
+
+/// Is this stored `iri` value from an import made before IRIs were kept?
+/// Those imports stored the raw token (`:Alice`, `<http://…>`), never an
+/// absolute IRI or a synthetic blank-node IRI.
+fn is_legacy_iri(stored: &str) -> bool {
+    !(stored.starts_with("_:") || stored.contains("://"))
+}
+
 /// Map an RDF literal to a `PropertyValue`. The table is the contract (it is
 /// repeated in the module docs):
 ///
@@ -268,7 +334,7 @@ pub(crate) fn local_name(iri: &str) -> String {
 /// | `xsd:string`, plain literal, language-tagged literal, anything else | `String` with the lexical value |
 ///
 /// A plain `"42"` is `xsd:string` by the RDF spec and stays a string here. The
-/// previous parser guessed `Int` from the shape of the text, so `"42"^^xsd:string`
+/// first parser guessed `Int` from the shape of the text, so `"42"^^xsd:string`
 /// became a number; that guess is gone. A typed literal whose text does not
 /// parse as its type falls back to `String` and is reported in `warnings`
 /// rather than dropped or coerced.
@@ -333,288 +399,446 @@ fn literal_to_property_value(lit: &oxrdf::Literal, warnings: &mut Vec<String>) -
 }
 
 // ---------------------------------------------------------------------------
+// Import context
+// ---------------------------------------------------------------------------
+
+/// Everything a pass needs: the graph, the taxonomy, the report being built,
+/// and the per-import caches (IRI → node id) that keep lookups to one per
+/// term instead of one per triple.
+struct Import<'a> {
+    graph: &'a Graph,
+    taxonomy: &'a mut TaxonomyIndex,
+    report: ImportReport,
+    prefixes: &'a BTreeMap<String, String>,
+    /// IRI → node id, for every node touched by this import (classes and
+    /// individuals; `None` means "looked up, not there").
+    nodes: HashMap<String, Option<NodeId>>,
+    /// Class labels already taken in the graph, by IRI, to detect collisions.
+    class_label_owner: HashMap<String, String>,
+    /// Individuals that had an `rdf:type` in this document, with their first
+    /// type's IRI (that type decides the label).
+    typed: HashMap<String, String>,
+    /// Subjects typed only with reserved vocabulary (`owl:Ontology`,
+    /// `owl:ObjectProperty`, …): vocabulary resources, not data.
+    vocabulary_subjects: HashSet<String>,
+    /// Nodes whose stored `iri` is a pre-0.5.10 raw token, seen while looking
+    /// for a node this document names. Reported once, at the end.
+    legacy_seen: usize,
+}
+
+impl Import<'_> {
+    /// Node by IRI, through the property index (one lookup, cached).
+    async fn lookup(&mut self, iri: &str) -> Result<Option<NodeId>> {
+        if let Some(hit) = self.nodes.get(iri) {
+            return Ok(*hit);
+        }
+        let ids = self
+            .graph
+            .get_all_nodes_by_property(PROP_IRI, &PropertyValue::String(iri.to_string()))
+            .await?;
+        let found = ids.first().copied();
+        self.nodes.insert(iri.to_string(), found);
+        Ok(found)
+    }
+
+    /// Detect nodes left by an import made before IRIs were kept: same label,
+    /// `iri` stored as the raw token whose local name matches. They are not
+    /// adopted — merging would need the prefix map that import never had —
+    /// only reported, once, with the upgrade path.
+    async fn note_legacy(&mut self, label: &str, iri: &str) -> Result<()> {
+        let local = local_name(iri);
+        let hits = self
+            .graph
+            .get_nodes_by_label(label)
+            .await?
+            .into_iter()
+            .filter(|n| {
+                matches!(n.properties.get(PROP_IRI), Some(PropertyValue::String(v))
+                    if is_legacy_iri(v) && local_name(v.trim_start_matches(':')) == local)
+            })
+            .count();
+        self.legacy_seen += hits;
+        Ok(())
+    }
+
+    /// The class node for `iri`, creating it if needed. `declared` says
+    /// whether this document has an `a owl:Class` for it; a class that is
+    /// only *named* (by a type or a subclass axiom) is created too, with a
+    /// warning, so nothing is dropped in silence.
+    async fn ensure_class(&mut self, iri: &str, declared: bool) -> Result<NodeId> {
+        if let Some(id) = self.lookup(iri).await? {
+            return Ok(id);
+        }
+
+        let local = local_name(iri);
+        let label = self.class_label_for(iri, &local).await?;
+
+        // A pre-0.5.10 import stored classes without an `iri`. Adopting the
+        // existing node (same label, kind Class, no `iri`) keeps the
+        // individuals that already point at it; the alternative — a second
+        // class with the same label — would split the hierarchy in two.
+        let legacy = self
+            .graph
+            .get_nodes_by_label(&label)
+            .await?
+            .into_iter()
+            .find(|n| n.kind == NodeKind::Class && !n.properties.contains_key(PROP_IRI));
+        let id = if let Some(mut node) = legacy {
+            node.properties.insert(PROP_IRI.into(), PropertyValue::String(iri.into()));
+            self.graph.add_node(node.clone()).await?;
+            self.report.warnings.push(format!(
+                "la clase `{label}` existía sin IRI (import anterior a 0.5.10): se le asignó `{iri}`"
+            ));
+            node.id
+        } else {
+            let mut node = Node::new(label.clone());
+            node.kind = NodeKind::Class;
+            node.properties.insert(PROP_IRI.into(), PropertyValue::String(iri.into()));
+            let id = self.graph.add_node(node).await?;
+            self.report.classes_added += 1;
+            if !declared {
+                self.report.warnings.push(format!(
+                    "la clase `{}` se usa sin declararla (`a owl:Class`): se creó",
+                    qualified_name(iri, self.prefixes)
+                ));
+            }
+            id
+        };
+
+        self.taxonomy.register_class(id, &label);
+        self.nodes.insert(iri.to_string(), Some(id));
+        self.class_label_owner.insert(label, iri.to_string());
+        Ok(id)
+    }
+
+    /// Label for a new class: its local name, unless another class (different
+    /// IRI) already owns that label in the graph. Then the qualified name
+    /// (`fauna:Rosa`), with a warning: the taxonomy and `instanceOf` are
+    /// label-keyed, and two classes under one label would silently become one.
+    async fn class_label_for(&mut self, iri: &str, local: &str) -> Result<String> {
+        let owner = match self.class_label_owner.get(local) {
+            Some(o) => Some(o.clone()),
+            None => self
+                .graph
+                .get_nodes_by_label(local)
+                .await?
+                .into_iter()
+                .find(|n| n.kind == NodeKind::Class)
+                .and_then(|n| match n.properties.get(PROP_IRI) {
+                    Some(PropertyValue::String(v)) => Some(v.clone()),
+                    // A legacy class without IRI is adopted by the caller, not a collision.
+                    _ => None,
+                }),
+        };
+        Ok(match owner {
+            Some(o) if o != iri => {
+                let q = qualified_name(iri, self.prefixes);
+                self.report.warnings.push(format!(
+                    "dos clases con local name `{local}` (`{o}` y `{iri}`): la segunda se etiquetó `{q}`"
+                ));
+                q
+            }
+            _ => local.to_string(),
+        })
+    }
+
+    /// The node for an individual `iri`. `class` is the label of its first
+    /// type when the document types it; `None` creates (or keeps) a
+    /// placeholder. A placeholder that gets a type here is upgraded in place:
+    /// same id, so edges already pointing at it stay valid.
+    async fn ensure_individual(&mut self, iri: &str, class: Option<&str>) -> Result<NodeId> {
+        if let Some(id) = self.lookup(iri).await? {
+            if let Some(class) = class {
+                let mut node = self.graph.get_node(id).await?;
+                if node.properties.remove(PROP_PLACEHOLDER).is_some() {
+                    node.label = class.to_string();
+                    self.graph.add_node(node).await?;
+                    self.report.instances_added += 1;
+                }
+            }
+            return Ok(id);
+        }
+
+        let mut node = match class {
+            Some(class) => Node::new(class),
+            None => Node::new(local_name(iri)),
+        };
+        node.properties.insert(PROP_IRI.into(), PropertyValue::String(iri.into()));
+        if let Some(class) = class {
+            self.note_legacy(class, iri).await?;
+            self.report.instances_added += 1;
+        } else {
+            node.properties.insert(PROP_PLACEHOLDER.into(), PropertyValue::Bool(true));
+            self.report.placeholders_created += 1;
+        }
+        let id = self.graph.add_node(node).await?;
+        self.nodes.insert(iri.to_string(), Some(id));
+        Ok(id)
+    }
+
+    /// Any node for a subject or object IRI: a class if the graph has one
+    /// under that IRI, else the individual (or placeholder).
+    async fn ensure_node(&mut self, iri: &str) -> Result<NodeId> {
+        let class = self.typed.get(iri).map(|c| local_name(c));
+        self.ensure_individual(iri, class.as_deref()).await
+    }
+
+    /// Create `source -[edge_type {iri}]-> target` unless it already exists.
+    /// Dedup is what makes a second import of the same document write nothing.
+    async fn ensure_edge(&mut self, source: NodeId, target: NodeId, edge_type: &str, pred_iri: &str) -> Result<bool> {
+        let exists = self
+            .graph
+            .get_outgoing_edges(source)
+            .await?
+            .iter()
+            .any(|e| e.target == target && e.edge_type == edge_type);
+        if exists {
+            return Ok(false);
+        }
+        let edge = Edge::new(source, target, edge_type)
+            .with_property(PROP_IRI, PropertyValue::String(pred_iri.into()));
+        self.graph.add_edge(edge).await?;
+        Ok(true)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Import a Turtle source string into `graph`, registering `owl:Class` nodes,
-/// `rdfs:subClassOf` edges, individual instances, and updating the `taxonomy` index.
+/// Import a Turtle source string into `graph`, registering classes, the
+/// `subClassOf` hierarchy, individuals with their `instanceOf` edges, the
+/// edges between individuals, and their data properties; updates the
+/// `taxonomy` index and the graph's prefix catalog.
 ///
-/// Only the following triple patterns are processed:
-/// - `?s rdf:type owl:Class`         → node with `NodeKind::Class`
-/// - `?s rdfs:subClassOf ?o`         → `subClassOf` edge + taxonomy edge
-/// - `?s rdf:type :SomeClass`        → Individual node with label = SomeClass (Pass 3)
-/// - `?s :prop ?o` (where s is an individual)  → property on Individual node
-///
-/// Every other triple is counted in [`ImportReport::triples_skipped`] and
-/// dropped. What the bridge keeps and what it loses is spelled out in the
-/// [module docs](crate::rdf_owl).
+/// Identity is the IRI: a class or individual with the same IRI is reused,
+/// never duplicated, and a second import of the same document creates
+/// nothing. What the bridge keeps, what it assumes and what it skips is
+/// spelled out in the [module docs](crate::rdf_owl).
 ///
 /// Malformed Turtle is an error ([`NopalError::RdfParseError`], with line and
 /// column), and nothing is written: a document is imported whole or not at all.
-///
-/// The function is idempotent: if a class or individual with the same IRI already
-/// exists, it is reused rather than duplicated.
 pub async fn import_turtle(
     graph: &Graph,
     taxonomy: &mut TaxonomyIndex,
     source: &str,
 ) -> Result<ImportReport> {
-    let mut report = ImportReport::default();
-
     // Step 1 — parse. Fails here, before any write, on malformed input.
     let doc = parse_turtle(source)?;
-    report.warnings.extend(doc.warnings.iter().cloned());
     let hash = doc.document_hash;
     let triples = &doc.triples;
 
-    // Step 2 — resolve and collect classes first (pass 1).
-    // We need all classes before wiring subClassOf edges.
-    let mut label_to_id: HashMap<String, NodeId> = HashMap::new();
+    let mut im = Import {
+        graph,
+        taxonomy,
+        report: ImportReport { warnings: doc.warnings.clone(), ..Default::default() },
+        prefixes: &doc.prefixes,
+        nodes: HashMap::new(),
+        class_label_owner: HashMap::new(),
+        typed: HashMap::new(),
+        vocabulary_subjects: HashSet::new(),
+        legacy_seen: 0,
+    };
 
-    // Track which subjects are known owl:Class IRIs (for Pass 3 exclusion).
-    let mut class_iris: HashSet<String> = HashSet::new();
-
-    // Pass 1: find rdf:type owl:Class triples.
-    for triple in triples {
-        if triple.predicate != rdf::TYPE {
+    // Pass 0 — classify subjects by their rdf:type, in document order.
+    //   declared classes:      `a owl:Class`
+    //   typed individuals:     `a :X` (first X wins the label)
+    //   vocabulary resources:  typed ONLY with reserved terms other than
+    //                          owl:Class / owl:NamedIndividual (ontology
+    //                          headers, property declarations): skipped whole.
+    let mut declared_classes: HashSet<String> = HashSet::new();
+    let mut reserved_typed: HashSet<String> = HashSet::new();
+    for t in triples {
+        if t.predicate != rdf::TYPE {
             continue;
         }
-        let Object::Resource(obj) = object_of(&triple.object, hash) else { continue };
+        let Object::Resource(obj) = object_of(&t.object, hash) else { continue };
+        let subj = subject_iri(&t.subject, hash);
+        if obj == OWL_CLASS.as_str() {
+            declared_classes.insert(subj);
+        } else if obj == OWL_NAMED_INDIVIDUAL.as_str() {
+            // Says "individual", not which class: nothing to record.
+        } else if is_reserved_namespace(&obj) {
+            reserved_typed.insert(subj);
+        } else {
+            im.typed.entry(subj).or_insert(obj);
+        }
+    }
+    for subj in reserved_typed {
+        if !declared_classes.contains(&subj) && !im.typed.contains_key(&subj) {
+            im.vocabulary_subjects.insert(subj);
+        }
+    }
+
+    // Pass 1 — declared classes, in document order (a class is created
+    // before anything can point at it).
+    for t in triples {
+        if t.predicate != rdf::TYPE {
+            continue;
+        }
+        let Object::Resource(obj) = object_of(&t.object, hash) else { continue };
         if obj != OWL_CLASS.as_str() {
             continue;
         }
-        let subj = subject_iri(&triple.subject, hash);
-        let class_label = local_name(&subj);
-        if class_label.is_empty() {
+        let subj = subject_iri(&t.subject, hash);
+        im.ensure_class(&subj, true).await?;
+    }
+
+    // Pass 2 — subClassOf edges + taxonomy.
+    for t in triples {
+        if t.predicate != rdfs::SUB_CLASS_OF {
             continue;
         }
+        let Object::Resource(obj) = object_of(&t.object, hash) else { continue };
+        let subj = subject_iri(&t.subject, hash);
+        let sub_id = im.ensure_class(&subj, declared_classes.contains(&subj)).await?;
+        let super_id = im.ensure_class(&obj, declared_classes.contains(&obj)).await?;
+        if im.ensure_edge(sub_id, super_id, EDGE_SUBCLASS_OF, rdfs::SUB_CLASS_OF.as_str()).await? {
+            im.report.subclass_edges_added += 1;
+        }
+        // Convention: add_subclass(parent, child) means child ⊑ parent. Idempotent.
+        im.taxonomy.add_subclass(super_id, sub_id)?;
+    }
 
-        class_iris.insert(subj);
-
-        // Idempotency: reuse existing node if label already in graph.
-        let node_id = match find_class(graph, &class_label).await? {
-            Some(id) => id,
-            None => {
-                let mut node = Node::new(class_label.clone());
-                node.kind = NodeKind::Class;
-                graph.add_node(node).await?
+    // Pass 3 — individuals: node (label = first type) + one instanceOf edge per type.
+    let typed_order: Vec<(String, String)> = {
+        let mut seen = HashSet::new();
+        let mut v = Vec::new();
+        for t in triples {
+            if t.predicate != rdf::TYPE {
+                continue;
             }
-        };
-
-        label_to_id.insert(class_label.clone(), node_id);
-
-        // Register in taxonomy (idempotent).
-        taxonomy.register_class(node_id, &class_label);
-        report.classes_added += 1;
+            let subj = subject_iri(&t.subject, hash);
+            if let Some(first) = im.typed.get(&subj)
+                && seen.insert(subj.clone())
+            {
+                v.push((subj, first.clone()));
+            }
+        }
+        v
+    };
+    for (subj, first_type) in &typed_order {
+        if declared_classes.contains(subj) {
+            continue; // a class is not also an individual
+        }
+        let class_id = im.ensure_class(first_type, declared_classes.contains(first_type)).await?;
+        let class_label = im.graph.get_node(class_id).await?.label;
+        im.ensure_individual(subj, Some(&class_label)).await?;
     }
-
-    // Pass 2: wire rdfs:subClassOf edges.
-    for triple in triples {
-        if triple.predicate != rdfs::SUB_CLASS_OF {
+    for t in triples {
+        if t.predicate != rdf::TYPE {
             continue;
         }
-        let Object::Resource(obj) = object_of(&triple.object, hash) else { continue };
-        let sub_label = local_name(&subject_iri(&triple.subject, hash));
-        let super_label = local_name(&obj);
-
-        if sub_label.is_empty() || super_label.is_empty() {
-            // Counted as skipped in the final tally below.
-            continue;
-        }
-
-        // Ensure both endpoints are known (lazily create if missing).
-        let sub_id = ensure_class(graph, taxonomy, &mut label_to_id, &sub_label).await?;
-        let super_id = ensure_class(graph, taxonomy, &mut label_to_id, &super_label).await?;
-
-        // Add graph edge (duplicate edges are rare in TTL and taxonomy is idempotent).
-        let edge = Edge {
-            id: uuid::Uuid::new_v4(),
-            source: sub_id,
-            target: super_id,
-            edge_type: "subClassOf".to_string(),
-            properties: Default::default(),
-        };
-        graph.add_edge(edge).await?;
-
-        // Wire taxonomy (idempotent: add_subclass ignores duplicates).
-        // Convention: add_subclass(parent, child) means child ⊑ parent.
-        taxonomy.add_subclass(super_id, sub_id)?;
-        report.subclass_edges_added += 1;
-    }
-
-    // Pass 3: import individuals (rdf:type <non-owl:Class>) and their data properties.
-    //
-    // Strategy: two mini-passes over triples.
-    //   3a. Identify individual subjects: those with rdf:type whose object resolves
-    //       to a known class label (but the object IRI is NOT an owl:Class itself).
-    //   3b. Collect data properties for those subjects.
-    //   3c. Create Individual nodes (idempotent via IRI property check).
-
-    // 3a: collect individual subject → class label mapping.
-    let mut individuals: HashMap<String, String> = HashMap::new(); // subj_iri → class_label
-
-    for triple in triples {
-        if triple.predicate != rdf::TYPE {
-            continue;
-        }
-        let Object::Resource(obj_iri) = object_of(&triple.object, hash) else { continue };
-        if obj_iri == OWL_CLASS.as_str() {
-            continue;
-        }
-        let obj = local_name(&obj_iri);
-        if obj.is_empty() {
-            continue;
-        }
-        let subj = subject_iri(&triple.subject, hash);
-        // Skip subjects that were declared as owl:Class themselves.
-        if class_iris.contains(&subj) {
-            continue;
-        }
-        // The object is a class label (e.g. "Person"). Only add if the class
-        // is known: declared as owl:Class in this file, or already in the
-        // graph from an earlier import (ontology in one file, instances in
-        // another). Otherwise the triple is counted as skipped below.
-        if !label_to_id.contains_key(&obj)
-            && let Some(id) = find_class(graph, &obj).await?
+        let Object::Resource(obj) = object_of(&t.object, hash) else { continue };
+        let subj = subject_iri(&t.subject, hash);
+        if obj == OWL_CLASS.as_str()
+            || obj == OWL_NAMED_INDIVIDUAL.as_str()
+            || is_reserved_namespace(&obj)
+            || declared_classes.contains(&subj)
         {
-            taxonomy.register_class(id, &obj);
-            label_to_id.insert(obj.clone(), id);
+            continue;
         }
-        if label_to_id.contains_key(&obj) {
-            individuals.entry(subj).or_insert_with(|| obj.clone());
+        let class_id = im.ensure_class(&obj, declared_classes.contains(&obj)).await?;
+        let Some(ind_id) = im.lookup(&subj).await? else { continue };
+        if im.ensure_edge(ind_id, class_id, EDGE_INSTANCE_OF, rdf::TYPE.as_str()).await? {
+            im.report.edges_created += 1;
         }
     }
 
-    if !individuals.is_empty() {
-        // 3b: collect data properties per individual. A predicate that appears
-        // more than once for the same subject keeps every value, as a `List`.
-        let mut props_map: HashMap<String, BTreeMap<String, Vec<PropertyValue>>> = HashMap::new();
-        for triple in triples {
-            if triple.predicate == rdf::TYPE {
-                continue;
-            }
-            let subj = subject_iri(&triple.subject, hash);
-            if !individuals.contains_key(&subj) {
-                continue;
-            }
-            let pred = local_name(triple.predicate.as_str());
-            if pred.is_empty() {
-                continue;
-            }
-            let val = match object_of(&triple.object, hash) {
-                Object::Literal(l) => literal_to_property_value(l, &mut report.warnings),
-                // A resource-valued object is stored as its IRI, as text.
-                // Turning it into an edge is the next step of the bridge.
-                Object::Resource(iri) => PropertyValue::String(iri),
-            };
-            props_map.entry(subj).or_default().entry(pred).or_default().push(val);
+    // Pass 4 — statements: edges for resource objects, properties for literals.
+    // Properties are gathered per subject and applied once, so a node is
+    // rewritten at most once and only when something actually changed.
+    let mut props: HashMap<String, BTreeMap<String, Vec<PropertyValue>>> = HashMap::new();
+    for t in triples {
+        if t.predicate == rdf::TYPE || t.predicate == rdfs::SUB_CLASS_OF {
+            continue;
         }
-
-        // 3c: create Individual nodes (idempotent).
-        for (subj_iri, class_label) in &individuals {
-            let props = props_map.remove(subj_iri).unwrap_or_default();
-
-            // Idempotency: check if a node with this IRI already exists.
-            let existing = graph.get_nodes_by_label(class_label).await?;
-            let already_exists = existing.iter().any(|n| {
-                matches!(n.properties.get("iri"), Some(PropertyValue::String(v)) if v == subj_iri)
-            });
-
-            if already_exists {
-                continue;
+        let pred = t.predicate.as_str();
+        let subj = subject_iri(&t.subject, hash);
+        if im.vocabulary_subjects.contains(&subj) {
+            continue;
+        }
+        let key = match pred {
+            p if p == rdfs::LABEL.as_str() => PROP_RDFS_LABEL.to_string(),
+            p if p == rdfs::COMMENT.as_str() => PROP_RDFS_COMMENT.to_string(),
+            p if is_reserved_namespace(p) => continue, // rdfs:domain, owl:equivalentClass, …: skipped
+            p => local_name(p),
+        };
+        if key.is_empty() {
+            continue;
+        }
+        match object_of(&t.object, hash) {
+            Object::Literal(l) => {
+                let v = literal_to_property_value(l, &mut im.report.warnings);
+                props.entry(subj).or_default().entry(key).or_default().push(v);
             }
-
-            let mut node = Node::new(class_label.as_str());
-            node.properties.insert(
-                "iri".to_string(),
-                PropertyValue::String(subj_iri.clone()),
-            );
-            for (k, mut values) in props {
-                let v = if values.len() == 1 {
-                    values.pop().expect("len checked")
+            Object::Resource(obj) => {
+                let source = im.ensure_node(&subj).await?;
+                let target = im.ensure_node(&obj).await?;
+                let edge_type = if key == EDGE_INSTANCE_OF || key == EDGE_SUBCLASS_OF {
+                    let q = qualified_name(pred, im.prefixes);
+                    im.report.warnings.push(format!(
+                        "el predicado `{q}` colisiona con la arista reservada `{key}`: se escribió como `{q}`"
+                    ));
+                    q
                 } else {
-                    PropertyValue::List(values)
+                    key
                 };
-                node.properties.insert(k, v);
+                if im.ensure_edge(source, target, &edge_type, pred).await? {
+                    im.report.edges_created += 1;
+                }
             }
-            graph.add_node(node).await?;
-            report.instances_added += 1;
+        }
+    }
+    for (subj, values) in props {
+        let id = im.ensure_node(&subj).await?;
+        let mut node = im.graph.get_node(id).await?;
+        let mut changed = false;
+        for (k, mut vs) in values {
+            let v = if vs.len() == 1 { vs.pop().expect("len checked") } else { PropertyValue::List(vs) };
+            if node.properties.get(&k) != Some(&v) {
+                node.properties.insert(k, v);
+                changed = true;
+            }
+        }
+        if changed {
+            im.graph.add_node(node).await?;
         }
     }
 
-    // Final tally: a triple is "skipped" when no pass consumed it. This is
-    // decided here, once, with the same tests the passes used — so the count
-    // is what actually left nothing in the graph, not a per-pass guess.
-    // Idempotent re-imports still count their triples as consumed: the data
-    // is in the graph, whether this call put it there or an earlier one did.
-    for triple in triples {
-        let subj = subject_iri(&triple.subject, hash);
-        let consumed = if triple.predicate == rdf::TYPE {
-            match object_of(&triple.object, hash) {
-                // Pass 1 (class declaration) or pass 3a (individual of a known class).
-                Object::Resource(obj) if obj == OWL_CLASS.as_str() => !local_name(&subj).is_empty(),
-                Object::Resource(obj) => individuals.get(&subj) == Some(&local_name(&obj)),
+    // Prefix catalog: the document's prefixes join the graph's (later import wins).
+    im.graph.merge_rdf_prefixes(&doc.prefixes).await?;
+
+    if im.legacy_seen > 0 {
+        im.report.warnings.push(format!(
+            "{} nodo(s) con `iri` de un import anterior a 0.5.10 (`:x`) coinciden por nombre con nodos de este documento: se crearon nodos nuevos, no se fusionaron. Para una sola identidad, re-importa en una base nueva.",
+            im.legacy_seen
+        ));
+    }
+
+    // Final tally: a triple is "skipped" when no pass consumed it, decided
+    // here, once, with the same tests the passes used.
+    for t in triples {
+        let subj = subject_iri(&t.subject, hash);
+        let consumed = if im.vocabulary_subjects.contains(&subj) {
+            false
+        } else if t.predicate == rdf::TYPE {
+            match object_of(&t.object, hash) {
+                Object::Resource(obj) => !is_reserved_namespace(&obj) || obj == OWL_CLASS.as_str() || obj == OWL_NAMED_INDIVIDUAL.as_str(),
                 Object::Literal(_) => false,
             }
-        } else if triple.predicate == rdfs::SUB_CLASS_OF {
-            // Pass 2 — both endpoints had to resolve to a label.
-            match object_of(&triple.object, hash) {
-                Object::Resource(obj) => !local_name(&subj).is_empty() && !local_name(&obj).is_empty(),
-                Object::Literal(_) => false,
-            }
+        } else if t.predicate == rdfs::SUB_CLASS_OF {
+            matches!(object_of(&t.object, hash), Object::Resource(_))
         } else {
-            // Pass 3b — data property of an individual.
-            !local_name(triple.predicate.as_str()).is_empty() && individuals.contains_key(&subj)
+            let p = t.predicate.as_str();
+            p == rdfs::LABEL.as_str() || p == rdfs::COMMENT.as_str() || !is_reserved_namespace(p)
         };
         if !consumed {
-            report.triples_skipped += 1;
+            im.report.triples_skipped += 1;
         }
     }
 
-    Ok(report)
-}
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/// Find the `NodeKind::Class` node labelled `label` already stored in the graph,
-/// if any. Labels are the identity of classes on this side of the bridge (see
-/// the module docs on why prefixes are dropped).
-async fn find_class(graph: &Graph, label: &str) -> Result<Option<NodeId>> {
-    let existing = graph.get_nodes_by_label(label).await?;
-    Ok(existing
-        .into_iter()
-        .find(|n| n.kind == NodeKind::Class)
-        .map(|n| n.id))
-}
-
-/// Ensure a class node with `label` exists in graph + taxonomy, creating it if
-/// necessary. Returns its `NodeId`.
-async fn ensure_class(
-    graph: &Graph,
-    taxonomy: &mut TaxonomyIndex,
-    cache: &mut HashMap<String, NodeId>,
-    label: &str,
-) -> Result<NodeId> {
-    if let Some(&id) = cache.get(label) {
-        return Ok(id);
-    }
-
-    // Look in graph.
-    if let Some(id) = find_class(graph, label).await? {
-        taxonomy.register_class(id, label);
-        cache.insert(label.to_string(), id);
-        return Ok(id);
-    }
-
-    // Create new.
-    let mut node = Node::new(label);
-    node.kind = NodeKind::Class;
-    let id = graph.add_node(node).await?;
-    taxonomy.register_class(id, label);
-    cache.insert(label.to_string(), id);
-    Ok(id)
+    Ok(im.report)
 }
 
 // ---------------------------------------------------------------------------
@@ -653,6 +877,30 @@ mod tests {
         nodes.iter().find(|n| n.kind != NodeKind::Class).expect("an individual")
     }
 
+    fn iri_of(node: &Node) -> &str {
+        match node.properties.get(PROP_IRI) {
+            Some(PropertyValue::String(s)) => s,
+            other => panic!("iri expected, got {other:?}"),
+        }
+    }
+
+    async fn by_iri(graph: &Graph, iri: &str) -> Node {
+        let ids = graph
+            .get_all_nodes_by_property(PROP_IRI, &PropertyValue::String(iri.into()))
+            .await
+            .unwrap();
+        assert_eq!(ids.len(), 1, "exactly one node for {iri}");
+        graph.get_node(ids[0]).await.unwrap()
+    }
+
+    fn zero(r: &ImportReport) -> bool {
+        r.classes_added == 0
+            && r.subclass_edges_added == 0
+            && r.instances_added == 0
+            && r.edges_created == 0
+            && r.placeholders_created == 0
+    }
+
     // -----------------------------------------------------------------------
     // Test 1 — single class declaration
     // -----------------------------------------------------------------------
@@ -669,12 +917,11 @@ mod tests {
         assert_eq!(report.subclass_edges_added, 0);
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
 
-        // Class node exists in graph
         let nodes = graph.get_nodes_by_label("Animal").await.unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].kind, NodeKind::Class);
+        assert_eq!(iri_of(&nodes[0]), "http://example.org/ontology#Animal");
 
-        // Registered in taxonomy
         assert!(taxonomy.find_by_label("Animal").is_some());
     }
 
@@ -701,8 +948,6 @@ mod tests {
 
         let animal_id = taxonomy.find_by_label("Animal").unwrap();
         let dog_id = taxonomy.find_by_label("Dog").unwrap();
-
-        // Transitive: Dog ⊑ Animal
         assert!(taxonomy.is_subclass_of(dog_id, animal_id));
     }
 
@@ -725,11 +970,13 @@ mod tests {
 
         assert_eq!(report.classes_added, 1);
         assert_eq!(report.instances_added, 1);
+        assert_eq!(report.edges_created, 1, "one instanceOf edge");
         assert_eq!(report.triples_skipped, 0, "both data properties end up on the node");
 
         let nodes = graph.get_nodes_by_label("Animal").await.unwrap();
         let fido = individual(&nodes);
-        assert_eq!(fido.properties.get("label"), Some(&PropertyValue::String("Fido".into())));
+        // rdfs:label lands in `rdfs_label`: `label` is the Node field.
+        assert_eq!(fido.properties.get(PROP_RDFS_LABEL), Some(&PropertyValue::String("Fido".into())));
         assert_eq!(fido.properties.get("age"), Some(&PropertyValue::Int(5)));
     }
 
@@ -737,9 +984,10 @@ mod tests {
     // Test 3b — triples_skipped counts exactly what left nothing in the graph
     // -----------------------------------------------------------------------
     //
-    // Regression for the over-count: pass 2 used to add every non-`type`
-    // triple to the tally, so the two data properties below were reported as
-    // lost while they were sitting on the node.
+    // With IRI identity, everything in a user namespace is kept — a class
+    // that is only named gets created (with a warning), and a property on a
+    // class is a property. What is skipped is the reserved vocabulary the
+    // importer does not model, and it is skipped whole.
     #[tokio::test]
     async fn test_triples_skipped_counts_only_discarded_triples() {
         let (graph, _dir) = open_temp_graph().await;
@@ -755,32 +1003,39 @@ mod tests {
         assert_eq!(report.classes_added, 1);
         assert_eq!(report.instances_added, 1);
         assert_eq!(report.triples_skipped, 0);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
 
-        // Now three triples that really are dropped, mixed with consumed ones:
-        //   - rdfs:label on a CLASS (pass 3 only takes properties of individuals)
-        //   - rdf:type pointing at a class nobody declared
-        //   - a data property whose subject is that undeclared-class individual
+        // Three triples that really are dropped, mixed with consumed ones:
+        //   - an owl:Ontology header and its rdfs:label (vocabulary resource: 2)
+        //   - owl:equivalentClass between classes (axiom not modelled: 1)
+        // and two things that are NOT dropped any more:
+        //   - rdfs:label on a class → `rdfs_label` on the class node
+        //   - rdf:type pointing at an undeclared class → the class is created, with a warning
         let source = ttl(r#"
+<http://example.org/ontology> a owl:Ontology ; rdfs:label "Plantas" .
 :Planta rdfs:label "Planta" .
+:Planta owl:equivalentClass :Vegetal .
 :Cactus rdf:type :Suculenta .
 :Cactus :nombreComun "cactus" .
 :Tulipan rdf:type :Planta .
-:Tulipan :nombreComun "tulipán" .
 "#);
         let report = import_turtle(&graph, &mut taxonomy, &source).await.unwrap();
-        assert_eq!(report.classes_added, 0);
-        assert_eq!(
-            report.instances_added, 1,
-            "Tulipan is a Planta (declared by the previous import); Cactus has no known class"
-        );
-        assert_eq!(report.triples_skipped, 3);
+        assert_eq!(report.classes_added, 1, "Suculenta, created because a type named it");
+        assert_eq!(report.instances_added, 2, "Cactus and Tulipan");
+        assert_eq!(report.triples_skipped, 3, "{report:?}");
+        assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+        assert!(report.warnings[0].contains("Suculenta"));
+
+        let planta = by_iri(&graph, "http://example.org/ontology#Planta").await;
+        assert_eq!(planta.kind, NodeKind::Class);
+        assert_eq!(planta.properties.get(PROP_RDFS_LABEL), Some(&PropertyValue::String("Planta".into())));
     }
 
     // -----------------------------------------------------------------------
-    // Test 3c — re-importing the same file skips nothing (the data is there)
+    // Test 3c — re-importing the same file creates nothing and skips nothing
     // -----------------------------------------------------------------------
     #[tokio::test]
-    async fn test_reimport_reports_no_skipped_triples() {
+    async fn test_reimport_is_zero_writes() {
         let (graph, _dir) = open_temp_graph().await;
         let mut taxonomy = TaxonomyIndex::new();
 
@@ -788,19 +1043,24 @@ mod tests {
 :Planta rdf:type owl:Class .
 :Arbol rdf:type owl:Class .
 :Arbol rdfs:subClassOf :Planta .
-:Rosa rdf:type :Planta .
-:Rosa :nombreComun "rosa" .
+:Rosa rdf:type :Planta ; :nombreComun "rosa" ; :creceEn :Jardin .
+:Jardin a :Lugar .
 "#);
         let first = import_turtle(&graph, &mut taxonomy, &source).await.unwrap();
+        let edges_after_first = graph.get_all_edges().await.unwrap().len();
+        let nodes_after_first = graph.get_all_nodes().await.unwrap().len();
+
         let second = import_turtle(&graph, &mut taxonomy, &source).await.unwrap();
 
         assert_eq!(first.triples_skipped, 0);
-        assert_eq!(second.instances_added, 0, "idempotent: node already there");
+        assert!(zero(&second), "second import must create nothing: {second:?}");
         assert_eq!(second.triples_skipped, 0, "already-present data is not 'lost'");
+        assert_eq!(graph.get_all_edges().await.unwrap().len(), edges_after_first, "no duplicate edges");
+        assert_eq!(graph.get_all_nodes().await.unwrap().len(), nodes_after_first, "no duplicate nodes");
     }
 
     // -----------------------------------------------------------------------
-    // Test 4 — idempotent: import same TTL twice → no duplicate nodes
+    // Test 4 — idempotent at the node level
     // -----------------------------------------------------------------------
     #[tokio::test]
     async fn test_import_idempotent() {
@@ -813,8 +1073,6 @@ mod tests {
 
         let nodes = graph.get_nodes_by_label("Animal").await.unwrap();
         assert_eq!(nodes.len(), 1, "second import should not duplicate the node");
-
-        // Taxonomy size stays at 1
         assert_eq!(taxonomy.size(), 1);
     }
 
@@ -844,17 +1102,12 @@ mod tests {
 
         let a_id = taxonomy.find_by_label("A").unwrap();
         let d_id = taxonomy.find_by_label("D").unwrap();
-
-        // D ⊑ A transitively
         assert!(taxonomy.is_subclass_of(d_id, a_id));
-
-        // Ancestors of D: B, C, A (3 ancestors)
-        let anc = taxonomy.ancestors(d_id);
-        assert_eq!(anc.len(), 3);
+        assert_eq!(taxonomy.ancestors(d_id).len(), 3);
     }
 
     // -----------------------------------------------------------------------
-    // Test 6 — local_name over absolute IRIs and synthetic blank-node IRIs
+    // Test 6 — local_name / qualified_name
     // -----------------------------------------------------------------------
     #[test]
     fn test_local_name_extraction() {
@@ -862,6 +1115,13 @@ mod tests {
         assert_eq!(local_name("http://www.w3.org/2002/07/owl#Class"), "Class");
         assert_eq!(local_name("http://example.org/ontology#Animal"), "Animal");
         assert_eq!(local_name("_:00000000deadbeef-b0"), "b0");
+
+        let mut prefixes = BTreeMap::new();
+        prefixes.insert("".to_string(), "http://example.org/ontology#".to_string());
+        prefixes.insert("fauna".to_string(), "http://fauna.example/".to_string());
+        assert_eq!(qualified_name("http://fauna.example/Rosa", &prefixes), "fauna:Rosa");
+        assert_eq!(qualified_name("http://example.org/ontology#Rosa", &prefixes), ":Rosa");
+        assert_eq!(qualified_name("http://other.example/Rosa", &prefixes), "http://other.example/Rosa");
     }
 
     // -----------------------------------------------------------------------
@@ -879,21 +1139,17 @@ mod tests {
         assert_eq!(literal_to_property_value(&typed("2.5", xsd::DECIMAL), &mut w), PropertyValue::Float(2.5));
         assert_eq!(literal_to_property_value(&typed("true", xsd::BOOLEAN), &mut w), PropertyValue::Bool(true));
         assert_eq!(literal_to_property_value(&typed("false", xsd::BOOLEAN), &mut w), PropertyValue::Bool(false));
-        // xsd:string stays a string even when it looks like a number.
         assert_eq!(literal_to_property_value(&typed("42", xsd::STRING), &mut w), PropertyValue::String("42".into()));
-        // A plain literal is xsd:string by definition: no guessing from the shape.
         assert_eq!(
             literal_to_property_value(&Literal::new_simple_literal("42"), &mut w),
             PropertyValue::String("42".into())
         );
-        // Unknown datatypes keep the lexical value.
         assert_eq!(
             literal_to_property_value(&typed("2026-09-02", xsd::DATE), &mut w),
             PropertyValue::String("2026-09-02".into())
         );
         assert!(w.is_empty(), "{w:?}");
 
-        // A typed literal that does not parse as its type: text + warning, never dropped.
         assert_eq!(literal_to_property_value(&typed("many", xsd::INTEGER), &mut w), PropertyValue::String("many".into()));
         assert_eq!(w.len(), 1);
     }
@@ -915,13 +1171,12 @@ mod tests {
         assert!(msg.contains("line 8"), "position expected in {msg}");
         assert!(msg.contains("column"), "{msg}");
 
-        // Whole-or-nothing: the valid first statement was not written either.
         assert!(graph.get_nodes_by_label("Animal").await.unwrap().is_empty());
         assert_eq!(taxonomy.size(), 0);
     }
 
     // -----------------------------------------------------------------------
-    // Test 9 — `a`, language tags, blank nodes, @base, several prefixes
+    // Test 9 — `a`, language tags, blank nodes, @base, default prefix
     // -----------------------------------------------------------------------
     #[tokio::test]
     async fn test_a_keyword_and_language_tags() {
@@ -939,21 +1194,16 @@ mod tests {
         assert_eq!(report.instances_added, 1);
         assert_eq!(report.triples_skipped, 0, "a lang tag must not desync the statement");
 
-        let nodes = graph.get_nodes_by_label("Planta").await.unwrap();
-        let rosa = individual(&nodes);
-        // Two values for the same predicate → a List; the tags themselves are dropped.
+        let rosa = by_iri(&graph, "http://example.org/ontology#rosa").await;
+        assert_eq!(rosa.label, "Planta");
         assert_eq!(
-            rosa.properties.get("label"),
+            rosa.properties.get(PROP_RDFS_LABEL),
             Some(&PropertyValue::List(vec![
                 PropertyValue::String("rosa".into()),
                 PropertyValue::String("rose".into()),
             ]))
         );
         assert_eq!(rosa.properties.get("altura"), Some(&PropertyValue::Int(40)));
-        assert_eq!(
-            rosa.properties.get("iri"),
-            Some(&PropertyValue::String("http://example.org/ontology#rosa".into()))
-        );
     }
 
     #[tokio::test]
@@ -968,19 +1218,16 @@ _:anon a :Planta ; :nombreComun "sin nombre" .
         let first = import_turtle(&graph, &mut taxonomy, &source).await.unwrap();
         let second = import_turtle(&graph, &mut taxonomy, &source).await.unwrap();
         assert_eq!(first.instances_added, 1);
-        assert_eq!(second.instances_added, 0, "same document → same blank-node identity");
+        assert!(zero(&second), "same document → same blank-node identity: {second:?}");
 
         let nodes = graph.get_nodes_by_label("Planta").await.unwrap();
         let anon = individual(&nodes);
-        let Some(PropertyValue::String(iri)) = anon.properties.get("iri") else { panic!() };
+        let iri = iri_of(anon);
         assert!(iri.starts_with("_:") && iri.ends_with("-anon"), "{iri}");
 
-        // A different document with the same label is a different node.
-        let other = ttl(r#"
-_:anon a :Planta ; :nombreComun "otra" .
-"#);
+        let other = ttl("_:anon a :Planta ; :nombreComun \"otra\" .\n");
         let third = import_turtle(&graph, &mut taxonomy, &other).await.unwrap();
-        assert_eq!(third.instances_added, 1);
+        assert_eq!(third.instances_added, 1, "a different document is a different blank node");
     }
 
     #[tokio::test]
@@ -996,12 +1243,8 @@ _:anon a :Planta ; :nombreComun "otra" .
         assert_eq!(report.instances_added, 1);
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
 
-        let nodes = graph.get_nodes_by_label("Planta").await.unwrap();
-        let tulipan = individual(&nodes);
-        assert_eq!(
-            tulipan.properties.get("iri"),
-            Some(&PropertyValue::String("http://plants.example/flor/tulipan".into()))
-        );
+        let tulipan = by_iri(&graph, "http://plants.example/flor/tulipan").await;
+        assert_eq!(tulipan.label, "Planta");
     }
 
     #[tokio::test]
@@ -1009,7 +1252,6 @@ _:anon a :Planta ; :nombreComun "otra" .
         let (graph, _dir) = open_temp_graph().await;
         let mut taxonomy = TaxonomyIndex::new();
 
-        // No `@prefix :` line at all — the shape of every pre-existing fixture.
         let source = r#"
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
@@ -1022,22 +1264,15 @@ _:anon a :Planta ; :nombreComun "otra" .
         assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
         assert!(report.warnings[0].contains(DEFAULT_NAMESPACE));
 
-        let nodes = graph.get_nodes_by_label("Animal").await.unwrap();
-        assert_eq!(
-            individual(&nodes).properties.get("iri"),
-            Some(&PropertyValue::String(format!("{DEFAULT_NAMESPACE}fido")))
-        );
+        let fido = by_iri(&graph, &format!("{DEFAULT_NAMESPACE}fido")).await;
+        assert_eq!(fido.label, "Animal");
     }
 
     // -----------------------------------------------------------------------
-    // Test 10 — what this step does NOT do yet, stated as a test
+    // Test 10 — IRI identity: same local name, two namespaces → two nodes
     // -----------------------------------------------------------------------
-    //
-    // Two IRIs with the same local name still collapse into one node: identity
-    // is by label here. The IRI step of the bridge turns this into two nodes;
-    // when it lands, this test flips.
     #[tokio::test]
-    async fn test_same_local_name_in_two_namespaces_still_collapses() {
+    async fn test_same_local_name_in_two_namespaces_is_two_nodes() {
         let (graph, _dir) = open_temp_graph().await;
         let mut taxonomy = TaxonomyIndex::new();
 
@@ -1046,13 +1281,249 @@ _:anon a :Planta ; :nombreComun "otra" .
 @prefix fauna: <http://fauna.example/> .
 flora:Rosa a owl:Class .
 fauna:Rosa a owl:Class .
+flora:rosal a flora:Rosa .
+fauna:rosalia a fauna:Rosa .
 "#);
         let report = import_turtle(&graph, &mut taxonomy, &source).await.unwrap();
-        assert_eq!(report.classes_added, 2, "both declarations are processed…");
+        assert_eq!(report.classes_added, 2);
+        assert_eq!(report.instances_added, 2);
+
+        let flora = by_iri(&graph, "http://flora.example/Rosa").await;
+        let fauna = by_iri(&graph, "http://fauna.example/Rosa").await;
+        assert_ne!(flora.id, fauna.id);
+        assert_eq!(flora.label, "Rosa", "first one keeps the plain local name");
+        assert_eq!(fauna.label, "fauna:Rosa", "second one is qualified so the taxonomy can tell them apart");
+        assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+        assert!(report.warnings[0].contains("fauna:Rosa"));
+
+        // Each individual is labelled by its own class, and the taxonomy knows both.
+        assert_eq!(by_iri(&graph, "http://flora.example/rosal").await.label, "Rosa");
+        assert_eq!(by_iri(&graph, "http://fauna.example/rosalia").await.label, "fauna:Rosa");
+        assert!(taxonomy.find_by_label("Rosa").is_some());
+        assert!(taxonomy.find_by_label("fauna:Rosa").is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 11 — resource-valued triple → edge; unknown object → placeholder
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_resource_object_creates_edge_and_placeholder() {
+        let (graph, _dir) = open_temp_graph().await;
+        let mut taxonomy = TaxonomyIndex::new();
+
+        let source = ttl(r#"
+:Planta a owl:Class .
+:rosa a :Planta ; :creceEn :jardin .
+"#);
+        let report = import_turtle(&graph, &mut taxonomy, &source).await.unwrap();
+        assert_eq!(report.instances_added, 1);
+        assert_eq!(report.placeholders_created, 1, ":jardin was never declared");
+        assert_eq!(report.edges_created, 2, "instanceOf + creceEn");
+        assert_eq!(report.triples_skipped, 0);
+
+        let rosa = by_iri(&graph, "http://example.org/ontology#rosa").await;
+        let jardin = by_iri(&graph, "http://example.org/ontology#jardin").await;
+        assert_eq!(jardin.label, "jardin");
+        assert_eq!(jardin.properties.get(PROP_PLACEHOLDER), Some(&PropertyValue::Bool(true)));
+
+        let edges = graph.get_outgoing_edges(rosa.id).await.unwrap();
+        let crece = edges.iter().find(|e| e.edge_type == "creceEn").expect("creceEn edge");
+        assert_eq!(crece.target, jardin.id);
         assert_eq!(
-            graph.get_nodes_by_label("Rosa").await.unwrap().len(),
-            1,
-            "…but they are one node: identity is by label at this step"
+            crece.properties.get(PROP_IRI),
+            Some(&PropertyValue::String("http://example.org/ontology#creceEn".into()))
         );
+        // Not a string property any more.
+        assert!(rosa.properties.get("creceEn").is_none());
+
+        // A later file types the placeholder: same node (same id), upgraded in place.
+        let later = ttl(r#"
+:Lugar a owl:Class .
+:jardin a :Lugar ; :nombre "jardín trasero" .
+"#);
+        let report = import_turtle(&graph, &mut taxonomy, &later).await.unwrap();
+        assert_eq!(report.placeholders_created, 0);
+        assert_eq!(report.instances_added, 1, "the placeholder became an instance");
+        let jardin2 = by_iri(&graph, "http://example.org/ontology#jardin").await;
+        assert_eq!(jardin2.id, jardin.id, "edges pointing at it stay valid");
+        assert_eq!(jardin2.label, "Lugar");
+        assert!(jardin2.properties.get(PROP_PLACEHOLDER).is_none());
+        assert_eq!(jardin2.properties.get("nombre"), Some(&PropertyValue::String("jardín trasero".into())));
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 12 — several rdf:type → one instanceOf edge each, first one labels
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_multiple_types_create_instanceof_edges() {
+        let (graph, _dir) = open_temp_graph().await;
+        let mut taxonomy = TaxonomyIndex::new();
+
+        let source = ttl(r#"
+:Planta a owl:Class .
+:Medicinal a owl:Class .
+:manzanilla a :Planta, :Medicinal ; a owl:NamedIndividual .
+"#);
+        let report = import_turtle(&graph, &mut taxonomy, &source).await.unwrap();
+        assert_eq!(report.instances_added, 1);
+        assert_eq!(report.edges_created, 2, "one instanceOf per class; owl:NamedIndividual is a no-op");
+        assert_eq!(report.triples_skipped, 0);
+
+        let manzanilla = by_iri(&graph, "http://example.org/ontology#manzanilla").await;
+        assert_eq!(manzanilla.label, "Planta", "the first type names the node");
+        let mut targets: Vec<String> = Vec::new();
+        for e in graph.get_outgoing_edges(manzanilla.id).await.unwrap() {
+            assert_eq!(e.edge_type, EDGE_INSTANCE_OF);
+            targets.push(graph.get_node(e.target).await.unwrap().label);
+        }
+        targets.sort();
+        assert_eq!(targets, vec!["Medicinal", "Planta"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 13 — classes in one file, instances in another: nothing skipped
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_two_file_import_nothing_skipped() {
+        let (graph, _dir) = open_temp_graph().await;
+        let mut taxonomy = TaxonomyIndex::new();
+
+        let ontology = ttl(r#"
+:Planta a owl:Class .
+:Arbol a owl:Class ; rdfs:subClassOf :Planta .
+"#);
+        let data = ttl(r#"
+:roble a :Arbol ; :altura "20"^^xsd:integer ; :vecinoDe :haya .
+:haya a :Arbol .
+"#);
+        let first = import_turtle(&graph, &mut taxonomy, &ontology).await.unwrap();
+        let second = import_turtle(&graph, &mut taxonomy, &data).await.unwrap();
+        assert_eq!(first.classes_added, 2);
+        assert_eq!(second.classes_added, 0, "Arbol comes from the graph, not this file");
+        assert_eq!(second.instances_added, 2);
+        assert_eq!(second.edges_created, 3, "2 instanceOf + vecinoDe");
+        assert_eq!(second.placeholders_created, 0, "haya is typed in the same file");
+        assert_eq!(second.triples_skipped, 0);
+        assert!(second.warnings.is_empty(), "{:?}", second.warnings);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 14 — a user predicate named like a reserved edge is qualified
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_user_predicate_named_instanceof_is_qualified() {
+        let (graph, _dir) = open_temp_graph().await;
+        let mut taxonomy = TaxonomyIndex::new();
+
+        let source = ttl(r#"
+:Planta a owl:Class .
+:a a :Planta . :b a :Planta .
+:a :instanceOf :b .
+:a :subClassOf :b .
+"#);
+        let report = import_turtle(&graph, &mut taxonomy, &source).await.unwrap();
+        assert_eq!(report.edges_created, 4);
+        assert_eq!(report.warnings.len(), 2, "{:?}", report.warnings);
+
+        let a = by_iri(&graph, "http://example.org/ontology#a").await;
+        let mut types: Vec<String> = graph
+            .get_outgoing_edges(a.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.edge_type)
+            .collect();
+        types.sort();
+        assert_eq!(types, vec![":instanceOf", ":subClassOf", "instanceOf"]);
+        // And the taxonomy is untouched by the user edge.
+        assert_eq!(taxonomy.size(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 15 — nodes from a pre-0.5.10 import are reported, not merged
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_legacy_nodes_are_reported() {
+        let (graph, _dir) = open_temp_graph().await;
+        let mut taxonomy = TaxonomyIndex::new();
+
+        // What the old importer left: class without iri, individual with the raw token.
+        let mut planta = Node::new("Planta");
+        planta.kind = NodeKind::Class;
+        let planta_id = graph.add_node(planta).await.unwrap();
+        let mut rosa = Node::new("Planta");
+        rosa.properties.insert(PROP_IRI.into(), PropertyValue::String(":rosa".into()));
+        graph.add_node(rosa).await.unwrap();
+
+        let source = ttl(r#"
+:Planta a owl:Class .
+:rosa a :Planta .
+"#);
+        let report = import_turtle(&graph, &mut taxonomy, &source).await.unwrap();
+        // The class is adopted (same node, now with an iri); the individual is not.
+        assert_eq!(report.classes_added, 0);
+        assert_eq!(by_iri(&graph, "http://example.org/ontology#Planta").await.id, planta_id);
+        assert_eq!(report.instances_added, 1);
+        assert_eq!(graph.get_nodes_by_label("Planta").await.unwrap().len(), 3, "class + legacy + new");
+        assert!(report.warnings.iter().any(|w| w.contains("anterior a 0.5.10")), "{:?}", report.warnings);
+        assert!(report.warnings.iter().any(|w| w.contains("existía sin IRI")), "{:?}", report.warnings);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 15b — a raw `subClassOf` edge touching an individual does not enter
+    // the taxonomy when the graph is (re)built from storage
+    // -----------------------------------------------------------------------
+    //
+    // `TaxonomyIndex::add_subclass` accepts any pair of ids, so before the
+    // guard a `subClassOf` edge from an individual to a class made that
+    // individual a "subclass" on every open. Any client can write such an
+    // edge; the importer is only the most likely one.
+    #[tokio::test]
+    async fn test_rebuild_taxonomy_ignores_edges_touching_individuals() {
+        let (graph, _dir) = open_temp_graph().await;
+        let mut taxonomy = TaxonomyIndex::new();
+
+        let source = ttl(r#"
+:Planta a owl:Class .
+:Arbol a owl:Class ; rdfs:subClassOf :Planta .
+:roble a :Arbol .
+"#);
+        import_turtle(&graph, &mut taxonomy, &source).await.unwrap();
+        let planta = by_iri(&graph, "http://example.org/ontology#Planta").await;
+        let arbol = by_iri(&graph, "http://example.org/ontology#Arbol").await;
+        let roble = by_iri(&graph, "http://example.org/ontology#roble").await;
+
+        graph.add_edge(Edge::new(roble.id, planta.id, EDGE_SUBCLASS_OF)).await.unwrap();
+
+        graph.rebuild_taxonomy_from_graph().await.unwrap();
+        let mut rebuilt = graph.get_taxonomy_sync().expect("taxonomy after rebuild");
+        assert!(rebuilt.is_subclass_of(arbol.id, planta.id), "the declared axiom survives");
+        assert!(!rebuilt.is_subclass_of(roble.id, planta.id), "the individual is not a class");
+        assert!(rebuilt.is_subclass_of_label("Arbol", planta.id));
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 16 — prefixes persist in the catalog and merge across imports
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_prefixes_persist_and_merge() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_str().unwrap().to_string();
+        {
+            let graph = Graph::open(&path).await.unwrap();
+            let mut taxonomy = TaxonomyIndex::new();
+            assert!(graph.rdf_prefixes().await.unwrap().is_empty());
+            let a = ttl("@prefix flora: <http://flora.example/> .\nflora:Rosa a owl:Class .\n");
+            import_turtle(&graph, &mut taxonomy, &a).await.unwrap();
+            let b = ttl("@prefix fauna: <http://fauna.example/> .\n@prefix flora: <http://flora.example/v2/> .\nfauna:Lobo a owl:Class .\n");
+            import_turtle(&graph, &mut taxonomy, &b).await.unwrap();
+            graph.close().await.unwrap();
+        }
+        let graph = Graph::open(&path).await.unwrap();
+        let prefixes = graph.rdf_prefixes().await.unwrap();
+        assert_eq!(prefixes.get("").map(String::as_str), Some("http://example.org/ontology#"));
+        assert_eq!(prefixes.get("fauna").map(String::as_str), Some("http://fauna.example/"));
+        assert_eq!(prefixes.get("flora").map(String::as_str), Some("http://flora.example/v2/"), "later import wins");
+        assert_eq!(prefixes.get("xsd").map(String::as_str), Some("http://www.w3.org/2001/XMLSchema#"));
     }
 }

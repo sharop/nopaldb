@@ -178,3 +178,93 @@ async fn test_import_then_reasoner_classify() {
         "EL reasoner must infer C ⊑ A via transitivity"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 5 — `:rosa :creceEn :jardin` es una arista que NQL puede recorrer
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn test_resource_object_creates_edge_queryable_by_nql() {
+    let (graph, _dir) = open_temp_graph().await;
+
+    let ttl = r#"
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix :    <http://plantas.example/> .
+
+:Planta a owl:Class .
+:Lugar  a owl:Class .
+:rosa   a :Planta ; :nombre "rosa" ; :creceEn :jardin .
+:cactus a :Planta ; :nombre "cactus" ; :creceEn :maceta .
+:jardin a :Lugar ; :nombre "jardín" .
+:maceta a :Lugar ; :nombre "maceta" .
+"#;
+    let report = graph.import_turtle(ttl).await.unwrap();
+    assert_eq!(report.edges_created, 6, "4 instanceOf + 2 creceEn");
+    assert_eq!(report.placeholders_created, 0);
+
+    let result = graph
+        .execute_nql(r#"find p.nombre, l.nombre from (p:Planta)-[:creceEn]->(l:Lugar) where p.nombre = "rosa""#)
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1, "{result:?}");
+    assert_eq!(
+        result.rows()[0].get("l.nombre"),
+        Some(&nopaldb::types::PropertyValue::String("jardín".into()))
+    );
+
+    // Y las aristas instanceOf también se recorren.
+    let result = graph
+        .execute_nql(r#"find p.nombre from (p)-[:instanceOf]->(c) where c.label = "Planta" order by p.nombre"#)
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 2, "{result:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Test 6 — una arista `subClassOf` entre individuos no envenena la taxonomía
+// ---------------------------------------------------------------------------
+//
+// `rebuild_taxonomy_from_graph` corre en cada `Graph::open`. Antes de 0.5.10
+// tomaba TODA arista `subClassOf`; con aristas por predicado de usuario, un
+// `:a :subClassOf :b` entre individuos entraría a la jerarquía. El importer
+// califica ese predicado (`:subClassOf`) y el rebuild exige extremos Class.
+#[cfg(feature = "reasoner")]
+#[tokio::test]
+async fn test_user_subclassof_between_individuals_survives_reopen() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().to_str().unwrap().to_string();
+
+    let ttl = r#"
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix :    <http://plantas.example/> .
+
+:Planta a owl:Class .
+:Arbol  a owl:Class ; rdfs:subClassOf :Planta .
+:roble  a :Arbol .
+:haya   a :Arbol .
+:roble  :subClassOf :haya .
+"#;
+    {
+        let graph = Graph::open(&path).await.unwrap();
+        let report = graph.import_turtle(ttl).await.unwrap();
+        assert!(report.warnings.iter().any(|w| w.contains(":subClassOf")), "{:?}", report.warnings);
+        graph.close().await.unwrap();
+    }
+
+    let graph = Graph::open(&path).await.unwrap();
+    // instanceOf transitivo sigue correcto: 2 árboles son plantas, y nada más.
+    let result = graph
+        .execute_nql(r#"find n.label from (n) where instanceOf(n, "Planta")"#)
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 2, "{result:?}");
+    // La jerarquía de clases es la declarada: solo Arbol bajo Planta.
+    let result = graph
+        .execute_nql(r#"find c.label from (c) where subClassOf(c, "Planta")"#)
+        .await
+        .unwrap();
+    let labels: Vec<_> = result.rows().iter().filter_map(|r| r.get("c.label").cloned()).collect();
+    assert_eq!(labels, vec![nopaldb::types::PropertyValue::String("Arbol".into())], "{result:?}");
+}

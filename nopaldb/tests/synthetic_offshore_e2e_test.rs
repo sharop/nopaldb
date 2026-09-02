@@ -23,7 +23,8 @@ mod tests {
 
     static TTL: &str = include_str!("fixtures/synthetic_offshore.ttl");
 
-    /// Importa el TTL y agrega aristas entre individuos.
+    /// Importa el TTL (clases, individuos y las relaciones sin propiedades) y
+    /// agrega a mano las aristas `registeredIn`, que llevan `risk` en la arista.
     async fn build_graph() -> Graph {
         let graph = Graph::in_memory().await.unwrap();
 
@@ -35,6 +36,11 @@ mod tests {
         assert_eq!(report.subclass_edges_added, 2);
         // 4 jurisdicciones + 2 intermediarios + 4 entidades + 4 oficiales = 14
         assert_eq!(report.instances_added, 14);
+        // 14 instanceOf + 4 intermediaryOf + 5 hasOfficer
+        assert_eq!(report.edges_created, 23);
+        assert_eq!(report.placeholders_created, 0, "todo objeto del TTL está tipado");
+        assert_eq!(report.triples_skipped, 0);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
 
         let find = |label: &str, name_val: &str| {
             let graph = graph.clone();
@@ -59,19 +65,11 @@ mod tests {
         let bvi = find("Jurisdiction", "British Virgin Islands").await;
         let harbor_cay = find("Jurisdiction", "Harbor Cay").await;
         let seychelles = find("Jurisdiction", "Seychelles").await;
-
-        let atlas = find("Intermediary", "Atlas Fiduciary Group").await;
-        let alpha = find("Intermediary", "Alpha Services Ltd").await;
-
         let sunrise = find("OffshoreEntity", "Sunrise Holdings BVI").await;
         let bluewater = find("OffshoreEntity", "Bluewater Capital SA").await;
         let redmond = find("OffshoreEntity", "Redmond International Ltd").await;
         let zephyr = find("OffshoreEntity", "Zephyr Trust Seychelles").await;
 
-        let alice = find("Officer", "Alice Novak").await;
-        let bob = find("Officer", "Bob Okafor").await;
-        let carol = find("Officer", "Carol Svensson").await;
-        let dave = find("Officer", "Dave Muller").await;
 
         // registeredIn: entidad → jurisdicción (con propiedad risk)
         graph
@@ -103,45 +101,7 @@ mod tests {
             .await
             .unwrap();
 
-        // intermediaryOf: intermediario → entidad
-        graph
-            .add_edge(Edge::new(atlas, sunrise, "intermediaryOf"))
-            .await
-            .unwrap();
-        graph
-            .add_edge(Edge::new(atlas, bluewater, "intermediaryOf"))
-            .await
-            .unwrap();
-        graph
-            .add_edge(Edge::new(atlas, redmond, "intermediaryOf"))
-            .await
-            .unwrap();
-        graph
-            .add_edge(Edge::new(alpha, zephyr, "intermediaryOf"))
-            .await
-            .unwrap();
-
-        // hasOfficer: entidad → oficial
-        graph
-            .add_edge(Edge::new(sunrise, alice, "hasOfficer"))
-            .await
-            .unwrap();
-        graph
-            .add_edge(Edge::new(bluewater, alice, "hasOfficer"))
-            .await
-            .unwrap(); // alice en 2 entidades
-        graph
-            .add_edge(Edge::new(bluewater, bob, "hasOfficer"))
-            .await
-            .unwrap();
-        graph
-            .add_edge(Edge::new(redmond, carol, "hasOfficer"))
-            .await
-            .unwrap();
-        graph
-            .add_edge(Edge::new(zephyr, dave, "hasOfficer"))
-            .await
-            .unwrap();
+        // intermediaryOf y hasOfficer vienen del TTL (aristas por objeto-recurso).
 
         graph
     }

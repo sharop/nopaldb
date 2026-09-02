@@ -2719,6 +2719,40 @@ impl Graph {
         Ok(report)
     }
 
+    /// Prefixes declared by the Turtle documents imported into this graph
+    /// (`prefix → namespace IRI`), merged across imports with the latest
+    /// declaration winning. Empty for a graph that never imported Turtle.
+    #[cfg(feature = "owl-import")]
+    pub async fn rdf_prefixes(&self) -> Result<std::collections::BTreeMap<String, String>> {
+        use crate::storage::META_RDF_PREFIXES;
+        match self.storage.get_meta_bytes(META_RDF_PREFIXES).await? {
+            Some(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| NopalError::SerializationError(format!("catálogo de prefijos RDF ilegible: {e}"))),
+            None => Ok(Default::default()),
+        }
+    }
+
+    /// Merge a document's prefixes into the catalog. Later declarations win
+    /// per prefix, which is what a reader of the exported Turtle expects.
+    #[cfg(feature = "owl-import")]
+    pub(crate) async fn merge_rdf_prefixes(
+        &self,
+        prefixes: &std::collections::BTreeMap<String, String>,
+    ) -> Result<()> {
+        use crate::storage::META_RDF_PREFIXES;
+        let mut merged = self.rdf_prefixes().await?;
+        let before = merged.clone();
+        for (p, ns) in prefixes {
+            merged.insert(p.clone(), ns.clone());
+        }
+        if merged != before {
+            let bytes = serde_json::to_vec(&merged)
+                .map_err(|e| NopalError::SerializationError(format!("catálogo de prefijos RDF: {e}")))?;
+            self.storage.put_meta_bytes(META_RDF_PREFIXES, &bytes).await?;
+        }
+        Ok(())
+    }
+
     /// Rebuild the TaxonomyIndex from Class nodes and `subClassOf` edges stored in the graph.
     ///
     /// Called automatically by `open_with_options` when `NodeKind::Class` nodes are detected,
@@ -2737,15 +2771,24 @@ impl Graph {
         }
 
         let mut tax = crate::index::TaxonomyIndex::new();
+        let class_ids: std::collections::HashSet<NodeId> = class_nodes.iter().map(|n| n.id).collect();
         for node in &class_nodes {
             tax.register_class(node.id, &node.label);
         }
 
         // Edges stored by importer as source=child, target=parent.
         // add_subclass(parent, child) wires the hierarchy correctly.
+        //
+        // Only Class→Class edges count (same rule as the reasoner). The Turtle
+        // importer writes an edge per user predicate, so a `subClassOf`-named
+        // edge between two individuals is data, not taxonomy; feeding it here
+        // would poison every `instanceOf` answer on the next open.
         let edges = self.storage.get_all_edges().await?;
         for edge in &edges {
-            if edge.edge_type == "subClassOf" {
+            if edge.edge_type == "subClassOf"
+                && class_ids.contains(&edge.source)
+                && class_ids.contains(&edge.target)
+            {
                 let _ = tax.add_subclass(edge.target, edge.source);
             }
         }

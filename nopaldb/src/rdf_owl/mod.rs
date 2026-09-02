@@ -1,48 +1,61 @@
-//! Turtle/OWL bridge: load an ontology into the property graph, and write the
-//! ontological part of the graph back out as Turtle.
+//! Turtle/OWL bridge: load an ontology and its data into the property graph,
+//! and write the ontological part of the graph back out as Turtle.
 //!
-//! This is an **ontology loader**, not an RDF store. It exists so that a class
-//! hierarchy and its individuals can be queried with `instanceOf` /
-//! `subClassOf` in NQL and fed to the OWL-EL reasoner. Anyone evaluating
-//! NopalDB to interoperate with a triple store needs the exact contract below
-//! before deciding — "lossy" undersells what is lost.
+//! The import is a **materialization**, not an RDF store: NopalDB keeps no
+//! triples, has no SPARQL and no named graphs. Keep the triple store as the
+//! system of record and materialize here the subgraph you want to query,
+//! reason over or embed. What follows is the exact contract.
+//!
+//! # Identity
+//!
+//! Every imported node carries its absolute IRI in the `iri` property, and
+//! that IRI is its identity: a class or individual with the same IRI is
+//! reused, never duplicated, and importing the same document twice creates
+//! nothing. Labels, edge types and property names are the *readable* half of
+//! a term — its local name (after `#` or the last `/`) — and are never used
+//! to decide identity. When two classes from different namespaces share a
+//! local name, the second one is labelled with its qualified name
+//! (`fauna:Rosa`), so the label-keyed taxonomy and `instanceOf` can tell them
+//! apart; the import reports it.
 //!
 //! # What the import keeps
 //!
 //! | Turtle | Graph |
 //! |--------|-------|
-//! | `:X rdf:type owl:Class` | node `X` with `NodeKind::Class` |
+//! | `:X a owl:Class` | node `X`, `NodeKind::Class`, `iri` |
 //! | `:X rdfs:subClassOf :Y` | edge `X → Y` of type `subClassOf`, plus the taxonomy index |
-//! | `:x rdf:type :X` (X a known class) | node with label `X`, property `iri` = the absolute IRI of `:x` |
-//! | `:x :p "literal"` (x an individual) | property `p` on that node, typed by the literal's datatype (table below); the same predicate twice → a `List` |
+//! | `:x a :X` (every type) | node with label = local name of the **first** type, `iri`; one edge `x → X` of type `instanceOf` per type |
+//! | `:x :p :y` (resource object) | edge `x → y` of type `p` (local name), with the predicate IRI in the edge's `iri` property |
+//! | `:x :p "literal"` | property `p` on the node, typed by datatype (table below); the same predicate twice → a `List` |
+//! | `rdfs:label` / `rdfs:comment` on anything | properties `rdfs_label` / `rdfs_comment` (`label` is the `Node` field, and `n.label` in NQL must keep meaning that) |
+//! | `:x a :Z` with `Z` never declared | the class `Z` is created, and the import reports it |
+//! | `:x :p :y` with `:y` never described | a **placeholder** node for `:y` (`iri`, `rdf_placeholder = true`), upgraded in place when a later document types it — edges pointing at it stay valid |
+//! | `:x a owl:NamedIndividual` | consumed as a no-op |
 //!
-//! Re-importing the same file is idempotent: classes are matched by label,
-//! individuals by their `iri` property. A class declared by an earlier import
-//! counts as known, so an ontology in one file and its instances in another
-//! work.
+//! Reserved edge types: `rdf:type` becomes `instanceOf` and `rdfs:subClassOf`
+//! stays `subClassOf`. A user predicate whose local name is one of those is
+//! written under its qualified name (`ex:subClassOf`) and reported, so the
+//! taxonomy is never fed a data edge. The taxonomy rebuilt on every
+//! `Graph::open` also only accepts `subClassOf` edges between two classes.
 //!
-//! # What the import loses
+//! Prefixes declared by the imported documents are kept in the graph catalog
+//! (`Graph::rdf_prefixes`), merged across imports with the latest declaration
+//! winning.
 //!
-//! - **IRI identity.** Terms are reduced to their local name (the part after
-//!   `#` or the last `/`); prefixes and `@base` are discarded. Two IRIs with the
-//!   same local name in different namespaces collapse into one node. Only the
-//!   `iri` property of individuals keeps the full, expanded IRI.
-//! - **Object properties.** A triple whose object is a resource
-//!   (`:x :knows :y`) does **not** create an edge: the object is stored as a
-//!   string property. The only edges the bridge creates are `subClassOf`.
-//! - **Multiple types.** An individual keeps its first `rdf:type` only.
-//! - **Class metadata.** `rdfs:label`, `rdfs:comment` and any other triple
-//!   whose subject is a class (not an individual) are dropped.
-//! - **Instances of unknown classes.** `:x rdf:type :Y` where `Y` was never
-//!   declared as `owl:Class` is skipped, together with the data properties
-//!   of `:x`.
-//! - **Everything else.** `owl:Ontology` headers, property declarations,
-//!   restrictions, equivalence axioms — anything the table above does not
-//!   list.
+//! # What the import skips
 //!
-//! Each dropped triple adds one to `ImportReport::triples_skipped`.
-//! The data properties of individuals do not: they are imported, and the
-//! count is exactly what left nothing in the graph.
+//! Reserved vocabulary the importer does not model, and it skips it whole:
+//! `owl:Ontology` headers and every statement about them, property
+//! declarations (`owl:ObjectProperty`, `owl:DatatypeProperty`, …),
+//! `rdfs:domain` / `rdfs:range` / `rdfs:subPropertyOf`, `owl:equivalentClass`
+//! and the other OWL axioms. Each adds one to
+//! `ImportReport::triples_skipped`. Everything in a user namespace is kept,
+//! so a non-zero count is a list of axioms, never of data.
+//!
+//! What is kept but *narrowed*: language tags (`"rosa"@es` lands as the
+//! string `rosa`), datatypes other than integer/decimal/boolean (`xsd:date`
+//! lands as its text), and edge properties — RDF has no such thing, so an
+//! edge imported from Turtle carries only the predicate IRI.
 //!
 //! # Parsing
 //!
@@ -53,9 +66,8 @@
 //!
 //! Two things the parser needs that a document may lack are assumed and
 //! reported in [`importer::ImportReport::warnings`]: an empty prefix (`:Foo`)
-//! without `@prefix :` resolves against
-//! [`importer::DEFAULT_NAMESPACE`], and a relative IRI without `@base`
-//! against [`importer::DEFAULT_BASE`].
+//! without `@prefix :` resolves against [`importer::DEFAULT_NAMESPACE`], and
+//! a relative IRI without `@base` against [`importer::DEFAULT_BASE`].
 //!
 //! Literals map to property values by datatype, not by the shape of the text:
 //!
@@ -64,31 +76,35 @@
 //! | `xsd:integer` family (`int`, `long`, `short`, `byte`, unsigned, `nonNegativeInteger`, …) | `Int` |
 //! | `xsd:decimal`, `xsd:double`, `xsd:float` | `Float` |
 //! | `xsd:boolean` | `Bool` |
-//! | `xsd:string`, plain literal, language-tagged literal, anything else (`xsd:date`, `xsd:anyURI`, …) | `String` (lexical value; the language tag is dropped) |
+//! | `xsd:string`, plain literal, language-tagged literal, anything else | `String` (lexical value) |
 //!
 //! A typed literal whose text does not parse as its type is kept as `String`
 //! and reported. Blank nodes get a synthetic identity scoped to the document
-//! (`_:<hash>-<label>`), so re-importing the same file is idempotent.
+//! (`_:<hash>-<label>`), so re-importing the same file is idempotent and two
+//! files that both say `_:b0` never collide.
 //!
-//! # What the export omits
+//! # Databases imported before 0.5.10
 //!
-//! `export_turtle` writes classes, `subClassOf` edges and individuals with
-//! their scalar data properties. It omits every other edge (nothing but
-//! `subClassOf` is emitted), nodes without an `iri` property, and `Null`,
-//! `Bytes`, `List`, `Object` and non-finite float properties. Local names are
-//! sanitized to ASCII `[A-Za-z0-9_-]` (anything else becomes `_`), and the
-//! default namespace is a fixed `http://example.org/ontology#` regardless of
-//! what the imported file declared. A round trip therefore preserves the
-//! counts of classes, subclass edges and individuals, but not IRIs,
-//! namespaces, or relationships between individuals.
+//! The first importer identified everything by label and stored the raw token
+//! (`:Alice`) in `iri`. Such nodes still export correctly. A new import next
+//! to them does not merge: a class without `iri` under the same label is
+//! adopted (it gets its IRI), but an individual with a raw token is a
+//! different identity from the same individual with its absolute IRI, and the
+//! import reports how many it saw. The upgrade path is to re-import into a
+//! fresh database.
 //!
-//! # Where this is going
+//! # What the export does today
 //!
-//! A faithful bridge — real Turtle grammar with errors, IRI identity, edges for
-//! resource-valued triples, a symmetric exporter — is tracked in the public
-//! roadmap. NopalDB will not become a triple store (no SPARQL, no named
-//! graphs); the intended shape is coexistence: keep the triple store, and
-//! materialize the subgraph you query here.
+//! `export_turtle` writes classes (by IRI, compacted to `:X` under the default
+//! namespace), `subClassOf` edges, and individuals with one `rdf:type` per
+//! `instanceOf` edge, their scalar data properties (`rdfs_label` back to
+//! `rdfs:label`), and nothing else: edges between individuals and the
+//! document's own namespaces are not written yet, and `Null`, `Bytes`,
+//! `List`, `Object` and non-finite floats are dropped in silence. Making the
+//! exporter symmetric with the importer is the next step of the bridge and
+//! is tracked in the public roadmap. Until then a round trip preserves
+//! classes, the hierarchy, individuals, their types and their scalar
+//! properties, but not the relationships between individuals.
 
 #[cfg(feature = "owl-import")]
 pub mod importer;

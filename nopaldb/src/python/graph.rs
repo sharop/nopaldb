@@ -826,7 +826,8 @@ impl PyGraph {
     ///     ttl_source (str): Contenido Turtle como string.
     ///
     /// Returns:
-    ///     dict: {classes_added, subclass_edges_added, instances_added, triples_skipped, warnings}.
+    ///     dict: {classes_added, subclass_edges_added, instances_added, edges_created,
+    ///           placeholders_created, triples_skipped, warnings}.
     ///     `triples_skipped` cuenta solo los triples que no dejaron nada en el grafo
     ///     (metadatos de clases, tipos desconocidos, axiomas no modelados); las data
     ///     properties de individuos se importan y no cuentan.
@@ -845,7 +846,25 @@ impl PyGraph {
         dict.set_item("subclass_edges_added", report.subclass_edges_added)?;
         dict.set_item("instances_added",      report.instances_added)?;
         dict.set_item("triples_skipped",      report.triples_skipped)?;
+        dict.set_item("edges_created",        report.edges_created)?;
+        dict.set_item("placeholders_created", report.placeholders_created)?;
         dict.set_item("warnings",             report.warnings.clone())?;
+        Ok(dict.into())
+    }
+
+    /// Prefijos declarados por los documentos Turtle importados en este grafo
+    /// (`{prefijo: namespace}`), fusionados entre imports. Vacío si nunca se
+    /// importó Turtle.
+    #[cfg(feature = "python-owl")]
+    fn rdf_prefixes(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        let graph = self.graph()?;
+        let map = to_py_result(
+            crate::python::runtime::block_on(py, async move { graph.rdf_prefixes().await })
+        )?;
+        let dict = pyo3::types::PyDict::new(py);
+        for (k, v) in map {
+            dict.set_item(k, v)?;
+        }
         Ok(dict.into())
     }
 

@@ -529,6 +529,10 @@ pub(crate) mod v2 {
     /// Nombre meta de la marca de limpieza idempotente del legacy. Si falta
     /// con `layout_format=2`, el próximo open solo reanuda la limpieza.
     pub(crate) const META_LEGACY_CLEANUP_DONE: &str = "legacy_cleanup_done";
+    /// Nombre meta del catálogo de prefijos RDF (`import_turtle` los
+    /// persiste; JSON `{prefijo: IRI}`). Primera meta que no es un u64.
+    #[cfg(feature = "owl-import")]
+    pub(crate) const META_RDF_PREFIXES: &str = "rdf_prefixes";
 
     /// Entrada meta del catalog: `m` + nombre UTF-8 (sin separador: el
     /// namespace `m` solo contiene metas y el nombre es el resto de la clave).
