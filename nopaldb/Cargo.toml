@@ -1,6 +1,6 @@
 [package]
 name = "nopaldb"
-version = "0.5.9"
+version = "0.5.10"
 authors = ["Sharop <sharop@gmail.com>"]
 description = "High-performance graph database with ACID transactions, MVCC time-travel, and Arrow analytics"
 keywords = ["graph", "database", "embedded", "mvcc", "arrow"]
@@ -28,6 +28,14 @@ exclude = [
 name = "nopaldb"
 crate-type = ["rlib", "cdylib"]
 
+
+# docs.rs construye con features DEFAULT si no se le dice otra cosa, y así
+# publicó hasta 0.5.9: sin algoritmos, embeddings, reasoner, SHACL ni
+# aislamiento — la mitad del crate invisible. `full` es el tier público más
+# ancho que compila sin Python (`python` necesita pyo3 y un intérprete) y sin
+# un segundo motor (`storage-redb` es opt-in). No `all-features` por eso.
+[package.metadata.docs.rs]
+features = ["full"]
 
 [dependencies]
 anyhow = "1.0"

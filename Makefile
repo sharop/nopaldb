@@ -15,7 +15,7 @@ WORKSPACE_VERSION := $(shell awk '/^\[workspace.package\]/{flag=1;next}/^\[/{fla
 	test test-core test-semantic test-full \
 	clippy clippy-core clippy-semantic clippy-full \
 	build-rust build-wheel build-wheel-all \
-	package-bin package-qa checksums clean
+	package-bin package-qa checksums clean check-on-main publish-crate
 
 help:
 	@echo "Targets:"
@@ -28,6 +28,7 @@ help:
 	@echo "  make clippy-semantic    - clippy tier semantic"
 	@echo "  make clippy-full        - clippy full public feature set"
 	@echo "  make check-doc-links    - links relativos de docs/ y READMEs apuntan a archivos que existen"
+	@echo "  make publish-crate      - cargo publish SOLO desde main al dia (check-on-main + checks)"
 	@echo "  make package-qa         - valida y empaqueta nopaldb (binario + wheel python)"
 	@echo "  make build-wheel        - wheel para PYTHON (default: python3), ej: PYTHON=python3.12"
 	@echo "  make build-wheel-all    - wheels para Python 3.10, 3.11, 3.12 y 3.13 (los que existan)"
@@ -44,6 +45,22 @@ ifeq ($(ALLOW_DIRTY),1)
 else
 	@test -z "$$(git status --porcelain)" || (echo "Hay cambios sin commit. Limpia el árbol antes de empaquetar." && exit 1)
 endif
+
+check-on-main:
+	@# `cargo publish` salió desde una rama dos veces (0.5.3 y 0.5.9). Las dos
+	@# veces el árbol resultó byte-idéntico a main, por suerte y no por diseño:
+	@# el SHA que crates.io registró apunta a un commit que ya no existe en
+	@# GitHub. El paso "checkout main + pull" del runbook es el que se salta;
+	@# aquí deja de ser un paso y pasa a ser una condición.
+	@b=$$(git branch --show-current); \
+	[ "$$b" = "main" ] || { echo "Estás en '$$b'. Se publica SOLO desde main: git checkout main && git pull --ff-only"; exit 1; }
+	@git fetch -q origin main; \
+	[ "$$(git rev-parse HEAD)" = "$$(git rev-parse origin/main)" ] || { echo "main local no es origin/main: git pull --ff-only"; exit 1; }
+	@echo "git: en main y al día con origin/main"
+
+publish-crate: check-on-main check-clean check-version-sync check-changelog-dates
+	cargo publish -p nopaldb --dry-run
+	cargo publish -p nopaldb
 
 check-version-sync:
 	@echo "nopaldb Cargo version: $(CARGO_VERSION)"

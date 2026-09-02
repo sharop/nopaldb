@@ -33,7 +33,9 @@ async fn main() -> nopaldb::Result<()> {
     tx.commit().await?;
 
     let result = graph.execute_nql("find p.name from (p:Person)").await?;
-    println!("{}", result.summary());
+    for row in result.rows() {
+        println!("{:?}", row.get("p.name"));
+    }
     Ok(())
 }
 ```

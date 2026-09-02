@@ -20,7 +20,8 @@
 ## Python Bindings
 
 - **[Índice de Documentación Python](../python/README.md)**
-- **[Referencia API](../python/API_REFERENCE.md)**
+- **[Referencia API](../python/API_REFERENCE.md)** (bilingüe, completa)
+- **[Referencia API Python (resumen en español)](API_PYTHON.md)**
 - **[Inicio Rápido](../python/QUICKSTART.md)**
 - **[Guía NQL](../python/NQL_GUIDE.md)**
 
