@@ -49,12 +49,11 @@ The applications born in this repo now live in their own repositories (AGPL-3.0,
 
 ## Roadmaps
 
-- [Roadmap (Primary)](ROADMAP.md)
-- [Roadmap Q1 2026 (Historical)](ROADMAP_Q1_2026.md)
+- [Roadmap](../ROADMAP.md) — direction by theme, and what is explicitly out of scope
 
 ## Examples
 
-- [Examples](../examples/)
+- [Examples](../nopaldb/examples/)
 
 ## Contributing Translations
 

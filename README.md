@@ -302,6 +302,7 @@ See `examples/`:
 
 #### Architecture
 - **[Adoption Guide](docs/ADOPTION.md)** - Fastest path in for Rust and Python users, plus pointers to the MCP and Studio apps
+- **[Roadmap](ROADMAP.md)** - Direction by theme, and what is explicitly out of scope
 - **[Architecture Overview](docs/ARCHITECTURE.md)** - System design
 - **[Durability Guarantees](docs/DURABILITY.md)** - Crash-safety model and what survives SIGKILL
 - **[Arrow Integration](docs/arrow/01-OVERVIEW.md)** - Arrow/ML pipeline docs
@@ -601,6 +602,7 @@ Ver **[Guía de Feature Tiers](docs/FEATURE_TIERS.md)** para opciones de compila
 #### Documentación API
 - **[Índice de Documentación (Español)](docs/es/README.md)** - Guía central de docs y runbooks
 - **[Guía de Adopción](docs/ADOPTION.md)** - La ruta rápida para Rust y Python, con pointers a las apps MCP y Studio
+- **[Roadmap](ROADMAP.md)** - Dirección por temas, y qué queda explícitamente fuera del alcance
 - **[Guía API Python](python/README.md)** - Bindings Python
 
 #### Versionado (SemVer)
