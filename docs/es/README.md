@@ -57,14 +57,13 @@
 
 ## Roadmaps
 
-- **[Roadmap (Principal)](../ROADMAP.md)**
-- **[Roadmap Q1 2026 (Histórico)](../ROADMAP_Q1_2026.md)**
+- **[Roadmap](../../ROADMAP.md)** — dirección por temas, y qué queda explícitamente fuera del alcance
 
 ---
 
 ## Ejemplos
 
-- [examples/](../../examples/)
+- [examples/](../../nopaldb/examples/)
 
 ---
 
