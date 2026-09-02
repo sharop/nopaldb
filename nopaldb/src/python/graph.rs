@@ -826,7 +826,10 @@ impl PyGraph {
     ///     ttl_source (str): Contenido Turtle como string.
     ///
     /// Returns:
-    ///     dict: {classes_added, subclass_edges_added, instances_added, triples_skipped}
+    ///     dict: {classes_added, subclass_edges_added, instances_added, triples_skipped}.
+    ///     `triples_skipped` cuenta solo los triples que no dejaron nada en el grafo
+    ///     (metadatos de clases, tipos desconocidos, axiomas no modelados); las data
+    ///     properties de individuos se importan y no cuentan.
     ///
     /// Requires:
     ///     Wheel compilado con `--features python-owl` (incluido en el tier `semantic`).
