@@ -61,10 +61,11 @@ async fn test_import_instances_with_properties() {
     let ttl = r#"
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
 :Person rdf:type owl:Class .
 :Alice  rdf:type :Person .
-:Alice  :age "30" .
+:Alice  :age "30"^^xsd:integer .
 :Alice  :name "Alice" .
 "#;
 
@@ -86,7 +87,8 @@ async fn test_import_instances_with_properties() {
     let alice = &individuals[0];
     assert_eq!(
         alice.properties.get("iri"),
-        Some(&nopaldb::types::PropertyValue::String(":Alice".to_string()))
+        // El IRI se guarda expandido: `:Alice` con el prefijo vacío por defecto.
+        Some(&nopaldb::types::PropertyValue::String("http://example.org/ontology#Alice".to_string()))
     );
     assert_eq!(
         alice.properties.get("age"),
@@ -104,10 +106,11 @@ async fn test_import_is_idempotent_at_graph_level() {
     let ttl = r#"
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 
 :Animal rdf:type owl:Class .
 :Dog    rdf:type owl:Class .
-:Dog    rdf:subClassOf :Animal .
+:Dog    rdfs:subClassOf :Animal .
 :Fido   rdf:type :Dog .
 "#;
 

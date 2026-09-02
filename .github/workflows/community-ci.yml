@@ -38,6 +38,11 @@ jobs:
       - name: Test semantic tier (rust-only)
         run: cargo test -p nopaldb --features core,reasoner,owl-import,shacl --lib
 
+      # `--lib` no compila tests/: los tres tests de integración del puente
+      # Turtle no corrieron en CI hasta 0.5.10.
+      - name: Test Turtle bridge integration
+        run: cargo test -p nopaldb --features semantic --test owl_import_integration_test --test rdf_roundtrip_test --test synthetic_offshore_e2e_test
+
       - name: Test isolation feature (full-isolation)
         run: cargo test -p nopaldb --features full-isolation --test p1_isolation_levels_test --test deadlock_tests --test p1_isolation_concurrent_test
 

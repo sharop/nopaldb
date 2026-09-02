@@ -263,7 +263,9 @@ La DB generada queda en `tutorials/test_dbs/biomedical_owl.db`.
 
 ## Paso 1 — Importar el TTL al grafo
 
-`Graph::import_turtle()` parsea el Turtle en tres pasadas:
+`Graph::import_turtle()` parsea el Turtle con una gramática completa (desde 0.5.10: `a`, lang tags,
+blank nodes, `@base`; un archivo malformado devuelve `Err` con línea y columna y no escribe nada)
+y luego lo interpreta en tres pasadas:
 
 | Pasada | Triple procesado | Qué crea en el grafo |
 |--------|-----------------|----------------------|
@@ -289,11 +291,12 @@ triples_skipped:      0     (las 18 data properties :name/:agent/:route quedan e
 - Los prefijos se descartan: `ex:Disease` y `other:Disease` colapsan en un solo nodo `Disease`.
 - Un triple con objeto-recurso (`:Covid19 :treatedBy :Remdesivir`) **no crea arista**: el objeto
   se guarda como string en la propiedad `treatedBy`. Las únicas aristas del puente son `subClassOf`.
-- Un individuo conserva solo su primer `rdf:type`; un predicado multivaluado conserva el último valor.
+- Un individuo conserva solo su primer `rdf:type`.
 - `rdfs:label`/`rdfs:comment` sobre clases, `owl:Ontology`, restricciones y axiomas de equivalencia
   se descartan, y cada uno suma 1 a `triples_skipped`.
-- El parser no entiende `a`, lang tags, blank nodes ni `@base`, y **no falla** con Turtle malformado:
-  un error de sintaxis aparece como un conteo raro, no como `Err`.
+- Los lang tags se descartan (`"rosa"@es` queda como `rosa`) y los datatypes que no sean
+  entero/decimal/booleano quedan como texto. Un literal plano (`"42"`) es texto, como dice RDF:
+  para que sea número hay que tiparlo (`"42"^^xsd:integer`).
 - El export solo escribe clases, `subClassOf` e individuos con propiedades escalares; cualquier otra
   arista se omite.
 

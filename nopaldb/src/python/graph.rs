@@ -826,7 +826,7 @@ impl PyGraph {
     ///     ttl_source (str): Contenido Turtle como string.
     ///
     /// Returns:
-    ///     dict: {classes_added, subclass_edges_added, instances_added, triples_skipped}.
+    ///     dict: {classes_added, subclass_edges_added, instances_added, triples_skipped, warnings}.
     ///     `triples_skipped` cuenta solo los triples que no dejaron nada en el grafo
     ///     (metadatos de clases, tipos desconocidos, axiomas no modelados); las data
     ///     properties de individuos se importan y no cuentan.
@@ -845,6 +845,7 @@ impl PyGraph {
         dict.set_item("subclass_edges_added", report.subclass_edges_added)?;
         dict.set_item("instances_added",      report.instances_added)?;
         dict.set_item("triples_skipped",      report.triples_skipped)?;
+        dict.set_item("warnings",             report.warnings.clone())?;
         Ok(dict.into())
     }
 

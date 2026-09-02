@@ -131,6 +131,13 @@ pub enum NopalError {
     #[error("Query parse error: {0}")]
     QueryParseError(String),
 
+    /// Turtle/RDF malformado en `import_turtle`: el mensaje trae línea y
+    /// columna (1-based). Variante propia y no `QueryParseError` (eso es NQL)
+    /// ni `SemanticError` (validación de esquema): quien importa ontologías
+    /// quiere distinguir "tu archivo está roto" de "tu query está rota".
+    #[error("RDF parse error: {0}")]
+    RdfParseError(String),
+
     /// Error al ejecutar query NQL
     #[error("Query execution error: {0}")]
     QueryExecutionError(String),

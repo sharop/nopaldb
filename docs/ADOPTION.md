@@ -124,8 +124,10 @@ gaps, is in the `nopaldb::rdf_owl` module docs on docs.rs.
 
 **Kept:** `owl:Class` declarations (one node each), `rdfs:subClassOf` (one
 edge each, plus the taxonomy that powers `instanceOf`/`subClassOf` in NQL),
-individuals of a declared class (one node, with an `iri` property), and their
-literal-valued properties (typed by value: `"42"` → int, `"true"` → bool).
+individuals of a declared class (one node, with the absolute IRI in an `iri`
+property), and their literal-valued properties, typed by datatype
+(`"42"^^xsd:integer` → int, `"true"^^xsd:boolean` → bool; the same predicate
+twice → a list).
 Re-importing is idempotent, and instances may come in a later file than their
 classes.
 
@@ -136,14 +138,16 @@ classes.
 - **Relationships between individuals.** A triple whose object is a resource
   (`:x :knows :y`) does not create an edge; the object lands as a string
   property. The only edges the bridge creates are `subClassOf`.
-- A second `rdf:type` on an individual, all but the last value of a
-  multi-valued predicate, `rdfs:label`/`rdfs:comment` on classes,
+- A second `rdf:type` on an individual, `rdfs:label`/`rdfs:comment` on classes,
   `owl:Ontology` headers, restrictions and equivalence axioms. Each dropped
   triple adds one to `ImportReport::triples_skipped`; imported properties do
   not, so the count is exactly what was lost.
-- **Parser coverage.** No `a` keyword, language tags, blank nodes, `@base` or
-  collections, and malformed Turtle does not fail — it shows up as a wrong
-  count.
+- **Language tags and non-numeric datatypes.** The parser is a full Turtle
+  grammar (`a`, language tags, blank nodes, `@base`, collections; malformed
+  input is an error with line and column, and nothing is written). What it
+  cannot keep is the language tag itself (`"rosa"@es` lands as the string
+  `rosa`) and datatypes other than integer/decimal/boolean (`xsd:date` lands
+  as its text). A plain `"42"` is a string, as RDF says, not a number.
 - **On export:** every edge except `subClassOf`, nodes without an `iri`
   property, non-scalar properties; local names are sanitized to ASCII and the
   namespace is a fixed `http://example.org/ontology#`.

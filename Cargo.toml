@@ -14,6 +14,7 @@ edition = "2024"
 # 1.87 por `is_multiple_of` (F1); subido a 1.89 en F3 como DECISIÓN al
 # adoptar redb 4.1 (su MSRV) — exactamente la negociación consciente para
 # la que existe este pin, no un accidente de `cargo update`.
+# oxttl/oxrdf (0.5.10, parser Turtle) piden 1.87: dentro del piso, sin negociar.
 rust-version = "1.89"
 authors = ["Sharop <sharop@gmail.com>"]
 # Default for workspace members, matching the flagship library and the

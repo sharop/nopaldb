@@ -13,8 +13,8 @@
 //! |--------|-------|
 //! | `:X rdf:type owl:Class` | node `X` with `NodeKind::Class` |
 //! | `:X rdfs:subClassOf :Y` | edge `X → Y` of type `subClassOf`, plus the taxonomy index |
-//! | `:x rdf:type :X` (X a known class) | node with label `X`, property `iri = ":x"` |
-//! | `:x :p "literal"` (x an individual) | property `p` on that node; `"42"` → `Int`, `"3.5"` → `Float`, `"true"` → `Bool`, otherwise `String` |
+//! | `:x rdf:type :X` (X a known class) | node with label `X`, property `iri` = the absolute IRI of `:x` |
+//! | `:x :p "literal"` (x an individual) | property `p` on that node, typed by the literal's datatype (table below); the same predicate twice → a `List` |
 //!
 //! Re-importing the same file is idempotent: classes are matched by label,
 //! individuals by their `iri` property. A class declared by an earlier import
@@ -26,13 +26,11 @@
 //! - **IRI identity.** Terms are reduced to their local name (the part after
 //!   `#` or the last `/`); prefixes and `@base` are discarded. Two IRIs with the
 //!   same local name in different namespaces collapse into one node. Only the
-//!   `iri` property of individuals keeps the original token, and it keeps it
-//!   as written (`:x` or `<http://…/x>`), not expanded.
+//!   `iri` property of individuals keeps the full, expanded IRI.
 //! - **Object properties.** A triple whose object is a resource
 //!   (`:x :knows :y`) does **not** create an edge: the object is stored as a
 //!   string property. The only edges the bridge creates are `subClassOf`.
 //! - **Multiple types.** An individual keeps its first `rdf:type` only.
-//! - **Multi-valued predicates.** `:x :tag "a", "b"` keeps the last value.
 //! - **Class metadata.** `rdfs:label`, `rdfs:comment` and any other triple
 //!   whose subject is a class (not an individual) are dropped.
 //! - **Instances of unknown classes.** `:x rdf:type :Y` where `Y` was never
@@ -46,15 +44,31 @@
 //! The data properties of individuals do not: they are imported, and the
 //! count is exactly what left nothing in the graph.
 //!
-//! # What the parser does not understand
+//! # Parsing
 //!
-//! The parser is a hand-written tokenizer for a subset of Turtle. It does not
-//! support the `a` keyword, language tags (`"x"@en`), blank nodes (`_:b` or
-//! `[ … ]`), collections, `@base`, or multi-line literals. Datatype suffixes
-//! (`^^xsd:integer`) are stripped, not honoured: `"42"^^xsd:string` becomes an
-//! `Int`. **Malformed input does not fail**: unrecognized tokens are silently
-//! dropped or mis-grouped, so a parse problem shows up as a wrong count, not
-//! as an error.
+//! Parsing is done by `oxttl`, a full Turtle grammar: `a`, `@prefix`/`PREFIX`,
+//! `@base`, language tags, blank nodes (`_:b` and `[ … ]`), collections,
+//! multi-line literals. **Malformed input is an error** with line and column
+//! ([`crate::NopalError::RdfParseError`]) and nothing is written.
+//!
+//! Two things the parser needs that a document may lack are assumed and
+//! reported in [`importer::ImportReport::warnings`]: an empty prefix (`:Foo`)
+//! without `@prefix :` resolves against
+//! [`importer::DEFAULT_NAMESPACE`], and a relative IRI without `@base`
+//! against [`importer::DEFAULT_BASE`].
+//!
+//! Literals map to property values by datatype, not by the shape of the text:
+//!
+//! | datatype | `PropertyValue` |
+//! |---|---|
+//! | `xsd:integer` family (`int`, `long`, `short`, `byte`, unsigned, `nonNegativeInteger`, …) | `Int` |
+//! | `xsd:decimal`, `xsd:double`, `xsd:float` | `Float` |
+//! | `xsd:boolean` | `Bool` |
+//! | `xsd:string`, plain literal, language-tagged literal, anything else (`xsd:date`, `xsd:anyURI`, …) | `String` (lexical value; the language tag is dropped) |
+//!
+//! A typed literal whose text does not parse as its type is kept as `String`
+//! and reported. Blank nodes get a synthetic identity scoped to the document
+//! (`_:<hash>-<label>`), so re-importing the same file is idempotent.
 //!
 //! # What the export omits
 //!
@@ -75,8 +89,6 @@
 //! roadmap. NopalDB will not become a triple store (no SPARQL, no named
 //! graphs); the intended shape is coexistence: keep the triple store, and
 //! materialize the subgraph you query here.
-
-pub mod rdf;
 
 #[cfg(feature = "owl-import")]
 pub mod importer;

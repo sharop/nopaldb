@@ -95,9 +95,10 @@ async fn test_roundtrip_individuals_with_properties() {
     let ttl_in = r#"
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 :Person rdf:type owl:Class .
 :Alice  rdf:type :Person .
-:Alice  :age "30" .
+:Alice  :age "30"^^xsd:integer .
 :Alice  :name "Alice" .
 "#;
 
@@ -107,7 +108,10 @@ async fn test_roundtrip_individuals_with_properties() {
 
     // El export debe contener el tipo xsd para el entero.
     assert!(exported.contains("xsd:integer"), "age debe exportarse como xsd:integer");
-    assert!(exported.contains(":Alice"), "individuo Alice debe estar en el export");
+    assert!(
+        exported.contains("<http://example.org/ontology#Alice>"),
+        "el individuo se exporta con su IRI absoluto entre <>: {exported}"
+    );
 
     // Reimport en grafo limpio.
     let (graph2, _dir2) = open_temp_graph().await;
