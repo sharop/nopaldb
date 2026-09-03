@@ -294,7 +294,7 @@ See `examples/`:
 
 #### API Documentation
 - **[Python API Guide](python/README.md)** - Python bindings
-- **[Rust API Docs](https://docs.rs/nopaldb)** - Rust documentation (coming soon)
+- **[Rust API Docs](https://docs.rs/nopaldb)** - Generated from the source; built with the `full` tier so every feature-gated module is there
 
 #### Build & Features
 - **[Feature Tiers Guide](docs/FEATURE_TIERS.md)** - How to compile by role (researcher, developer, production)

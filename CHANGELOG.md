@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.10] - unreleased
+
+### Added
+
+- **`make publish-crate` y `make check-on-main`.** `cargo publish` salió desde una rama dos veces (0.5.3 y 0.5.9); las dos veces el árbol resultó idéntico a `main` por suerte, no por diseño, y el SHA que crates.io registró apunta a un commit que ya no existe en GitHub. El paso "checkout main + pull" del runbook era el que se saltaba: ahora es una condición que falla, no un paso que se recuerda.
+- docs.rs construye el crate con el tier `full` (`[package.metadata.docs.rs]`). Hasta 0.5.9 construía con features default: algoritmos, embeddings, reasoner, SHACL y aislamiento no aparecían en la documentación publicada. Y `lib.rs` tiene por fin portada: qué es NopalDB, el ejemplo de cinco minutos, la tabla de tiers y a dónde ir después.
+
+### Removed
+
+- `docs/es/API_RUST.md`. Documentaba 13 ítems, 8 con firma o descripción falsa (toda la sección `Storage` describía un KV de strings sobre `sled::Db` que el crate no es desde 0.5.0; a las `Transaction` les faltaba el `async`), cubría ~5% de la API pública y nadie lo enlazaba. La referencia Rust es docs.rs, generada del código, y la ruta de entrada a mano es `docs/ADOPTION.md`. Mantener una copia manual de firmas es exactamente cómo llegó a ese estado.
+- `docs/es/API_REFERENCIA.md` pasa a llamarse `docs/es/API_PYTHON.md`: era la API de Python en español con un nombre que sugería otra cosa, y tampoco lo enlazaba nadie. Ahora lo enlaza el índice de docs en español.
+
+### Fixed
+
+- El ejemplo Rust de `docs/ADOPTION.md` llamaba `result.summary()`, que no existe en `QueryResult` (existe en `NqlResult`, otro tipo): no compilaba. Lo atrapó el doctest de la portada nueva de `lib.rs`, que es exactamente para lo que existen los doctests — el mismo ejemplo vive ahora en los dos sitios y se compila en `cargo test --doc`.
+
 ## [0.5.9] - 2026-09-02
 
 ### Added

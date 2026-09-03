@@ -128,7 +128,7 @@ matches = graph.knn_nodes([0.1, 0.2, 0.3], 10, "modelo")
 OWL:
 
 ```python
-stats = graph.import_turtle("ontology.ttl")
+stats = graph.import_turtle(open("ontology.ttl").read())   # recibe el TEXTO Turtle, no la ruta
 ```
 
 Reasoner:

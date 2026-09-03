@@ -1,4 +1,60 @@
-// src/lib.rs
+//! NopalDB: an embedded property graph with native embeddings, MVCC
+//! transactions and its own query language (NQL).
+//!
+//! One process opens a directory and owns it; everything else — nodes, edges,
+//! full-text and vector indexes, transactions, the write-ahead log — lives in
+//! that directory. There is no server to run.
+//!
+//! # Five-minute start
+//!
+//! ```toml
+//! [dependencies]
+//! nopaldb = { version = "0.5", features = ["core"] }
+//! ```
+//!
+//! ```rust,no_run
+//! use nopaldb::{Edge, Graph, Node, PropertyValue};
+//!
+//! #[tokio::main]
+//! async fn main() -> nopaldb::Result<()> {
+//!     let graph = Graph::open("./data.db").await?;
+//!
+//!     let mut tx = graph.begin_transaction().await?;
+//!     let a = tx.add_node(Node::new("Person")
+//!         .with_property("name", PropertyValue::String("Alice".into()))).await?;
+//!     let b = tx.add_node(Node::new("Person")
+//!         .with_property("name", PropertyValue::String("Bob".into()))).await?;
+//!     tx.add_edge(Edge::new(a, b, "KNOWS"))?;
+//!     tx.commit().await?;
+//!
+//!     let result = graph.execute_nql("find p.name from (p:Person)").await?;
+//!     for row in result.rows() {
+//!         println!("{:?}", row.get("p.name"));
+//!     }
+//!     Ok(())
+//! }
+//! ```
+//!
+//! # Feature tiers
+//!
+//! | Tier | What you get |
+//! |------|--------------|
+//! | *default* | Property graph + NQL + MVCC + WAL (sled storage) |
+//! | `core` | + Arrow/Parquet export, graph algorithms, embeddings + HNSW, full-text search, ML helpers |
+//! | `semantic` | + OWL-EL reasoner, Turtle import/export, SHACL validation |
+//! | `full` | + `full-isolation`: isolation levels, per-node lock manager, deadlock detection |
+//!
+//! These docs are built with `full`, so every feature-gated module is listed;
+//! an item's `cfg` badge says which feature you need.
+//!
+//! # Where to go next
+//!
+//! - [`Graph`] is the entry point: open, transactions, upsert, search, export.
+//! - [`Graph::execute_nql`] runs NQL; the language reference lives in the
+//!   repository under `docs/en/NQL_REFERENCE.md`.
+//! - [`rdf_owl`] documents exactly what the Turtle bridge keeps and loses.
+//! - Operational rules (one process per directory, durability, isolation,
+//!   bulk loading) are in `docs/ADOPTION.md` in the repository.
 
 // El storage necesita exactamente un motor KV compilado. Sin esto, un build
 // sin backend produce cientos de errores crípticos en storage/ en vez de uno
