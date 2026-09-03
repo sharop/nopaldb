@@ -1,6 +1,8 @@
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix :     <http://example.org/offshore#> .
 
 :LegalEntity    rdf:type owl:Class .
 :OffshoreEntity rdf:type owl:Class ; rdfs:subClassOf :LegalEntity .
@@ -17,10 +19,10 @@
 :AtlasFiduciary rdf:type :Intermediary ; :name "Atlas Fiduciary Group" ; :country "Harbor Cay" .
 :AlphaServices  rdf:type :Intermediary ; :name "Alpha Services Ltd" ; :country "BVI" .
 
-:SunriseHoldingsBVI    rdf:type :OffshoreEntity ; :name "Sunrise Holdings BVI" ; :incorporated "2005-03-14" ; :status "active" ; :shell "true" .
-:BluewaterCapital      rdf:type :OffshoreEntity ; :name "Bluewater Capital SA" ; :incorporated "2008-07-01" ; :status "active" ; :shell "false" .
-:RedmondInternational  rdf:type :OffshoreEntity ; :name "Redmond International Ltd" ; :incorporated "2011-11-30" ; :status "inactive" ; :shell "false" .
-:ZephyrTrust           rdf:type :OffshoreEntity ; :name "Zephyr Trust Seychelles" ; :incorporated "2003-01-20" ; :status "active" ; :shell "true" .
+:SunriseHoldingsBVI    rdf:type :OffshoreEntity ; :name "Sunrise Holdings BVI" ; :incorporated "2005-03-14" ; :status "active" ; :shell "true"^^xsd:boolean .
+:BluewaterCapital      rdf:type :OffshoreEntity ; :name "Bluewater Capital SA" ; :incorporated "2008-07-01" ; :status "active" ; :shell "false"^^xsd:boolean .
+:RedmondInternational  rdf:type :OffshoreEntity ; :name "Redmond International Ltd" ; :incorporated "2011-11-30" ; :status "inactive" ; :shell "false"^^xsd:boolean .
+:ZephyrTrust           rdf:type :OffshoreEntity ; :name "Zephyr Trust Seychelles" ; :incorporated "2003-01-20" ; :status "active" ; :shell "true"^^xsd:boolean .
 
 :OfficerAlice rdf:type :Officer ; :name "Alice Novak" ; :country "Russia" .
 :OfficerBob   rdf:type :Officer ; :name "Bob Okafor" ; :country "Nigeria" .

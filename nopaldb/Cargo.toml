@@ -38,6 +38,13 @@ crate-type = ["rlib", "cdylib"]
 features = ["full"]
 
 [dependencies]
+# Turtle: parser (oxttl) y modelo RDF (oxrdf). oxttl pinea oxrdf EXACTO
+# (`=0.3.4`): se suben juntos o no compila. `default-features = false` es el
+# default upstream, pero se escribe: si alguien activara `rdf-12` (triples
+# citados), `Term` ganaría una variante y los `match` exhaustivos del
+# importer dejarían de compilar. MSRV de ambos: 1.87 (el piso es 1.89).
+oxttl = { version = "0.2.4", default-features = false, optional = true }
+oxrdf = { version = "0.3.4", default-features = false, optional = true }
 anyhow = "1.0"
 async-recursion = "1.0"
 bytes = "1.0"
@@ -96,7 +103,7 @@ ml = ["analytics"]
 algorithms = []
 hypergraph = []
 reasoner = []
-owl-import = ["reasoner"]
+owl-import = ["reasoner", "dep:oxttl", "dep:oxrdf"]
 shacl = ["regex"]
 fulltext = ["tantivy"]
 hybrid = ["fulltext", "embeddings-index"]   # RRF hybrid search (full-text + vector)
@@ -129,6 +136,12 @@ required-features = ["owl-import"]
 [[test]]
 name = "rdf_roundtrip_test"
 required-features = ["owl-import"]
+
+# Existía sin registrar: compilaba vacío (su `cfg` interno) y ningún job lo
+# corría. Es el test que más se parece a un uso real del puente.
+[[test]]
+name = "synthetic_offshore_e2e_test"
+required-features = ["owl-import", "reasoner"]
 
 [[test]]
 name = "shacl_validation_test"

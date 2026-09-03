@@ -123,7 +123,8 @@ pub async fn export_turtle(graph: &Graph) -> Result<String> {
     if !individuals.is_empty() {
         out.push('\n');
         for node in &individuals {
-            if let Some(PropertyValue::String(iri)) = node.properties.get("iri") {
+            if let Some(PropertyValue::String(stored)) = node.properties.get("iri") {
+                let iri = turtle_term(stored);
                 let class_iri = format!(":{}", escape_iri_local(&node.label));
                 out.push_str(&format!("{} rdf:type {} .\n", iri, class_iri));
 
@@ -172,6 +173,25 @@ fn property_value_to_literal(value: &PropertyValue) -> Option<String> {
         PropertyValue::String(s) => Some(format!("\"{}\"", escape_string(s))),
         PropertyValue::Null | PropertyValue::Bytes(_) => None,
         PropertyValue::Object(_) | PropertyValue::List(_) => None,
+    }
+}
+
+/// Escribe un IRI almacenado como término Turtle. El importer guarda IRIs
+/// absolutos (`http://…#x`), que en Turtle van entre `<>`; un blank node
+/// sintético (`_:…`) y un nombre prefijado (`:x`, de bases importadas antes
+/// de 0.5.10, que guardaban el token crudo) se escriben tal cual.
+fn turtle_term(stored: &str) -> String {
+    let is_absolute = stored
+        .split_once(':')
+        .is_some_and(|(scheme, rest)| {
+            !scheme.is_empty()
+                && scheme.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+                && rest.starts_with("//")
+        });
+    if is_absolute {
+        format!("<{stored}>")
+    } else {
+        stored.to_string()
     }
 }
 
