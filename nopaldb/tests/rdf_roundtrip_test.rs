@@ -109,8 +109,8 @@ async fn test_roundtrip_individuals_with_properties() {
     // El export debe contener el tipo xsd para el entero.
     assert!(exported.contains("xsd:integer"), "age debe exportarse como xsd:integer");
     assert!(
-        exported.contains("<http://example.org/ontology#Alice>"),
-        "el individuo se exporta con su IRI absoluto entre <>: {exported}"
+        exported.contains(":Alice rdf:type :Person ."),
+        "bajo el namespace por defecto el IRI se compacta a :Alice: {exported}"
     );
 
     // Reimport en grafo limpio.

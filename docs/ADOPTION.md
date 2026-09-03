@@ -117,48 +117,58 @@ https://github.com/Anxious-Mind-Group/ndbstudio.
 
 ## Interoperating with an RDF store: what the Turtle bridge keeps
 
-`import_turtle` / `export_turtle` (feature `semantic`) are an **ontology
-loader**, not an RDF store. If you are deciding whether NopalDB can sit next
-to a triple store, this is the contract — the full version, with the parser's
-gaps, is in the `nopaldb::rdf_owl` module docs on docs.rs.
+`import_turtle` / `export_turtle` (feature `semantic`) materialize an
+ontology and its data into the property graph. NopalDB is not an RDF store —
+no triples, no SPARQL, no named graphs — so the useful shape is coexistence:
+keep the triple store as the system of record and materialize here the
+subgraph you want to query, reason over or embed. This is the contract; the
+full version is in the `nopaldb::rdf_owl` module docs on docs.rs.
 
-**Kept:** `owl:Class` declarations (one node each), `rdfs:subClassOf` (one
-edge each, plus the taxonomy that powers `instanceOf`/`subClassOf` in NQL),
-individuals of a declared class (one node, with the absolute IRI in an `iri`
-property), and their literal-valued properties, typed by datatype
-(`"42"^^xsd:integer` → int, `"true"^^xsd:boolean` → bool; the same predicate
-twice → a list).
-Re-importing is idempotent, and instances may come in a later file than their
-classes.
+**Identity is the IRI.** Every imported node carries its absolute IRI in the
+`iri` property; a class or individual with the same IRI is reused, never
+duplicated, and importing the same document twice creates nothing. Labels,
+edge types and property names are the local name of the term (`Disease`,
+`treatedBy`), and never decide identity: two classes that share a local name
+across namespaces become two nodes, the second labelled `prefix:Name`.
 
-**Lost:**
+**Kept:**
 
-- **IRIs.** Terms are reduced to their local name; prefixes are dropped. Two
-  IRIs with the same local name in different namespaces collapse into one node.
-- **Relationships between individuals.** A triple whose object is a resource
-  (`:x :knows :y`) does not create an edge; the object lands as a string
-  property. The only edges the bridge creates are `subClassOf`.
-- A second `rdf:type` on an individual, `rdfs:label`/`rdfs:comment` on classes,
-  `owl:Ontology` headers, restrictions and equivalence axioms. Each dropped
-  triple adds one to `ImportReport::triples_skipped`; imported properties do
-  not, so the count is exactly what was lost.
-- **Language tags and non-numeric datatypes.** The parser is a full Turtle
-  grammar (`a`, language tags, blank nodes, `@base`, collections; malformed
-  input is an error with line and column, and nothing is written). What it
-  cannot keep is the language tag itself (`"rosa"@es` lands as the string
-  `rosa`) and datatypes other than integer/decimal/boolean (`xsd:date` lands
-  as its text). A plain `"42"` is a string, as RDF says, not a number.
-- **On export:** every edge except `subClassOf`, nodes without an `iri`
-  property, non-scalar properties; local names are sanitized to ASCII and the
-  namespace is a fixed `http://example.org/ontology#`.
+- `owl:Class` declarations (one node each) and `rdfs:subClassOf` (one edge
+  each, plus the taxonomy behind `instanceOf`/`subClassOf` in NQL).
+- Individuals: one node, labelled by their **first** `rdf:type`, plus one
+  `instanceOf` edge per type — so `from (x)-[:instanceOf]->(c)` sees every
+  type, and `from (d:Disease)` keeps working.
+- **Relationships**: `:x :p :y` is an edge of type `p` from `x` to `y`, with
+  the predicate IRI on the edge. A `:y` that is never described becomes a
+  placeholder node (`rdf_placeholder = true`), upgraded in place when a later
+  file types it.
+- Literal properties, typed by datatype (`"42"^^xsd:integer` → int, plain
+  `"42"` → string, as RDF says); the same predicate twice → a list.
+  `rdfs:label`/`rdfs:comment` land in `rdfs_label`/`rdfs_comment`.
+- A class that is only named (`:x a :Z` without declaring `Z`) is created;
+  nothing in a user namespace is dropped in silence. The prefixes of every
+  imported document are kept in the graph (`graph.rdf_prefixes()`).
 
-**What to do with that:** keep the triple store as the system of record for
-RDF and materialize into NopalDB the subgraph you want to query, reason over
-or embed. NopalDB will not grow SPARQL or named graphs; a faithful bridge
-(real grammar with errors, IRI identity, edges for resource-valued triples, a
-symmetric exporter) is tracked in the public roadmap — issues
-[#69](https://github.com/sharop/nopaldb/issues/69) and
-[#70](https://github.com/sharop/nopaldb/issues/70).
+**Skipped** (counted in `triples_skipped`, which is therefore a list of
+axioms, never of data): `owl:Ontology` headers, property declarations,
+`rdfs:domain`/`rdfs:range`, `owl:equivalentClass` and the other OWL axioms.
+
+**Narrowed:** language tags (`"rosa"@es` lands as `rosa`), datatypes other
+than integer/decimal/boolean (`xsd:date` lands as its text), and edge
+properties (RDF has none; an imported edge carries only the predicate IRI).
+
+**Parser:** a full Turtle grammar. Malformed input is an error with line and
+column, and nothing is written. What the document did not say and the import
+assumed — a missing `@prefix :`, a class used without being declared, a
+label it had to qualify, nodes left by an import made before 0.5.10 — comes
+back in `ImportReport.warnings`; empty means the file was taken as written.
+
+**Export, today:** classes, the hierarchy, individuals with every type and
+their scalar properties. Edges between individuals and the document's own
+namespaces are not written yet: the symmetric exporter is issue
+[#70](https://github.com/sharop/nopaldb/issues/70), and the `instanceOf`
+predicate that reads the new edges (multi-typing and full IRIs from NQL) is
+the step after it — both in the public roadmap.
 
 ## Re-ingesting a source: keeping node, text and vector in step
 

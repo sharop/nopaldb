@@ -74,6 +74,8 @@ pub(crate) mod kv;
 /// default (`node:`/`idx:`/`ts:`/`meta:`, solo para la migración F5.5). Ver
 /// la advertencia de formato en la cabecera del módulo.
 mod keys;
+#[cfg(feature = "owl-import")]
+pub(crate) use keys::v2::META_RDF_PREFIXES;
 
 /// Interning de tipos de arista string↔u32 (layout v2, F5), persistido en el
 /// keyspace `catalog`. Consumidor: la adyacencia v2 — el tipo viaja como
@@ -422,6 +424,20 @@ impl Storage {
     /// Lee una cota de reloj lógico persistida.
     pub async fn get_meta_u64(&self, key: &str) -> Result<Option<u64>> {
         self.get_meta_u64_sync(key)
+    }
+
+    /// Escribe una meta opaca (bytes) en el catálogo. Las metas anteriores son
+    /// todas u64 con semántica de máximo; esta es un reemplazo plano, para
+    /// documentos pequeños (el catálogo de prefijos RDF) que el llamador
+    /// serializa como quiera.
+    pub async fn put_meta_bytes(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.catalog_ks.insert(&keys::v2::catalog_meta_key(key), value)?;
+        Ok(())
+    }
+
+    /// Lee una meta opaca escrita con [`Self::put_meta_bytes`].
+    pub async fn get_meta_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self.catalog_ks.get(&keys::v2::catalog_meta_key(key))?.map(|v| v.to_vec()))
     }
 
     /// Elimina una key meta. Existe para pruebas de migración (simular una base

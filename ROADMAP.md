@@ -33,10 +33,13 @@ The current Turtle import/export is an ontology loader, not an RDF bridge —
 its exact limits are documented in `docs/ADOPTION.md` and in the `rdf_owl`
 module docs. The work is to make it faithful:
 
-- **Importer** ([#69](https://github.com/sharop/nopaldb/issues/69)): a real
-  Turtle grammar that reports errors instead of silently mis-parsing, IRI
-  identity (prefixes kept, no collapsing of same-named terms), and an edge for
-  every resource-valued triple instead of a string property.
+- **Importer** ([#69](https://github.com/sharop/nopaldb/issues/69), shipped
+  in 0.5.10): a real Turtle grammar that reports errors instead of silently
+  mis-parsing, IRI identity (no collapsing of same-named terms), an edge for
+  every resource-valued triple, and one `instanceOf` edge per `rdf:type`.
+- **`instanceOf` in NQL reads those edges**: the predicate accepts a label or
+  a full IRI and answers for every type of a node, not just the first one, so
+  one vocabulary means the same thing as a predicate and as a traversal.
 - **Exporter** ([#70](https://github.com/sharop/nopaldb/issues/70)): symmetric
   with the importer, emitting the document's own namespaces and all edges, with
   a verified import → export → import round trip; export exposed in Python.
@@ -117,10 +120,13 @@ El import/export Turtle actual es un cargador de ontologías, no un puente RDF:
 sus límites exactos están en `docs/ADOPTION.md` y en el doc del módulo
 `rdf_owl`. El trabajo es volverlo fiel:
 
-- **Importer** ([#69](https://github.com/sharop/nopaldb/issues/69)): gramática
-  Turtle real que reporta errores en vez de parsear mal en silencio, identidad
-  IRI (prefijos conservados, sin colapsar términos homónimos) y una arista por
-  cada triple con objeto-recurso en lugar de una propiedad string.
+- **Importer** ([#69](https://github.com/sharop/nopaldb/issues/69), liberado en
+  0.5.10): gramática Turtle real que reporta errores en vez de parsear mal en
+  silencio, identidad IRI (sin colapsar términos homónimos), una arista por cada
+  triple con objeto-recurso y una arista `instanceOf` por cada `rdf:type`.
+- **`instanceOf` en NQL lee esas aristas**: el predicado acepta label o IRI
+  completo y responde por todos los tipos de un nodo, no solo el primero, para
+  que un mismo vocabulario signifique lo mismo como predicado y como traversal.
 - **Exporter** ([#70](https://github.com/sharop/nopaldb/issues/70)): simétrico
   al importer, con los namespaces del documento y todas las aristas, round trip
   import → export → import verificado, y export expuesto en Python.

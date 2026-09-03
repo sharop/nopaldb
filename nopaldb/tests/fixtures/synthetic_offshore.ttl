@@ -28,3 +28,14 @@
 :OfficerBob   rdf:type :Officer ; :name "Bob Okafor" ; :country "Nigeria" .
 :OfficerCarol rdf:type :Officer ; :name "Carol Svensson" ; :country "Sweden" .
 :OfficerDave  rdf:type :Officer ; :name "Dave Muller" ; :country "Germany" .
+
+# ---- Relaciones (objeto-recurso → arista) ----
+# `registeredIn` lleva una propiedad (`risk`) en la arista; RDF plano no
+# expresa propiedades de arista, así que esas las construye el test a mano.
+:AtlasFiduciary :intermediaryOf :SunriseHoldingsBVI, :BluewaterCapital, :RedmondInternational .
+:AlphaServices  :intermediaryOf :ZephyrTrust .
+
+:SunriseHoldingsBVI   :hasOfficer :OfficerAlice .
+:BluewaterCapital     :hasOfficer :OfficerAlice, :OfficerBob .
+:RedmondInternational :hasOfficer :OfficerCarol .
+:ZephyrTrust          :hasOfficer :OfficerDave .

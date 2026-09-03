@@ -174,6 +174,15 @@ fn gate(
             report.triples_skipped
         ).into());
     }
+    // Cada individuo tiene una arista instanceOf a su clase (9), ningún
+    // objeto sin declarar (0 placeholders) y el TTL declara sus prefijos
+    // (0 warnings): el import no asumió nada por el archivo.
+    if report.edges_created != 9 || report.placeholders_created != 0 || !report.warnings.is_empty() {
+        return Err(format!(
+            "Gate fallido: esperaba 9 aristas instanceOf, 0 placeholders, 0 warnings; got {} / {} / {:?}",
+            report.edges_created, report.placeholders_created, report.warnings
+        ).into());
+    }
     println!("instanceOf(n, \"Disease\") retorno {} individuos (esperado 5)", instance_count);
     if instance_count != 5 {
         return Err(format!(

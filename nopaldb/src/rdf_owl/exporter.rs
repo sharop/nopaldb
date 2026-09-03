@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::error::Result;
 use crate::graph::Graph;
+use crate::rdf_owl::importer::{DEFAULT_NAMESPACE, EDGE_INSTANCE_OF, PROP_IRI, PROP_PLACEHOLDER, PROP_RDFS_COMMENT, PROP_RDFS_LABEL};
 use crate::types::{Node, NodeId, NodeKind, PropertyValue};
 
 // ---------------------------------------------------------------------------
@@ -60,14 +61,25 @@ pub async fn export_turtle(graph: &Graph) -> Result<String> {
             .unwrap_or("")
     });
 
-    // 3. Construir mapa NodeId → IRI para resolver aristas subClassOf.
+    // 3. Construir mapa NodeId → término Turtle para resolver aristas.
     let mut id_to_iri: HashMap<NodeId, String> = HashMap::new();
     for node in &classes {
-        id_to_iri.insert(node.id, format!(":{}", escape_iri_local(&node.label)));
+        id_to_iri.insert(node.id, class_term(node));
     }
     for node in &individuals {
-        if let Some(PropertyValue::String(iri)) = node.properties.get("iri") {
-            id_to_iri.insert(node.id, iri.clone());
+        if let Some(PropertyValue::String(iri)) = node.properties.get(PROP_IRI) {
+            id_to_iri.insert(node.id, turtle_term(iri));
+        }
+    }
+
+    // Tipos por aristas instanceOf (multi-tipo). Un individuo sin ellas
+    // (base anterior a 0.5.10) se tipa por su label, como siempre.
+    let mut types_of: HashMap<NodeId, Vec<String>> = HashMap::new();
+    for edge in &all_edges {
+        if edge.edge_type == EDGE_INSTANCE_OF
+            && let Some(class_term) = id_to_iri.get(&edge.target)
+        {
+            types_of.entry(edge.source).or_default().push(class_term.clone());
         }
     }
 
@@ -104,10 +116,7 @@ pub async fn export_turtle(graph: &Graph) -> Result<String> {
     if !classes.is_empty() {
         out.push('\n');
         for node in &classes {
-            out.push_str(&format!(
-                ":{} rdf:type owl:Class .\n",
-                escape_iri_local(&node.label)
-            ));
+            out.push_str(&format!("{} rdf:type owl:Class .\n", class_term(node)));
         }
     }
 
@@ -123,26 +132,27 @@ pub async fn export_turtle(graph: &Graph) -> Result<String> {
     if !individuals.is_empty() {
         out.push('\n');
         for node in &individuals {
-            if let Some(PropertyValue::String(stored)) = node.properties.get("iri") {
+            if let Some(PropertyValue::String(stored)) = node.properties.get(PROP_IRI) {
                 let iri = turtle_term(stored);
-                let class_iri = format!(":{}", escape_iri_local(&node.label));
-                out.push_str(&format!("{} rdf:type {} .\n", iri, class_iri));
+                let mut types = types_of.get(&node.id).cloned().unwrap_or_default();
+                types.sort();
+                if types.is_empty() {
+                    types.push(format!(":{}", escape_iri_local(&node.label)));
+                }
+                for class_iri in &types {
+                    out.push_str(&format!("{} rdf:type {} .\n", iri, class_iri));
+                }
 
-                // Data properties (excluir "iri").
+                // Data properties (excluir las del puente: iri, placeholder).
                 let mut props: Vec<(&String, &PropertyValue)> = node
                     .properties
                     .iter()
-                    .filter(|(k, _)| k.as_str() != "iri")
+                    .filter(|(k, _)| k.as_str() != PROP_IRI && k.as_str() != PROP_PLACEHOLDER)
                     .collect();
                 props.sort_by_key(|(k, _)| k.as_str());
                 for (key, value) in props {
                     if let Some(literal) = property_value_to_literal(value) {
-                        out.push_str(&format!(
-                            "{} :{} {} .\n",
-                            iri,
-                            escape_iri_local(key),
-                            literal
-                        ));
+                        out.push_str(&format!("{} {} {} .\n", iri, property_term(key), literal));
                     }
                 }
             }
@@ -176,11 +186,39 @@ fn property_value_to_literal(value: &PropertyValue) -> Option<String> {
     }
 }
 
+/// Término Turtle de un nodo clase: su IRI si lo tiene (compactado bajo el
+/// prefijo vacío cuando cae en el namespace por defecto), o `:{label}` para
+/// clases de bases anteriores a 0.5.10, que no guardaban IRI.
+fn class_term(node: &Node) -> String {
+    match node.properties.get(PROP_IRI) {
+        Some(PropertyValue::String(iri)) => turtle_term(iri),
+        _ => format!(":{}", escape_iri_local(&node.label)),
+    }
+}
+
+/// Predicado Turtle de una propiedad: `rdfs_label`/`rdfs_comment` vuelven a
+/// ser `rdfs:label`/`rdfs:comment`; el resto va bajo el prefijo vacío.
+fn property_term(key: &str) -> String {
+    match key {
+        k if k == PROP_RDFS_LABEL => "rdfs:label".to_string(),
+        k if k == PROP_RDFS_COMMENT => "rdfs:comment".to_string(),
+        k => format!(":{}", escape_iri_local(k)),
+    }
+}
+
 /// Escribe un IRI almacenado como término Turtle. El importer guarda IRIs
 /// absolutos (`http://…#x`), que en Turtle van entre `<>`; un blank node
 /// sintético (`_:…`) y un nombre prefijado (`:x`, de bases importadas antes
 /// de 0.5.10, que guardaban el token crudo) se escriben tal cual.
 fn turtle_term(stored: &str) -> String {
+    // Bajo el namespace por defecto, el nombre prefijado es más legible y es
+    // lo que el importer resuelve de vuelta al mismo IRI.
+    if let Some(local) = stored.strip_prefix(DEFAULT_NAMESPACE)
+        && !local.is_empty()
+        && local.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return format!(":{local}");
+    }
     let is_absolute = stored
         .split_once(':')
         .is_some_and(|(scheme, rest)| {

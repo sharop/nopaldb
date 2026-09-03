@@ -263,22 +263,28 @@ La DB generada queda en `tutorials/test_dbs/biomedical_owl.db`.
 
 ## Paso 1 — Importar el TTL al grafo
 
-`Graph::import_turtle()` parsea el Turtle con una gramática completa (desde 0.5.10: `a`, lang tags,
-blank nodes, `@base`; un archivo malformado devuelve `Err` con línea y columna y no escribe nada)
-y luego lo interpreta en tres pasadas:
+`Graph::import_turtle()` parsea el Turtle con una gramática completa (`a`, lang tags, blank nodes,
+`@base`; un archivo malformado devuelve `Err` con línea y columna y no escribe nada) y lo materializa
+en el grafo con la **identidad por IRI**: cada nodo guarda su IRI absoluto en `iri`, y un segundo
+import del mismo archivo no crea nada.
 
-| Pasada | Triple procesado | Qué crea en el grafo |
-|--------|-----------------|----------------------|
-| Pass 1 | `:X rdf:type owl:Class` | Nodo Class con `label = X` |
-| Pass 2 | `:X rdfs:subClassOf :Y` | Edge `X → Y` de tipo `"subClassOf"` + registro en TaxonomyIndex |
-| Pass 3 | `:x rdf:type :SomeClass` | Nodo Individual con `label = SomeClass`, propiedades del sujeto |
+| Triple | Qué crea en el grafo |
+|--------|----------------------|
+| `:X a owl:Class` | Nodo Class con `label = X` e `iri` |
+| `:X rdfs:subClassOf :Y` | Arista `X → Y` de tipo `subClassOf` + registro en TaxonomyIndex |
+| `:x a :X` (cada tipo) | Nodo Individual con `label = X` (el primer tipo) e `iri`; una arista `x → X` de tipo `instanceOf` por tipo |
+| `:x :p :y` | Arista `x → y` de tipo `p`, con el IRI del predicado en la arista; `:y` sin describir → nodo placeholder |
+| `:x :p "literal"` | Propiedad `p`, tipada por datatype (`"42"^^xsd:integer` → Int; `"42"` plano → String) |
 
 **Gate del import:**
 ```
 classes_added:        7
 subclass_edges_added: 5
 instances_added:      9
+edges_created:        9     (una arista instanceOf por individuo; el TTL no tiene relaciones)
+placeholders_created: 0
 triples_skipped:      0     (las 18 data properties :name/:agent/:route quedan en los nodos)
+warnings:             []    (el TTL declara sus prefijos: el import no asumió nada)
 ```
 
 > Hasta 0.5.8 este mismo import reportaba `triples_skipped: 18` y esta página lo explicaba
@@ -286,19 +292,27 @@ triples_skipped:      0     (las 18 data properties :name/:agent/:route quedan e
 > descartado todo triple que no fuera `rdf:type`, incluidas las data properties que la pasada 3
 > importaba después. Nada de este TTL se pierde; el contador ahora dice exactamente eso.
 
+Con las aristas `instanceOf`, NQL puede recorrer los tipos sin predicado especial:
+
+```
+find d.name, c.label from (d)-[:instanceOf]->(c) where c.label = "ViralInfection"
+find c.label, count(d) as n from (d)-[:instanceOf]->(c) group by c.label
+```
+
 **Lo que este puente NO conserva** (importa antes de traer tu propia ontología):
 
-- Los prefijos se descartan: `ex:Disease` y `other:Disease` colapsan en un solo nodo `Disease`.
-- Un triple con objeto-recurso (`:Covid19 :treatedBy :Remdesivir`) **no crea arista**: el objeto
-  se guarda como string en la propiedad `treatedBy`. Las únicas aristas del puente son `subClassOf`.
-- Un individuo conserva solo su primer `rdf:type`.
-- `rdfs:label`/`rdfs:comment` sobre clases, `owl:Ontology`, restricciones y axiomas de equivalencia
-  se descartan, y cada uno suma 1 a `triples_skipped`.
+- Vocabulario reservado que no se modela: cabeceras `owl:Ontology`, declaraciones de propiedades
+  (`owl:ObjectProperty`…), `rdfs:domain`/`rdfs:range`, `owl:equivalentClass` y demás axiomas OWL.
+  Cada uno suma 1 a `triples_skipped`; todo lo que esté en tu namespace se conserva.
 - Los lang tags se descartan (`"rosa"@es` queda como `rosa`) y los datatypes que no sean
   entero/decimal/booleano quedan como texto. Un literal plano (`"42"`) es texto, como dice RDF:
   para que sea número hay que tiparlo (`"42"^^xsd:integer`).
-- El export solo escribe clases, `subClassOf` e individuos con propiedades escalares; cualquier otra
-  arista se omite.
+- `rdfs:label`/`rdfs:comment` van a las propiedades `rdfs_label`/`rdfs_comment` (`label` es el campo
+  del nodo y `n.label` en NQL sigue siendo eso).
+- El export escribe clases, jerarquía, individuos con todos sus tipos y propiedades escalares; las
+  aristas entre individuos y los namespaces del documento todavía no (issue #70).
+- El predicado `instanceOf(n, "Clase")` de NQL sigue mirando el label (el primer tipo); leer las
+  aristas `instanceOf` y aceptar IRIs completos es el paso siguiente del ciclo.
 
 La lista completa, con lo que sí se conserva, está en el doc del módulo `nopaldb::rdf_owl`
 (docs.rs) y en la sección "Interoperating with an RDF store" de [`docs/ADOPTION.md`](../../ADOPTION.md).
