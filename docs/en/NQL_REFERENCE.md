@@ -11,6 +11,7 @@
 - [Pattern Matching (FROM)](#pattern-matching-from)
 - [Data Selection (FIND)](#data-selection-find)
 - [Filtering (WHERE)](#filtering-where)
+- [Ontology Predicates](#ontology-predicates-instanceof--subclassof)
 - [Write Operations (ADD/UPDATE/DELETE)](#write-operations-addupdatedelete)
 - [Aggregations & Functions](#aggregations--functions)
 - [Data Export (EXPORT)](#data-export-export)
@@ -116,6 +117,48 @@ where (p.city = "NYC" or p.city = "SF") and p.age < 30
 -- Exclusion
 where not p.status = "Inactive"
 ```
+
+---
+
+## Ontology Predicates (instanceOf / subClassOf)
+
+When the graph carries a class hierarchy (imported from Turtle/OWL, or built
+with `NodeKind::Class` nodes and `subClassOf` edges), two predicates in `where`
+ask the taxonomy instead of comparing labels:
+
+- `instanceOf(n, "C")` — `n` is an individual whose declared type is `C` **or a
+  subclass of `C`**, at any depth. Every declared type counts: a node imported
+  with two `rdf:type` matches either of them, not only the one shown as its
+  label.
+- `subClassOf(c, "C")` — `c` is a class node that is a strict subclass of `C`
+  (a class is not a subclass of itself).
+
+The class can be named three ways; the first form that resolves wins:
+
+| Form | Example | Resolved through |
+|---|---|---|
+| Label | `"Arbol"` | the class node's label (the only form for graphs built by hand) |
+| Prefixed name | `"flora:Arbol"` | the prefix catalog of the imported documents (`graph.rdf_prefixes()`); an unknown prefix falls back to the label, which is how a class whose local name collided is labelled (`fauna:Rosa`) |
+| Full IRI | `"http://plantas.example/flora#Arbol"` | the class node's `iri` property |
+
+```nql
+-- Every plant: direct instances and instances of subclasses alike
+find n.label from (n) where instanceOf(n, "Planta")
+
+-- Same class, unambiguous across namespaces
+find n.iri from (n) where instanceOf(n, "flora:Rosa")
+
+-- Only the classes under Planta
+find c.label from (c) where subClassOf(c, "Planta")
+```
+
+Path queries run the same test over the nodes of a path:
+`path_start_instanceOf("C")`, `path_end_instanceOf("C")`,
+`path_any_instanceOf("C")`, `path_all_instanceOf("C")`, and the `subClassOf`
+counterparts. They take the class name only, in any of the three forms.
+
+Without a taxonomy (no class nodes in the graph) both predicates are `false`
+for every node.
 
 ---
 

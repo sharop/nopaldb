@@ -311,8 +311,6 @@ find c.label, count(d) as n from (d)-[:instanceOf]->(c) group by c.label
   del nodo y `n.label` en NQL sigue siendo eso).
 - El export escribe clases, jerarquía, individuos con todos sus tipos y propiedades escalares; las
   aristas entre individuos y los namespaces del documento todavía no (issue #70).
-- El predicado `instanceOf(n, "Clase")` de NQL sigue mirando el label (el primer tipo); leer las
-  aristas `instanceOf` y aceptar IRIs completos es el paso siguiente del ciclo.
 
 La lista completa, con lo que sí se conserva, está en el doc del módulo `nopaldb::rdf_owl`
 (docs.rs) y en la sección "Interoperating with an RDF store" de [`docs/ADOPTION.md`](../../ADOPTION.md).

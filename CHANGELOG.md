@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.11] - unreleased
+
+### Fixed
+
+- **`instanceOf(n, "C")` omitía las instancias directas de `C`** — cierra [#93](https://github.com/sharop/nopaldb/issues/93). La comprobación de subclase de la taxonomía es estricta (`C` no es subclase de sí misma) y el evaluador le pasaba la clase del individuo como "hija", así que `:musgo a :Planta` nunca salía en `instanceOf(n, "Planta")` y `instanceOf(n, "Arbol")` devolvía 0 filas con `:roble a :Arbol`. El predicado solo funcionaba por herencia, y ningún test ni el tutorial lo notaron porque consultaban la raíz de la jerarquía. Ahora el tipo del nodo cuenta si es `C` o subclase de `C`; test de regresión con la fixture del issue.
+
+### Added
+
+- **`instanceOf` lee las aristas `instanceOf` y acepta IRIs** — [#93](https://github.com/sharop/nopaldb/issues/93). El predicado responde por TODOS los tipos declarados de un individuo (las aristas que escribe `import_turtle` desde 0.5.10), no solo el que quedó en `label`; y la clase se puede nombrar por label, por `prefijo:Local` (resuelto con el catálogo `rdf_prefixes()`) o por IRI completo, también en `path_*_instanceOf`. `subClassOf` acepta las mismas tres formas y sigue siendo estricto. Por dentro, `TaxonomyIndex` guarda el IRI de cada clase, los tipos de cada individuo y el catálogo de prefijos (`register_class_iri`, `register_instance`, `resolve_class`, `is_instance_of`), y `rebuild_taxonomy_from_graph` los reconstruye al abrir la base. Un nodo sin aristas `instanceOf` (creado a mano, por NQL o por un import anterior a 0.5.10) se sigue evaluando por su label.
+- **Referencia NQL: sección "Predicados de Ontología"** (EN y ES). Hasta ahora ninguna de las dos referencias mencionaba `instanceOf`/`subClassOf` ni los filtros de camino `path_*_instanceOf`.
+
+---
+
 ## [0.5.10] - 2026-09-04
 
 ### Added

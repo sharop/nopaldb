@@ -2774,6 +2774,9 @@ impl Graph {
         let class_ids: std::collections::HashSet<NodeId> = class_nodes.iter().map(|n| n.id).collect();
         for node in &class_nodes {
             tax.register_class(node.id, &node.label);
+            if let Some(crate::types::PropertyValue::String(iri)) = node.properties.get("iri") {
+                tax.register_class_iri(node.id, iri);
+            }
         }
 
         // Edges stored by importer as source=child, target=parent.
@@ -2783,6 +2786,10 @@ impl Graph {
         // importer writes an edge per user predicate, so a `subClassOf`-named
         // edge between two individuals is data, not taxonomy; feeding it here
         // would poison every `instanceOf` answer on the next open.
+        //
+        // `instanceOf` edges (one per `rdf:type`, written by the importer) are
+        // mirrored into the snapshot so the NQL predicate answers for every
+        // type of an individual; only edges into a Class count.
         let edges = self.storage.get_all_edges().await?;
         for edge in &edges {
             if edge.edge_type == "subClassOf"
@@ -2790,8 +2797,16 @@ impl Graph {
                 && class_ids.contains(&edge.target)
             {
                 let _ = tax.add_subclass(edge.target, edge.source);
+            } else if edge.edge_type == "instanceOf"
+                && class_ids.contains(&edge.target)
+                && !class_ids.contains(&edge.source)
+            {
+                tax.register_instance(edge.source, edge.target);
             }
         }
+
+        #[cfg(feature = "owl-import")]
+        tax.set_prefixes(self.rdf_prefixes().await?);
 
         self.index_manager.set_taxonomy(tax).await;
         Ok(())

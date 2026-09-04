@@ -10,8 +10,14 @@
 //   - is_subclass_of: transitivity check
 //   - direct_children / direct_parents: single-hop queries
 //   - find_by_label: reverse label lookup
+//   - register_class_iri / find_by_iri: classes by absolute IRI (Turtle imports)
+//   - register_instance / types_of: declared types of an individual (its
+//     `instanceOf` edges), so the NQL predicate sees every type, not the label
+//   - resolve_class: one rule for naming a class from NQL (IRI, prefix:Local, label)
+//   - is_instance_of: the `instanceOf(n, C)` predicate, direct or inherited
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use crate::error::{NopalError, Result};
 use crate::index::{Index, IndexQuery};
@@ -33,6 +39,20 @@ pub struct TaxonomyIndex {
     label_to_id: HashMap<String, NodeId>,
     /// Transitive closure cache: root_id → Some(set) or None (invalidated)
     closure_cache: HashMap<NodeId, Option<HashSet<NodeId>>>,
+    /// class IRI → node_id, for classes that have one (Turtle imports).
+    iris: HashMap<String, NodeId>,
+    /// node_id → class IRI (inverse of `iris`, kept in sync).
+    iri_of: HashMap<NodeId, String>,
+    /// individual → its declared types (the targets of its `instanceOf` edges).
+    ///
+    /// Behind an `Arc` because the NQL executor clones the whole index once per
+    /// evaluated node (`get_taxonomy_sync` hands out snapshots): the class maps
+    /// are small, this one grows with the data, and a refcount bump keeps the
+    /// per-node cost where it was. Writers go through `Arc::make_mut`.
+    instance_types: Arc<HashMap<NodeId, Vec<NodeId>>>,
+    /// prefix → namespace IRI, the graph's RDF prefix catalog, so `resolve_class`
+    /// can expand `flora:Rosa` without touching storage.
+    prefixes: Arc<BTreeMap<String, String>>,
 }
 
 impl TaxonomyIndex {
@@ -60,6 +80,116 @@ impl TaxonomyIndex {
         // Ensure adjacency entries exist even for leaf nodes.
         self.children.entry(id).or_default();
         self.parents.entry(id).or_default();
+    }
+
+    /// Record the absolute IRI of a registered class, so NQL can name it by IRI
+    /// or by `prefix:Local`. A class without IRI (built by hand or by NQL) is
+    /// reachable by label only.
+    pub fn register_class_iri(&mut self, id: NodeId, iri: impl Into<String>) {
+        let iri = iri.into();
+        if let Some(old) = self.iri_of.insert(id, iri.clone()) {
+            self.iris.remove(&old);
+        }
+        self.iris.insert(iri, id);
+    }
+
+    /// Lookup a class by its absolute IRI.
+    pub fn find_by_iri(&self, iri: &str) -> Option<NodeId> {
+        self.iris.get(iri).copied()
+    }
+
+    /// The IRI recorded for a class, if any.
+    pub fn iri_of(&self, id: NodeId) -> Option<&str> {
+        self.iri_of.get(&id).map(String::as_str)
+    }
+
+    /// Record that `individual` is a declared instance of `class` (one call per
+    /// `instanceOf` edge). Idempotent.
+    ///
+    /// The types live here, in the snapshot, and not in the graph's edges at
+    /// evaluation time on purpose: the executor evaluates predicates
+    /// synchronously over a cloned index while storage is async, so an edge
+    /// lookup per node would need a second, blocking path into storage. The
+    /// importer and `rebuild_taxonomy_from_graph` already walk every
+    /// `instanceOf` edge; recording it here costs one map entry.
+    pub fn register_instance(&mut self, individual: NodeId, class: NodeId) {
+        let types = Arc::make_mut(&mut self.instance_types).entry(individual).or_default();
+        if !types.contains(&class) {
+            types.push(class);
+        }
+    }
+
+    /// Declared types of `individual`; empty when nothing was registered (a node
+    /// created by hand or by NQL, or a database written before 0.5.10).
+    pub fn types_of(&self, individual: NodeId) -> &[NodeId] {
+        self.instance_types.get(&individual).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Number of individuals with at least one registered type.
+    pub fn instance_count(&self) -> usize {
+        self.instance_types.len()
+    }
+
+    /// Replace the prefix catalog used by [`Self::resolve_class`].
+    pub fn set_prefixes(&mut self, prefixes: BTreeMap<String, String>) {
+        self.prefixes = Arc::new(prefixes);
+    }
+
+    /// The prefix catalog known to this index.
+    pub fn prefixes(&self) -> &BTreeMap<String, String> {
+        &self.prefixes
+    }
+
+    /// Resolve the class named by an NQL argument. One rule for every
+    /// ontology predicate, in this order:
+    ///
+    /// 1. an absolute IRI (`http://…`, or a blank node `_:…`) → [`Self::find_by_iri`];
+    /// 2. `prefix:Local` → expanded with the prefix catalog and looked up by IRI;
+    ///    if the prefix is unknown, the text is tried as a label, because that
+    ///    is exactly how the importer labels a class whose local name collided
+    ///    (`fauna:Rosa`);
+    /// 3. anything else → by label, as before 0.5.11.
+    pub fn resolve_class(&self, name: &str) -> Option<NodeId> {
+        if name.contains("://") || name.starts_with("_:") {
+            return self.find_by_iri(name);
+        }
+        if let Some((prefix, local)) = name.split_once(':')
+            && let Some(ns) = self.prefixes.get(prefix)
+            && let Some(id) = self.find_by_iri(&format!("{ns}{local}"))
+        {
+            return Some(id);
+        }
+        self.find_by_label(name)
+    }
+
+    /// The NQL `instanceOf(n, C)` test for an individual: some declared type
+    /// `T` of the node is `C` itself or a transitive subclass of `C`.
+    ///
+    /// When the node has no registered types, its `label` is read as its (only)
+    /// class, which is how every graph built by hand, by NQL `add`, or by an
+    /// import older than 0.5.10 encodes the type. Before 0.5.11 this path
+    /// answered `false` for direct instances (`is_subclass_of` is strict), so
+    /// `instanceOf(n, "Planta")` missed every `:musgo a :Planta`.
+    pub fn is_instance_of(&mut self, individual: NodeId, label: &str, class: NodeId) -> bool {
+        let types = self.types_of(individual).to_vec();
+        if types.is_empty() {
+            return match self.find_by_label(label) {
+                Some(t) => t == class || self.is_subclass_of(t, class),
+                None => false,
+            };
+        }
+        types.into_iter().any(|t| t == class || self.is_subclass_of(t, class))
+    }
+
+    /// The NQL `subClassOf(c, C)` test for a class node: a strict subclass
+    /// (`c` is never a subclass of itself). Prefers the node's id and falls
+    /// back to its label for class nodes the index never registered by id.
+    pub fn is_class_subclass_of(&mut self, class_node: NodeId, label: &str, ancestor: NodeId) -> bool {
+        if self.labels.contains_key(&class_node) {
+            self.is_subclass_of(class_node, ancestor)
+        } else {
+            self.is_subclass_of_label(label, ancestor)
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -285,6 +415,10 @@ impl TaxonomyIndex {
         self.labels.clear();
         self.label_to_id.clear();
         self.closure_cache.clear();
+        self.iris.clear();
+        self.iri_of.clear();
+        self.instance_types = Arc::default();
+        self.prefixes = Arc::default();
     }
 
     /// Remove a Class node from the index, cleaning up all DAG entries and
@@ -293,6 +427,9 @@ impl TaxonomyIndex {
         // Remove label mappings.
         if let Some(label) = self.labels.remove(&id) {
             self.label_to_id.remove(&label);
+        }
+        if let Some(iri) = self.iri_of.remove(&id) {
+            self.iris.remove(&iri);
         }
 
         // Remove `id` from children lists of its parents.
@@ -384,6 +521,112 @@ mod tests {
 
     fn id() -> NodeId {
         Uuid::new_v4()
+    }
+
+    // -- #93: IRIs, declared types, prefix resolution, direct instances --------
+
+    fn flora() -> (TaxonomyIndex, NodeId, NodeId, NodeId, NodeId) {
+        let mut idx = TaxonomyIndex::new();
+        let (planta, arbol, medicinal, fauna_rosa) = (id(), id(), id(), id());
+        idx.register_class(planta, "Planta");
+        idx.register_class_iri(planta, "http://plantas.example/flora#Planta");
+        idx.register_class(arbol, "Arbol");
+        idx.register_class_iri(arbol, "http://plantas.example/flora#Arbol");
+        idx.register_class(medicinal, "PlantaMedicinal");
+        idx.register_class_iri(medicinal, "http://plantas.example/flora#PlantaMedicinal");
+        idx.register_class(fauna_rosa, "fauna:Rosa");
+        idx.register_class_iri(fauna_rosa, "http://plantas.example/fauna#Rosa");
+        idx.add_subclass(planta, arbol).unwrap();
+        idx.add_subclass(planta, medicinal).unwrap();
+        idx.set_prefixes(BTreeMap::from([
+            ("flora".to_string(), "http://plantas.example/flora#".to_string()),
+            ("".to_string(), "http://plantas.example/".to_string()),
+        ]));
+        (idx, planta, arbol, medicinal, fauna_rosa)
+    }
+
+    #[test]
+    fn test_resolve_class_by_iri_prefix_and_label() {
+        let (idx, planta, arbol, _, fauna_rosa) = flora();
+        assert_eq!(idx.resolve_class("Arbol"), Some(arbol));
+        assert_eq!(idx.resolve_class("flora:Arbol"), Some(arbol));
+        assert_eq!(idx.resolve_class("http://plantas.example/flora#Planta"), Some(planta));
+        // Unknown prefix: the text is a label (how the importer names collisions).
+        assert_eq!(idx.resolve_class("fauna:Rosa"), Some(fauna_rosa));
+        assert_eq!(idx.resolve_class("flora:Hongo"), None);
+        assert_eq!(idx.resolve_class("http://plantas.example/flora#Hongo"), None);
+        assert_eq!(idx.resolve_class("Hongo"), None);
+        // Empty prefix expands too.
+        assert_eq!(idx.resolve_class(":Arbol"), None); // no class under the default namespace
+    }
+
+    #[test]
+    fn test_register_class_iri_replaces_previous_iri() {
+        let mut idx = TaxonomyIndex::new();
+        let c = id();
+        idx.register_class(c, "Planta");
+        idx.register_class_iri(c, "http://a.example/Planta");
+        idx.register_class_iri(c, "http://b.example/Planta");
+        assert_eq!(idx.find_by_iri("http://a.example/Planta"), None);
+        assert_eq!(idx.find_by_iri("http://b.example/Planta"), Some(c));
+        assert_eq!(idx.iri_of(c), Some("http://b.example/Planta"));
+    }
+
+    #[test]
+    fn test_is_instance_of_direct_inherited_and_multityped() {
+        let (mut idx, planta, arbol, medicinal, fauna_rosa) = flora();
+        let (roble, musgo, sauce) = (id(), id(), id());
+        idx.register_instance(roble, arbol);
+        idx.register_instance(musgo, planta);
+        idx.register_instance(sauce, arbol);
+        idx.register_instance(sauce, medicinal);
+        idx.register_instance(sauce, medicinal); // idempotent
+        assert_eq!(idx.types_of(sauce).len(), 2);
+        assert_eq!(idx.instance_count(), 3);
+
+        // direct
+        assert!(idx.is_instance_of(roble, "Arbol", arbol));
+        assert!(idx.is_instance_of(musgo, "Planta", planta));
+        // inherited
+        assert!(idx.is_instance_of(roble, "Arbol", planta));
+        // second type counts even though the label says Arbol
+        assert!(idx.is_instance_of(sauce, "Arbol", medicinal));
+        // unrelated
+        assert!(!idx.is_instance_of(roble, "Arbol", medicinal));
+        assert!(!idx.is_instance_of(roble, "Arbol", fauna_rosa));
+    }
+
+    #[test]
+    fn test_is_instance_of_falls_back_to_label_without_registered_types() {
+        let (mut idx, planta, arbol, medicinal, _) = flora();
+        let encino = id(); // never registered: a node added by hand
+        assert!(idx.is_instance_of(encino, "Arbol", arbol), "direct instance by label");
+        assert!(idx.is_instance_of(encino, "Arbol", planta), "inherited by label");
+        assert!(!idx.is_instance_of(encino, "Arbol", medicinal));
+        assert!(!idx.is_instance_of(encino, "Piedra", planta), "unknown label");
+    }
+
+    #[test]
+    fn test_is_class_subclass_of_is_strict() {
+        let (mut idx, planta, arbol, _, _) = flora();
+        assert!(idx.is_class_subclass_of(arbol, "Arbol", planta));
+        assert!(!idx.is_class_subclass_of(planta, "Planta", planta));
+        // Unregistered class node id: label decides.
+        assert!(idx.is_class_subclass_of(id(), "Arbol", planta));
+    }
+
+    #[test]
+    fn test_clear_and_unregister_drop_iris_and_types() {
+        let (mut idx, planta, arbol, _, _) = flora();
+        let roble = id();
+        idx.register_instance(roble, arbol);
+        idx.unregister_class(arbol);
+        assert_eq!(idx.find_by_iri("http://plantas.example/flora#Arbol"), None);
+        assert_eq!(idx.find_by_iri("http://plantas.example/flora#Planta"), Some(planta));
+        idx.clear();
+        assert_eq!(idx.instance_count(), 0);
+        assert!(idx.prefixes().is_empty());
+        assert_eq!(idx.resolve_class("Planta"), None);
     }
 
     #[test]

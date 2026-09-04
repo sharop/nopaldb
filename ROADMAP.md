@@ -37,9 +37,12 @@ module docs. The work is to make it faithful:
   in 0.5.10): a real Turtle grammar that reports errors instead of silently
   mis-parsing, IRI identity (no collapsing of same-named terms), an edge for
   every resource-valued triple, and one `instanceOf` edge per `rdf:type`.
-- **`instanceOf` in NQL reads those edges**: the predicate accepts a label or
-  a full IRI and answers for every type of a node, not just the first one, so
-  one vocabulary means the same thing as a predicate and as a traversal.
+- **`instanceOf` in NQL reads those edges**
+  ([#93](https://github.com/sharop/nopaldb/issues/93), shipped in 0.5.11): the
+  predicate accepts a label, `prefix:Local` or a full IRI and answers for every
+  type of a node, not just the first one, so one vocabulary means the same
+  thing as a predicate and as a traversal. Direct instances count too, which
+  they did not before.
 - **Exporter** ([#70](https://github.com/sharop/nopaldb/issues/70)): symmetric
   with the importer, emitting the document's own namespaces and all edges, with
   a verified import → export → import round trip; export exposed in Python.
@@ -124,9 +127,12 @@ sus límites exactos están en `docs/ADOPTION.md` y en el doc del módulo
   0.5.10): gramática Turtle real que reporta errores en vez de parsear mal en
   silencio, identidad IRI (sin colapsar términos homónimos), una arista por cada
   triple con objeto-recurso y una arista `instanceOf` por cada `rdf:type`.
-- **`instanceOf` en NQL lee esas aristas**: el predicado acepta label o IRI
-  completo y responde por todos los tipos de un nodo, no solo el primero, para
-  que un mismo vocabulario signifique lo mismo como predicado y como traversal.
+- **`instanceOf` en NQL lee esas aristas**
+  ([#93](https://github.com/sharop/nopaldb/issues/93), liberado en 0.5.11): el
+  predicado acepta label, `prefijo:Local` o IRI completo y responde por todos
+  los tipos de un nodo, no solo el primero, para que un mismo vocabulario
+  signifique lo mismo como predicado y como traversal. Las instancias directas
+  también cuentan, cosa que antes no pasaba.
 - **Exporter** ([#70](https://github.com/sharop/nopaldb/issues/70)): simétrico
   al importer, con los namespaces del documento y todas las aristas, round trip
   import → export → import verificado, y export expuesto en Python.
