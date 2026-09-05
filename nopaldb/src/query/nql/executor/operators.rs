@@ -632,16 +632,19 @@ pub fn eval_condition_with_graph(
                 Expression::Literal(PropertyValue::String(s)) => s.clone(),
                 _ => return Ok(false),
             };
+            // The class may be named by label, `prefix:Local` or full IRI;
+            // the taxonomy snapshot resolves all three (`resolve_class`) and
+            // knows every declared type of the node, not just its label.
             let Some(mut tax) = graph.get_taxonomy_sync() else { return Ok(false); };
-            let Some(parent_id) = tax.find_by_label(&class_name) else { return Ok(false); };
+            let Some(class_id) = tax.resolve_class(&class_name) else { return Ok(false); };
             let result = match name.to_lowercase().as_str() {
                 "instanceof" => {
                     node.kind == crate::types::NodeKind::Individual
-                        && tax.is_subclass_of_label(&node.label, parent_id)
+                        && tax.is_instance_of(node.id, &node.label, class_id)
                 }
                 "subclassof" => {
                     node.kind == crate::types::NodeKind::Class
-                        && tax.is_subclass_of_label(&node.label, parent_id)
+                        && tax.is_class_subclass_of(node.id, &node.label, class_id)
                 }
                 _ => false,
             };

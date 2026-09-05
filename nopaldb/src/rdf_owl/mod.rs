@@ -15,8 +15,9 @@
 //! a term — its local name (after `#` or the last `/`) — and are never used
 //! to decide identity. When two classes from different namespaces share a
 //! local name, the second one is labelled with its qualified name
-//! (`fauna:Rosa`), so the label-keyed taxonomy and `instanceOf` can tell them
-//! apart; the import reports it.
+//! (`fauna:Rosa`), so a lookup by label still tells them apart; the import
+//! reports it. In NQL, `instanceOf(n, C)` names the class by label,
+//! `prefix:Local` or full IRI, and reads every `instanceOf` edge of the node.
 //!
 //! # What the import keeps
 //!

@@ -163,12 +163,14 @@ assumed — a missing `@prefix :`, a class used without being declared, a
 label it had to qualify, nodes left by an import made before 0.5.10 — comes
 back in `ImportReport.warnings`; empty means the file was taken as written.
 
+**In NQL:** `instanceOf(n, "C")` reads those `instanceOf` edges, so every
+type of a node counts, and the class can be named by label, `prefix:Local`
+or full IRI (`"flora:Rosa"`, `"http://…#Rosa"`); see the NQL reference.
+
 **Export, today:** classes, the hierarchy, individuals with every type and
 their scalar properties. Edges between individuals and the document's own
 namespaces are not written yet: the symmetric exporter is issue
-[#70](https://github.com/sharop/nopaldb/issues/70), and the `instanceOf`
-predicate that reads the new edges (multi-typing and full IRIs from NQL) is
-the step after it — both in the public roadmap.
+[#70](https://github.com/sharop/nopaldb/issues/70), in the public roadmap.
 
 ## Re-ingesting a source: keeping node, text and vector in step
 

@@ -11,6 +11,7 @@
 - [Búsqueda de Patrones (FROM)](#búsqueda-de-patrones-from)
 - [Selección de Datos (FIND)](#selección-de-datos-find)
 - [Filtrado (WHERE)](#filtrado-where)
+- [Predicados de Ontología](#predicados-de-ontología-instanceof--subclassof)
 - [Operaciones de Escritura (ADD/UPDATE/DELETE)](#operaciones-de-escritura-addupdatedelete)
 - [Agregaciones y Funciones](#agregaciones-y-funciones)
 - [Exportación de Datos (EXPORT)](#exportación-de-datos-export)
@@ -116,6 +117,48 @@ where (p.ciudad = "CDMX" or p.ciudad = "GDL") and p.edad < 30
 -- Exclusión
 where not p.estado = "Inactivo"
 ```
+
+---
+
+## Predicados de Ontología (instanceOf / subClassOf)
+
+Cuando el grafo tiene una jerarquía de clases (importada de Turtle/OWL, o
+construida con nodos `NodeKind::Class` y aristas `subClassOf`), dos predicados
+del `where` consultan la taxonomía en vez de comparar labels:
+
+- `instanceOf(n, "C")` — `n` es un individuo cuyo tipo declarado es `C` **o una
+  subclase de `C`**, a cualquier profundidad. Cuentan todos sus tipos: un nodo
+  importado con dos `rdf:type` cumple con cualquiera de los dos, no solo con el
+  que se muestra como label.
+- `subClassOf(c, "C")` — `c` es un nodo clase que es subclase estricta de `C`
+  (una clase no es subclase de sí misma).
+
+La clase se puede nombrar de tres formas; gana la primera que resuelve:
+
+| Forma | Ejemplo | Se resuelve por |
+|---|---|---|
+| Label | `"Arbol"` | el label del nodo clase (la única forma en grafos construidos a mano) |
+| Nombre con prefijo | `"flora:Arbol"` | el catálogo de prefijos de los documentos importados (`graph.rdf_prefixes()`); si el prefijo no existe se prueba como label, que es como el importer etiqueta una clase cuyo local name colisionó (`fauna:Rosa`) |
+| IRI completo | `"http://plantas.example/flora#Arbol"` | la propiedad `iri` del nodo clase |
+
+```nql
+-- Todas las plantas: instancias directas y de subclases por igual
+find n.label from (n) where instanceOf(n, "Planta")
+
+-- La misma clase, sin ambigüedad entre namespaces
+find n.iri from (n) where instanceOf(n, "flora:Rosa")
+
+-- Solo las clases bajo Planta
+find c.label from (c) where subClassOf(c, "Planta")
+```
+
+Las consultas de camino aplican la misma prueba sobre los nodos del camino:
+`path_start_instanceOf("C")`, `path_end_instanceOf("C")`,
+`path_any_instanceOf("C")`, `path_all_instanceOf("C")` y sus equivalentes con
+`subClassOf`. Reciben solo el nombre de la clase, en cualquiera de las tres formas.
+
+Sin taxonomía (sin nodos clase en el grafo) ambos predicados son `false` para
+todos los nodos.
 
 ---
 

@@ -506,6 +506,7 @@ impl Import<'_> {
         };
 
         self.taxonomy.register_class(id, &label);
+        self.taxonomy.register_class_iri(id, iri);
         self.nodes.insert(iri.to_string(), Some(id));
         self.class_label_owner.insert(label, iri.to_string());
         Ok(id)
@@ -743,6 +744,9 @@ pub async fn import_turtle(
         if im.ensure_edge(ind_id, class_id, EDGE_INSTANCE_OF, rdf::TYPE.as_str()).await? {
             im.report.edges_created += 1;
         }
+        // The taxonomy snapshot mirrors the edge so `instanceOf(n, C)` in NQL
+        // sees this type without reading storage.
+        im.taxonomy.register_instance(ind_id, class_id);
     }
 
     // Pass 4 — statements: edges for resource objects, properties for literals.
@@ -806,8 +810,11 @@ pub async fn import_turtle(
         }
     }
 
-    // Prefix catalog: the document's prefixes join the graph's (later import wins).
+    // Prefix catalog: the document's prefixes join the graph's (later import wins),
+    // and the taxonomy snapshot gets the merged catalog so NQL can say `flora:Rosa`.
     im.graph.merge_rdf_prefixes(&doc.prefixes).await?;
+    let catalog = im.graph.rdf_prefixes().await?;
+    im.taxonomy.set_prefixes(catalog);
 
     if im.legacy_seen > 0 {
         im.report.warnings.push(format!(

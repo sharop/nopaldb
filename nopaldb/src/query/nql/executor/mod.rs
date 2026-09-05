@@ -3701,15 +3701,16 @@ impl<'a> Executor<'a> {
             return false;
         }
 
-        // Get taxonomy snapshot (non-blocking clone).
+        // Get taxonomy snapshot (non-blocking clone). The class may be named by
+        // label, `prefix:Local` or full IRI.
         let Some(mut tax) = self.graph.get_taxonomy_sync() else {
             return false;
         };
-        let Some(parent_id) = tax.find_by_label(&class_name) else {
+        let Some(class_id) = tax.resolve_class(&class_name) else {
             return false;
         };
 
-        self.evaluate_node_ontology_predicate(node, name, &mut tax, parent_id)
+        self.evaluate_node_ontology_predicate(node, name, &mut tax, class_id)
     }
 
     fn evaluate_node_ontology_predicate(
@@ -3724,13 +3725,15 @@ impl<'a> Executor<'a> {
                 if node.kind != crate::types::NodeKind::Individual {
                     return false;
                 }
-                tax.is_subclass_of_label(&node.label, parent_id)
+                // Every declared type counts (the `instanceOf` edges), direct
+                // or inherited; a node without registered types is read by label.
+                tax.is_instance_of(node.id, &node.label, parent_id)
             }
             "subclassof" => {
                 if node.kind != crate::types::NodeKind::Class {
                     return false;
                 }
-                tax.is_subclass_of_label(&node.label, parent_id)
+                tax.is_class_subclass_of(node.id, &node.label, parent_id)
             }
             _ => false,
         }
@@ -3762,7 +3765,7 @@ impl<'a> Executor<'a> {
         let Some(mut tax) = self.graph.get_taxonomy_sync() else {
             return Ok(PropertyValue::Bool(false));
         };
-        let Some(parent_id) = tax.find_by_label(&class_name) else {
+        let Some(parent_id) = tax.resolve_class(&class_name) else {
             return Ok(PropertyValue::Bool(false));
         };
 

@@ -1,6 +1,6 @@
 [package]
 name = "nopaldb"
-version = "0.5.10"
+version = "0.5.11"
 authors = ["Sharop <sharop@gmail.com>"]
 description = "High-performance graph database with ACID transactions, MVCC time-travel, and Arrow analytics"
 keywords = ["graph", "database", "embedded", "mvcc", "arrow"]
@@ -141,6 +141,10 @@ required-features = ["owl-import"]
 # corría. Es el test que más se parece a un uso real del puente.
 [[test]]
 name = "synthetic_offshore_e2e_test"
+required-features = ["owl-import", "reasoner"]
+
+[[test]]
+name = "nql_instanceof_edges_test"
 required-features = ["owl-import", "reasoner"]
 
 [[test]]
