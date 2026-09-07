@@ -167,10 +167,15 @@ back in `ImportReport.warnings`; empty means the file was taken as written.
 type of a node counts, and the class can be named by label, `prefix:Local`
 or full IRI (`"flora:Rosa"`, `"http://…#Rosa"`); see the NQL reference.
 
-**Export, today:** classes, the hierarchy, individuals with every type and
-their scalar properties. Edges between individuals and the document's own
-namespaces are not written yet: the symmetric exporter is issue
-[#70](https://github.com/sharop/nopaldb/issues/70), in the public roadmap.
+**Export:** the mirror of the import. `export_turtle` writes classes, the
+hierarchy, individuals with every type, every edge between exported nodes as
+an object property (with the predicate IRI the import kept), and typed
+literals, under the prefixes your documents declared. It returns the text
+and an `ExportReport`; its `skipped` list names, with a reason, whatever
+Turtle cannot carry (bytes, nested objects, NaN, edge properties, edges to
+nodes without `iri`). Empty `skipped` means import → export → import gives
+the same graph back, which is what the round-trip test asserts. Python:
+`ttl, report = graph.export_turtle()` and `graph.export_owl_file(path)`.
 
 ## Re-ingesting a source: keeping node, text and vector in step
 

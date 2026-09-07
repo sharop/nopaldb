@@ -1,6 +1,6 @@
 [package]
 name = "nopaldb"
-version = "0.5.11"
+version = "0.5.12"
 authors = ["Sharop <sharop@gmail.com>"]
 description = "High-performance graph database with ACID transactions, MVCC time-travel, and Arrow analytics"
 keywords = ["graph", "database", "embedded", "mvcc", "arrow"]
@@ -80,6 +80,9 @@ regex = { version = "1", optional = true }      # SHACL sh:pattern constraint ev
 
 
 [dev-dependencies]
+# Oracle for the export tests: the same Turtle parser the importer uses, as an
+# independent check that what the exporter writes is Turtle.
+oxttl = { version = "0.2.4", default-features = false }
 tempfile = "3.19"
 tokio-test = "0.4"
 num_cpus = "1.16"
@@ -135,6 +138,10 @@ required-features = ["owl-import"]
 
 [[test]]
 name = "rdf_roundtrip_test"
+required-features = ["owl-import"]
+
+[[test]]
+name = "rdf_export_symmetry_test"
 required-features = ["owl-import"]
 
 # Existía sin registrar: compilaba vacío (su `cfg` interno) y ningún job lo

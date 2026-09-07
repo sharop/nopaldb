@@ -34,17 +34,17 @@ use crate::types::{Edge, Node, NodeId, NodeKind, PropertyValue};
 
 /// `owl:Class`. `oxrdf` ships `rdf`, `rdfs` and `xsd` vocabularies but not
 /// `owl`, so the terms this importer needs are declared here.
-const OWL_CLASS: NamedNodeRef<'static> =
+pub(crate) const OWL_CLASS: NamedNodeRef<'static> =
     NamedNodeRef::new_unchecked("http://www.w3.org/2002/07/owl#Class");
 /// `owl:NamedIndividual`: says "this is an individual" and nothing else. It is
 /// consumed as a no-op — the individual's real class is its other `rdf:type`.
 const OWL_NAMED_INDIVIDUAL: NamedNodeRef<'static> =
     NamedNodeRef::new_unchecked("http://www.w3.org/2002/07/owl#NamedIndividual");
 
-const NS_RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
-const NS_RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
-const NS_OWL: &str = "http://www.w3.org/2002/07/owl#";
-const NS_XSD: &str = "http://www.w3.org/2001/XMLSchema#";
+pub(crate) const NS_RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+pub(crate) const NS_RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
+pub(crate) const NS_OWL: &str = "http://www.w3.org/2002/07/owl#";
+pub(crate) const NS_XSD: &str = "http://www.w3.org/2001/XMLSchema#";
 
 /// Edge type of `rdf:type`. Reserved: a user predicate whose local name is
 /// `instanceOf` or `subClassOf` is written with its qualified name instead,

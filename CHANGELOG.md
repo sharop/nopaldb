@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.12] - unreleased
+
+### Added
+
+- **Exporter Turtle simétrico** — cierra [#70](https://github.com/sharop/nopaldb/issues/70). `export_turtle` escribe ahora TODO lo que el importer guarda: cada arista entre nodos con `iri` como object property (con el IRI del predicado que trajo el import, o el namespace de export + tipo de arista para las creadas en NopalDB), todos los tipos de cada individuo, literales tipados por la misma tabla del importer, y los **namespaces del documento** (el catálogo `rdf_prefixes()`) en vez de `http://example.org/ontology#` fijo; `café_de_olla` se escribe tal cual (los IRIs admiten no-ASCII) en lugar de `caf__de_olla`. La serialización la hace `oxttl::TurtleSerializer`, el mismo stack del parser, así que el escape y la validez de los IRIs son de la librería y no de un `format!`. Test de round-trip **import → export → import isomorfo** (nodos por IRI, aristas por sujeto/predicado/objeto, literales por valor y tipo) sobre una fixture con jerarquía, multi-tipo, relaciones, listas, datatypes y no-ASCII; el export es determinista y re-importarlo en su propio grafo no escribe nada.
+- **`ExportReport`**: `classes`, `subclass_edges`, `individuals`, `type_triples`, `edges`, `literals`, `triples_written` y `skipped`, una línea con razón por cada valor o arista que Turtle no puede llevar (`Null`, `Bytes`, `Object`, listas anidadas, NaN/∞, propiedades de arista, aristas hacia nodos sin `iri`). Antes se omitían en silencio. `skipped` vacío = export fiel.
+- **Export en Python**: `graph.export_turtle() -> (str, dict)` y `graph.export_owl_file(path) -> dict`, con stubs `.pyi` y un script de round-trip en CI.
+
+### Changed
+
+- `Graph::export_turtle` devuelve `TurtleExport { turtle, report }` en vez de `String`, y `export_owl_file` devuelve el `ExportReport`. Cambio de firma deliberado: un export que puede perder datos tiene que decir qué perdió en el mismo valor de retorno, no en un log. Migración: `graph.export_turtle().await?.turtle`.
+
+---
+
 ## [0.5.11] - 2026-09-05
 
 ### Fixed
