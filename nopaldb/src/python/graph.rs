@@ -956,6 +956,53 @@ impl PyGraph {
         export_report_dict(py, &report)
     }
 
+    /// Valida el grafo contra shapes SHACL escritas en Turtle.
+    ///
+    /// Returns:
+    ///     dict: {conforms, violations, notes, shapes, property_shapes,
+    ///     constraints, ignored, warnings}. Cada violación es
+    ///     {focus_node, shape, constraint, path, value, message, severity}.
+    ///     `ignored` lista, con razón, cada término `sh:*` que este validador
+    ///     no comprueba; vacío significa que las shapes se aplican completas.
+    ///     Un Turtle malformado levanta con línea y columna. El grafo no se
+    ///     modifica.
+    ///
+    /// Requires:
+    ///     Wheel compilado con `--features python-shacl` (incluido en `python-full`).
+    #[cfg(feature = "python-shacl")]
+    fn validate_shapes(&self, py: Python<'_>, shapes_turtle: &str) -> PyResult<Py<pyo3::types::PyDict>> {
+        let graph = self.graph()?;
+        let source = shapes_turtle.to_string();
+        let (report, shapes) = to_py_result(
+            crate::python::runtime::block_on(py, async move { graph.validate_shapes(&source).await })
+        )?;
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("conforms", report.conforms)?;
+        let violations = pyo3::types::PyList::empty(py);
+        for v in &report.violations {
+            let d = pyo3::types::PyDict::new(py);
+            d.set_item("focus_node", v.focus_node.to_string())?;
+            d.set_item("shape", v.shape_name.clone())?;
+            d.set_item("constraint", v.constraint.clone())?;
+            d.set_item("path", v.path.clone())?;
+            match &v.value {
+                Some(value) => d.set_item("value", crate::python::property_to_py(py, value)?)?,
+                None => d.set_item("value", py.None())?,
+            }
+            d.set_item("message", v.message.clone())?;
+            d.set_item("severity", format!("{:?}", v.severity))?;
+            violations.append(d)?;
+        }
+        dict.set_item("violations", violations)?;
+        dict.set_item("notes", report.notes.clone())?;
+        dict.set_item("shapes", shapes.shapes)?;
+        dict.set_item("property_shapes", shapes.property_shapes)?;
+        dict.set_item("constraints", shapes.constraints)?;
+        dict.set_item("ignored", shapes.ignored.clone())?;
+        dict.set_item("warnings", shapes.warnings.clone())?;
+        Ok(dict.into())
+    }
+
     /// Prefijos declarados por los documentos Turtle importados en este grafo
     /// (`{prefijo: namespace}`), fusionados entre imports. Vacío si nunca se
     /// importó Turtle.

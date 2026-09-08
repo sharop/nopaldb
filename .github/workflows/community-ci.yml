@@ -41,7 +41,7 @@ jobs:
       # `--lib` no compila tests/: los tres tests de integración del puente
       # Turtle no corrieron en CI hasta 0.5.10.
       - name: Test Turtle bridge integration
-        run: cargo test -p nopaldb --features semantic --test owl_import_integration_test --test rdf_roundtrip_test --test rdf_export_symmetry_test --test synthetic_offshore_e2e_test --test nql_instanceof_edges_test
+        run: cargo test -p nopaldb --features semantic --test owl_import_integration_test --test rdf_roundtrip_test --test rdf_export_symmetry_test --test synthetic_offshore_e2e_test --test nql_instanceof_edges_test --test shacl_validation_test --test shacl_turtle_test
 
       - name: Test isolation feature (full-isolation)
         run: cargo test -p nopaldb --features full-isolation --test p1_isolation_levels_test --test deadlock_tests --test p1_isolation_concurrent_test
@@ -130,4 +130,5 @@ jobs:
           python nopaldb/python/scripts/roundtrip_sample.py
           python nopaldb/python/scripts/turtle_roundtrip_sample.py
           python nopaldb/python/scripts/fulltext_analyzer_sample.py
+          python nopaldb/python/scripts/shacl_sample.py
           mypy --strict nopaldb/python/scripts/typecheck_sample.py

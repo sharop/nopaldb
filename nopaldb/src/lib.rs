@@ -108,7 +108,7 @@ pub use reasoner::{Axiom, CompletionRule, ELReasoner, Inference};
 pub mod shacl;
 
 #[cfg(feature = "shacl")]
-pub use shacl::{ShaclValidator, Shape, ValidationReport, ConstraintViolation};
+pub use shacl::{ShaclValidator, Shape, ValidationReport, ConstraintViolation, ShapesReport};
 
 // ML integrations (feature-gated)
 #[cfg(feature = "ml")]

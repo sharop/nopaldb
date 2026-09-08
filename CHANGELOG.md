@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.14] - unreleased
+
+### Added
+
+- **SHACL declarativo: shapes desde Turtle** — cierra [#98](https://github.com/sharop/nopaldb/issues/98). `Graph::validate_shapes(ttl)` / `validate_shapes_file(path)` y `ShaclValidator::from_turtle` cargan `sh:NodeShape`, `sh:targetClass`, `sh:targetNode`, `sh:property` (blank nodes o IRIs), `sh:path` de un salto, las 14 constraints por su término `sh:*`, `sh:in ( … )` y `sh:datatype xsd:*` con la misma tabla que usa el importer, reutilizando el parser Turtle del puente (misma gramática, mismos errores con línea y columna). Hasta ahora las shapes solo se construían desde Rust y `from_graph` leía tres propiedades. **Nada se ignora en silencio**: cada término `sh:*` no soportado o mal formado es una línea con razón en `ShapesReport.ignored` (`sh:closed`, `sh:and/or/not`, paths compuestos…), con el issue que lo cubre; `ignored` vacío = las shapes se aplican completas. Un `sh:targetNode` que no existe va a `ValidationReport.notes`. Python: `graph.validate_shapes(ttl) -> dict`. Docs: `docs/SHACL.md` (EN) y `docs/es/SHACL.md`.
+- **Violaciones que dicen qué y sobre qué**: `ConstraintViolation` gana `constraint` (el componente, p. ej. `sh:MinCountConstraintComponent`), `value` (el literal o el `iri` del nodo culpable) y `shape_name`; `ValidationReport` y `ShapesReport` derivan `Serialize`.
+- **`sh:class` y `sh:nodeKind` dentro de `sh:property` funcionan**: los valores de un path son ahora `PathValue::{Literal, Node}` y un solo evaluador juzga literales y nodos (`sh:class` por la taxonomía, directa o heredada, nombrando la clase por label, `prefix:Local` o IRI). Antes `PathSpec::Edge` convertía los destinos a UUID en texto y esas dos constraints eran un no-op silencioso en property shapes. Nuevo `PathSpec::Predicate(p)` = propiedad `p` ∪ aristas de tipo `p`, que es lo que carga `sh:path`; una propiedad `List` cuenta un valor por elemento (antes `sh:minCount 2` sobre un predicado repetido nunca se cumplía). `ConstraintType::NodeKindShacl` para `sh:nodeKind sh:IRI|sh:BlankNode|sh:Literal|…`.
+- `shacl_validation_test` corre en CI por primera vez, junto al nuevo `shacl_turtle_test` (fixtures `recetario.ttl` + `recetario_shapes.ttl`).
+
+### Changed
+
+- La feature `shacl` pasa a `["regex", "owl-import"]`: las shapes son Turtle y `sh:class` se resuelve por la taxonomía; un `shacl` sin ellos era un motor sin puerta de entrada estándar. El tier `semantic` no cambia. `evaluate_constraints` recibe `&[PathValue]` y un `EvalContext`; `evaluate_node_kind_constraint` desaparece (mismo evaluador para los dos niveles); `Shape` gana `iri`.
+
+### Fixed
+
+- **`sh:targetClass` validaba el propio nodo clase**: `:Receta a owl:Class` lleva label `Receta` y `get_nodes_by_label` lo devolvía como focus node, así que cada `sh:minCount` fallaba también sobre la clase. Una clase no es instancia de sí misma; ahora se excluye.
+
+---
+
 ## [0.5.13] - 2026-09-08
 
 ### Added

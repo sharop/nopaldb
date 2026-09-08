@@ -1,53 +1,69 @@
 // src/shacl/mod.rs
 //! SHACL Core — validacion de shapes sobre el grafo NopalDB.
 //!
-//! Implementa un subconjunto de SHACL Core (W3C) sin SPARQL, rutas complejas
-//! (only single-hop) ni SHACL Advanced Features.
+//! Implementa un subconjunto de SHACL Core (W3C) sin SPARQL: 14 constraints
+//! sobre paths de un salto (`sh:minCount`, `sh:maxCount`, `sh:datatype`,
+//! los cuatro rangos numéricos, `sh:minLength`/`sh:maxLength`, `sh:pattern`,
+//! `sh:in`, `sh:hasValue`, `sh:nodeKind`, `sh:class`), con `sh:targetClass`
+//! y `sh:targetNode`. Lo que no implementa lo dice: al cargar shapes desde
+//! Turtle cada término no soportado sale en [`ShapesReport::ignored`] con la
+//! razón, y una violación trae el componente, el path y el valor culpable.
 //!
-//! Feature gate: compilado solo con `--features shacl`.
+//! Feature gate: compilado solo con `--features shacl` (que trae el parser
+//! Turtle del puente RDF y la taxonomía, porque las shapes son Turtle y
+//! `sh:class` se resuelve por la jerarquía de clases).
 //!
 //! # Uso rapido
 //!
 //! ```no_run
 //! # async fn example() -> nopaldb::Result<()> {
-//! use nopaldb::{Graph, shacl::{ShaclValidator, Shape, Target, ConstraintType, PropertyShape, PathSpec}};
-//! use nopaldb::types::PropertyValue;
+//! use nopaldb::Graph;
 //!
 //! let graph = Graph::in_memory().await?;
+//! graph.import_turtle(r#"
+//!   @prefix : <http://cocina.example/> .
+//!   :Receta a <http://www.w3.org/2002/07/owl#Class> .
+//!   :sopa a :Receta ; :tiempoMin "-5"^^<http://www.w3.org/2001/XMLSchema#integer> .
+//! "#).await?;
 //!
-//! // Definir un shape programatico
-//! let shape = Shape::new("PersonShape")
-//!     .with_target(Target::Class("Person".into()))
-//!     .with_property_shape(
-//!         PropertyShape::new(
-//!             PathSpec::Property("age".into()),
-//!             vec![ConstraintType::MinCount(1)],
-//!         )
-//!     );
+//! let (report, shapes) = graph.validate_shapes(r#"
+//!   @prefix sh: <http://www.w3.org/ns/shacl#> .
+//!   @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+//!   @prefix : <http://cocina.example/> .
+//!   :RecetaShape a sh:NodeShape ; sh:targetClass :Receta ;
+//!     sh:property [ sh:path :nombre ; sh:minCount 1 ] ,
+//!                 [ sh:path :tiempoMin ; sh:datatype xsd:integer ; sh:minInclusive 1 ] .
+//! "#).await?;
 //!
-//! let validator = ShaclValidator::from_shapes(vec![shape]);
-//! let report = validator.validate(&graph).await?;
-//!
-//! if !report.conforms {
-//!     for v in &report.violations {
-//!         println!("Violacion: {}", v.message);
-//!     }
+//! assert!(shapes.ignored.is_empty());          // every sh:* term was understood
+//! assert!(!report.conforms);
+//! for v in &report.violations {
+//!     println!("{} {} {:?}: {}", v.shape_name, v.constraint, v.path, v.message);
 //! }
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! Las shapes también se construyen desde Rust ([`Shape::new`] y la API
+//! fluida) o se leen de nodos `sh:NodeShape` del propio grafo
+//! ([`ShaclValidator::from_graph`], limitado a `sh:targetClass` y
+//! `sh:nodeKind`).
 
 pub mod shape;
 pub mod constraint;
 pub mod report;
+pub mod turtle;
 
-pub use shape::{Shape, Target, PropertyShape, PathSpec, ConstraintType, DatatypeKind};
-pub use constraint::{evaluate_constraints, evaluate_node_kind_constraint};
-pub use report::{ValidationReport, ConstraintViolation, Severity};
+pub use shape::{Shape, Target, PropertyShape, PathSpec, PathValue, ConstraintType, DatatypeKind, ShaclNodeKind};
+pub use constraint::{evaluate_constraints, component, EvalContext};
+pub use report::{ValidationReport, ConstraintViolation, Severity, ShapesReport};
+pub use turtle::parse_shapes;
+
+use std::collections::HashMap;
 
 use crate::error::Result;
 use crate::graph::Graph;
-use crate::types::{NodeId, PropertyValue};
+use crate::types::{Node, NodeId, PropertyValue};
 
 /// Validador SHACL Core para grafos NopalDB.
 ///
@@ -67,6 +83,21 @@ impl ShaclValidator {
         Self { shapes }
     }
 
+    /// Construye el validador desde un documento Turtle de shapes SHACL.
+    ///
+    /// Devuelve también el [`ShapesReport`]: cuánto se cargó y qué términos
+    /// `sh:*` este validador no comprueba (con razón). Un documento
+    /// malformado es `Err` con línea y columna; no se carga nada.
+    pub fn from_turtle(source: &str) -> Result<(Self, ShapesReport)> {
+        let (shapes, report) = parse_shapes(source)?;
+        Ok((Self { shapes }, report))
+    }
+
+    /// Las shapes cargadas.
+    pub fn shapes(&self) -> &[Shape] {
+        &self.shapes
+    }
+
     /// Construye el validador leyendo shapes del grafo.
     ///
     /// Busca nodos con `label == "sh:NodeShape"` y construye shapes
@@ -78,14 +109,13 @@ impl ShaclValidator {
     /// - `sh:targetClass` (String) — label de clase objetivo
     /// - `sh:nodeKind` (String) — nombre del NodeKind esperado
     ///
-    /// Para PropertyShapes anidadas, usar la API programatica en v1.
+    /// Para property shapes, cargar el documento con [`Self::from_turtle`].
     pub async fn from_graph(graph: &Graph) -> Result<Self> {
         let mut shapes = Vec::new();
 
         let all_nodes = graph.get_all_nodes().await?;
         for node in &all_nodes {
             if node.label == "sh:NodeShape" {
-                let shape_id = node.id;
                 let shape_name = node
                     .properties
                     .get("sh:name")
@@ -93,13 +123,8 @@ impl ShaclValidator {
                     .unwrap_or("unnamed")
                     .to_string();
 
-                let mut shape = Shape {
-                    id: shape_id,
-                    name: shape_name,
-                    targets: vec![],
-                    constraints: vec![],
-                    property_shapes: vec![],
-                };
+                let mut shape = Shape::new(shape_name);
+                shape.id = node.id;
 
                 // sh:targetClass
                 if let Some(PropertyValue::String(label)) =
@@ -140,16 +165,20 @@ impl ShaclValidator {
     /// y lista todas las violaciones encontradas.
     pub async fn validate(&self, graph: &Graph) -> Result<ValidationReport> {
         let mut all_violations = Vec::new();
+        let mut notes = Vec::new();
+        let mut ctx = EvalContext { nodes: HashMap::new(), taxonomy: graph.get_taxonomy_sync() };
 
         for shape in &self.shapes {
-            let focus_nodes = self.resolve_focus_nodes(graph, shape).await?;
+            let focus_nodes = self.resolve_focus_nodes(graph, shape, &mut notes).await?;
             for node_id in focus_nodes {
-                let violations = self.validate_focus_node(graph, shape, node_id).await?;
+                let violations = self.validate_focus_node(graph, shape, node_id, &mut ctx).await?;
                 all_violations.extend(violations);
             }
         }
 
-        Ok(ValidationReport::from_violations(all_violations))
+        let mut report = ValidationReport::from_violations(all_violations);
+        report.notes = notes;
+        Ok(report)
     }
 
     /// Valida un nodo especifico contra todos los shapes registrados.
@@ -159,9 +188,10 @@ impl ShaclValidator {
         node_id: NodeId,
     ) -> Result<Vec<ConstraintViolation>> {
         let mut all_violations = Vec::new();
+        let mut ctx = EvalContext { nodes: HashMap::new(), taxonomy: graph.get_taxonomy_sync() };
 
         for shape in &self.shapes {
-            let violations = self.validate_focus_node(graph, shape, node_id).await?;
+            let violations = self.validate_focus_node(graph, shape, node_id, &mut ctx).await?;
             all_violations.extend(violations);
         }
 
@@ -173,6 +203,7 @@ impl ShaclValidator {
         &self,
         graph: &Graph,
         shape: &Shape,
+        notes: &mut Vec<String>,
     ) -> Result<Vec<NodeId>> {
         let mut focus = Vec::new();
 
@@ -186,11 +217,28 @@ impl ShaclValidator {
         for target in &shape.targets {
             match target {
                 Target::Node(id) => {
-                    focus.push(*id);
+                    if graph.get_node(*id).await.is_ok() {
+                        focus.push(*id);
+                    } else {
+                        notes.push(format!("{}: sh:targetNode {id} no existe en el grafo; nada que validar", shape.name));
+                    }
+                }
+                Target::NodeIri(iri) => {
+                    let nodes = graph
+                        .get_all_nodes_by_property("iri", &PropertyValue::String(iri.clone()))
+                        .await?;
+                    if nodes.is_empty() {
+                        notes.push(format!("{}: sh:targetNode <{iri}> no existe en el grafo; nada que validar", shape.name));
+                    }
+                    focus.extend(nodes.iter().copied());
                 }
                 Target::Class(label) => {
+                    // A class node carries the class label too (`:Receta a
+                    // owl:Class` has label "Receta"), but a class is not an
+                    // instance of itself: validating it against its own shape
+                    // reported every minCount as a violation of the class.
                     let nodes = graph.get_nodes_by_label(label).await?;
-                    focus.extend(nodes.iter().map(|n| n.id));
+                    focus.extend(nodes.iter().filter(|n| n.kind != crate::types::NodeKind::Class).map(|n| n.id));
                 }
             }
         }
@@ -207,6 +255,7 @@ impl ShaclValidator {
         graph: &Graph,
         shape: &Shape,
         node_id: NodeId,
+        ctx: &mut EvalContext,
     ) -> Result<Vec<ConstraintViolation>> {
         let mut violations = Vec::new();
 
@@ -214,78 +263,78 @@ impl ShaclValidator {
             Ok(n) => n,
             Err(_) => return Ok(violations), // nodo no existe: ignorar
         };
+        ctx.nodes.insert(node_id, node.clone());
 
-        // Constraints directas sobre el nodo (NodeKind, Class)
-        for constraint in &shape.constraints {
-            if let Some(v) =
-                evaluate_node_kind_constraint(&node, constraint, shape.id)
-            {
-                violations.push(v);
-            }
+        // Constraints directas sobre el nodo: el propio focus node es el valor.
+        if !shape.constraints.is_empty() {
+            let focus = [PathValue::Node(node_id)];
+            violations.extend(evaluate_constraints(&shape.constraints, &focus, node_id, shape.id, None, ctx));
         }
 
         // PropertyShapes
         for ps in &shape.property_shapes {
-            let values = self.resolve_path_values(graph, &node, &ps.path).await?;
-            let path_str = ps.path.as_str();
-            let vs = evaluate_constraints(
-                &ps.constraints,
-                &values,
-                node_id,
-                shape.id,
-                Some(path_str),
-            );
+            let values = self.resolve_path_values(graph, &node, &ps.path, ctx).await?;
+            let vs = evaluate_constraints(&ps.constraints, &values, node_id, shape.id, Some(ps.path.as_str()), ctx);
             violations.extend(vs);
         }
 
+        for v in &mut violations {
+            v.shape_name = shape.name.clone();
+        }
         Ok(violations)
     }
 
-    /// Resuelve los valores de un path sobre un nodo.
+    /// Resuelve los valores de un path sobre un nodo, y deja en `ctx` los
+    /// nodos destino para que las constraints de nodo puedan juzgarlos.
     ///
-    /// - `PathSpec::Property(key)` → valores de `node.properties[key]`
+    /// - `PathSpec::Property(key)` → literales de `node.properties[key]`
+    ///   (una `List`, un valor por elemento)
     /// - `PathSpec::Edge(edge_type)` → nodos destino de aristas salientes
-    ///   (retorna sus IDs como `PropertyValue::String(uuid)`)
+    /// - `PathSpec::Predicate(name)` → ambos
     async fn resolve_path_values(
         &self,
         graph: &Graph,
-        node: &crate::types::Node,
+        node: &Node,
         path: &PathSpec,
-    ) -> Result<Vec<PropertyValue>> {
-        match path {
-            PathSpec::Property(key) => {
-                if let Some(v) = node.properties.get(key) {
-                    Ok(vec![v.clone()])
-                } else {
-                    Ok(vec![])
-                }
-            }
-            PathSpec::Edge(edge_type) => {
-                let edges = graph.get_outgoing_edges(node.id).await?;
-                let targets: Vec<PropertyValue> = edges
-                    .iter()
-                    .filter(|e| e.edge_type == *edge_type)
-                    .map(|e| PropertyValue::String(e.target.to_string()))
-                    .collect();
-                Ok(targets)
+        ctx: &mut EvalContext,
+    ) -> Result<Vec<PathValue>> {
+        let mut values = Vec::new();
+        let (property, edge) = match path {
+            PathSpec::Property(k) => (Some(k), None),
+            PathSpec::Edge(e) => (None, Some(e)),
+            PathSpec::Predicate(p) => (Some(p), Some(p)),
+        };
+        if let Some(key) = property
+            && let Some(v) = node.properties.get(key)
+        {
+            match v {
+                PropertyValue::List(items) => values.extend(items.iter().cloned().map(PathValue::Literal)),
+                other => values.push(PathValue::Literal(other.clone())),
             }
         }
+        if let Some(edge_type) = edge {
+            let edges = graph.get_outgoing_edges(node.id).await?;
+            for e in edges.iter().filter(|e| e.edge_type == *edge_type) {
+                if !ctx.nodes.contains_key(&e.target)
+                    && let Ok(target) = graph.get_node(e.target).await
+                {
+                    ctx.nodes.insert(e.target, target);
+                }
+                values.push(PathValue::Node(e.target));
+            }
+        }
+        Ok(values)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Node, PropertyValue, NodeKind};
-    use crate::graph::Graph;
-
-    async fn temp_graph() -> Graph {
-        Graph::in_memory().await.unwrap()
-    }
+    use crate::types::{Node, NodeKind};
 
     #[tokio::test]
     async fn test_from_shapes_empty_report() {
-        let graph = temp_graph().await;
+        let graph = Graph::in_memory().await.unwrap();
         let validator = ShaclValidator::from_shapes(vec![]);
         let report = validator.validate(&graph).await.unwrap();
         assert!(report.conforms);
@@ -294,14 +343,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_no_violations_when_conforms() {
-        let graph = temp_graph().await;
+        let graph = Graph::in_memory().await.unwrap();
         let mut tx = graph.begin_transaction().await.unwrap();
-        tx.add_node(
-            Node::new("Person")
-                .with_property("age", PropertyValue::Int(30))
-        )
-        .await
-        .unwrap();
+        tx.add_node(Node::new("Person").with_property("age", PropertyValue::Int(30))).await.unwrap();
         tx.commit().await.unwrap();
 
         let shape = Shape::new("PersonShape")
@@ -310,20 +354,15 @@ mod tests {
                 PathSpec::Property("age".into()),
                 vec![ConstraintType::MinCount(1)],
             ));
-
-        let validator = ShaclValidator::from_shapes(vec![shape]);
-        let report = validator.validate(&graph).await.unwrap();
+        let report = ShaclValidator::from_shapes(vec![shape]).validate(&graph).await.unwrap();
         assert!(report.conforms);
     }
 
     #[tokio::test]
     async fn test_min_count_violation_detected() {
-        let graph = temp_graph().await;
+        let graph = Graph::in_memory().await.unwrap();
         let mut tx = graph.begin_transaction().await.unwrap();
-        // Bob no tiene "age"
-        tx.add_node(Node::new("Person").with_property("name", PropertyValue::String("Bob".into())))
-            .await
-            .unwrap();
+        tx.add_node(Node::new("Person")).await.unwrap();
         tx.commit().await.unwrap();
 
         let shape = Shape::new("PersonShape")
@@ -332,31 +371,55 @@ mod tests {
                 PathSpec::Property("age".into()),
                 vec![ConstraintType::MinCount(1)],
             ));
-
-        let validator = ShaclValidator::from_shapes(vec![shape]);
-        let report = validator.validate(&graph).await.unwrap();
+        let report = ShaclValidator::from_shapes(vec![shape]).validate(&graph).await.unwrap();
         assert!(!report.conforms);
         assert_eq!(report.violations.len(), 1);
-        assert!(report.violations[0].message.contains("minCount"));
+        assert_eq!(report.violations[0].shape_name, "PersonShape");
+        assert_eq!(report.violations[0].constraint, "sh:MinCountConstraintComponent");
+        assert_eq!(report.violations[0].path.as_deref(), Some("age"));
     }
 
     #[tokio::test]
     async fn test_node_kind_constraint() {
-        let graph = temp_graph().await;
+        let graph = Graph::in_memory().await.unwrap();
         let mut tx = graph.begin_transaction().await.unwrap();
-        // Un nodo con kind != Individual
-        let mut node = Node::new("MyClass");
-        node.kind = NodeKind::Class;
-        tx.add_node(node).await.unwrap();
+        tx.add_node(Node::new("Thing")).await.unwrap(); // Individual
         tx.commit().await.unwrap();
 
         let shape = Shape::new("ClassShape")
-            .with_target(Target::Class("MyClass".into()))
-            .with_constraint(ConstraintType::NodeKindConstraint(NodeKind::Individual));
+            .with_target(Target::Class("Thing".into()))
+            .with_constraint(ConstraintType::NodeKindConstraint(NodeKind::Class));
+        let report = ShaclValidator::from_shapes(vec![shape]).validate(&graph).await.unwrap();
+        assert!(!report.conforms, "an Individual is not a Class");
+        assert_eq!(report.violations[0].constraint, "sh:NodeKindConstraintComponent");
+    }
 
-        let validator = ShaclValidator::from_shapes(vec![shape]);
-        let report = validator.validate(&graph).await.unwrap();
-        assert!(!report.conforms);
-        assert_eq!(report.violations.len(), 1);
+    #[tokio::test]
+    async fn test_list_property_counts_one_value_per_element() {
+        let graph = Graph::in_memory().await.unwrap();
+        let mut tx = graph.begin_transaction().await.unwrap();
+        tx.add_node(Node::new("Receta").with_property(
+            "ingrediente",
+            PropertyValue::List(vec![PropertyValue::String("canela".into()), PropertyValue::String("piloncillo".into())]),
+        ))
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let shape = Shape::new("R")
+            .with_target(Target::Class("Receta".into()))
+            .with_property_shape(PropertyShape::new(PathSpec::Predicate("ingrediente".into()), vec![ConstraintType::MinCount(2)]));
+        let report = ShaclValidator::from_shapes(vec![shape]).validate(&graph).await.unwrap();
+        assert!(report.conforms, "{:?}", report.violations);
+    }
+
+    #[tokio::test]
+    async fn test_missing_target_node_is_noted_not_silent() {
+        let graph = Graph::in_memory().await.unwrap();
+        let shape = Shape::new("S").with_target(Target::NodeIri("http://cocina.example/nada".into()));
+        let report = ShaclValidator::from_shapes(vec![shape]).validate(&graph).await.unwrap();
+        assert!(report.conforms);
+        assert_eq!(report.notes.len(), 1, "{:?}", report.notes);
+        assert!(report.notes[0].contains("cocina.example/nada"));
     }
 }

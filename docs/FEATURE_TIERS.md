@@ -57,7 +57,7 @@ Everything in `core` plus OWL-EL reasoning, Turtle import/export, and SHACL vali
 |---------|-----------------|
 | `reasoner` | EL Reasoner (CR1 transitivity, CR2 conjunction, CR3 existential) |
 | `owl-import` | OWL/Turtle import/export helpers |
-| `shacl` | SHACL validation constraints |
+| `shacl` | SHACL validation: shapes from Turtle (`validate_shapes`) or from Rust |
 
 ```bash
 cargo build -p nopaldb --features semantic
@@ -137,7 +137,7 @@ cargo clippy -p nopaldb --features full -- -D warnings
 | `full-isolation` | none |
 | `reasoner` | none |
 | `owl-import` | `reasoner` |
-| `shacl` | `regex` |
+| `shacl` | `regex`, `owl-import` (shapes are Turtle; `sh:class` uses the taxonomy) |
 | `python` | `pyo3` |
 | `python-reasoner` | `python`, `reasoner` |
 | `python-owl` | `python`, `owl-import` |
