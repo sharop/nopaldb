@@ -129,6 +129,9 @@ OWL:
 
 ```python
 stats = graph.import_turtle(open("ontology.ttl").read())   # recibe el TEXTO Turtle, no la ruta
+ttl, report = graph.export_turtle()        # texto Turtle + reporte; report["skipped"] == [] ⇒ export fiel
+report = graph.export_owl_file("salida.ttl")   # mismo reporte, escribe el archivo
+prefixes = graph.rdf_prefixes()              # {prefijo: namespace} de los documentos importados
 ```
 
 Reasoner:

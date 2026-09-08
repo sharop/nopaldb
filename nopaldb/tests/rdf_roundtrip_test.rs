@@ -1,6 +1,8 @@
 // tests/rdf_roundtrip_test.rs
 //
 // Round-trip tests: Graph → export_turtle() → import_turtle() → same Graph.
+// The symmetry of the whole bridge (edges, namespaces, datatypes, report) is
+// covered in rdf_export_symmetry_test.rs; this file keeps the original cases.
 //
 // Required features: owl-import
 // Run with: cargo test --features owl-import --test rdf_roundtrip_test
@@ -30,12 +32,12 @@ async fn test_roundtrip_single_class() {
 
     graph.import_turtle(ttl_in).await.unwrap();
 
-    let exported = graph.export_turtle().await.unwrap();
+    let exported = graph.export_turtle().await.unwrap().turtle;
 
     // El output debe contener el bloque de prefijos y la clase.
     assert!(exported.contains("@prefix owl:"), "debe incluir prefijo owl");
     assert!(exported.contains("@prefix rdf:"), "debe incluir prefijo rdf");
-    assert!(exported.contains(":Person rdf:type owl:Class ."), "debe exportar la clase Person");
+    assert!(exported.contains(":Person a owl:Class"), "debe exportar la clase Person");
 
     // Reimport en grafo limpio → debe dar 1 clase.
     let (graph2, _dir2) = open_temp_graph().await;
@@ -70,11 +72,11 @@ async fn test_roundtrip_hierarchy() {
     assert_eq!(first.classes_added, 3);
     assert_eq!(first.subclass_edges_added, 2);
 
-    let exported = graph.export_turtle().await.unwrap();
+    let exported = graph.export_turtle().await.unwrap().turtle;
 
-    assert!(exported.contains(":Animal rdf:type owl:Class ."));
-    assert!(exported.contains(":Mammal rdf:type owl:Class ."));
-    assert!(exported.contains(":Dog rdf:type owl:Class ."));
+    assert!(exported.contains(":Animal a owl:Class"));
+    assert!(exported.contains(":Mammal a owl:Class"));
+    assert!(exported.contains(":Dog a owl:Class"));
     assert!(exported.contains("rdfs:subClassOf"));
 
     // Reimport → mismas métricas.
@@ -104,12 +106,12 @@ async fn test_roundtrip_individuals_with_properties() {
 
     graph.import_turtle(ttl_in).await.unwrap();
 
-    let exported = graph.export_turtle().await.unwrap();
+    let exported = graph.export_turtle().await.unwrap().turtle;
 
-    // El export debe contener el tipo xsd para el entero.
-    assert!(exported.contains("xsd:integer"), "age debe exportarse como xsd:integer");
+    // El serializador escribe el entero como token Turtle (`85`), que ES xsd:integer.
+    assert!(exported.contains(":age 30"), "age debe exportarse como entero: {exported}");
     assert!(
-        exported.contains(":Alice rdf:type :Person ."),
+        exported.contains(":Alice a :Person"),
         "bajo el namespace por defecto el IRI se compacta a :Alice: {exported}"
     );
 
@@ -156,11 +158,11 @@ async fn test_export_excludes_ordinary_nodes() {
 "#;
     graph.import_turtle(ttl_owl).await.unwrap();
 
-    let exported = graph.export_turtle().await.unwrap();
+    let exported = graph.export_turtle().await.unwrap().turtle;
 
     // La clase OWL sí debe aparecer.
     assert!(
-        exported.contains(":LegalEntity rdf:type owl:Class ."),
+        exported.contains(":LegalEntity a owl:Class"),
         "clase OWL debe exportarse"
     );
     // El nodo ordinario no debe aparecer.
@@ -196,7 +198,7 @@ async fn test_roundtrip_diamond_idempotent() {
 "#;
 
     graph.import_turtle(ttl_in).await.unwrap();
-    let exported = graph.export_turtle().await.unwrap();
+    let exported = graph.export_turtle().await.unwrap().turtle;
 
     // Primer reimport en grafo limpio.
     let (graph2, _dir2) = open_temp_graph().await;

@@ -2826,32 +2826,35 @@ impl Graph {
         self.import_turtle(&source).await
     }
 
-    /// Export the ontological content of the graph to a Turtle (.ttl) string.
+    /// Export the RDF content of the graph as Turtle: classes, the hierarchy,
+    /// individuals with every type, every edge between exported nodes as an
+    /// object property, and typed literals, under the prefixes the imported
+    /// documents declared. Returns the text and an
+    /// [`ExportReport`](crate::rdf_owl::exporter::ExportReport) that lists
+    /// what could not be written (`skipped` empty = faithful export).
     ///
-    /// Only exports OWL-origin content:
-    /// - `NodeKind::Class` nodes → `rdf:type owl:Class`
-    /// - Edges of type `"subClassOf"` → `rdfs:subClassOf`
-    /// - `NodeKind::Individual` nodes with an `"iri"` property → instance triples + data properties
-    ///
-    /// Ordinary NopalDB data nodes (without an `"iri"` property) are not exported,
-    /// allowing mixed graphs (OWL + data) to produce clean ontology output.
+    /// Nodes without an `iri` property (ordinary NopalDB data) are not exported,
+    /// so a mixed graph produces clean RDF. See [`crate::rdf_owl`] for the
+    /// full contract.
     #[cfg(feature = "owl-import")]
-    pub async fn export_turtle(&self) -> Result<String> {
+    pub async fn export_turtle(&self) -> Result<crate::rdf_owl::exporter::TurtleExport> {
         crate::rdf_owl::exporter::export_turtle(self).await
     }
 
-    /// Export the ontological content of the graph to a Turtle (.ttl) file.
+    /// Export the RDF content of the graph to a Turtle (.ttl) file.
     ///
-    /// Delegates to [`Self::export_turtle`] and writes the result to `path`.
+    /// Delegates to [`Self::export_turtle`], writes the text to `path` and
+    /// returns the report.
     #[cfg(feature = "owl-import")]
     pub async fn export_owl_file(
         &self,
         path: impl AsRef<std::path::Path>,
-    ) -> Result<()> {
-        let content = self.export_turtle().await?;
-        tokio::fs::write(path, content)
+    ) -> Result<crate::rdf_owl::exporter::ExportReport> {
+        let export = self.export_turtle().await?;
+        tokio::fs::write(path, export.turtle)
             .await
-            .map_err(NopalError::IoError)
+            .map_err(NopalError::IoError)?;
+        Ok(export.report)
     }
 
     /// Obtiene un nodo en un timestamp específico

@@ -852,6 +852,41 @@ impl PyGraph {
         Ok(dict.into())
     }
 
+    /// Exporta el contenido RDF del grafo como Turtle.
+    ///
+    /// Returns:
+    ///     tuple[str, dict]: el documento Turtle y el reporte
+    ///     {classes, subclass_edges, individuals, type_triples, edges, literals,
+    ///     triples_written, skipped}. `skipped` es la lista de valores y aristas
+    ///     sin representación en Turtle (Bytes, Object, NaN, propiedades de
+    ///     arista, aristas hacia nodos sin `iri`), una línea por cada uno con la
+    ///     razón; vacía significa que el export es fiel.
+    ///
+    /// Requires:
+    ///     Wheel compilado con `--features python-owl` (incluido en el tier `semantic`).
+    #[cfg(feature = "python-owl")]
+    fn export_turtle(&self, py: Python<'_>) -> PyResult<(String, Py<pyo3::types::PyDict>)> {
+        let graph = self.graph()?;
+        let export = to_py_result(
+            crate::python::runtime::block_on(py, async move { graph.export_turtle().await })
+        )?;
+        Ok((export.turtle, export_report_dict(py, &export.report)?))
+    }
+
+    /// Exporta el contenido RDF del grafo a un archivo Turtle (.ttl).
+    ///
+    /// Returns:
+    ///     dict: el mismo reporte que `export_turtle`.
+    #[cfg(feature = "python-owl")]
+    fn export_owl_file(&self, py: Python<'_>, path: &str) -> PyResult<Py<pyo3::types::PyDict>> {
+        let graph = self.graph()?;
+        let path = path.to_string();
+        let report = to_py_result(
+            crate::python::runtime::block_on(py, async move { graph.export_owl_file(&path).await })
+        )?;
+        export_report_dict(py, &report)
+    }
+
     /// Prefijos declarados por los documentos Turtle importados en este grafo
     /// (`{prefijo: namespace}`), fusionados entre imports. Vacío si nunca se
     /// importó Turtle.
@@ -1286,4 +1321,21 @@ fn build_upsert_request_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<UpsertRe
         embedding: build_embedding(vector, model)?,
         links,
     })
+}
+
+#[cfg(feature = "python-owl")]
+fn export_report_dict(
+    py: Python<'_>,
+    report: &crate::rdf_owl::exporter::ExportReport,
+) -> PyResult<Py<pyo3::types::PyDict>> {
+    let dict = pyo3::types::PyDict::new(py);
+    dict.set_item("classes",         report.classes)?;
+    dict.set_item("subclass_edges",  report.subclass_edges)?;
+    dict.set_item("individuals",     report.individuals)?;
+    dict.set_item("type_triples",    report.type_triples)?;
+    dict.set_item("edges",           report.edges)?;
+    dict.set_item("literals",        report.literals)?;
+    dict.set_item("triples_written", report.triples_written)?;
+    dict.set_item("skipped",         report.skipped.clone())?;
+    Ok(dict.into())
 }

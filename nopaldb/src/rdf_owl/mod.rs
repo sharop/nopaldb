@@ -94,19 +94,38 @@
 //! import reports how many it saw. The upgrade path is to re-import into a
 //! fresh database.
 //!
-//! # What the export does today
+//! # What the export writes
 //!
-//! `export_turtle` writes classes (by IRI, compacted to `:X` under the default
-//! namespace), `subClassOf` edges, and individuals with one `rdf:type` per
-//! `instanceOf` edge, their scalar data properties (`rdfs_label` back to
-//! `rdfs:label`), and nothing else: edges between individuals and the
-//! document's own namespaces are not written yet, and `Null`, `Bytes`,
-//! `List`, `Object` and non-finite floats are dropped in silence. Making the
-//! exporter symmetric with the importer is the next step of the bridge and
-//! is tracked in the public roadmap. Until then a round trip preserves
-//! classes, the hierarchy, individuals, their types and their scalar
-//! properties, but not the relationships between individuals.
-
+//! `export_turtle` is the mirror of the import. For every node with an `iri`
+//! (classes and individuals; ordinary NopalDB nodes stay out, so a mixed graph
+//! exports clean RDF) it writes:
+//!
+//! | In the graph | In the document |
+//! |---|---|
+//! | Class node | `a owl:Class`, its literals (`rdfs_label` → `rdfs:label`) |
+//! | `subClassOf` edge between two classes | `rdfs:subClassOf` |
+//! | `instanceOf` edge | `a <C>`, one per edge (no edges: the label is the class; a placeholder gets no type) |
+//! | any other edge to an exported node | one triple, predicate = the edge's `iri`, or the export namespace + edge type when it has none |
+//! | `Int` / `Float` / `Bool` / `String` | `xsd:integer` / `xsd:double` / `xsd:boolean` / plain literal |
+//! | `List` | one triple per element (the inverse of how the import builds a list) |
+//!
+//! Prefixes are the graph's catalog (`rdf_prefixes()`, what the imported
+//! documents declared) plus `rdf`, `rdfs`, `owl`, `xsd`; the empty prefix is
+//! the catalog's, or `http://example.org/ontology#` for a graph that never
+//! imported Turtle. Serialization goes through `oxttl`, the same family as
+//! the parser, so escaping and IRI validity are the library's, not ours; the
+//! output is deterministic (subjects by IRI, predicates by name).
+//!
+//! What RDF cannot carry is not dropped in silence: `Null`, `Bytes`, `Object`,
+//! nested lists, NaN/∞, edge properties other than the predicate IRI, and
+//! edges towards nodes without `iri` are each one line in
+//! [`ExportReport::skipped`](exporter::ExportReport::skipped), with the
+//! reason. Empty `skipped` means import → export → import gives back the same
+//! graph: same nodes by IRI, same edges, same literals with the same types
+//! (there is a test that checks exactly that). Blank nodes keep their
+//! synthetic id inside one database, but a re-import re-hashes them, as RDF
+//! allows.
+//!
 #[cfg(feature = "owl-import")]
 pub mod importer;
 

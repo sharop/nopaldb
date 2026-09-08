@@ -43,9 +43,10 @@ module docs. The work is to make it faithful:
   type of a node, not just the first one, so one vocabulary means the same
   thing as a predicate and as a traversal. Direct instances count too, which
   they did not before.
-- **Exporter** ([#70](https://github.com/sharop/nopaldb/issues/70)): symmetric
-  with the importer, emitting the document's own namespaces and all edges, with
-  a verified import → export → import round trip; export exposed in Python.
+- **Exporter** ([#70](https://github.com/sharop/nopaldb/issues/70), shipped in
+  0.5.12): symmetric with the importer, emitting the document's own namespaces
+  and all edges, with a verified import → export → import round trip and an
+  `ExportReport` that lists what Turtle cannot carry; export exposed in Python.
 - **Declarative SHACL**: the constraint engine exists; what is missing is
   loading shapes from a standard `.ttl`, `sh:targetClass` that honours the
   class hierarchy, logical constraints (`sh:and`/`sh:or`/`sh:not`) and
@@ -133,9 +134,10 @@ sus límites exactos están en `docs/ADOPTION.md` y en el doc del módulo
   los tipos de un nodo, no solo el primero, para que un mismo vocabulario
   signifique lo mismo como predicado y como traversal. Las instancias directas
   también cuentan, cosa que antes no pasaba.
-- **Exporter** ([#70](https://github.com/sharop/nopaldb/issues/70)): simétrico
-  al importer, con los namespaces del documento y todas las aristas, round trip
-  import → export → import verificado, y export expuesto en Python.
+- **Exporter** ([#70](https://github.com/sharop/nopaldb/issues/70), liberado en
+  0.5.12): simétrico al importer, con los namespaces del documento y todas las
+  aristas, round trip import → export → import verificado y un `ExportReport`
+  que lista lo que Turtle no puede llevar; export expuesto en Python.
 - **SHACL declarativo**: el motor de constraints existe; falta cargar shapes
   desde un `.ttl` estándar, `sh:targetClass` consciente de la jerarquía de
   clases, constraints lógicas (`sh:and`/`sh:or`/`sh:not`) y paths multi-salto.
