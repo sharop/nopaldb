@@ -50,8 +50,8 @@ module docs. The work is to make it faithful:
 - **Declarative SHACL**: the constraint engine exists; shapes now load from
   a standard `.ttl` with a report of what is not checked
   ([#98](https://github.com/sharop/nopaldb/issues/98), shipped in 0.5.14).
-  Still open: `sh:targetClass` that honours the class hierarchy
-  ([#99](https://github.com/sharop/nopaldb/issues/99)), logical constraints
+  `sh:targetClass` honours the class hierarchy
+  ([#99](https://github.com/sharop/nopaldb/issues/99), 0.5.15). Still open: logical constraints
   `sh:and`/`sh:or`/`sh:not` ([#100](https://github.com/sharop/nopaldb/issues/100))
   and multi-hop paths ([#101](https://github.com/sharop/nopaldb/issues/101)).
 
@@ -144,8 +144,8 @@ sus límites exactos están en `docs/ADOPTION.md` y en el doc del módulo
 - **SHACL declarativo**: el motor de constraints existe; las shapes ya se
   cargan desde un `.ttl` estándar con reporte de lo que no se comprueba
   ([#98](https://github.com/sharop/nopaldb/issues/98), liberado en 0.5.14).
-  Falta: `sh:targetClass` consciente de la jerarquía de clases
-  ([#99](https://github.com/sharop/nopaldb/issues/99)), constraints lógicas
+  `sh:targetClass` respeta la jerarquía de clases
+  ([#99](https://github.com/sharop/nopaldb/issues/99), 0.5.15). Falta: constraints lógicas
   `sh:and`/`sh:or`/`sh:not` ([#100](https://github.com/sharop/nopaldb/issues/100))
   y paths multi-salto ([#101](https://github.com/sharop/nopaldb/issues/101)).
 

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.15] - unreleased
+
+### Added
+
+- **SHACL: `sh:targetClass` consciente de la taxonomía** — cierra [#99](https://github.com/sharop/nopaldb/issues/99). Los focus nodes de un shape sobre `:Comida` son sus instancias **y las de sus subclases** (`:Postre rdfs:subClassOf :Comida`), por cualquiera de sus tipos declarados, y la clase se nombra por label, `prefix:Local` o IRI completo: la misma resolución que `instanceOf` en NQL (#93), vía `TaxonomyIndex::resolve_class` + `is_instance_of`. Antes era un scan exacto por `label`: sin subclases, `sh:targetClass <IRI>` daba cero focus nodes y un individuo con dos tipos solo era focus del shape de su primer tipo. Sin taxonomía (grafo a mano) el resultado es el de siempre. Opt-out explícito: `ShaclValidator::with_target_mode(TargetMode::ExactLabel)`. Al cargar desde Turtle, `sh:targetClass` conserva el IRI completo del target.
+
+---
+
 ## [0.5.14] - 2026-09-08
 
 ### Added

@@ -60,7 +60,7 @@ async fn shapes_from_turtle_find_exactly_the_planted_defects() -> Result<()> {
 }
 
 #[tokio::test]
-async fn correct_data_conforms_and_subclass_instances_are_reached_by_label_only() -> Result<()> {
+async fn correct_data_conforms_and_subclass_instances_are_focus_nodes() -> Result<()> {
     // Only the three correct recipes.
     let graph = Graph::in_memory().await?;
     let correct: String = DATA.lines().take_while(|l| !l.starts_with("# Un defecto")).collect::<Vec<_>>().join("\n");
@@ -68,20 +68,109 @@ async fn correct_data_conforms_and_subclass_instances_are_reached_by_label_only(
     let (report, _) = graph.validate_shapes(SHAPES).await?;
     assert!(report.conforms, "{:?}", report.violations);
 
-    // `pan_de_muerto` is a Postre ⊑ Receta. Today sh:targetClass resolves by
-    // label (issue #99 makes it taxonomy-aware), so a shape on Receta does
-    // not reach it: make that explicit so #99 has a test to flip.
+    // `pan_de_muerto` is a Postre ⊑ Receta with two ingredients: a shape on
+    // Receta demanding three reaches it through the hierarchy (#99).
     let shape = SHAPES.replace("sh:minCount 2 ; sh:class :Ingrediente", "sh:minCount 3 ; sh:class :Ingrediente");
     let (report, _) = graph.validate_shapes(&shape).await?;
     let focus: BTreeSet<String> = {
         let mut s = BTreeSet::new();
         for v in &report.violations {
             let node = graph.get_node(v.focus_node).await?;
-            s.insert(node.label.clone());
+            s.insert(node.properties["iri"].as_str().unwrap().rsplit('/').next().unwrap().to_string());
         }
         s
     };
-    assert_eq!(focus, BTreeSet::new(), "the two Receta recipes have 3 ingredients; the Postre with 2 is not a focus node yet");
+    assert_eq!(focus, BTreeSet::from(["pan_de_muerto".to_string()]));
+
+    // The class itself is never a focus node, even though it carries the label.
+    for v in &report.violations {
+        assert_ne!(graph.get_node(v.focus_node).await?.kind, nopaldb::types::NodeKind::Class);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn target_class_by_label_prefix_and_iri_agree_and_exact_label_opts_out() -> Result<()> {
+    use nopaldb::shacl::{ConstraintType, PathSpec, PropertyShape, ShaclValidator, Shape, Target, TargetMode};
+
+    let graph = graph_with_data().await?;
+    // Every Receta (and Postre) must have 3 ingredients: the ones with fewer are the focus nodes that fail.
+    let shape_for = |target: &str| {
+        Shape::new("Tres")
+            .with_target(Target::Class(target.into()))
+            .with_property_shape(PropertyShape::new(PathSpec::Predicate("usa".into()), vec![ConstraintType::MinCount(3)]))
+    };
+    let mut results = Vec::new();
+    for target in ["Receta", ":Receta", "http://cocina.example/Receta"] {
+        let report = ShaclValidator::from_shapes(vec![shape_for(target)]).validate(&graph).await?;
+        let mut who: Vec<String> = Vec::new();
+        for v in &report.violations {
+            who.push(graph.get_node(v.focus_node).await?.properties["iri"].as_str().unwrap().rsplit('/').next().unwrap().to_string());
+        }
+        who.sort();
+        results.push(who);
+    }
+    assert_eq!(results[0], results[1], "label vs :prefixed");
+    assert_eq!(results[0], results[2], "label vs IRI");
+    // pan_de_muerto (Postre ⊑ Receta, 2 ingredients) is in, through the hierarchy.
+    assert!(results[0].contains(&"pan_de_muerto".to_string()), "{:?}", results[0]);
+    assert!(results[0].contains(&"un_ingrediente".to_string()));
+    assert!(!results[0].contains(&"cafe_de_olla".to_string()), "3 ingredients: conforms");
+
+    // ExactLabel reproduces the pre-0.5.15 scan: the Postre is out, and an IRI finds nobody.
+    let report = ShaclValidator::from_shapes(vec![shape_for("Receta")])
+        .with_target_mode(TargetMode::ExactLabel)
+        .validate(&graph)
+        .await?;
+    let mut who: Vec<String> = Vec::new();
+    for v in &report.violations {
+        who.push(graph.get_node(v.focus_node).await?.label.clone());
+    }
+    assert!(who.iter().all(|l| l == "Receta"), "{who:?}");
+    assert!(!who.is_empty());
+    let report = ShaclValidator::from_shapes(vec![shape_for("http://cocina.example/Receta")])
+        .with_target_mode(TargetMode::ExactLabel)
+        .validate(&graph)
+        .await?;
+    assert_eq!(report.violations.len(), who.len(), "ExactLabel falls back to the local name of an IRI");
+    Ok(())
+}
+
+#[tokio::test]
+async fn multi_typed_individual_is_a_focus_node_of_every_type() -> Result<()> {
+    let graph = Graph::in_memory().await?;
+    graph
+        .import_turtle(
+            r#"
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix :    <http://cocina.example/> .
+:Receta a owl:Class .  :Vegana a owl:Class .
+:ensalada a :Receta, :Vegana .
+:asado    a :Receta .
+"#,
+        )
+        .await?;
+    let (report, _) = graph
+        .validate_shapes(
+            r#"
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix :   <http://cocina.example/> .
+:R sh:targetClass :Receta ; sh:property [ sh:path :nombre ; sh:minCount 1 ] .
+:V sh:targetClass :Vegana ; sh:property [ sh:path :sinCarne ; sh:minCount 1 ] .
+"#,
+        )
+        .await?;
+    let mut got: Vec<(String, String)> = Vec::new();
+    for v in &report.violations {
+        let node = graph.get_node(v.focus_node).await?;
+        got.push((node.properties["iri"].as_str().unwrap().rsplit('/').next().unwrap().to_string(), v.shape_name.clone()));
+    }
+    got.sort();
+    assert_eq!(
+        got,
+        vec![("asado".to_string(), "R".to_string()), ("ensalada".to_string(), "R".to_string()), ("ensalada".to_string(), "V".to_string())],
+        "ensalada is labelled Receta (first type) but is also a focus node of the Vegana shape"
+    );
     Ok(())
 }
 
