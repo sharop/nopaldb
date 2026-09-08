@@ -31,7 +31,10 @@ inspection — see [Explaining a result](#explaining-a-result).
 Provide `text`, `vector`, or both. `vector` requires `model`. The full-text path
 needs an index created with `create index on <Label>(<property>) type fulltext`;
 if `text_index` is omitted it is auto-discovered (preferring one whose label
-matches the filter).
+matches the filter). The query text is analyzed with **that index's analyzer**
+(language stemmer, stop words, accent folding, configured at `create index ...
+with (...)`; see the NQL reference), so for a non-English corpus the BM25
+branch keeps its recall instead of degrading the fusion to vector-only.
 
 ```python
 hits = graph.search_hybrid(

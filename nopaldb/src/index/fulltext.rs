@@ -3,13 +3,28 @@
 // Full-text search index using Tantivy
 
 use crate::error::{NopalError, Result};
+use crate::index::analyzer::FullTextAnalyzer;
 use crate::types::{NodeId, PropertyValue};
 use crate::index::{Index, IndexQuery};
 use tantivy::*;
 use tantivy::schema::*;
 use tantivy::query::QueryParser;
 use tantivy::collector::TopDocs;
-use std::path::PathBuf;
+use tantivy::tokenizer::{
+    AsciiFoldingFilter, Language, LowerCaser, RemoveLongFilter, SimpleTokenizer, Stemmer, StopWordFilter, TextAnalyzer,
+};
+use std::path::{Path, PathBuf};
+
+/// File next to the tantivy directory that records the index's analyzer.
+///
+/// Why a sidecar and not a field in `IndexMetadata`: the metadata file is
+/// bincode (not self-describing) and a metadata that fails to load is
+/// swallowed into "start with no indexes" (`IndexManager::load_indices`).
+/// Adding a field there would silently delete every index of every existing
+/// database on upgrade. A file that lives with the directory it describes
+/// costs nothing to read and its absence means "default", which is what every
+/// index created before 0.5.13 is.
+pub const ANALYZER_FILE: &str = "analyzer.json";
 
 /// Full-text search index powered by Tantivy
 pub struct FullTextIndex {
@@ -18,16 +33,71 @@ pub struct FullTextIndex {
     writer: Option<IndexWriter>,
     node_id_field: Field,
     content_field: Field,
+    analyzer: FullTextAnalyzer,
 }
 
 impl FullTextIndex {
-    /// Create new full-text index
+    /// Create a new full-text index with the default analyzer (tantivy's
+    /// `default` tokenizer, as every index before 0.5.13).
     pub fn new(path: Option<String>) -> Result<Self> {
-        // Build schema
+        Self::with_analyzer(path, FullTextAnalyzer::default())
+    }
+
+    /// Create a new full-text index whose documents and queries go through
+    /// `analyzer`. With a `path`, the analyzer is recorded in
+    /// [`ANALYZER_FILE`] so [`Self::open_existing`] rebuilds the same chain.
+    pub fn with_analyzer(path: Option<String>, analyzer: FullTextAnalyzer) -> Result<Self> {
+        analyzer.validate()?;
+        if let Some(p) = &path {
+            std::fs::create_dir_all(p)
+                .map_err(|e| NopalError::index_error(format!("Failed to create index directory: {}", e)))?;
+            let bytes = serde_json::to_vec_pretty(&analyzer)
+                .map_err(|e| NopalError::index_error(format!("Failed to encode analyzer: {}", e)))?;
+            std::fs::write(Path::new(p).join(ANALYZER_FILE), bytes)
+                .map_err(|e| NopalError::index_error(format!("Failed to write {}: {}", ANALYZER_FILE, e)))?;
+        }
+        Self::open(path, analyzer)
+    }
+
+    /// Open the index stored at `path`, with the analyzer it was created with
+    /// (default when there is no [`ANALYZER_FILE`]: the index predates 0.5.13).
+    pub fn open_existing(path: String) -> Result<Self> {
+        let analyzer = Self::read_analyzer(Path::new(&path))?.unwrap_or_default();
+        Self::open(Some(path), analyzer)
+    }
+
+    /// The analyzer recorded for the index at `path`, if any.
+    pub fn read_analyzer(path: &Path) -> Result<Option<FullTextAnalyzer>> {
+        let file = path.join(ANALYZER_FILE);
+        if !file.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&file)
+            .map_err(|e| NopalError::index_error(format!("Failed to read {}: {}", file.display(), e)))?;
+        serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| NopalError::index_error(format!("{} is not a valid analyzer: {}", file.display(), e)))
+    }
+
+    /// The analyzer this index tokenizes with.
+    pub fn analyzer(&self) -> &FullTextAnalyzer {
+        &self.analyzer
+    }
+
+    fn open(path: Option<String>, analyzer: FullTextAnalyzer) -> Result<Self> {
+        // Build schema. The `content` field names its tokenizer explicitly;
+        // for the default analyzer that name is tantivy's own `default`, so
+        // the schema is identical to what earlier versions wrote and an old
+        // directory opens unchanged.
         let mut schema_builder = Schema::builder();
 
         let node_id_field = schema_builder.add_text_field("node_id", STRING | STORED);
-        let content_field = schema_builder.add_text_field("content", TEXT);
+        let content_options = TextOptions::default().set_indexing_options(
+            TextFieldIndexing::default()
+                .set_tokenizer(&analyzer.tokenizer_name())
+                .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+        );
+        let content_field = schema_builder.add_text_field("content", content_options);
 
         let schema = schema_builder.build();
 
@@ -41,11 +111,24 @@ impl FullTextIndex {
                 .map_err(|e| NopalError::index_error(format!("Failed to create index directory: {}", e)))?;
             let dir = tantivy::directory::MmapDirectory::open(&path)
                 .map_err(|e| NopalError::index_error(format!("Failed to open index directory: {}", e)))?;
-            tantivy::Index::open_or_create(dir, schema.clone())
-                .map_err(|e| NopalError::index_error(format!("Failed to open or create index: {}", e)))?
+            tantivy::Index::open_or_create(dir, schema.clone()).map_err(|e| {
+                NopalError::index_error(format!(
+                    "Failed to open or create index: {}. If the analyzer changed, drop the index and create it again: \
+                     the tokens on disk were produced by the previous analyzer",
+                    e
+                ))
+            })?
         } else {
             tantivy::Index::create_in_ram(schema.clone())
         };
+
+        // The analyzer must be registered on the index before anything reads
+        // or writes: `QueryParser::for_index` resolves the field's tokenizer
+        // from here, which is what makes a query analyzed exactly like the
+        // documents without a second code path.
+        if !analyzer.is_default() {
+            index.tokenizers().register(&analyzer.tokenizer_name(), build_text_analyzer(&analyzer)?);
+        }
 
         // Create reader
         let reader = index.reader_builder()
@@ -63,6 +146,7 @@ impl FullTextIndex {
             writer: Some(writer),
             node_id_field,
             content_field,
+            analyzer,
         })
     }
 
@@ -195,6 +279,77 @@ impl Index for FullTextIndex {
         let searcher = self.reader.searcher();
         searcher.num_docs() as usize
     }
+
+    fn fulltext_analyzer(&self) -> Option<&FullTextAnalyzer> {
+        Some(&self.analyzer)
+    }
+}
+
+/// tantivy's `Language` for one of [`FullTextAnalyzer::LANGUAGES`].
+fn language_of(name: &str) -> Result<Language> {
+    Ok(match name {
+        "arabic" => Language::Arabic,
+        "danish" => Language::Danish,
+        "dutch" => Language::Dutch,
+        "english" => Language::English,
+        "finnish" => Language::Finnish,
+        "french" => Language::French,
+        "german" => Language::German,
+        "greek" => Language::Greek,
+        "hungarian" => Language::Hungarian,
+        "italian" => Language::Italian,
+        "norwegian" => Language::Norwegian,
+        "portuguese" => Language::Portuguese,
+        "romanian" => Language::Romanian,
+        "russian" => Language::Russian,
+        "spanish" => Language::Spanish,
+        "swedish" => Language::Swedish,
+        "tamil" => Language::Tamil,
+        "turkish" => Language::Turkish,
+        other => return Err(NopalError::index_error(format!("full-text analyzer: unknown language `{other}`"))),
+    })
+}
+
+/// Build the tantivy chain for `analyzer`. Only called for non-default
+/// analyzers; the default keeps tantivy's built-in `default`.
+///
+/// Order matters and was chosen for the accent case:
+/// tokenize → drop long tokens → lowercase → **stop words** → **fold accents**
+/// → **stem**. Stop words go before folding because tantivy's lists carry the
+/// accented forms (`más`, `él`, `está`): folded first, they would slip through.
+/// Folding goes before stemming, not after, because the Snowball stemmers key
+/// on accented suffixes (`-ción`): stemming `clasificación` and the unaccented
+/// `clasificacion` the user typed gives two different stems, and the query
+/// misses. Folding both first makes document and query identical before the
+/// stemmer sees them, which is the property a search index needs; the stem
+/// itself being a little less linguistic is not.
+fn build_text_analyzer(analyzer: &FullTextAnalyzer) -> Result<TextAnalyzer> {
+    let mut builder = TextAnalyzer::builder(SimpleTokenizer::default())
+        .filter_dynamic(RemoveLongFilter::limit(40))
+        .filter_dynamic(LowerCaser);
+    let language = analyzer.language.as_deref().map(language_of).transpose()?;
+    if analyzer.stopwords {
+        let lang = language.ok_or_else(|| {
+            NopalError::index_error("full-text analyzer: stopwords need a language".to_string())
+        })?;
+        let filter = StopWordFilter::new(lang).ok_or_else(|| {
+            NopalError::index_error(format!(
+                "full-text analyzer: tantivy has no stop-word list for `{}`",
+                analyzer.language.as_deref().unwrap_or_default()
+            ))
+        })?;
+        builder = builder.filter_dynamic(filter);
+    }
+    if analyzer.ascii_folding {
+        builder = builder.filter_dynamic(AsciiFoldingFilter);
+    }
+    if analyzer.stemming {
+        let lang = language.ok_or_else(|| {
+            NopalError::index_error("full-text analyzer: stemming needs a language".to_string())
+        })?;
+        builder = builder.filter_dynamic(Stemmer::new(lang));
+    }
+    Ok(builder.build())
 }
 
 #[cfg(test)]

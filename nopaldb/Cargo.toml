@@ -1,6 +1,6 @@
 [package]
 name = "nopaldb"
-version = "0.5.12"
+version = "0.5.13"
 authors = ["Sharop <sharop@gmail.com>"]
 description = "High-performance graph database with ACID transactions, MVCC time-travel, and Arrow analytics"
 keywords = ["graph", "database", "embedded", "mvcc", "arrow"]
@@ -165,6 +165,25 @@ required-features = ["core"]
 [[test]]
 name = "kv_migrate_test"
 required-features = ["storage-sled", "storage-redb"]
+
+# Hybrid search tests call `Graph::search_hybrid`, which only exists with the
+# `hybrid` feature; without this gate they fail to compile under `--features
+# fulltext` alone.
+[[test]]
+name = "hybrid_test"
+required-features = ["hybrid"]
+
+[[test]]
+name = "hybrid_explain_test"
+required-features = ["hybrid"]
+
+[[test]]
+name = "index_lifecycle_test"
+required-features = ["hybrid"]
+
+[[test]]
+name = "fulltext_analyzer_test"
+required-features = ["hybrid"]
 
 # Migración entre motores KV (sled ↔ redb).
 [[example]]
