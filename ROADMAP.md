@@ -47,10 +47,13 @@ module docs. The work is to make it faithful:
   0.5.12): symmetric with the importer, emitting the document's own namespaces
   and all edges, with a verified import → export → import round trip and an
   `ExportReport` that lists what Turtle cannot carry; export exposed in Python.
-- **Declarative SHACL**: the constraint engine exists; what is missing is
-  loading shapes from a standard `.ttl`, `sh:targetClass` that honours the
-  class hierarchy, logical constraints (`sh:and`/`sh:or`/`sh:not`) and
-  multi-hop paths.
+- **Declarative SHACL**: the constraint engine exists; shapes now load from
+  a standard `.ttl` with a report of what is not checked
+  ([#98](https://github.com/sharop/nopaldb/issues/98), shipped in 0.5.14).
+  Still open: `sh:targetClass` that honours the class hierarchy
+  ([#99](https://github.com/sharop/nopaldb/issues/99)), logical constraints
+  `sh:and`/`sh:or`/`sh:not` ([#100](https://github.com/sharop/nopaldb/issues/100))
+  and multi-hop paths ([#101](https://github.com/sharop/nopaldb/issues/101)).
 
 ### 3. Retrieval honesty and control
 
@@ -138,9 +141,13 @@ sus límites exactos están en `docs/ADOPTION.md` y en el doc del módulo
   0.5.12): simétrico al importer, con los namespaces del documento y todas las
   aristas, round trip import → export → import verificado y un `ExportReport`
   que lista lo que Turtle no puede llevar; export expuesto en Python.
-- **SHACL declarativo**: el motor de constraints existe; falta cargar shapes
-  desde un `.ttl` estándar, `sh:targetClass` consciente de la jerarquía de
-  clases, constraints lógicas (`sh:and`/`sh:or`/`sh:not`) y paths multi-salto.
+- **SHACL declarativo**: el motor de constraints existe; las shapes ya se
+  cargan desde un `.ttl` estándar con reporte de lo que no se comprueba
+  ([#98](https://github.com/sharop/nopaldb/issues/98), liberado en 0.5.14).
+  Falta: `sh:targetClass` consciente de la jerarquía de clases
+  ([#99](https://github.com/sharop/nopaldb/issues/99)), constraints lógicas
+  `sh:and`/`sh:or`/`sh:not` ([#100](https://github.com/sharop/nopaldb/issues/100))
+  y paths multi-salto ([#101](https://github.com/sharop/nopaldb/issues/101)).
 
 ### 3. Honestidad y control del retrieval
 

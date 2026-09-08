@@ -2753,6 +2753,34 @@ impl Graph {
         Ok(())
     }
 
+    /// Validate the graph against SHACL shapes written in Turtle.
+    ///
+    /// Returns the [`ValidationReport`](crate::shacl::ValidationReport)
+    /// (violations with component, path and value) and the
+    /// [`ShapesReport`](crate::shacl::ShapesReport): what was loaded and every
+    /// `sh:*` term this validator does not check, with the reason. Empty
+    /// `ignored` means the shapes apply in full. Malformed Turtle is an error
+    /// with line and column. The graph is never modified.
+    #[cfg(feature = "shacl")]
+    pub async fn validate_shapes(
+        &self,
+        shapes_turtle: &str,
+    ) -> Result<(crate::shacl::ValidationReport, crate::shacl::ShapesReport)> {
+        let (validator, shapes) = crate::shacl::ShaclValidator::from_turtle(shapes_turtle)?;
+        let report = validator.validate(self).await?;
+        Ok((report, shapes))
+    }
+
+    /// [`Self::validate_shapes`] reading the shapes from a `.ttl` file.
+    #[cfg(feature = "shacl")]
+    pub async fn validate_shapes_file(
+        &self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<(crate::shacl::ValidationReport, crate::shacl::ShapesReport)> {
+        let source = tokio::fs::read_to_string(path).await.map_err(NopalError::IoError)?;
+        self.validate_shapes(&source).await
+    }
+
     /// Rebuild the TaxonomyIndex from Class nodes and `subClassOf` edges stored in the graph.
     ///
     /// Called automatically by `open_with_options` when `NodeKind::Class` nodes are detected,

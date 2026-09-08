@@ -31,6 +31,7 @@ The applications born in this repo now live in their own repositories (AGPL-3.0,
 ## Core Engineering Docs
 
 - [Architecture](ARCHITECTURE.md)
+- [SHACL validation](SHACL.md) · [ES](es/SHACL.md)
 - [Algorithms](ALGORITHMS.md)
 - [Indexing](INDEXING_DOCS.MD)
 - [Property Indexing](PROPERTY_INDEXING.md)

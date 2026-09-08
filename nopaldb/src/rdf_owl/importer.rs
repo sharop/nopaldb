@@ -338,7 +338,7 @@ fn is_legacy_iri(stored: &str) -> bool {
 /// became a number; that guess is gone. A typed literal whose text does not
 /// parse as its type falls back to `String` and is reported in `warnings`
 /// rather than dropped or coerced.
-fn literal_to_property_value(lit: &oxrdf::Literal, warnings: &mut Vec<String>) -> PropertyValue {
+pub(crate) fn literal_to_property_value(lit: &oxrdf::Literal, warnings: &mut Vec<String>) -> PropertyValue {
     let value = lit.value();
     let dt = lit.datatype();
 

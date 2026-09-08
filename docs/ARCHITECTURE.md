@@ -244,10 +244,15 @@ No modifica el grafo. Opera sobre una copia interna de la taxonomia. Soporta tim
 
 ### ShaclValidator (`feature = shacl`)
 
-Valida shapes contra el grafo. No modifica el grafo. Constraints implementados:
+Valida shapes contra el grafo. No modifica el grafo. Las shapes se cargan desde
+Turtle estándar (`Graph::validate_shapes`, `ShaclValidator::from_turtle`, con el
+parser del puente RDF) o se construyen desde Rust. Constraints implementados:
 `minCount`, `maxCount`, `datatype`, `minInclusive/maxInclusive/minExclusive/maxExclusive`,
-`minLength`, `maxLength`, `pattern` (regex), `in`, `hasValue`, `nodeKind`, `class`,
-`PathSpec::Edge` (single-hop).
+`minLength`, `maxLength`, `pattern` (regex), `in`, `hasValue`, `nodeKind`, `class`
+(por la taxonomía: directa o heredada), sobre paths de un salto (`sh:path :p` = la
+propiedad `p` más las aristas de tipo `p`). Cada violación trae componente, path y
+valor; cada término `sh:*` no soportado sale en `ShapesReport.ignored` con razón.
+Detalle en `docs/SHACL.md`.
 
 Ver `docs/FEATURE_TIERS.md` para los comandos de compilacion por feature tier.
 

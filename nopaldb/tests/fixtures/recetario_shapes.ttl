@@ -1,0 +1,14 @@
+# Shapes SHACL para recetario.ttl. `sh:closed` está a propósito: este
+# validador no lo implementa y debe decirlo en ShapesReport.ignored.
+@prefix sh:  <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix :    <http://cocina.example/> .
+
+:RecetaShape a sh:NodeShape ;
+    sh:name "Receta bien descrita" ;
+    sh:targetClass :Receta ;
+    sh:property [ sh:path :nombre ;     sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] ,
+                [ sh:path :tiempoMin ;  sh:datatype xsd:integer ; sh:minInclusive 1 ] ,
+                [ sh:path :dificultad ; sh:in ( "fácil" "media" "difícil" ) ] ,
+                [ sh:path :usa ;        sh:minCount 2 ; sh:class :Ingrediente ] ;
+    sh:closed true .

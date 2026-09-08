@@ -1,0 +1,41 @@
+# Datos ficticios: un recetario. Usados por shacl_turtle_test.rs junto con
+# recetario_shapes.ttl. Tres recetas correctas y cuatro con un defecto cada una.
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix :     <http://cocina.example/> .
+
+:Receta      a owl:Class .
+:Postre      a owl:Class ; rdfs:subClassOf :Receta .
+:Ingrediente a owl:Class .
+:Utensilio   a owl:Class .
+
+:canela     a :Ingrediente .
+:piloncillo a :Ingrediente .
+:cafe       a :Ingrediente .
+:harina     a :Ingrediente .
+:huevo      a :Ingrediente .
+:olla       a :Utensilio .
+
+# Correctas
+:cafe_de_olla a :Receta ;
+    :nombre "Café de olla" ; :tiempoMin "20"^^xsd:integer ; :dificultad "fácil" ;
+    :usa :cafe, :canela, :piloncillo .
+:pan_de_muerto a :Postre ;
+    :nombre "Pan de muerto" ; :tiempoMin "180"^^xsd:integer ; :dificultad "difícil" ;
+    :usa :harina, :huevo .
+:atole a :Receta ;
+    :nombre "Atole" ; :tiempoMin "15"^^xsd:integer ; :dificultad "fácil" ;
+    :usa :harina, :piloncillo, :canela .
+
+# Un defecto cada una
+:sin_nombre a :Receta ;
+    :tiempoMin "10"^^xsd:integer ; :dificultad "fácil" ; :usa :cafe, :canela .
+:tiempo_negativo a :Receta ;
+    :nombre "Agua fría" ; :tiempoMin "-5"^^xsd:integer ; :dificultad "fácil" ; :usa :cafe, :canela .
+:dificultad_rara a :Receta ;
+    :nombre "Mole" ; :tiempoMin "240"^^xsd:integer ; :dificultad "imposible" ; :usa :cafe, :canela .
+:un_ingrediente a :Receta ;
+    :nombre "Té" ; :tiempoMin "5"^^xsd:integer ; :dificultad "fácil" ; :usa :canela .
+:usa_utensilio a :Receta ;
+    :nombre "Sopa" ; :tiempoMin "30"^^xsd:integer ; :dificultad "media" ; :usa :harina, :olla .
