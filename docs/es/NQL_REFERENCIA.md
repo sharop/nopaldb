@@ -13,6 +13,7 @@
 - [Filtrado (WHERE)](#filtrado-where)
 - [Predicados de Ontología](#predicados-de-ontología-instanceof--subclassof)
 - [Operaciones de Escritura (ADD/UPDATE/DELETE)](#operaciones-de-escritura-addupdatedelete)
+- [Índices (CREATE INDEX / DROP INDEX)](#índices-create-index--drop-index)
 - [Agregaciones y Funciones](#agregaciones-y-funciones)
 - [Exportación de Datos (EXPORT)](#exportación-de-datos-export)
 - [Operadores](#operadores)
@@ -233,6 +234,52 @@ where p.name = "Bob"
 Para un estado detallado y ejemplos completos:
 - `docs/NQL_WRITE_CRUD_STATUS.md`
 - `docs/NQL_WRITE_CRUD_HANDS_ON.md`
+
+---
+
+## Índices (CREATE INDEX / DROP INDEX)
+
+```nql
+create index on Persona(email)                     -- hash (default): búsquedas por igualdad
+create index on Persona(edad) type btree           -- rangos
+create index on Articulo(cuerpo) type fulltext     -- búsqueda de texto BM25, la usa hybrid()
+drop index Persona_email                           -- el nombre es Label_propiedad
+```
+
+### Analyzer full-text
+
+Un índice full-text tokeniza sus documentos una vez, al indexar, y toda consulta
+contra él pasa por el **mismo** analyzer. Por defecto es el tokenizer `default`
+de tantivy: separar por no-alfanuméricos y pasar a minúsculas, nada más, así que
+`clasificacion` no encuentra `clasificación` y `catálogos` no encuentra
+`catálogo`. La cláusula `with (...)` configura el analyzer por índice:
+
+```nql
+-- Todo activo para español: stemming, stopwords y plegado de acentos
+create index on Nota(cuerpo) type fulltext with (language = "spanish")
+
+-- Cada interruptor se puede apagar (o encender sin idioma, solo el plegado)
+create index on Nota(cuerpo) type fulltext with (language = "spanish", stopwords = false)
+create index on Nota(cuerpo) type fulltext with (ascii_folding = true)
+```
+
+| Opción | Valores | Efecto |
+|---|---|---|
+| `language` | `"arabic"`, `"danish"`, `"dutch"`, `"english"`, `"finnish"`, `"french"`, `"german"`, `"greek"`, `"hungarian"`, `"italian"`, `"norwegian"`, `"portuguese"`, `"romanian"`, `"russian"`, `"spanish"`, `"swedish"`, `"tamil"`, `"turkish"` | Idioma del stemmer y de la lista de stopwords. Solo, activa los tres interruptores de abajo. |
+| `stemming` | `true` / `false` | Reduce las palabras a su raíz (`catálogos`, `catálogo` → `catalog`). Requiere `language`. |
+| `stopwords` | `true` / `false` | Descarta las stopwords del idioma (`de`, `la`, `el`). Requiere `language`; hay listas para danish, dutch, english, finnish, french, german, hungarian, italian, norwegian, portuguese, russian, spanish, swedish. |
+| `ascii_folding` | `true` / `false` | Pliega acentos a ASCII (`clasificación` → `clasificacion`), así una consulta sin acentos encuentra. Funciona sin idioma. |
+
+`with (...)` solo es válido con `type fulltext`; una opción desconocida o un
+valor del tipo equivocado es error de parseo, nunca un ajuste ignorado en silencio.
+
+**Cambiar el analyzer exige reindexar.** Los tokens en disco los produjo la
+cadena anterior, así que no hay cambio en sitio: `drop index Nota_cuerpo` y
+crearlo de nuevo (se repuebla desde los nodos). Crear un índice que ya existe te
+lo dice exactamente así. El analyzer se guarda junto al índice y sobrevive a
+reabrir la base; los índices creados antes de 0.5.13 conservan el default.
+
+Rust: `graph.create_index_with(label, property, IndexType::FullText, IndexOptions { analyzer: Some(FullTextAnalyzer::for_language("spanish")) })` y `graph.describe_index(name)`. Python: `graph.create_index("Nota", "cuerpo", "fulltext", analyzer={"language": "spanish"})` y `graph.describe_index("Nota_cuerpo")`.
 
 ---
 

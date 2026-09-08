@@ -82,34 +82,43 @@ result = graph.execute_nql("""
 
 ### 3. Full-Text Index (Tantivy-powered)
 
-**Use for:** Text search, fuzzy matching  
-**Usar para:** Búsqueda de texto, coincidencia difusa
+**Use for:** BM25 text search, alone or fused with vectors (`search_hybrid`)  
+**Usar para:** Búsqueda de texto BM25, sola o fusionada con vectores (`search_hybrid`)
 
 ```rust
 // Rust
 graph.create_index("Document", "content", IndexType::FullText).await?;
 
-// Query
-find d from (d:Document) where fulltext(d.content, "fraud detection")
+// Per-index analyzer: language stemmer + stop words + accent folding
+graph.create_index_with(
+    "Nota", "cuerpo", IndexType::FullText,
+    IndexOptions { analyzer: Some(FullTextAnalyzer::for_language("spanish")) },
+).await?;
+
+// Query: the text branch of hybrid search (BM25 ranking)
+let mut q = HybridQuery::new();
+q.text = Some("fraud detection".into());
+let hits = graph.search_hybrid(q).await?;
 ```
 
 ```python
 # Python
 graph.create_index("Document", "content", "fulltext")
+graph.create_index("Nota", "cuerpo", "fulltext", analyzer={"language": "spanish"})
 
-# Boolean search
-result = graph.execute_nql("""
-    find d.title
-    from (d:Document)
-    where fulltext(d.content, 'fraud AND detection')
-""")
+hits = graph.search_hybrid(text="fraud detection", k=10)
+graph.describe_index("Nota_cuerpo")["analyzer"]   # {'language': 'spanish', 'stemming': True, ...}
+```
+
+```nql
+create index on Nota(cuerpo) type fulltext with (language = "spanish", ascii_folding = true)
+find n.titulo from (n:Nota) where hybrid(n, "clasificacion de catalogos", "ref", "model")
 ```
 
 **Features:**
-- Boolean operators: AND, OR, NOT
-- Phrase search: "exact phrase"
-- Fuzzy search: detection~2
-- Multilingual support
+- Boolean operators in the query text: AND, OR, NOT; phrase search: "exact phrase"
+- Per-index analyzer (0.5.13): stemming and stop words for 18 / 13 languages, accent folding; the query is analyzed with the index's analyzer. Default = tantivy's `default` tokenizer (lowercase only). Changing it requires drop + create. Full option table in the NQL reference.
+- There is no `fulltext(...)` predicate in NQL; text search goes through `hybrid(...)` / `search_hybrid`.
 
 ---
 
@@ -262,12 +271,13 @@ for i in range(10000):
         }})
     """)
 
-# Query with index
+# Query with index (age uses the btree; text goes through hybrid search)
 result = graph.execute_nql("""
     find n.email
     from (n:Person)
-    where n.age > 50 and fulltext(n.bio, 'expert')
+    where n.age > 50
 """)
+hits = graph.search_hybrid(text="expert", k=10, label="Person")
 
 # Close
 graph.close()

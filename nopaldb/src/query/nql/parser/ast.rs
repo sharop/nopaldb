@@ -58,6 +58,19 @@ pub struct CreateIndexStmt {
     pub label: String,
     pub property: String,
     pub index_type: IndexType,
+    /// The `with (...)` clause; `None` when absent. Only valid with `FullText`.
+    pub options: Option<IndexOptionsAst>,
+}
+
+/// Full-text analyzer options as written in `create index ... with (...)`.
+/// Every field is optional so the executor can apply the defaults
+/// (`language` alone turns stemming, stop words and accent folding on).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct IndexOptionsAst {
+    pub language: Option<String>,
+    pub stemming: Option<bool>,
+    pub stopwords: Option<bool>,
+    pub ascii_folding: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

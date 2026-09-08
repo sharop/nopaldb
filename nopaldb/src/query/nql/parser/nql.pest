@@ -29,15 +29,27 @@ explain_stmt = {
     ^"explain" ~ query
 }
 
-// CREATE INDEX statement: create index on Label(property) [type hash|btree|fulltext]
+// CREATE INDEX statement:
+//   create index on Label(property) [type hash|btree|fulltext|taxonomy]
+//                   [with (language = "spanish", stemming = true, stopwords = true, ascii_folding = true)]
+// The `with (...)` clause configures the full-text analyzer (#74); the parser
+// rejects it for any other index type.
 create_index_stmt = {
-    ^"create" ~ ^"index" ~ ^"on" ~ identifier ~ "(" ~ identifier ~ ")" ~ index_type_spec?
+    ^"create" ~ ^"index" ~ ^"on" ~ identifier ~ "(" ~ identifier ~ ")" ~ index_type_spec? ~ index_options?
 }
 
 index_type_keyword = { ^"hash" | ^"btree" | ^"fulltext" | ^"taxonomy" }
 
 index_type_spec = {
     ^"type" ~ index_type_keyword
+}
+
+index_options = {
+    ^"with" ~ "(" ~ index_option ~ ("," ~ index_option)* ~ ")"
+}
+
+index_option = {
+    identifier ~ "=" ~ (string | boolean)
 }
 
 // DROP INDEX statement: drop index <name>

@@ -2,6 +2,7 @@
 //
 // Index management system for NopalDB
 
+pub mod analyzer;
 pub mod hash;
 pub mod btree;
 #[cfg(feature = "fulltext")]
@@ -12,9 +13,11 @@ pub mod taxonomy;
 use crate::error::Result;
 use crate::types::{NodeId, PropertyValue};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+pub use analyzer::FullTextAnalyzer;
 pub use hash::HashIndex;
 pub use btree::BTreeIndex;
 #[cfg(feature = "fulltext")]
@@ -104,6 +107,31 @@ pub trait Index: Send + Sync {
     fn as_taxonomy(&self) -> Option<&TaxonomyIndex> {
         None
     }
+
+    /// The analyzer a full-text index tokenizes with; `None` for every other
+    /// index type. Lets `describe_index` report it without downcasting.
+    fn fulltext_analyzer(&self) -> Option<&FullTextAnalyzer> {
+        None
+    }
+}
+
+/// Options for [`IndexManager::create_index_with`]. Today only full-text
+/// indexes have any: the analyzer (#74). Hash, B-tree and taxonomy indexes
+/// reject a non-default value instead of ignoring it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IndexOptions {
+    /// Analyzer for a `FullText` index. `None` = the default analyzer.
+    pub analyzer: Option<FullTextAnalyzer>,
+}
+
+/// One index as `describe_index` reports it: its metadata plus the analyzer
+/// when it is a full-text index.
+#[derive(Debug, Clone)]
+pub struct IndexInfo {
+    pub metadata: IndexMetadata,
+    /// The analyzer of a full-text index (always `Some` for one, even when
+    /// default); `None` for the other types.
+    pub analyzer: Option<FullTextAnalyzer>,
 }
 
 /// Index metadata
@@ -206,8 +234,10 @@ impl IndexManager {
                                 IndexType::FullText => {
                                     #[cfg(feature = "fulltext")]
                                     {
+                                        // The analyzer comes from the sidecar next to the
+                                        // tantivy files; no sidecar = created before 0.5.13 = default.
                                         let path = format!("{}/fulltext_{}", base_path, index_name);
-                                        Box::new(FullTextIndex::new(Some(path))?)
+                                        Box::new(FullTextIndex::open_existing(path)?)
                                     }
                                     #[cfg(not(feature = "fulltext"))]
                                     {
@@ -316,20 +346,47 @@ impl IndexManager {
         Ok(())
     }
 
-    /// Create a new index
+    /// Create a new index with default options.
     pub async fn create_index(
         &self,
         label: &str,
         property: &str,
         index_type: IndexType,
     ) -> Result<String> {
+        self.create_index_with(label, property, index_type, IndexOptions::default()).await
+    }
+
+    /// Create a new index. `options.analyzer` configures a full-text index
+    /// (see [`FullTextAnalyzer`]); any other type rejects it.
+    pub async fn create_index_with(
+        &self,
+        label: &str,
+        property: &str,
+        index_type: IndexType,
+        options: IndexOptions,
+    ) -> Result<String> {
         let index_name = format!("{}_{}", label, property);
+
+        if options.analyzer.is_some() && index_type != IndexType::FullText {
+            return Err(crate::error::NopalError::index_error(format!(
+                "Index {}: an analyzer only applies to full-text indexes, not {:?}",
+                index_name, index_type
+            )));
+        }
 
         // Check if index already exists
         let indexes = self.indexes.read().await;
-        if indexes.contains_key(&index_name) {
+        if let Some(existing) = indexes.get(&index_name) {
+            let hint = match existing.fulltext_analyzer() {
+                Some(_) => format!(
+                    "; to change its analyzer, `drop index {}` and create it again (the tokens on disk \
+                     were produced by the current analyzer, so there is no in-place change)",
+                    index_name
+                ),
+                None => String::new(),
+            };
             return Err(crate::error::NopalError::index_error(
-                format!("Index {} already exists", index_name)
+                format!("Index {} already exists{}", index_name, hint)
             ));
         }
         drop(indexes);
@@ -343,7 +400,20 @@ impl IndexManager {
                 {
                     let path = self.base_path.as_ref()
                         .map(|p| format!("{}/fulltext_{}", p, index_name));
-                    Box::new(FullTextIndex::new(path)?)
+                    // A directory left behind by an earlier index of the same
+                    // name (dropped before 0.5.13, when `drop_index` did not
+                    // remove it) would be reopened with its old schema and
+                    // analyzer. A new index starts from an empty directory.
+                    if let Some(p) = &path
+                        && Path::new(p).exists()
+                    {
+                        std::fs::remove_dir_all(p).map_err(|e| {
+                            crate::error::NopalError::index_error(format!(
+                                "Failed to clear stale index directory {}: {}", p, e
+                            ))
+                        })?;
+                    }
+                    Box::new(FullTextIndex::with_analyzer(path, options.analyzer.unwrap_or_default())?)
                 }
                 #[cfg(not(feature = "fulltext"))]
                 {
@@ -389,15 +459,30 @@ impl IndexManager {
         Ok(index_name)
     }
 
-    /// Drop an index
+    /// Drop an index. A full-text index also loses its directory on disk:
+    /// until 0.5.13 it stayed behind, so dropping and re-creating the index
+    /// reopened the old tokens (and, with another analyzer, the old schema).
     pub async fn drop_index(&self, index_name: &str) -> Result<()> {
         let mut indexes = self.indexes.write().await;
         let mut metadata = self.metadata.write().await;
 
-        indexes.remove(index_name);
-        metadata.remove(index_name);
+        let removed = indexes.remove(index_name);
+        let meta = metadata.remove(index_name);
 
         self.save_metadata_internal(&metadata)?;
+
+        // Release the writer (its lock file) before removing the directory.
+        drop(removed);
+        if let (Some(meta), Some(base_path)) = (meta, &self.base_path)
+            && meta.index_type == IndexType::FullText
+        {
+            let dir = format!("{}/fulltext_{}", base_path, index_name);
+            if Path::new(&dir).exists() {
+                std::fs::remove_dir_all(&dir).map_err(|e| {
+                    crate::error::NopalError::index_error(format!("Failed to remove index directory {}: {}", dir, e))
+                })?;
+            }
+        }
 
         log::info!("Dropped index: {}", index_name);
         Ok(())
@@ -525,6 +610,14 @@ impl IndexManager {
     pub async fn get_metadata(&self, index_name: &str) -> Option<IndexMetadata> {
         let metadata = self.metadata.read().await;
         metadata.get(index_name).cloned()
+    }
+
+    /// Everything known about one index, or `None` if it does not exist.
+    pub async fn describe_index(&self, index_name: &str) -> Option<IndexInfo> {
+        let metadata = self.metadata.read().await.get(index_name).cloned()?;
+        let indexes = self.indexes.read().await;
+        let analyzer = indexes.get(index_name).and_then(|i| i.fulltext_analyzer().cloned());
+        Some(IndexInfo { metadata, analyzer })
     }
 
     /// List all indexes

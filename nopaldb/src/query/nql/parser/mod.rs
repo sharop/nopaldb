@@ -1301,6 +1301,7 @@ impl AstBuilder {
         let mut label = None;
         let mut property = None;
         let mut index_type = IndexType::Hash; // default
+        let mut options: Option<IndexOptionsAst> = None;
 
         for inner in pair.into_inner() {
             match inner.as_rule() {
@@ -1310,6 +1311,9 @@ impl AstBuilder {
                     } else if property.is_none() {
                         property = Some(inner.as_str().to_string());
                     }
+                }
+                Rule::index_options => {
+                    options = Some(Self::build_index_options(inner)?);
                 }
                 Rule::index_type_spec => {
                     // Iterate over the named index_type_keyword sub-rule.
@@ -1330,11 +1334,66 @@ impl AstBuilder {
             }
         }
 
+        if options.is_some() && index_type != IndexType::FullText {
+            return Err(NopalError::QueryParseError(
+                "CREATE INDEX: `with (...)` configures the full-text analyzer and only applies to `type fulltext`".into(),
+            ));
+        }
+
         Ok(CreateIndexStmt {
             label: label.ok_or_else(|| NopalError::QueryParseError("Missing label in CREATE INDEX".into()))?,
             property: property.ok_or_else(|| NopalError::QueryParseError("Missing property in CREATE INDEX".into()))?,
             index_type,
+            options,
         })
+    }
+
+    /// `with (key = value, ...)` of CREATE INDEX. Unknown keys and values of
+    /// the wrong kind are parse errors that name the key: a typo in
+    /// `ascii_folding` must not silently create an index without it.
+    fn build_index_options(pair: pest::iterators::Pair<Rule>) -> Result<IndexOptionsAst> {
+        let mut opts = IndexOptionsAst::default();
+        for option in pair.into_inner().filter(|p| p.as_rule() == Rule::index_option) {
+            let mut parts = option.into_inner();
+            let key = parts
+                .next()
+                .ok_or_else(|| NopalError::QueryParseError("CREATE INDEX: empty option".into()))?
+                .as_str()
+                .to_lowercase();
+            let value = parts
+                .next()
+                .ok_or_else(|| NopalError::QueryParseError(format!("CREATE INDEX: option `{key}` has no value")))?;
+            let as_bool = |v: &pest::iterators::Pair<Rule>| -> Result<bool> {
+                match (v.as_rule(), v.as_str().to_lowercase().as_str()) {
+                    (Rule::boolean, "true") => Ok(true),
+                    (Rule::boolean, "false") => Ok(false),
+                    _ => Err(NopalError::QueryParseError(format!(
+                        "CREATE INDEX: option `{key}` expects true or false, got {}",
+                        v.as_str()
+                    ))),
+                }
+            };
+            match key.as_str() {
+                "language" => {
+                    if value.as_rule() != Rule::string {
+                        return Err(NopalError::QueryParseError(format!(
+                            "CREATE INDEX: option `language` expects a quoted string, got {}",
+                            value.as_str()
+                        )));
+                    }
+                    opts.language = Some(Self::unquote_string(value.as_str()).to_lowercase());
+                }
+                "stemming" => opts.stemming = Some(as_bool(&value)?),
+                "stopwords" => opts.stopwords = Some(as_bool(&value)?),
+                "ascii_folding" => opts.ascii_folding = Some(as_bool(&value)?),
+                other => {
+                    return Err(NopalError::QueryParseError(format!(
+                        "CREATE INDEX: unknown option `{other}`; valid options are language, stemming, stopwords, ascii_folding"
+                    )));
+                }
+            }
+        }
+        Ok(opts)
     }
 
     fn unquote_string(input: &str) -> String {

@@ -93,6 +93,8 @@ graph.rebuild_schema()
 ```python
 index_name = graph.create_index("Persona", "email", "hash")
 graph.create_index("Persona", "edad", "btree")
+graph.create_index("Nota", "cuerpo", "fulltext", analyzer={"language": "spanish"})  # stemming + stopwords + acentos
+graph.describe_index("Nota_cuerpo")   # {'name', 'label', 'property', 'type', 'analyzer': {...}}
 
 for name, label, prop, index_type in graph.list_indexes():
     print(name, label, prop, index_type)

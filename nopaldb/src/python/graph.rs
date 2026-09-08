@@ -513,7 +513,12 @@ impl PyGraph {
     /// Args:
     ///     label (str): Node label
     ///     property (str): Property name
-    ///     index_type (str): 'hash', 'btree', or 'fulltext' (default: 'hash')
+    ///     index_type (str): 'hash', 'btree', 'fulltext' or 'taxonomy' (default: 'hash')
+    ///     analyzer (dict | None): full-text only. Keys: `language` (tantivy
+    ///         language name, e.g. "spanish"), `stemming`, `stopwords`,
+    ///         `ascii_folding` (bools). `language` alone turns the three on.
+    ///         The same analyzer is applied to every query on the index;
+    ///         changing it requires `drop_index` + `create_index`.
     ///
     /// Returns:
     ///     str: Index name
@@ -521,33 +526,97 @@ impl PyGraph {
     /// Example:
     ///     >>> graph.create_index("Person", "name", "hash")
     ///     'Person_name'
-    ///     >>> graph.create_index("Person", "age", "btree")
-    ///     'Person_age'
-    #[pyo3(signature = (label, property, index_type="hash"))]
+    ///     >>> graph.create_index("Nota", "cuerpo", "fulltext", analyzer={"language": "spanish"})
+    ///     'Nota_cuerpo'
+    #[pyo3(signature = (label, property, index_type="hash", analyzer=None))]
     fn create_index(
         &self,
         py: Python<'_>,
         label: String,
         property: String,
         index_type: &str,
+        analyzer: Option<&Bound<'_, pyo3::types::PyDict>>,
     ) -> PyResult<String> {
-        use crate::index::IndexType;
+        use crate::index::{FullTextAnalyzer, IndexOptions, IndexType};
 
         let graph = self.graph()?;
         let idx_type = match index_type {
             "hash" => IndexType::Hash,
             "btree" => IndexType::BTree,
             "fulltext" => IndexType::FullText,
+            "taxonomy" => IndexType::Taxonomy,
             _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                format!("Invalid index type '{}'. Use 'hash', 'btree', or 'fulltext'", index_type)
+                format!("Invalid index type '{}'. Use 'hash', 'btree', 'fulltext' or 'taxonomy'", index_type)
             )),
         };
+        let analyzer = match analyzer {
+            None => None,
+            Some(dict) => {
+                let language: Option<String> = match dict.get_item("language")? {
+                    Some(v) if !v.is_none() => Some(v.extract::<String>()?),
+                    _ => None,
+                };
+                let mut a = match &language {
+                    Some(lang) => FullTextAnalyzer::for_language(lang),
+                    None => FullTextAnalyzer::default(),
+                };
+                for (key, slot) in [
+                    ("stemming", &mut a.stemming),
+                    ("stopwords", &mut a.stopwords),
+                    ("ascii_folding", &mut a.ascii_folding),
+                ] {
+                    if let Some(v) = dict.get_item(key)? && !v.is_none() {
+                        *slot = v.extract::<bool>()?;
+                    }
+                }
+                for key in dict.keys().iter() {
+                    let k: String = key.extract()?;
+                    if !matches!(k.as_str(), "language" | "stemming" | "stopwords" | "ascii_folding") {
+                        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                            "analyzer: unknown key '{k}'; valid keys are language, stemming, stopwords, ascii_folding"
+                        )));
+                    }
+                }
+                Some(a)
+            }
+        };
+        let options = IndexOptions { analyzer };
 
         let result = crate::python::runtime::block_on(py, async move {
-            graph.create_index(&label, &property, idx_type).await
+            graph.create_index_with(&label, &property, idx_type, options).await
         });
 
         to_py_result(result)
+    }
+
+    /// Describe one index: metadata plus, for a full-text index, its analyzer.
+    ///
+    /// Returns:
+    ///     dict | None: {name, label, property, type, analyzer} where `analyzer`
+    ///     is {language, stemming, stopwords, ascii_folding} for a full-text
+    ///     index and None otherwise. None if no index has that name.
+    #[pyo3(signature = (index_name))]
+    fn describe_index(&self, py: Python<'_>, index_name: String) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
+        let graph = self.graph()?;
+        let info = crate::python::runtime::block_on(py, async move { graph.describe_index(&index_name).await });
+        let Some(info) = info else { return Ok(None) };
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("name", info.metadata.name)?;
+        dict.set_item("label", info.metadata.label)?;
+        dict.set_item("property", info.metadata.property)?;
+        dict.set_item("type", format!("{:?}", info.metadata.index_type))?;
+        match info.analyzer {
+            Some(a) => {
+                let an = pyo3::types::PyDict::new(py);
+                an.set_item("language", a.language)?;
+                an.set_item("stemming", a.stemming)?;
+                an.set_item("stopwords", a.stopwords)?;
+                an.set_item("ascii_folding", a.ascii_folding)?;
+                dict.set_item("analyzer", an)?;
+            }
+            None => dict.set_item("analyzer", py.None())?,
+        }
+        Ok(Some(dict.into()))
     }
 
     /// Drop an index

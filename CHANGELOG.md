@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.13] - unreleased
+
+### Added
+
+- **Analyzer full-text configurable por índice** — cierra [#74](https://github.com/sharop/nopaldb/issues/74). `create index on Nota(cuerpo) type fulltext with (language = "spanish")` activa stemmer, stopwords y plegado de acentos para ese índice (cada uno se apaga por separado; `ascii_folding` funciona sin idioma); Rust `Graph::create_index_with(.., IndexOptions { analyzer })` con `FullTextAnalyzer`, Python `create_index(..., analyzer={...})`. La consulta se analiza con el mismo analyzer del índice (tantivy lo resuelve del schema, así que no hay segundo camino que pueda divergir): `clasificacion` encuentra "clasificación", `catalogos` encuentra "catálogo", y `de`/`la`/`el` no entran al índice. Todo con piezas que tantivy ya traía: cero dependencias nuevas. El analyzer se guarda en un sidecar `analyzer.json` junto al directorio tantivy, NO en `metadata.bin`: ese archivo es bincode y un fallo de carga se traduce en "cero índices", así que añadirle un campo habría borrado en silencio los índices de toda base existente al actualizar. Sin sidecar = default = comportamiento idéntico al de 0.5.12. Introspección: `Graph::describe_index(name)` / Python `describe_index` devuelven el analyzer. Referencia NQL EN/ES: sección nueva "CREATE INDEX / DROP INDEX" (hasta ahora ninguna documentaba `type fulltext`).
+
+### Fixed
+
+- **`drop index` no borraba el directorio tantivy** del índice full-text: un drop + create del mismo nombre reabría los tokens viejos (y, con otro analyzer, el schema viejo). Ahora lo borra, y crear un índice cuyo nombre ya existe dice literalmente `drop index <nombre>` para cambiar el analyzer.
+- `docs/INDEXING_DOCS.MD` documentaba un predicado NQL `fulltext(...)` que no existe y prometía "multilingual support" que no había; el stub Python de `create_index` decía `-> None` cuando devuelve el nombre. Los tests `hybrid_test`, `hybrid_explain_test` e `index_lifecycle_test` quedan registrados con `required-features = ["hybrid"]`, que es lo que necesitan para compilar.
+
+---
+
 ## [0.5.12] - 2026-09-08
 
 ### Added

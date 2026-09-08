@@ -59,7 +59,7 @@ jobs:
         run: cargo test -p nopaldb --features core --test delete_by_key_test
 
       - name: Test hybrid search (M1-5)
-        run: cargo test -p nopaldb --features core --test hybrid_test --test hybrid_explain_test
+        run: cargo test -p nopaldb --features core --test hybrid_test --test hybrid_explain_test --test fulltext_analyzer_test
 
       - name: Test filtered KNN recall (exact path + native HNSW filter)
         run: cargo test -p nopaldb --features core --test knn_filtered_recall_test --test knn_exact_test
@@ -129,4 +129,5 @@ jobs:
           python nopaldb/python/scripts/check_stubs.py
           python nopaldb/python/scripts/roundtrip_sample.py
           python nopaldb/python/scripts/turtle_roundtrip_sample.py
+          python nopaldb/python/scripts/fulltext_analyzer_sample.py
           mypy --strict nopaldb/python/scripts/typecheck_sample.py

@@ -3439,18 +3439,32 @@ impl Graph {
         Ok(ids)
     }
 
-    /// Create an index on a label's property
+    /// Create an index on a label's property with default options.
     pub async fn create_index(
         &self,
         label: &str,
         property: &str,
         index_type: IndexType,
     ) -> Result<String> {
+        self.create_index_with(label, property, index_type, crate::index::IndexOptions::default()).await
+    }
+
+    /// Create an index on a label's property. For a full-text index,
+    /// `options.analyzer` chooses the language, stemming, stop words and
+    /// accent folding (see [`crate::index::FullTextAnalyzer`]); the same
+    /// analyzer is applied to every query against that index.
+    pub async fn create_index_with(
+        &self,
+        label: &str,
+        property: &str,
+        index_type: IndexType,
+        options: crate::index::IndexOptions,
+    ) -> Result<String> {
         self.deny_if_read_only("create_index")?;
         log::info!("Creating index on {}.{}", label, property);
 
         // Step 1: Create index metadata
-        let index_name = self.index_manager.create_index(label, property, index_type.clone()).await?;
+        let index_name = self.index_manager.create_index_with(label, property, index_type.clone(), options).await?;
         log::debug!("Index metadata created: {}", index_name);
 
         // Taxonomy indexes require a two-phase population (nodes then edges).
@@ -3511,6 +3525,11 @@ impl Graph {
     /// List all indexes
     pub async fn list_indexes(&self) -> Vec<crate::index::IndexMetadata> {
         self.index_manager.list_indexes().await
+    }
+    /// Metadata plus, for a full-text index, its analyzer. `None` if no index
+    /// has that name.
+    pub async fn describe_index(&self, index_name: &str) -> Option<crate::index::IndexInfo> {
+        self.index_manager.describe_index(index_name).await
     }
 
     /// Presencia y tipo del índice que la EJECUCIÓN usaría para una igualdad

@@ -5076,7 +5076,27 @@ impl<'a> Executor<'a> {
             IndexType::Taxonomy => GraphIndexType::Taxonomy,
         };
 
-        self.graph.create_index(&stmt.label, &stmt.property, index_type).await
+        // `with (language = "x")` alone means the whole chain for that
+        // language; each switch can still be turned off explicitly.
+        let analyzer = stmt.options.as_ref().map(|o| {
+            let mut a = match &o.language {
+                Some(lang) => crate::index::FullTextAnalyzer::for_language(lang),
+                None => crate::index::FullTextAnalyzer::default(),
+            };
+            if let Some(v) = o.stemming {
+                a.stemming = v;
+            }
+            if let Some(v) = o.stopwords {
+                a.stopwords = v;
+            }
+            if let Some(v) = o.ascii_folding {
+                a.ascii_folding = v;
+            }
+            a
+        });
+        let options = crate::index::IndexOptions { analyzer };
+
+        self.graph.create_index_with(&stmt.label, &stmt.property, index_type, options).await
     }
 
     /// Execute DROP INDEX
