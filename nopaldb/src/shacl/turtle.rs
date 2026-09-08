@@ -192,7 +192,10 @@ pub fn parse_shapes(source: &str) -> Result<(Vec<Shape>, ShapesReport)> {
                 }
                 "description" => {}
                 "targetClass" => match obj {
-                    Term::NamedNode(n) => shape.targets.push(Target::Class(local_name(n.as_str()))),
+                    // The full IRI: the validator resolves it through the
+                    // taxonomy (subclasses included) and falls back to the
+                    // local name as a label when the graph has none.
+                    Term::NamedNode(n) => shape.targets.push(Target::Class(n.as_str().to_string())),
                     other => report.ignored.push(format!("{shown}: sh:targetClass espera un IRI, no `{other}`")),
                 },
                 "targetNode" => match obj {
@@ -402,7 +405,7 @@ mod tests {
         assert_eq!(shapes.len(), 2, "{shapes:?}");
         let receta = shapes.iter().find(|s| s.iri.as_deref() == Some("http://cocina.example/RecetaShape")).unwrap();
         assert_eq!(receta.name, "Receta bien descrita");
-        assert_eq!(receta.targets, vec![Target::Class("Receta".into())]);
+        assert_eq!(receta.targets, vec![Target::Class("http://cocina.example/Receta".into())]);
         assert_eq!(receta.property_shapes.len(), 4);
         let usa = receta.property_shapes.iter().find(|p| p.path == PathSpec::Predicate("usa".into())).unwrap();
         assert_eq!(

@@ -59,6 +59,7 @@ pub use constraint::{evaluate_constraints, component, EvalContext};
 pub use report::{ValidationReport, ConstraintViolation, Severity, ShapesReport};
 pub use turtle::parse_shapes;
 
+
 use std::collections::HashMap;
 
 use crate::error::Result;
@@ -73,6 +74,21 @@ use crate::types::{Node, NodeId, PropertyValue};
 /// No modifica el grafo bajo ningun concepto.
 pub struct ShaclValidator {
     shapes: Vec<Shape>,
+    target_mode: TargetMode,
+}
+
+/// Cómo `sh:targetClass` elige sus focus nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TargetMode {
+    /// Por la taxonomía del grafo (default): la clase se nombra por label,
+    /// `prefix:Local` o IRI, y son focus nodes sus instancias directas y las
+    /// de sus subclases, por cualquiera de sus tipos declarados. Sin
+    /// taxonomía (grafo construido a mano) cae a `ExactLabel`.
+    #[default]
+    Taxonomy,
+    /// El comportamiento anterior a 0.5.15: los individuos cuyo `label` es
+    /// exactamente el texto del target. Ni subclases ni IRIs.
+    ExactLabel,
 }
 
 impl ShaclValidator {
@@ -80,7 +96,13 @@ impl ShaclValidator {
     ///
     /// Util para definir shapes en codigo sin cargar desde el grafo.
     pub fn from_shapes(shapes: Vec<Shape>) -> Self {
-        Self { shapes }
+        Self { shapes, target_mode: TargetMode::default() }
+    }
+
+    /// Cambia cómo se resuelve `sh:targetClass` (ver [`TargetMode`]).
+    pub fn with_target_mode(mut self, mode: TargetMode) -> Self {
+        self.target_mode = mode;
+        self
     }
 
     /// Construye el validador desde un documento Turtle de shapes SHACL.
@@ -90,7 +112,7 @@ impl ShaclValidator {
     /// malformado es `Err` con línea y columna; no se carga nada.
     pub fn from_turtle(source: &str) -> Result<(Self, ShapesReport)> {
         let (shapes, report) = parse_shapes(source)?;
-        Ok((Self { shapes }, report))
+        Ok((Self { shapes, target_mode: TargetMode::default() }, report))
     }
 
     /// Las shapes cargadas.
@@ -156,7 +178,7 @@ impl ShaclValidator {
             }
         }
 
-        Ok(Self { shapes })
+        Ok(Self { shapes, target_mode: TargetMode::default() })
     }
 
     /// Valida todos los nodos del grafo contra todos los shapes registrados.
@@ -232,13 +254,8 @@ impl ShaclValidator {
                     }
                     focus.extend(nodes.iter().copied());
                 }
-                Target::Class(label) => {
-                    // A class node carries the class label too (`:Receta a
-                    // owl:Class` has label "Receta"), but a class is not an
-                    // instance of itself: validating it against its own shape
-                    // reported every minCount as a violation of the class.
-                    let nodes = graph.get_nodes_by_label(label).await?;
-                    focus.extend(nodes.iter().filter(|n| n.kind != crate::types::NodeKind::Class).map(|n| n.id));
+                Target::Class(class) => {
+                    focus.extend(self.instances_of(graph, class).await?);
                 }
             }
         }
@@ -247,6 +264,37 @@ impl ShaclValidator {
         focus.sort_unstable();
         focus.dedup();
         Ok(focus)
+    }
+
+    /// Los focus nodes de `sh:targetClass C`.
+    ///
+    /// Con taxonomía: `C` se resuelve como en NQL (`TaxonomyIndex::resolve_class`:
+    /// label, `prefix:Local` o IRI) y cuentan las instancias directas y las de
+    /// sus subclases, por cualquiera de sus tipos declarados — el mismo
+    /// criterio que `instanceOf(n, C)`. Sin taxonomía, o en
+    /// [`TargetMode::ExactLabel`], los individuos cuyo `label` es el local
+    /// name de `C`, que es lo que hacía siempre.
+    ///
+    /// Un nodo clase lleva el label de la clase (`:Receta a owl:Class` tiene
+    /// label "Receta") pero una clase no es instancia de sí misma: nunca es
+    /// focus node de su propio shape.
+    async fn instances_of(&self, graph: &Graph, class: &str) -> Result<Vec<NodeId>> {
+        use crate::rdf_owl::importer::local_name;
+        use crate::types::NodeKind;
+
+        if self.target_mode == TargetMode::Taxonomy
+            && let Some(mut tax) = graph.get_taxonomy_sync()
+            && let Some(class_id) = tax.resolve_class(class)
+        {
+            let all = graph.get_all_nodes().await?;
+            return Ok(all
+                .iter()
+                .filter(|n| n.kind != NodeKind::Class && tax.is_instance_of(n.id, &n.label, class_id))
+                .map(|n| n.id)
+                .collect());
+        }
+        let nodes = graph.get_nodes_by_label(&local_name(class)).await?;
+        Ok(nodes.iter().filter(|n| n.kind != NodeKind::Class).map(|n| n.id).collect())
     }
 
     /// Valida un focus node contra un shape especifico.

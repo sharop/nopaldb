@@ -56,7 +56,7 @@ Un archivo de shapes, para un recetario ficticio:
 | Término | Significado aquí |
 |---|---|
 | `sh:NodeShape`, `sh:name` | Una shape; el nombre aparece en cada violación. Todo sujeto con `sh:targetClass` o `sh:targetNode` también es shape. |
-| `sh:targetClass :C` | Focus nodes = los individuos con label `C` (el nodo clase no lo es). Subclases e IRIs: [#99](https://github.com/sharop/nopaldb/issues/99). |
+| `sh:targetClass :C` | Focus nodes = las instancias de `C` **y de sus subclases**, por la jerarquía de clases del grafo, por cualquiera de sus tipos declarados; `C` puede ser label, `prefijo:Local` o IRI completo (la misma resolución que `instanceOf` en NQL). El nodo clase nunca lo es. Sin jerarquía (grafo a mano) son los individuos con label `C`. |
 | `sh:targetNode <iri>` | El nodo cuya propiedad `iri` es ese IRI. Un IRI que no existe se reporta en `report.notes`, no se ignora. |
 | `sh:property [ sh:path :p ; … ]` | Constraints sobre los valores de `p`: la propiedad `p` del nodo (una lista cuenta un valor por elemento) **y** los destinos de sus aristas de tipo `p`. Turtle no dice en cuál de las dos aterrizó un predicado en NopalDB, así que el path son ambas. |
 | `sh:minCount`, `sh:maxCount` | Número de valores. |
@@ -124,6 +124,16 @@ let report = ShaclValidator::from_shapes(vec![shape]).validate(&graph).await?;
 
 `PathSpec::Property` lee solo la propiedad, `PathSpec::Edge` solo las aristas,
 `PathSpec::Predicate` ambas (como carga `sh:path`).
+
+### Modo de target
+
+`sh:targetClass` sigue la taxonomía por defecto. Si dependes del comportamiento
+anterior a 0.5.15 (individuos cuyo `label` es exactamente el texto, sin
+subclases ni IRIs):
+
+```rust
+let validator = ShaclValidator::from_shapes(shapes).with_target_mode(TargetMode::ExactLabel);
+```
 
 ## Feature
 
