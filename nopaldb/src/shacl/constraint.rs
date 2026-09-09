@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use crate::index::TaxonomyIndex;
 use crate::rdf_owl::importer::local_name;
 use crate::types::{Node, NodeId, PropertyValue};
-use super::shape::{ConstraintType, DatatypeKind, PathValue, ShaclNodeKind};
+use super::shape::{ConstraintType, DatatypeKind, PathSpec, PathValue, ShaclNodeKind, Shape};
 use super::report::{ConstraintViolation, Severity};
 
 /// Lo que el evaluador (síncrono) necesita del grafo para juzgar valores-nodo:
@@ -24,6 +24,11 @@ pub struct EvalContext {
     pub nodes: HashMap<NodeId, Node>,
     /// Snapshot de la taxonomía; `None` cuando el grafo no tiene clases.
     pub taxonomy: Option<TaxonomyIndex>,
+    /// Valores ya resueltos de `(nodo, path)`, cargados por el validador antes
+    /// de evaluar, porque el evaluador es síncrono y el storage no.
+    pub paths: HashMap<(NodeId, PathSpec), Vec<PathValue>>,
+    /// Shapes del documento por IRI y por nombre, para `sh:node`.
+    pub shapes: HashMap<String, Shape>,
 }
 
 impl EvalContext {
@@ -64,6 +69,73 @@ pub fn component(constraint: &ConstraintType) -> &'static str {
         ConstraintType::HasValue(_) => "sh:HasValueConstraintComponent",
         ConstraintType::NodeKindConstraint(_) | ConstraintType::NodeKindShacl(_) => "sh:NodeKindConstraintComponent",
         ConstraintType::Class(_) => "sh:ClassConstraintComponent",
+        ConstraintType::And(_) => "sh:AndConstraintComponent",
+        ConstraintType::Or(_) => "sh:OrConstraintComponent",
+        ConstraintType::Not(_) => "sh:NotConstraintComponent",
+        ConstraintType::Xone(_) => "sh:XoneConstraintComponent",
+        ConstraintType::Node(_) => "sh:NodeConstraintComponent",
+    }
+}
+
+/// Valida `value` como focus node de `shape`: constraints de nodo sobre el
+/// propio valor y property shapes sobre los paths ya cargados en `ctx`
+/// (un literal no tiene paths: sus property shapes ven cero valores).
+/// Aplica `sh:severity` y `sh:message` de la shape y de cada property shape.
+/// Es EL evaluador: el validador lo llama para cada focus node y los
+/// combinadores lo llaman para cada valor.
+pub fn evaluate_shape(shape: &Shape, value: &PathValue, ctx: &mut EvalContext) -> Vec<ConstraintViolation> {
+    if shape.deactivated {
+        return vec![];
+    }
+    let focus = match value {
+        PathValue::Node(id) => *id,
+        // A literal has no id; the violations still need a focus. Use nil.
+        PathValue::Literal(_) => NodeId::nil(),
+    };
+    let mut out = Vec::new();
+    if !shape.constraints.is_empty() {
+        let mut vs = evaluate_constraints(&shape.constraints, std::slice::from_ref(value), focus, shape.id, None, ctx);
+        for v in &mut vs {
+            apply_author(v, shape.severity, shape.message.as_deref());
+        }
+        out.extend(vs);
+    }
+    for ps in &shape.property_shapes {
+        let values = match value {
+            PathValue::Node(id) => ctx.paths.get(&(*id, ps.path.clone())).cloned().unwrap_or_default(),
+            PathValue::Literal(_) => vec![],
+        };
+        let mut vs = evaluate_constraints(&ps.constraints, &values, focus, shape.id, Some(ps.path.as_str()), ctx);
+        for v in &mut vs {
+            apply_author(v, ps.severity.unwrap_or(shape.severity), ps.message.as_deref().or(shape.message.as_deref()));
+        }
+        out.extend(vs);
+    }
+    for v in &mut out {
+        v.shape_name = shape.name.clone();
+    }
+    out
+}
+
+fn apply_author(v: &mut ConstraintViolation, severity: Severity, message: Option<&str>) {
+    v.severity = severity;
+    if let Some(m) = message {
+        v.message = m.to_string();
+    }
+}
+
+/// `true` si `value` conforma con `shape`: ninguna violación de severidad
+/// `Violation`. Las de menor severidad no cuentan, como en `conforms`.
+fn conforms(shape: &Shape, value: &PathValue, ctx: &mut EvalContext) -> (bool, Vec<ConstraintViolation>) {
+    let vs = evaluate_shape(shape, value, ctx);
+    let ok = vs.iter().all(|v| v.severity != Severity::Violation);
+    (ok, vs)
+}
+
+fn describe_value(value: &PathValue, ctx: &EvalContext) -> PropertyValue {
+    match value {
+        PathValue::Literal(l) => l.clone(),
+        PathValue::Node(id) => ctx.describe(*id),
     }
 }
 
@@ -162,14 +234,11 @@ fn evaluate_constraint(
         })
         .map(|bad| fail(format!("sh:maxLength {max}: cadena demasiado larga")).with_value(bad)),
 
-        // --- Patron regex: un no-string no conforma ---
-        ConstraintType::Pattern(pattern) => match regex::Regex::new(pattern) {
-            Ok(re) => first_bad(values, ctx, |v| matches!(literal(v), Some(PropertyValue::String(s)) if re.is_match(s)))
-                .map(|bad| fail(format!("sh:pattern '{pattern}': valor no coincide con el patron")).with_value(bad)),
-            Err(e) => Some(
-                fail(format!("sh:pattern: patron regex invalido '{pattern}': {e}")).with_severity(Severity::Warning),
-            ),
-        },
+        // --- Patron regex (compilado al construir): un no-string no conforma ---
+        ConstraintType::Pattern(pattern) => {
+            first_bad(values, ctx, |v| matches!(literal(v), Some(PropertyValue::String(s)) if pattern.is_match(s)))
+                .map(|bad| fail(format!("sh:pattern '{}': valor no coincide con el patron", pattern.source())).with_value(bad))
+        }
 
         // --- Enumeracion ---
         ConstraintType::In(allowed) => first_bad(values, ctx, |v| literal(v).is_some_and(|l| allowed.contains(l)))
@@ -222,6 +291,95 @@ fn evaluate_constraint(
             };
             first_bad(values, ctx, ok)
                 .map(|bad| fail(format!("sh:nodeKind {}: el valor no es de ese kind", kind.as_str())).with_value(bad))
+        }
+
+        // --- Lógicas: cada valor contra shapes; la primera que falla se reporta con sus ramas ---
+        ConstraintType::And(shapes) => {
+            for value in values {
+                let mut nested = Vec::new();
+                for shape in shapes {
+                    let (ok, vs) = conforms(shape, value, ctx);
+                    if !ok {
+                        nested.extend(vs);
+                    }
+                }
+                if !nested.is_empty() {
+                    let mut v = fail(format!("sh:and: el valor no conforma con {} de {} shapes", nested.len().min(shapes.len()), shapes.len()))
+                        .with_value(describe_value(value, ctx));
+                    v.nested = nested;
+                    return Some(v);
+                }
+            }
+            None
+        }
+        ConstraintType::Or(shapes) => {
+            for value in values {
+                let mut nested = Vec::new();
+                let mut any = false;
+                for shape in shapes {
+                    let (ok, vs) = conforms(shape, value, ctx);
+                    if ok {
+                        any = true;
+                        break;
+                    }
+                    nested.extend(vs);
+                }
+                if !any {
+                    let mut v = fail(format!("sh:or: el valor no conforma con ninguna de las {} shapes", shapes.len()))
+                        .with_value(describe_value(value, ctx));
+                    v.nested = nested;
+                    return Some(v);
+                }
+            }
+            None
+        }
+        ConstraintType::Xone(shapes) => {
+            for value in values {
+                let mut nested = Vec::new();
+                let mut count = 0usize;
+                for shape in shapes {
+                    let (ok, vs) = conforms(shape, value, ctx);
+                    if ok {
+                        count += 1;
+                    } else {
+                        nested.extend(vs);
+                    }
+                }
+                if count != 1 {
+                    let mut v = fail(format!("sh:xone: el valor conforma con {count} shapes, se requiere exactamente 1"))
+                        .with_value(describe_value(value, ctx));
+                    v.nested = nested;
+                    return Some(v);
+                }
+            }
+            None
+        }
+        ConstraintType::Not(shape) => {
+            for value in values {
+                let (ok, _) = conforms(shape, value, ctx);
+                if ok {
+                    return Some(
+                        fail(format!("sh:not: el valor conforma con la shape `{}` y no debe", shape.name))
+                            .with_value(describe_value(value, ctx)),
+                    );
+                }
+            }
+            None
+        }
+        ConstraintType::Node(reference) => {
+            let Some(shape) = ctx.shapes.get(reference).cloned() else {
+                return Some(fail(format!("sh:node: la shape `{reference}` no existe en el documento")));
+            };
+            for value in values {
+                let (ok, vs) = conforms(&shape, value, ctx);
+                if !ok {
+                    let mut v = fail(format!("sh:node: el valor no conforma con la shape `{}`", shape.name))
+                        .with_value(describe_value(value, ctx));
+                    v.nested = vs;
+                    return Some(v);
+                }
+            }
+            None
         }
 
         // --- sh:class: cada valor-nodo es instancia de la clase ---
@@ -342,11 +500,13 @@ mod tests {
 
     #[test]
     fn test_pattern() {
-        assert!(eval(ConstraintType::Pattern("^[a-z]+$".into()), vec![PropertyValue::String("abc".into())]).is_empty());
-        assert_eq!(eval(ConstraintType::Pattern("^[a-z]+$".into()), vec![PropertyValue::String("ABC".into())]).len(), 1);
-        assert_eq!(eval(ConstraintType::Pattern("^[a-z]+$".into()), vec![PropertyValue::Int(1)]).len(), 1);
-        let v = eval(ConstraintType::Pattern("(".into()), vec![PropertyValue::String("x".into())]);
-        assert_eq!(v[0].severity, Severity::Warning);
+        let p = || ConstraintType::pattern("^[a-z]+$").unwrap();
+        assert!(eval(p(), vec![PropertyValue::String("abc".into())]).is_empty());
+        assert_eq!(eval(p(), vec![PropertyValue::String("ABC".into())]).len(), 1);
+        assert_eq!(eval(p(), vec![PropertyValue::Int(1)]).len(), 1);
+        // An invalid pattern is an error when the shape is built, not a warning per value.
+        let err = ConstraintType::pattern("(").unwrap_err().to_string();
+        assert!(err.contains("patron regex invalido '('"), "{err}");
     }
 
     #[test]
@@ -399,6 +559,65 @@ mod tests {
         // A literal is never a node of any kind, and never a class instance.
         let v = evaluate_constraints(&[ConstraintType::Datatype(DatatypeKind::Int)], &values[..1], node_id(), shape_id(), None, &mut ctx);
         assert_eq!(v.len(), 1, "a node is not an integer");
+    }
+
+    #[test]
+    fn test_logical_combinators_and_node_reference() {
+        let mut ctx = EvalContext::default();
+        let int_shape = Shape::new("Int").with_constraint(ConstraintType::Datatype(DatatypeKind::Int));
+        let float_shape = Shape::new("Float").with_constraint(ConstraintType::Datatype(DatatypeKind::Float));
+        let positive = Shape::new("Positive").with_constraint(ConstraintType::MinInclusive(0.0));
+        let or = ConstraintType::Or(vec![int_shape.clone(), float_shape.clone()]);
+        let and = ConstraintType::And(vec![int_shape.clone(), positive.clone()]);
+        let xone = ConstraintType::Xone(vec![int_shape.clone(), positive.clone()]);
+        let not = ConstraintType::Not(Box::new(int_shape.clone()));
+
+        let run = |c: &ConstraintType, v: PropertyValue, ctx: &mut EvalContext| {
+            evaluate_constraints(std::slice::from_ref(c), &[PathValue::Literal(v)], node_id(), shape_id(), Some("p"), ctx)
+        };
+        assert!(run(&or, PropertyValue::Int(3), &mut ctx).is_empty());
+        assert!(run(&or, PropertyValue::Float(3.5), &mut ctx).is_empty());
+        let v = run(&or, PropertyValue::String("3".into()), &mut ctx);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].constraint, "sh:OrConstraintComponent");
+        assert_eq!(v[0].nested.len(), 2, "both branches explain why: {:?}", v[0].nested);
+        assert!(v[0].nested.iter().any(|n| n.shape_name == "Int") && v[0].nested.iter().any(|n| n.shape_name == "Float"));
+
+        assert!(run(&and, PropertyValue::Int(3), &mut ctx).is_empty());
+        assert_eq!(run(&and, PropertyValue::Int(-3), &mut ctx)[0].nested[0].shape_name, "Positive");
+
+        // xone: an Int >= 0 satisfies both → exactly one is required → fails; -3 satisfies only Int → ok.
+        assert_eq!(run(&xone, PropertyValue::Int(3), &mut ctx).len(), 1);
+        assert!(run(&xone, PropertyValue::Int(-3), &mut ctx).is_empty());
+        assert_eq!(run(&xone, PropertyValue::String("x".into()), &mut ctx).len(), 1);
+
+        assert!(run(&not, PropertyValue::String("x".into()), &mut ctx).is_empty());
+        assert_eq!(run(&not, PropertyValue::Int(1), &mut ctx).len(), 1);
+
+        // sh:node by name, resolved through the context; an unknown reference is a violation.
+        ctx.shapes.insert("Positive".into(), positive.clone());
+        assert!(run(&ConstraintType::Node("Positive".into()), PropertyValue::Int(1), &mut ctx).is_empty());
+        let v = run(&ConstraintType::Node("Positive".into()), PropertyValue::Int(-1), &mut ctx);
+        assert_eq!(v[0].constraint, "sh:NodeConstraintComponent");
+        assert_eq!(v[0].nested.len(), 1);
+        let v = run(&ConstraintType::Node("Nadie".into()), PropertyValue::Int(1), &mut ctx);
+        assert!(v[0].message.contains("no existe"), "{}", v[0].message);
+    }
+
+    #[test]
+    fn test_severity_and_message_of_the_author_reach_the_report() {
+        let mut ctx = EvalContext::default();
+        let mut shape = Shape::new("Suave").with_constraint(ConstraintType::Datatype(DatatypeKind::Int));
+        shape.severity = Severity::Warning;
+        shape.message = Some("debería ser un entero".into());
+        let mut ps = crate::shacl::PropertyShape::new(PathSpec::Property("x".into()), vec![ConstraintType::MinCount(1)]);
+        ps.severity = Some(Severity::Info);
+        shape.property_shapes.push(ps);
+        let vs = evaluate_shape(&shape, &PathValue::Literal(PropertyValue::String("a".into())), &mut ctx);
+        assert_eq!(vs.len(), 2);
+        assert_eq!((vs[0].severity, vs[0].message.as_str()), (Severity::Warning, "debería ser un entero"));
+        assert_eq!((vs[1].severity, vs[1].message.as_str()), (Severity::Info, "debería ser un entero"));
+        assert!(conforms(&shape, &PathValue::Literal(PropertyValue::String("a".into())), &mut ctx).0, "warnings do not break conformance");
     }
 
     #[test]

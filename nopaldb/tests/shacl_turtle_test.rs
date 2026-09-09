@@ -249,3 +249,139 @@ async fn shapes_file_and_target_node_by_iri() -> Result<()> {
     assert!(report.notes[0].contains("cocina.example/nadie"));
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// #100: logical constraints, sh:node, sh:severity / sh:message, pattern errors.
+// ---------------------------------------------------------------------------
+
+const LOGIC_DATA: &str = r#"
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix :    <http://cocina.example/> .
+:Receta a owl:Class .  :Ingrediente a owl:Class .  :Utensilio a owl:Class .
+:canela a :Ingrediente ; :nombre "Canela" .
+:cafe   a :Ingrediente .
+:olla   a :Utensilio ; :nombre "Olla" .
+:entero  a :Receta ; :tiempoMin "20"^^xsd:integer ; :estado "cocido" ; :usa :canela .
+:decimal a :Receta ; :tiempoMin "20.5"^^xsd:decimal ; :estado "cocido" ; :usa :canela .
+:texto   a :Receta ; :tiempoMin "20" ; :estado "cocido" ; :usa :canela .
+:crudo   a :Receta ; :tiempoMin "5"^^xsd:integer ; :estado "crudo" ; :usa :canela .
+:sin_nombre_ing a :Receta ; :tiempoMin "5"^^xsd:integer ; :estado "cocido" ; :usa :cafe .
+:con_olla a :Receta ; :tiempoMin "5"^^xsd:integer ; :estado "cocido" ; :usa :canela, :olla .
+"#;
+
+const LOGIC_SHAPES: &str = r#"
+@prefix sh:  <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix :    <http://cocina.example/> .
+:IngredienteShape a sh:NodeShape ;
+  sh:class :Ingrediente ;
+  sh:property [ sh:path :nombre ; sh:minCount 1 ] .
+:RecetaShape a sh:NodeShape ; sh:targetClass :Receta ;
+  sh:property [ sh:path :tiempoMin ; sh:or ( [ sh:datatype xsd:integer ] [ sh:datatype xsd:decimal ] ) ] ,
+              [ sh:path :estado ; sh:not [ sh:in ( "crudo" ) ] ; sh:severity sh:Warning ; sh:message "mejor cocido" ] ,
+              [ sh:path :usa ; sh:node :IngredienteShape ] .
+"#;
+
+async fn who(graph: &Graph, v: &nopaldb::shacl::ConstraintViolation) -> Result<String> {
+    Ok(graph.get_node(v.focus_node).await?.properties["iri"].as_str().unwrap().rsplit('/').next().unwrap().to_string())
+}
+
+#[tokio::test]
+async fn or_not_node_severity_and_message_from_turtle() -> Result<()> {
+    let graph = Graph::in_memory().await?;
+    graph.import_turtle(LOGIC_DATA).await?;
+    let (report, shapes) = graph.validate_shapes(LOGIC_SHAPES).await?;
+    assert!(shapes.ignored.is_empty(), "{:?}", shapes.ignored);
+
+    let mut got: Vec<(String, String, String, usize)> = Vec::new();
+    for v in &report.violations {
+        got.push((who(&graph, v).await?, v.constraint.clone(), format!("{:?}", v.severity), v.nested.len()));
+    }
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            ("con_olla".to_string(), "sh:NodeConstraintComponent".to_string(), "Violation".to_string(), 1),
+            ("crudo".to_string(), "sh:NotConstraintComponent".to_string(), "Warning".to_string(), 0),
+            ("sin_nombre_ing".to_string(), "sh:NodeConstraintComponent".to_string(), "Violation".to_string(), 1),
+            ("texto".to_string(), "sh:OrConstraintComponent".to_string(), "Violation".to_string(), 2),
+        ]
+    );
+    // The `or` explains both branches; the `node` explains which constraint of the referenced shape failed.
+    let texto = report.violations.iter().find(|v| v.constraint == "sh:OrConstraintComponent").unwrap();
+    assert!(texto.nested.iter().all(|n| n.constraint == "sh:DatatypeConstraintComponent"));
+    assert_eq!(texto.value, Some(PropertyValue::String("20".into())));
+    let olla = report.violations.iter().find(|v| v.value == Some(iri("olla"))).unwrap();
+    assert_eq!(olla.nested[0].constraint, "sh:ClassConstraintComponent");
+    assert_eq!(olla.nested[0].shape_name, "IngredienteShape");
+    let cafe = report.violations.iter().find(|v| v.value == Some(iri("cafe"))).unwrap();
+    assert_eq!(cafe.nested[0].constraint, "sh:MinCountConstraintComponent");
+    assert_eq!(cafe.nested[0].path.as_deref(), Some("nombre"));
+    // sh:message is the author's text; sh:severity Warning does not break conformance by itself.
+    let crudo = report.violations.iter().find(|v| v.constraint == "sh:NotConstraintComponent").unwrap();
+    assert_eq!(crudo.message, "mejor cocido");
+    assert!(!report.conforms, "the Violations do");
+
+    // Only the warning left: conforms.
+    let only_warning = LOGIC_SHAPES.replace("[ sh:path :tiempoMin ; sh:or ( [ sh:datatype xsd:integer ] [ sh:datatype xsd:decimal ] ) ] ,\n", "").replace(" ,\n              [ sh:path :usa ; sh:node :IngredienteShape ]", "");
+    let (report, _) = graph.validate_shapes(&only_warning).await?;
+    assert_eq!(report.violations.len(), 1, "{:?}", report.violations);
+    assert!(report.conforms);
+    Ok(())
+}
+
+#[tokio::test]
+async fn and_xone_and_deactivated_from_turtle() -> Result<()> {
+    let graph = Graph::in_memory().await?;
+    graph.import_turtle(LOGIC_DATA).await?;
+    let shapes = r#"
+@prefix sh:  <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix :    <http://cocina.example/> .
+:Rapida a sh:NodeShape ; sh:targetClass :Receta ;
+  sh:property [ sh:path :tiempoMin ; sh:and ( [ sh:datatype xsd:integer ] [ sh:maxInclusive 10 ] ) ] .
+:Exclusiva a sh:NodeShape ; sh:targetClass :Receta ;
+  sh:property [ sh:path :tiempoMin ; sh:xone ( [ sh:datatype xsd:integer ] [ sh:minInclusive 10 ] ) ] .
+:Apagada a sh:NodeShape ; sh:targetClass :Receta ; sh:deactivated true ;
+  sh:property [ sh:path :nombre ; sh:minCount 1 ] .
+"#;
+    let (report, sr) = graph.validate_shapes(shapes).await?;
+    assert!(sr.ignored.is_empty(), "{:?}", sr.ignored);
+    let mut got: Vec<(String, String)> = Vec::new();
+    for v in &report.violations {
+        got.push((v.shape_name.clone(), who(&graph, v).await?));
+    }
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            // and: integer AND <= 10 → entero (20) and decimal/texto fail; the three 5-minute ones pass.
+            ("Exclusiva".to_string(), "entero".to_string()),   // integer AND >= 10: both → not exactly one
+            ("Exclusiva".to_string(), "texto".to_string()),    // neither
+            ("Rapida".to_string(), "decimal".to_string()),
+            ("Rapida".to_string(), "entero".to_string()),
+            ("Rapida".to_string(), "texto".to_string()),
+        ],
+        "Apagada validates nothing"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_pattern_is_a_load_error_naming_the_shape() -> Result<()> {
+    let graph = graph_with_data().await?;
+    let err = graph
+        .validate_shapes(
+            r#"
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix :   <http://cocina.example/> .
+:RecetaShape sh:targetClass :Receta ; sh:property [ sh:path :nombre ; sh:pattern "[" ] .
+"#,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains(":RecetaShape") && err.contains("'['"), "{err}");
+    Ok(())
+}

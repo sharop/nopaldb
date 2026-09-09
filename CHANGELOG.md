@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.16] - unreleased
+
+### Added
+
+- **SHACL: constraints lógicas, `sh:node`, `sh:severity` y `sh:message`** — cierra [#100](https://github.com/sharop/nopaldb/issues/100). `sh:and`/`sh:or`/`sh:xone ( shape shape … )` y `sh:not shape`, con shapes miembro anónimas o con nombre, property shapes incluidas; `sh:node :OtraShape` valida cada valor contra otra shape del documento (el validador carga los paths del propio valor). La violación de un combinador trae las ramas fallidas en el campo nuevo `nested`, así un `or` dice por qué falló cada rama (también en Python). `sh:severity sh:Warning|sh:Info` y `sh:message "…"` por shape y por property shape llegan al reporte: `conforms` solo mira `Violation` y el mensaje del autor sustituye al generado. `sh:deactivated true` carga la shape sin validar nada. Referencia que no existe = violación, no silencio.
+
+### Changed
+
+- **Un solo evaluador** (`evaluate_shape`): constraints de nodo, property shapes y combinadores pasan por el mismo código sobre `PathValue`, con los paths resueltos por adelantado (`EvalContext.paths`, acotado por nodo/shape para que un `sh:node` recursivo termine). `evaluate_constraints` sigue existiendo para las hojas.
+- **`sh:pattern` se compila al cargar la shape** (`ConstraintType::pattern(src) -> Result`, `PatternConstraint`): un patrón inválido es error de carga con la shape y el patrón, en vez de un `Warning` por cada valor evaluado y una recompilación por evaluación. Migración programática: `ConstraintType::Pattern(s)` → `ConstraintType::pattern(s)?`.
+
+---
+
 ## [0.5.15] - 2026-09-08
 
 ### Added

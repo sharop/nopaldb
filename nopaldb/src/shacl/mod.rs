@@ -54,13 +54,11 @@ pub mod constraint;
 pub mod report;
 pub mod turtle;
 
-pub use shape::{Shape, Target, PropertyShape, PathSpec, PathValue, ConstraintType, DatatypeKind, ShaclNodeKind};
-pub use constraint::{evaluate_constraints, component, EvalContext};
+pub use shape::{Shape, Target, PropertyShape, PathSpec, PathValue, ConstraintType, DatatypeKind, ShaclNodeKind, PatternConstraint};
+pub use constraint::{evaluate_constraints, evaluate_shape, component, EvalContext};
 pub use report::{ValidationReport, ConstraintViolation, Severity, ShapesReport};
 pub use turtle::parse_shapes;
 
-
-use std::collections::HashMap;
 
 use crate::error::Result;
 use crate::graph::Graph;
@@ -188,9 +186,12 @@ impl ShaclValidator {
     pub async fn validate(&self, graph: &Graph) -> Result<ValidationReport> {
         let mut all_violations = Vec::new();
         let mut notes = Vec::new();
-        let mut ctx = EvalContext { nodes: HashMap::new(), taxonomy: graph.get_taxonomy_sync() };
+        let mut ctx = self.context(graph);
 
         for shape in &self.shapes {
+            if shape.deactivated {
+                continue;
+            }
             let focus_nodes = self.resolve_focus_nodes(graph, shape, &mut notes).await?;
             for node_id in focus_nodes {
                 let violations = self.validate_focus_node(graph, shape, node_id, &mut ctx).await?;
@@ -210,9 +211,12 @@ impl ShaclValidator {
         node_id: NodeId,
     ) -> Result<Vec<ConstraintViolation>> {
         let mut all_violations = Vec::new();
-        let mut ctx = EvalContext { nodes: HashMap::new(), taxonomy: graph.get_taxonomy_sync() };
+        let mut ctx = self.context(graph);
 
         for shape in &self.shapes {
+            if shape.deactivated {
+                continue;
+            }
             let violations = self.validate_focus_node(graph, shape, node_id, &mut ctx).await?;
             all_violations.extend(violations);
         }
@@ -230,7 +234,14 @@ impl ShaclValidator {
         let mut focus = Vec::new();
 
         if shape.targets.is_empty() {
-            // Sin targets: aplica a todos los nodos
+            // SHACL: a shape without targets has no focus nodes of its own;
+            // it exists to be referenced (`sh:node`, `sh:or ( … )`). That is
+            // what a shape loaded from Turtle (it has an `iri`) means. The
+            // programmatic API keeps its older convention: no targets = every
+            // node, which is what its callers rely on.
+            if shape.iri.is_some() {
+                return Ok(focus);
+            }
             let all = graph.get_all_nodes().await?;
             focus.extend(all.iter().map(|n| n.id));
             return Ok(focus);
@@ -297,7 +308,23 @@ impl ShaclValidator {
         Ok(nodes.iter().filter(|n| n.kind != NodeKind::Class).map(|n| n.id).collect())
     }
 
-    /// Valida un focus node contra un shape especifico.
+    /// El contexto de evaluación: taxonomía y las shapes del documento por
+    /// IRI y por nombre (para `sh:node`).
+    fn context(&self, graph: &Graph) -> EvalContext {
+        let mut ctx = EvalContext { taxonomy: graph.get_taxonomy_sync(), ..Default::default() };
+        for shape in &self.shapes {
+            if let Some(iri) = &shape.iri {
+                ctx.shapes.insert(iri.clone(), shape.clone());
+            }
+            ctx.shapes.entry(shape.name.clone()).or_insert_with(|| shape.clone());
+        }
+        ctx
+    }
+
+    /// Valida un focus node contra un shape especifico: carga en `ctx` los
+    /// valores de todos los paths que la evaluación va a necesitar (los de la
+    /// shape, y recursivamente los de las shapes de sus combinadores y
+    /// `sh:node` sobre los valores-nodo) y evalúa en un solo paso síncrono.
     async fn validate_focus_node(
         &self,
         graph: &Graph,
@@ -305,31 +332,71 @@ impl ShaclValidator {
         node_id: NodeId,
         ctx: &mut EvalContext,
     ) -> Result<Vec<ConstraintViolation>> {
-        let mut violations = Vec::new();
-
-        let node = match graph.get_node(node_id).await {
-            Ok(n) => n,
-            Err(_) => return Ok(violations), // nodo no existe: ignorar
-        };
-        ctx.nodes.insert(node_id, node.clone());
-
-        // Constraints directas sobre el nodo: el propio focus node es el valor.
-        if !shape.constraints.is_empty() {
-            let focus = [PathValue::Node(node_id)];
-            violations.extend(evaluate_constraints(&shape.constraints, &focus, node_id, shape.id, None, ctx));
+        if graph.get_node(node_id).await.is_err() {
+            return Ok(vec![]); // nodo no existe: ignorar
         }
+        let mut visited = std::collections::HashSet::new();
+        self.prefetch(graph, node_id, shape, ctx, &mut visited).await?;
+        Ok(evaluate_shape(shape, &PathValue::Node(node_id), ctx))
+    }
 
-        // PropertyShapes
-        for ps in &shape.property_shapes {
-            let values = self.resolve_path_values(graph, &node, &ps.path, ctx).await?;
-            let vs = evaluate_constraints(&ps.constraints, &values, node_id, shape.id, Some(ps.path.as_str()), ctx);
-            violations.extend(vs);
-        }
+    /// Resuelve los paths de `shape` sobre `node_id` y, para cada shape que un
+    /// combinador o `sh:node` aplicará a un valor-nodo, los de esa shape sobre
+    /// ese valor. Acotado por `visited` (un par nodo/shape se carga una vez),
+    /// así que un `sh:node` recursivo termina.
+    fn prefetch<'a>(
+        &'a self,
+        graph: &'a Graph,
+        node_id: NodeId,
+        shape: &'a Shape,
+        ctx: &'a mut EvalContext,
+        visited: &'a mut std::collections::HashSet<(NodeId, NodeId)>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            if !visited.insert((node_id, shape.id)) {
+                return Ok(());
+            }
+            let node = match ctx.nodes.get(&node_id) {
+                Some(n) => n.clone(),
+                None => {
+                    let Ok(n) = graph.get_node(node_id).await else { return Ok(()) };
+                    ctx.nodes.insert(node_id, n.clone());
+                    n
+                }
+            };
+            // Node-level combinators apply their shapes to the focus node itself.
+            for c in &shape.constraints {
+                for sub in self.referenced_shapes(c, ctx) {
+                    self.prefetch(graph, node_id, &sub, ctx, visited).await?;
+                }
+            }
+            for ps in &shape.property_shapes {
+                let values = self.resolve_path_values(graph, &node, &ps.path, ctx).await?;
+                for c in &ps.constraints {
+                    for sub in self.referenced_shapes(c, ctx) {
+                        for v in &values {
+                            if let PathValue::Node(id) = v {
+                                self.prefetch(graph, *id, &sub, ctx, visited).await?;
+                            }
+                        }
+                    }
+                }
+                ctx.paths.insert((node_id, ps.path.clone()), values);
+            }
+            Ok(())
+        })
+    }
 
-        for v in &mut violations {
-            v.shape_name = shape.name.clone();
+    /// Las shapes que `constraint` aplicará a sus valores: los miembros de un
+    /// combinador, o la shape que `sh:node` refiere (si existe).
+    fn referenced_shapes(&self, constraint: &ConstraintType, ctx: &EvalContext) -> Vec<Shape> {
+        let mut out: Vec<Shape> = constraint.member_shapes().into_iter().cloned().collect();
+        if let ConstraintType::Node(reference) = constraint
+            && let Some(s) = ctx.shapes.get(reference)
+        {
+            out.push(s.clone());
         }
-        Ok(violations)
+        out
     }
 
     /// Resuelve los valores de un path sobre un nodo, y deja en `ctx` los

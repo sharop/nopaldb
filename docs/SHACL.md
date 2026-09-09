@@ -55,7 +55,7 @@ A shapes file, for a fictional cookbook:
 
 | Term | Meaning here |
 |---|---|
-| `sh:NodeShape`, `sh:name` | A shape; the name appears in every violation. Any subject with `sh:targetClass` or `sh:targetNode` is a shape too. |
+| `sh:NodeShape`, `sh:name` | A shape; the name appears in every violation. Any subject with `sh:targetClass` or `sh:targetNode` is a shape too. A shape with no target validates nothing by itself: it is there to be referenced by `sh:node` or a combinator (as SHACL says; only the programmatic API keeps "no targets = every node"). |
 | `sh:targetClass :C` | Focus nodes = the instances of `C` **and of its subclasses**, through the graph's class hierarchy, by any of their declared types; `C` may be a label, a `prefix:Local` or a full IRI (the same resolution as `instanceOf` in NQL). The class node itself is never one. Without a hierarchy (a graph built by hand) it is the individuals labelled `C`. |
 | `sh:targetNode <iri>` | The node whose `iri` property is that IRI. An IRI that matches nothing is reported in `report.notes`, not ignored. |
 | `sh:property [ sh:path :p ; … ]` | Constraints on the values of `p`: the property `p` of the node (a list counts one value per element) **and** the targets of its edges of type `p`. Turtle does not say which one a predicate became in NopalDB, so both are the path. |
@@ -63,24 +63,28 @@ A shapes file, for a fictional cookbook:
 | `sh:datatype xsd:*` | Read with the importer's own table: the integer family → integer, `decimal`/`double`/`float` → float, `boolean`, everything else (`xsd:string`, `xsd:date`, …) → text, with a warning when a datatype is checked as text. A node value never satisfies a datatype. |
 | `sh:minInclusive` … `sh:maxExclusive` | Numeric ranges; a non-number does not satisfy them. |
 | `sh:minLength`, `sh:maxLength` | On strings; other values are not judged. |
-| `sh:pattern` | A regex (Rust `regex` syntax) on strings; a non-string does not match. An invalid pattern is a `Warning` per value (an error at load time is [#100](https://github.com/sharop/nopaldb/issues/100)). |
+| `sh:pattern` | A regex (Rust `regex` syntax) on strings, compiled once when the shape loads; a non-string does not match. An invalid pattern is a load error that names the shape and the pattern. |
 | `sh:in ( … )` | The value is one of the listed literals. IRIs in the list are reported and skipped. |
 | `sh:hasValue` | Some value equals the literal, or some node value has that IRI. |
 | `sh:class :C` | Every node value is an instance of `C`: directly or through the class hierarchy when the graph has one (`C` by label, `prefix:Local` or IRI), by label otherwise. A literal never is. |
 | `sh:nodeKind sh:IRI` / `sh:BlankNode` / `sh:Literal` and combinations | A node value is an IRI (or a blank node when its `iri` starts with `_:`); a property value is a literal. |
 
-Node-level constraints (`sh:class`, `sh:nodeKind` written directly on the
-shape) are evaluated on the focus node itself with the same code.
+| `sh:and ( s1 s2 … )`, `sh:or ( … )`, `sh:xone ( … )`, `sh:not s` | Each value must conform to all / at least one / exactly one / none of the member shapes (anonymous `[ … ]` or named). The violation carries the failing branches in `nested`, so an `or` says why every branch failed. |
+| `sh:node :OtherShape` | Each value must conform to another shape of the same document (by IRI or name), property shapes included: the validator fetches the value's own paths. The violation nests the other shape's violations. A reference that does not exist is a violation. |
+| `sh:severity sh:Violation` / `sh:Warning` / `sh:Info`, `sh:message "…"` | On a shape or a property shape. `conforms` only looks at `Violation`; the author's message replaces the generated one. |
+| `sh:deactivated true` | The shape loads and validates nothing. |
+
+Node-level constraints (`sh:class`, `sh:nodeKind`, the combinators written
+directly on the shape) are evaluated on the focus node itself with the same
+code as property shapes: there is one evaluator, `evaluate_shape`.
 
 ## What is not checked, and how you know
 
 Everything else in the `sh:` vocabulary is **reported, never ignored in
 silence**: each unsupported or malformed term is one line in
 `ShapesReport.ignored` with the reason, and the rest of the shape still loads.
-Today that covers `sh:and`/`sh:or`/`sh:not`/`sh:xone`/`sh:node`,
-`sh:severity`/`sh:message`/`sh:deactivated` ([#100](https://github.com/sharop/nopaldb/issues/100)),
-composite paths (sequences, inverse, alternatives, closures;
-[#101](https://github.com/sharop/nopaldb/issues/101)), `sh:closed`,
+Today that covers composite paths (sequences, inverse, alternatives,
+closures; [#101](https://github.com/sharop/nopaldb/issues/101)), `sh:closed`,
 `sh:qualifiedValueShape`, property comparisons (`sh:equals`, `sh:lessThan`, …),
 `sh:languageIn`/`sh:uniqueLang` (language tags are not kept by the import),
 `sh:flags`, `sh:targetSubjectsOf`/`sh:targetObjectsOf` and SHACL-SPARQL. A
@@ -104,7 +108,8 @@ no violation has severity `Violation`. Each `ConstraintViolation`:
 | `constraint` | The SHACL component, e.g. `sh:MinCountConstraintComponent`. |
 | `path` | The predicate of the property shape; `None` for node-level constraints. |
 | `value` | The offending value: the literal, or the `iri` of the node (its id when it has none). `None` for cardinality. |
-| `message`, `severity` | Human text and `Violation` / `Warning` / `Info`. |
+| `message`, `severity` | Human text (the author's `sh:message` when given) and `Violation` / `Warning` / `Info`. |
+| `nested` | For combinators and `sh:node`: the violations of the branches / the referenced shape. |
 
 `notes` lists what the validator could not do at all (a `sh:targetNode` that
 matches nothing). Both types derive `Serialize`.
