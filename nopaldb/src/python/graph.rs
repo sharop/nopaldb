@@ -978,22 +978,7 @@ impl PyGraph {
         )?;
         let dict = pyo3::types::PyDict::new(py);
         dict.set_item("conforms", report.conforms)?;
-        let violations = pyo3::types::PyList::empty(py);
-        for v in &report.violations {
-            let d = pyo3::types::PyDict::new(py);
-            d.set_item("focus_node", v.focus_node.to_string())?;
-            d.set_item("shape", v.shape_name.clone())?;
-            d.set_item("constraint", v.constraint.clone())?;
-            d.set_item("path", v.path.clone())?;
-            match &v.value {
-                Some(value) => d.set_item("value", crate::python::property_to_py(py, value)?)?,
-                None => d.set_item("value", py.None())?,
-            }
-            d.set_item("message", v.message.clone())?;
-            d.set_item("severity", format!("{:?}", v.severity))?;
-            violations.append(d)?;
-        }
-        dict.set_item("violations", violations)?;
+        dict.set_item("violations", violations_to_py(py, &report.violations)?)?;
         dict.set_item("notes", report.notes.clone())?;
         dict.set_item("shapes", shapes.shapes)?;
         dict.set_item("property_shapes", shapes.property_shapes)?;
@@ -1454,4 +1439,28 @@ fn export_report_dict(
     dict.set_item("triples_written", report.triples_written)?;
     dict.set_item("skipped",         report.skipped.clone())?;
     Ok(dict.into())
+}
+
+#[cfg(feature = "python-shacl")]
+fn violations_to_py<'py>(
+    py: Python<'py>,
+    violations: &[crate::shacl::ConstraintViolation],
+) -> PyResult<Bound<'py, pyo3::types::PyList>> {
+    let list = pyo3::types::PyList::empty(py);
+    for v in violations {
+        let d = pyo3::types::PyDict::new(py);
+        d.set_item("focus_node", v.focus_node.to_string())?;
+        d.set_item("shape", v.shape_name.clone())?;
+        d.set_item("constraint", v.constraint.clone())?;
+        d.set_item("path", v.path.clone())?;
+        match &v.value {
+            Some(value) => d.set_item("value", crate::python::property_to_py(py, value)?)?,
+            None => d.set_item("value", py.None())?,
+        }
+        d.set_item("message", v.message.clone())?;
+        d.set_item("severity", format!("{:?}", v.severity))?;
+        d.set_item("nested", violations_to_py(py, &v.nested)?)?;
+        list.append(d)?;
+    }
+    Ok(list)
 }

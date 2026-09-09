@@ -132,7 +132,7 @@ async fn test_pattern_email_valid() {
             PathSpec::Property("email".into()),
             vec![
                 ConstraintType::MinCount(1),
-                ConstraintType::Pattern(r"^[^@\s]+@[^@\s]+\.[^@\s]+$".into()),
+                ConstraintType::pattern(r"^[^@\s]+@[^@\s]+\.[^@\s]+$").unwrap(),
             ],
         ));
 
@@ -162,7 +162,7 @@ async fn test_pattern_email_invalid() {
             PathSpec::Property("email".into()),
             vec![
                 ConstraintType::MinCount(1),
-                ConstraintType::Pattern(r"^[^@\s]+@[^@\s]+\.[^@\s]+$".into()),
+                ConstraintType::pattern(r"^[^@\s]+@[^@\s]+\.[^@\s]+$").unwrap(),
             ],
         ));
 

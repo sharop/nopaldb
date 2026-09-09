@@ -49,6 +49,20 @@ def main() -> None:
     ], got
     assert all(v["shape"] == "Receta" and v["severity"] == "Violation" for v in r["violations"]), r
 
+    # sh:or explains its branches (nested), and sh:severity Warning keeps conforms.
+    r = g.validate_shapes("""
+@prefix sh:  <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix :    <http://cocina.example/> .
+:S sh:targetClass :Receta ; sh:severity sh:Warning ; sh:message "tiempo raro" ;
+  sh:property [ sh:path :tiempoMin ; sh:or ( [ sh:datatype xsd:decimal ] [ sh:maxInclusive 10 ] ) ] .
+""")
+    assert r["conforms"] is True, r
+    assert r["ignored"] == [], r
+    bad = [v for v in r["violations"] if v["constraint"] == "sh:OrConstraintComponent"]
+    assert len(bad) == 1 and bad[0]["severity"] == "Warning" and bad[0]["message"] == "tiempo raro", bad
+    assert len(bad[0]["nested"]) == 2 and bad[0]["value"] == 20, bad[0]
+
     try:
         g.validate_shapes("@prefix sh: <http://www.w3.org/ns/shacl#> .\n:S sh:minCount .")
     except Exception as e:  # noqa: BLE001 — la excepción es la API

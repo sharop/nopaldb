@@ -2,7 +2,46 @@
 //! Definicion de NodeShape, PropertyShape, Target y ConstraintType.
 
 use uuid::Uuid;
+use crate::error::{NopalError, Result};
 use crate::types::{NodeId, PropertyValue, NodeKind};
+use super::report::Severity;
+
+/// Una regex de `sh:pattern`, compilada una vez al construir la shape.
+///
+/// Antes se compilaba en cada evaluación y un patrón inválido salía como
+/// `Warning` por cada valor; ahora un patrón inválido es error al construir
+/// ([`ConstraintType::pattern`]) y la evaluación no compila nada.
+#[derive(Debug, Clone)]
+pub struct PatternConstraint {
+    source: String,
+    regex: regex::Regex,
+}
+
+impl PatternConstraint {
+    /// Compila `source`; `Err` con el patrón y el motivo si no es una regex.
+    pub fn new(source: impl Into<String>) -> Result<Self> {
+        let source = source.into();
+        let regex = regex::Regex::new(&source)
+            .map_err(|e| NopalError::custom(format!("sh:pattern: patron regex invalido '{source}': {e}")))?;
+        Ok(Self { source, regex })
+    }
+
+    /// El patrón tal como se escribió.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// `true` si `text` contiene una coincidencia.
+    pub fn is_match(&self, text: &str) -> bool {
+        self.regex.is_match(text)
+    }
+}
+
+impl PartialEq for PatternConstraint {
+    fn eq(&self, other: &Self) -> bool {
+        self.source == other.source
+    }
+}
 
 /// Target de un NodeShape — determina que nodos se validan.
 #[derive(Debug, Clone, PartialEq)]
@@ -135,8 +174,9 @@ pub enum ConstraintType {
     MaxLength(usize),
 
     // --- Patron y enumeracion ---
-    /// sh:pattern — la cadena debe coincidir con la expresion regular.
-    Pattern(String),
+    /// sh:pattern — la cadena debe coincidir con la expresion regular
+    /// (compilada al construir: [`ConstraintType::pattern`]).
+    Pattern(PatternConstraint),
     /// sh:in — el valor debe estar en la lista.
     In(Vec<PropertyValue>),
     /// sh:hasValue — la propiedad/path tiene exactamente este valor. Para un
@@ -153,10 +193,42 @@ pub enum ConstraintType {
     /// directa o por herencia, y la clase se nombra por label, `prefix:Local`
     /// o IRI; sin taxonomía, por `label`). Un literal siempre falla.
     Class(String),
+
+    // --- Lógicas: cada valor se valida contra shapes ---
+    /// sh:and — cada valor conforma con TODAS las shapes.
+    And(Vec<Shape>),
+    /// sh:or — cada valor conforma con AL MENOS UNA shape; la violación lista
+    /// por qué falló cada rama (`nested`).
+    Or(Vec<Shape>),
+    /// sh:not — ningún valor conforma con la shape.
+    Not(Box<Shape>),
+    /// sh:xone — cada valor conforma con EXACTAMENTE UNA shape.
+    Xone(Vec<Shape>),
+    /// sh:node — cada valor conforma con otra shape del mismo documento,
+    /// referida por su IRI o su nombre. Una referencia que no resuelve es
+    /// violación (nunca silencio).
+    Node(String),
+}
+
+impl ConstraintType {
+    /// `sh:pattern` con la regex compilada; `Err` si el patrón no es válido.
+    pub fn pattern(source: impl Into<String>) -> Result<Self> {
+        Ok(ConstraintType::Pattern(PatternConstraint::new(source)?))
+    }
+
+    /// Las shapes que este constraint aplica a cada valor (combinadores);
+    /// vacío para las hojas. `sh:node` se resuelve aparte, por referencia.
+    pub fn member_shapes(&self) -> Vec<&Shape> {
+        match self {
+            ConstraintType::And(v) | ConstraintType::Or(v) | ConstraintType::Xone(v) => v.iter().collect(),
+            ConstraintType::Not(s) => vec![s.as_ref()],
+            _ => vec![],
+        }
+    }
 }
 
 /// Especificacion de path en un PropertyShape (un solo salto).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PathSpec {
     /// Propiedad del nodo: `node.properties[key]`. Una `List` cuenta un
     /// valor por elemento.
@@ -193,6 +265,10 @@ pub enum PathValue {
 pub struct PropertyShape {
     pub path: PathSpec,
     pub constraints: Vec<ConstraintType>,
+    /// `sh:severity` propio; si es `None` hereda la de la shape.
+    pub severity: Option<Severity>,
+    /// `sh:message` del autor: sustituye al mensaje generado en cada violación.
+    pub message: Option<String>,
 }
 
 /// NodeShape: targets + constraints directas + property shapes anidadas.
@@ -212,6 +288,12 @@ pub struct Shape {
     pub constraints: Vec<ConstraintType>,
     /// Property shapes anidadas (sh:property).
     pub property_shapes: Vec<PropertyShape>,
+    /// `sh:severity` de las violaciones de esta shape (default `Violation`).
+    pub severity: Severity,
+    /// `sh:message` del autor para las violaciones de esta shape.
+    pub message: Option<String>,
+    /// `sh:deactivated true`: la shape se carga pero no valida nada.
+    pub deactivated: bool,
 }
 
 impl Shape {
@@ -224,6 +306,9 @@ impl Shape {
             targets: vec![],
             constraints: vec![],
             property_shapes: vec![],
+            severity: Severity::Violation,
+            message: None,
+            deactivated: false,
         }
     }
 
@@ -249,6 +334,6 @@ impl Shape {
 impl PropertyShape {
     /// Crea un PropertyShape con path y constraints.
     pub fn new(path: PathSpec, constraints: Vec<ConstraintType>) -> Self {
-        Self { path, constraints }
+        Self { path, constraints, severity: None, message: None }
     }
 }

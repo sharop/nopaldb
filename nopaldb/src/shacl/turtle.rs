@@ -16,10 +16,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use oxrdf::{NamedOrBlankNode, Term, Triple};
 use uuid::Uuid;
 
-use crate::error::Result;
+use crate::error::{NopalError, Result};
 use crate::rdf_owl::importer::{literal_to_property_value, local_name, parse_turtle};
 use crate::types::PropertyValue;
-use super::report::ShapesReport;
+use super::report::{Severity, ShapesReport};
 use super::shape::{ConstraintType, DatatypeKind, PathSpec, PropertyShape, Shape, ShaclNodeKind, Target};
 
 const SH: &str = "http://www.w3.org/ns/shacl#";
@@ -32,8 +32,6 @@ const RDF_NIL: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil";
 /// que los cubre o la razón. Todo lo demás desconocido se reporta como tal.
 fn unsupported_reason(local: &str) -> Option<&'static str> {
     Some(match local {
-        "and" | "or" | "not" | "xone" | "node" => "constraints lógicas y sh:node: issue #100",
-        "severity" | "message" | "deactivated" => "sh:severity / sh:message / sh:deactivated: issue #100",
         "closed" | "ignoredProperties" => "sh:closed no está implementado (toda propiedad extra se acepta)",
         "qualifiedValueShape" | "qualifiedMinCount" | "qualifiedMaxCount" | "qualifiedValueShapesDisjoint" => {
             "sh:qualifiedValueShape no está implementado"
@@ -172,55 +170,7 @@ pub fn parse_shapes(source: &str) -> Result<(Vec<Shape>, ShapesReport)> {
 
     let mut shapes = Vec::new();
     for subject in subjects {
-        let mut shape = Shape::new(local_name(&subject));
-        shape.iri = Some(subject.clone());
-        shape.id = Uuid::new_v4();
-        let shown = doc.show(&subject);
-
-        for (pred, obj) in doc.statements(&subject) {
-            let Some(local) = pred.strip_prefix(SH) else {
-                if pred != RDF_TYPE {
-                    report.ignored.push(format!("{shown}: predicado {} fuera del vocabulario SHACL, ignorado", doc.show(pred)));
-                }
-                continue;
-            };
-            match local {
-                "name" => {
-                    if let Term::Literal(l) = obj {
-                        shape.name = l.value().to_string();
-                    }
-                }
-                "description" => {}
-                "targetClass" => match obj {
-                    // The full IRI: the validator resolves it through the
-                    // taxonomy (subclasses included) and falls back to the
-                    // local name as a label when the graph has none.
-                    Term::NamedNode(n) => shape.targets.push(Target::Class(n.as_str().to_string())),
-                    other => report.ignored.push(format!("{shown}: sh:targetClass espera un IRI, no `{other}`")),
-                },
-                "targetNode" => match obj {
-                    Term::NamedNode(n) => shape.targets.push(Target::NodeIri(n.as_str().to_string())),
-                    other => report.ignored.push(format!("{shown}: sh:targetNode espera un IRI, no `{other}`")),
-                },
-                "property" => {
-                    let Some(ps_key) = object_key(obj) else {
-                        report.ignored.push(format!("{shown}: sh:property espera un nodo, no un literal"));
-                        continue;
-                    };
-                    if let Some(ps) = property_shape(&doc, &ps_key, &shown, &mut report) {
-                        report.constraints += ps.constraints.len();
-                        report.property_shapes += 1;
-                        shape.property_shapes.push(ps);
-                    }
-                }
-                _ => {
-                    if let Some(c) = constraint(&doc, local, obj, &shown, &mut report) {
-                        report.constraints += 1;
-                        shape.constraints.push(c);
-                    }
-                }
-            }
-        }
+        let shape = shape_body(&doc, &subject, &mut report)?;
         report.shapes += 1;
         shapes.push(shape);
     }
@@ -228,11 +178,114 @@ pub fn parse_shapes(source: &str) -> Result<(Vec<Shape>, ShapesReport)> {
     Ok((shapes, report))
 }
 
+/// Una shape (con nombre o anónima, de nivel superior o miembro de un
+/// combinador) a partir de todo lo dicho sobre `subject`. Un `sh:pattern`
+/// inválido es `Err` con la shape y el patrón: no se carga nada.
+fn shape_body(doc: &Doc, subject: &str, report: &mut ShapesReport) -> Result<Shape> {
+    let mut shape = Shape::new(local_name(subject));
+    shape.iri = Some(subject.to_string());
+    shape.id = Uuid::new_v4();
+    let shown = doc.show(subject);
+
+    for (pred, obj) in doc.statements(subject) {
+        let Some(local) = pred.strip_prefix(SH) else {
+            if pred != RDF_TYPE {
+                report.ignored.push(format!("{shown}: predicado {} fuera del vocabulario SHACL, ignorado", doc.show(pred)));
+            }
+            continue;
+        };
+        match local {
+            "name" => {
+                if let Term::Literal(l) = obj {
+                    shape.name = l.value().to_string();
+                }
+            }
+            "description" => {}
+            "targetClass" => match obj {
+                // The full IRI: the validator resolves it through the
+                // taxonomy (subclasses included) and falls back to the
+                // local name as a label when the graph has none.
+                Term::NamedNode(n) => shape.targets.push(Target::Class(n.as_str().to_string())),
+                other => report.ignored.push(format!("{shown}: sh:targetClass espera un IRI, no `{other}`")),
+            },
+            "targetNode" => match obj {
+                Term::NamedNode(n) => shape.targets.push(Target::NodeIri(n.as_str().to_string())),
+                other => report.ignored.push(format!("{shown}: sh:targetNode espera un IRI, no `{other}`")),
+            },
+            "severity" => match severity_of(obj) {
+                Some(sev) => shape.severity = sev,
+                None => report.ignored.push(format!("{shown}: sh:severity espera sh:Violation, sh:Warning o sh:Info, no `{obj}`")),
+            },
+            "message" => match obj {
+                Term::Literal(l) => shape.message = Some(l.value().to_string()),
+                other => report.ignored.push(format!("{shown}: sh:message espera una cadena, no `{other}`")),
+            },
+            "deactivated" => {
+                shape.deactivated = matches!(obj, Term::Literal(l) if l.value() == "true" || l.value() == "1");
+            }
+            "property" => {
+                let Some(ps_key) = object_key(obj) else {
+                    report.ignored.push(format!("{shown}: sh:property espera un nodo, no un literal"));
+                    continue;
+                };
+                if let Some(ps) = property_shape(doc, &ps_key, &shown, report)? {
+                    report.constraints += ps.constraints.len();
+                    report.property_shapes += 1;
+                    shape.property_shapes.push(ps);
+                }
+            }
+            _ => {
+                if let Some(c) = constraint(doc, local, obj, &shown, report)? {
+                    report.constraints += 1;
+                    shape.constraints.push(c);
+                }
+            }
+        }
+    }
+    Ok(shape)
+}
+
+fn severity_of(obj: &Term) -> Option<Severity> {
+    match obj {
+        Term::NamedNode(n) => match n.as_str().strip_prefix(SH)? {
+            "Violation" => Some(Severity::Violation),
+            "Warning" => Some(Severity::Warning),
+            "Info" => Some(Severity::Info),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Las shapes miembro de `sh:and/or/xone ( … )`: cada elemento de la lista
+/// RDF es una shape (anónima o nombrada) del mismo documento.
+fn member_shapes(doc: &Doc, obj: &Term, where_: &str, local: &str, report: &mut ShapesReport) -> Result<Option<Vec<Shape>>> {
+    let Some(head) = object_key(obj) else {
+        report.ignored.push(format!("{where_}: sh:{local} espera una lista ( shape shape … ), no `{obj}`; se ignora"));
+        return Ok(None);
+    };
+    let members = doc.list(&head);
+    if members.is_empty() {
+        report.ignored.push(format!("{where_}: sh:{local} con lista vacía; se ignora"));
+        return Ok(None);
+    }
+    let mut shapes = Vec::new();
+    for m in members {
+        match object_key(&m) {
+            Some(key) => shapes.push(shape_body(doc, &key, report)?),
+            None => report.ignored.push(format!("{where_}: sh:{local} espera shapes, no el literal `{m}`; ese miembro se ignora")),
+        }
+    }
+    Ok(Some(shapes))
+}
+
 /// Un `sh:property [ … ]`: su path y sus constraints.
-fn property_shape(doc: &Doc, ps_key: &str, owner: &str, report: &mut ShapesReport) -> Option<PropertyShape> {
+fn property_shape(doc: &Doc, ps_key: &str, owner: &str, report: &mut ShapesReport) -> Result<Option<PropertyShape>> {
     let where_ = format!("{owner} sh:property {}", doc.show(ps_key));
     let mut path: Option<PathSpec> = None;
     let mut constraints = Vec::new();
+    let mut severity = None;
+    let mut message = None;
     for (pred, obj) in doc.statements(ps_key) {
         let Some(local) = pred.strip_prefix(SH) else {
             if pred != RDF_TYPE {
@@ -247,26 +300,39 @@ fn property_shape(doc: &Doc, ps_key: &str, owner: &str, report: &mut ShapesRepor
                     report.ignored.push(format!(
                         "{where_}: sh:path compuesto (secuencia, inverso, alternativa o cierre) no soportado: issue #101; la property shape se descarta"
                     ));
-                    return None;
+                    return Ok(None);
                 }
                 other => {
                     report.ignored.push(format!("{where_}: sh:path espera un IRI, no `{other}`; la property shape se descarta"));
-                    return None;
+                    return Ok(None);
                 }
             },
             "name" | "description" => {}
+            "severity" => match severity_of(obj) {
+                Some(sev) => severity = Some(sev),
+                None => report.ignored.push(format!("{where_}: sh:severity espera sh:Violation, sh:Warning o sh:Info, no `{obj}`")),
+            },
+            "message" => match obj {
+                Term::Literal(l) => message = Some(l.value().to_string()),
+                other => report.ignored.push(format!("{where_}: sh:message espera una cadena, no `{other}`")),
+            },
             _ => {
-                if let Some(c) = constraint(doc, local, obj, &where_, report) {
+                if let Some(c) = constraint(doc, local, obj, &where_, report)? {
                     constraints.push(c);
                 }
             }
         }
     }
     match path {
-        Some(path) => Some(PropertyShape::new(path, constraints)),
+        Some(path) => {
+            let mut ps = PropertyShape::new(path, constraints);
+            ps.severity = severity;
+            ps.message = message;
+            Ok(Some(ps))
+        }
         None => {
             report.ignored.push(format!("{where_}: sin sh:path; la property shape se descarta"));
-            None
+            Ok(None)
         }
     }
 }
@@ -294,12 +360,12 @@ fn literal_value(obj: &Term, warnings: &mut Vec<String>) -> Option<PropertyValue
 
 /// Una constraint `sh:<local> <obj>`; `None` si no se soporta o está mal
 /// formada (con la razón en el reporte).
-fn constraint(doc: &Doc, local: &str, obj: &Term, where_: &str, report: &mut ShapesReport) -> Option<ConstraintType> {
+fn constraint(doc: &Doc, local: &str, obj: &Term, where_: &str, report: &mut ShapesReport) -> Result<Option<ConstraintType>> {
     let bad = |what: &str, report: &mut ShapesReport| {
         report.ignored.push(format!("{where_}: sh:{local} espera {what}, no `{obj}`; se ignora"));
         None
     };
-    match local {
+    Ok(match local {
         "minCount" => usize_of(obj).map(ConstraintType::MinCount).or_else(|| bad("un entero", report)),
         "maxCount" => usize_of(obj).map(ConstraintType::MaxCount).or_else(|| bad("un entero", report)),
         "minLength" => usize_of(obj).map(ConstraintType::MinLength).or_else(|| bad("un entero", report)),
@@ -322,11 +388,24 @@ fn constraint(doc: &Doc, local: &str, obj: &Term, where_: &str, report: &mut Sha
             _ => bad("un IRI xsd:*", report),
         },
         "pattern" => match obj {
-            Term::Literal(l) => Some(ConstraintType::Pattern(l.value().to_string())),
+            Term::Literal(l) => Some(ConstraintType::pattern(l.value()).map_err(|e| {
+                NopalError::custom(format!("{where_}: {e}"))
+            })?),
             _ => bad("una cadena", report),
         },
+        "and" => member_shapes(doc, obj, where_, local, report)?.map(ConstraintType::And),
+        "or" => member_shapes(doc, obj, where_, local, report)?.map(ConstraintType::Or),
+        "xone" => member_shapes(doc, obj, where_, local, report)?.map(ConstraintType::Xone),
+        "not" => match object_key(obj) {
+            Some(key) => Some(ConstraintType::Not(Box::new(shape_body(doc, &key, report)?))),
+            None => bad("una shape", report),
+        },
+        "node" => match obj {
+            Term::NamedNode(n) => Some(ConstraintType::Node(n.as_str().to_string())),
+            _ => bad("el IRI de una shape del documento", report),
+        },
         "in" => {
-            let Some(head) = object_key(obj) else { return bad("una lista ( … )", report) };
+            let Some(head) = object_key(obj) else { return Ok(bad("una lista ( … )", report)) };
             let mut values = Vec::new();
             for member in doc.list(&head) {
                 match literal_value(&member, &mut report.warnings) {
@@ -359,7 +438,7 @@ fn constraint(doc: &Doc, local: &str, obj: &Term, where_: &str, report: &mut Sha
             report.ignored.push(format!("{where_}: sh:{other} no se comprueba — {reason}"));
             None
         }
-    }
+    })
 }
 
 impl std::fmt::Display for ShapesReport {
@@ -436,6 +515,45 @@ mod tests {
     }
 
     #[test]
+    fn logical_combinators_severity_message_and_pattern_errors() {
+        let ttl = r#"
+@prefix sh:  <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix :    <http://cocina.example/> .
+:IngredienteShape a sh:NodeShape ; sh:targetClass :Ingrediente ;
+  sh:property [ sh:path :nombre ; sh:minCount 1 ] .
+:RecetaShape a sh:NodeShape ; sh:targetClass :Receta ; sh:severity sh:Warning ; sh:message "receta rara" ;
+  sh:property [ sh:path :tiempoMin ; sh:or ( [ sh:datatype xsd:integer ] [ sh:datatype xsd:decimal ] ) ] ,
+              [ sh:path :estado ; sh:not [ sh:in ( "crudo" ) ] ; sh:severity sh:Info ; sh:message "no crudo" ] ,
+              [ sh:path :usa ; sh:node :IngredienteShape ] ;
+  sh:xone ( [ sh:class :Receta ] [ sh:class :Postre ] ) ;
+  sh:deactivated false .
+"#;
+        let (shapes, report) = parse_shapes(ttl).unwrap();
+        assert!(report.ignored.is_empty(), "{:?}", report.ignored);
+        let receta = shapes.iter().find(|s| s.name == "RecetaShape").unwrap();
+        assert_eq!((receta.severity, receta.message.as_deref()), (Severity::Warning, Some("receta rara")));
+        assert!(!receta.deactivated);
+        assert!(matches!(&receta.constraints[..], [ConstraintType::Xone(v)] if v.len() == 2));
+        let tiempo = receta.property_shapes.iter().find(|p| p.path == PathSpec::Predicate("tiempoMin".into())).unwrap();
+        assert!(matches!(&tiempo.constraints[..], [ConstraintType::Or(v)] if v.len() == 2 && v[0].constraints == vec![ConstraintType::Datatype(DatatypeKind::Int)]));
+        let estado = receta.property_shapes.iter().find(|p| p.path == PathSpec::Predicate("estado".into())).unwrap();
+        assert!(matches!(&estado.constraints[..], [ConstraintType::Not(_)]));
+        assert_eq!((estado.severity, estado.message.as_deref()), (Some(Severity::Info), Some("no crudo")));
+        let usa = receta.property_shapes.iter().find(|p| p.path == PathSpec::Predicate("usa".into())).unwrap();
+        assert_eq!(usa.constraints, vec![ConstraintType::Node("http://cocina.example/IngredienteShape".into())]);
+        // Member shapes count as constraints of their own; the report counts the top level.
+        assert_eq!(report.shapes, 2);
+
+        let err = parse_shapes(r#"
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix :   <http://cocina.example/> .
+:S sh:targetClass :Receta ; sh:property [ sh:path :nombre ; sh:pattern "(" ] .
+"#).unwrap_err().to_string();
+        assert!(err.contains(":S sh:property") && err.contains("patron regex invalido '('"), "{err}");
+    }
+
+    #[test]
     fn malformed_turtle_is_an_error_with_position() {
         let err = parse_shapes("@prefix sh: <http://www.w3.org/ns/shacl#> .\n:S a sh:NodeShape ; sh:minCount .").unwrap_err();
         assert!(err.to_string().contains("line 2"), "{err}");
@@ -447,7 +565,7 @@ mod tests {
 @prefix sh: <http://www.w3.org/ns/shacl#> .
 @prefix :   <http://cocina.example/> .
 :S a sh:NodeShape ; sh:targetClass :Receta ;
-   sh:or ( [ sh:datatype :x ] ) ;
+   sh:closed true ;
    sh:property [ sh:path :nombre ; sh:minCount "muchos" ; sh:frobnicate 3 ] ;
    sh:property [ sh:minCount 1 ] .
 "#;
@@ -456,7 +574,7 @@ mod tests {
         assert_eq!(shapes[0].property_shapes.len(), 1);
         assert!(shapes[0].property_shapes[0].constraints.is_empty());
         let ignored = report.ignored.join("\n");
-        assert!(ignored.contains("sh:or"), "{ignored}");
+        assert!(ignored.contains("sh:closed"), "{ignored}");
         assert!(ignored.contains("sh:minCount espera un entero"), "{ignored}");
         assert!(ignored.contains("sh:frobnicate"), "{ignored}");
         assert!(ignored.contains("sin sh:path"), "{ignored}");

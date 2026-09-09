@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::types::{NodeId, PropertyValue};
 
 /// Severidad de una violacion, segun la especificacion SHACL.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Severity {
     /// sh:Violation — incumplimiento de un constraint obligatorio (default).
     Violation,
@@ -40,6 +40,9 @@ pub struct ConstraintViolation {
     pub message: String,
     /// Severidad de la violacion.
     pub severity: Severity,
+    /// Para `sh:or`/`sh:xone`/`sh:and`/`sh:not`/`sh:node`: por qué falló cada
+    /// rama o la shape referida, para que el reporte explique el combinador.
+    pub nested: Vec<ConstraintViolation>,
 }
 
 impl ConstraintViolation {
@@ -59,6 +62,7 @@ impl ConstraintViolation {
             value: None,
             message: message.into(),
             severity: Severity::Violation,
+            nested: vec![],
         }
     }
 
