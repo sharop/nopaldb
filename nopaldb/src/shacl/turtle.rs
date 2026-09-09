@@ -294,18 +294,9 @@ fn property_shape(doc: &Doc, ps_key: &str, owner: &str, report: &mut ShapesRepor
             continue;
         };
         match local {
-            "path" => match obj {
-                Term::NamedNode(n) => path = Some(PathSpec::Predicate(local_name(n.as_str()))),
-                Term::BlankNode(_) => {
-                    report.ignored.push(format!(
-                        "{where_}: sh:path compuesto (secuencia, inverso, alternativa o cierre) no soportado: issue #101; la property shape se descarta"
-                    ));
-                    return Ok(None);
-                }
-                other => {
-                    report.ignored.push(format!("{where_}: sh:path espera un IRI, no `{other}`; la property shape se descarta"));
-                    return Ok(None);
-                }
+            "path" => match path_spec(doc, obj, &where_, report) {
+                Some(p) => path = Some(p),
+                None => return Ok(None),
             },
             "name" | "description" => {}
             "severity" => match severity_of(obj) {
@@ -333,6 +324,53 @@ fn property_shape(doc: &Doc, ps_key: &str, owner: &str, report: &mut ShapesRepor
         None => {
             report.ignored.push(format!("{where_}: sin sh:path; la property shape se descarta"));
             Ok(None)
+        }
+    }
+}
+
+/// Un `sh:path`: un predicado, o una lista RDF de predicados (secuencia).
+/// Los demás paths de SHACL (`sh:inversePath`, `sh:alternativePath`,
+/// `sh:zeroOrMorePath`, `sh:oneOrMorePath`, `sh:zeroOrOnePath`) no están
+/// implementados: cambian la semántica de cardinalidad sobre cierres y
+/// merecen su propio diseño con la taxonomía. Se reportan y la property
+/// shape se descarta, nunca se valida a medias.
+fn path_spec(doc: &Doc, obj: &Term, where_: &str, report: &mut ShapesReport) -> Option<PathSpec> {
+    match obj {
+        Term::NamedNode(n) => Some(PathSpec::Predicate(local_name(n.as_str()))),
+        Term::BlankNode(b) => {
+            let key = format!("_:{}", b.as_str());
+            if doc.objects(&key, RDF_FIRST).next().is_some() {
+                let mut steps = Vec::new();
+                for member in doc.list(&key) {
+                    match member {
+                        Term::NamedNode(n) => steps.push(PathSpec::Predicate(local_name(n.as_str()))),
+                        other => {
+                            report.ignored.push(format!(
+                                "{where_}: sh:path con un paso compuesto (`{other}`) dentro de la secuencia no soportado; la property shape se descarta"
+                            ));
+                            return None;
+                        }
+                    }
+                }
+                if steps.is_empty() {
+                    report.ignored.push(format!("{where_}: sh:path con secuencia vacía; la property shape se descarta"));
+                    return None;
+                }
+                return Some(PathSpec::Sequence(steps));
+            }
+            let kind = doc
+                .statements(&key)
+                .iter()
+                .find_map(|(p, _)| p.strip_prefix(SH).map(str::to_string))
+                .unwrap_or_else(|| "desconocido".to_string());
+            report.ignored.push(format!(
+                "{where_}: sh:path con sh:{kind} no soportado (solo predicados y secuencias `( :a :b )`); la property shape se descarta"
+            ));
+            None
+        }
+        other => {
+            report.ignored.push(format!("{where_}: sh:path espera un IRI o una secuencia, no `{other}`; la property shape se descarta"));
+            None
         }
     }
 }
@@ -502,15 +540,18 @@ mod tests {
         );
         let ing = shapes.iter().find(|s| s.name == "IngredienteShape").unwrap();
         assert_eq!(ing.constraints, vec![ConstraintType::NodeKindShacl(ShaclNodeKind::Iri)]);
-        assert!(ing.property_shapes.is_empty(), "the sequence path is dropped, with a reason");
+        assert_eq!(
+            ing.property_shapes[0].path,
+            PathSpec::Sequence(vec![PathSpec::Predicate("origen".into()), PathSpec::Predicate("region".into())])
+        );
+        assert_eq!(ing.property_shapes[0].path.to_sparql(), "origen/region");
 
         assert_eq!(report.shapes, 2);
-        assert_eq!(report.property_shapes, 4);
-        assert_eq!(report.constraints, 1 + 2 + 2 + 1 + 2);
+        assert_eq!(report.property_shapes, 5);
+        assert_eq!(report.constraints, 1 + 2 + 2 + 1 + 2 + 1);
         let ignored = report.ignored.join("\n");
         assert!(ignored.contains("sh:closed"), "{ignored}");
-        assert!(ignored.contains("issue #101"), "{ignored}");
-        assert_eq!(report.ignored.len(), 2, "{ignored}");
+        assert_eq!(report.ignored.len(), 1, "{ignored}");
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     }
 
@@ -551,6 +592,24 @@ mod tests {
 :S sh:targetClass :Receta ; sh:property [ sh:path :nombre ; sh:pattern "(" ] .
 "#).unwrap_err().to_string();
         assert!(err.contains(":S sh:property") && err.contains("patron regex invalido '('"), "{err}");
+    }
+
+    #[test]
+    fn unsupported_path_kinds_are_reported_and_the_property_shape_dropped() {
+        let ttl = r#"
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix :   <http://cocina.example/> .
+:S sh:targetClass :Receta ;
+   sh:property [ sh:path [ sh:inversePath :usa ] ; sh:minCount 1 ] ,
+               [ sh:path ( :usa [ sh:zeroOrMorePath :parte ] ) ; sh:minCount 1 ] ,
+               [ sh:path :nombre ; sh:minCount 1 ] .
+"#;
+        let (shapes, report) = parse_shapes(ttl).unwrap();
+        assert_eq!(shapes[0].property_shapes.len(), 1, "only the plain one survives");
+        let ignored = report.ignored.join("\n");
+        assert!(ignored.contains("sh:inversePath"), "{ignored}");
+        assert!(ignored.contains("paso compuesto"), "{ignored}");
+        assert_eq!(report.ignored.len(), 2, "{ignored}");
     }
 
     #[test]

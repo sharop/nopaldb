@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.17] - unreleased
+
+### Added
+
+- **SHACL: sequence paths `sh:path ( :a :b … )`** — cierra [#101](https://github.com/sharop/nopaldb/issues/101) y con él la serie "SHACL declarativo" (#98–#101). `PathSpec::Sequence`: los valores de un salto son los focus del siguiente, solo a través de nodos (un literal termina su rama sin error ni panic); el resultado es la unión de todas las ramas sin duplicados, así `sh:maxCount 1` sobre `( :usa :origen :en )` se cumple aunque dos ingredientes lleguen al mismo país. Las violaciones muestran el path como `usa/origen` (`PathSpec::to_sparql`, `Display`). Las demás formas de path de SHACL (`sh:inversePath`, `sh:alternativePath`, `sh:zeroOrMorePath`, `sh:oneOrMorePath`, `sh:zeroOrOnePath`) se reportan en `ShapesReport.ignored` con razón y la property shape se descarta, nunca se valida a medias: cambian lo que significa la cardinalidad sobre un cierre y merecen su propio diseño con la taxonomía.
+
+### Changed
+
+- `PathSpec::as_str` devuelve `Cow<str>` (una secuencia no tiene un `&str` que prestar); `PathSpec` implementa `Display`.
+
+---
+
 ## [0.5.16] - 2026-09-09
 
 ### Added

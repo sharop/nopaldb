@@ -385,3 +385,119 @@ async fn invalid_pattern_is_a_load_error_naming_the_shape() -> Result<()> {
     assert!(err.contains(":RecetaShape") && err.contains("'['"), "{err}");
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// #101: sequence paths `sh:path ( :a :b )`.
+// ---------------------------------------------------------------------------
+
+const ORIGEN_DATA: &str = r#"
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix :    <http://cocina.example/> .
+:Receta a owl:Class .  :Ingrediente a owl:Class .  :Region a owl:Class .  :Pais a owl:Class .
+:veracruz a :Region ; :en :mexico .
+:oaxaca   a :Region ; :en :mexico .
+:mexico   a :Pais .
+:canela     a :Ingrediente ; :origen :veracruz .
+:cafe       a :Ingrediente ; :origen :veracruz .
+:chocolate  a :Ingrediente ; :origen :oaxaca .
+:sal        a :Ingrediente .
+:cafe_de_olla a :Receta ; :usa :cafe, :canela .
+:mole         a :Receta ; :usa :chocolate, :canela .
+:huevo_duro   a :Receta ; :usa :sal .
+:agua         a :Receta .
+:rara         a :Receta ; :usa "canela en rama" .
+"#;
+
+#[tokio::test]
+async fn sequence_path_follows_hops_and_reports_the_sparql_path() -> Result<()> {
+    let graph = Graph::in_memory().await?;
+    graph.import_turtle(ORIGEN_DATA).await?;
+    let (report, shapes) = graph
+        .validate_shapes(
+            r#"
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix :   <http://cocina.example/> .
+:ConOrigen sh:targetClass :Receta ;
+  sh:property [ sh:path ( :usa :origen ) ; sh:class :Region ; sh:minCount 1 ] .
+"#,
+        )
+        .await?;
+    assert!(shapes.ignored.is_empty(), "{:?}", shapes.ignored);
+    let mut got: Vec<(String, String, Option<String>)> = Vec::new();
+    for v in &report.violations {
+        got.push((who(&graph, v).await?, v.constraint.clone(), v.path.clone()));
+    }
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            // no :usa at all → zero values
+            ("agua".to_string(), "sh:MinCountConstraintComponent".to_string(), Some("usa/origen".to_string())),
+            // its only ingredient has no origin → zero values
+            ("huevo_duro".to_string(), "sh:MinCountConstraintComponent".to_string(), Some("usa/origen".to_string())),
+            // :usa is a literal: the branch stops there, no panic, zero values
+            ("rara".to_string(), "sh:MinCountConstraintComponent".to_string(), Some("usa/origen".to_string())),
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn sequence_path_of_three_hops_unions_branches_without_duplicates() -> Result<()> {
+    let graph = Graph::in_memory().await?;
+    graph.import_turtle(ORIGEN_DATA).await?;
+    // cafe_de_olla: cafe→veracruz→mexico and canela→veracruz→mexico: one country, reached twice.
+    // mole: chocolate→oaxaca→mexico, canela→veracruz→mexico: one country too.
+    let (report, shapes) = graph
+        .validate_shapes(
+            r#"
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix :   <http://cocina.example/> .
+:UnPais sh:targetClass :Receta ;
+  sh:property [ sh:path ( :usa :origen :en ) ; sh:class :Pais ; sh:minCount 1 ; sh:maxCount 1 ] .
+"#,
+        )
+        .await?;
+    assert!(shapes.ignored.is_empty(), "{:?}", shapes.ignored);
+    let mut got: Vec<(String, String)> = Vec::new();
+    for v in &report.violations {
+        got.push((who(&graph, v).await?, v.constraint.clone()));
+    }
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            ("agua".to_string(), "sh:MinCountConstraintComponent".to_string()),
+            ("huevo_duro".to_string(), "sh:MinCountConstraintComponent".to_string()),
+            ("rara".to_string(), "sh:MinCountConstraintComponent".to_string()),
+        ],
+        "cafe_de_olla and mole reach one country through two branches: maxCount 1 holds"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn inverse_path_in_the_fixture_is_ignored_with_reason_and_the_rest_loads() -> Result<()> {
+    let graph = Graph::in_memory().await?;
+    graph.import_turtle(ORIGEN_DATA).await?;
+    let (report, shapes) = graph
+        .validate_shapes(
+            r#"
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix :   <http://cocina.example/> .
+:S sh:targetClass :Ingrediente ;
+  sh:property [ sh:path [ sh:inversePath :usa ] ; sh:minCount 1 ] ,
+              [ sh:path :origen ; sh:minCount 1 ] .
+"#,
+        )
+        .await?;
+    assert_eq!(shapes.property_shapes, 1);
+    assert_eq!(shapes.ignored.len(), 1, "{:?}", shapes.ignored);
+    assert!(shapes.ignored[0].contains("sh:inversePath"), "{}", shapes.ignored[0]);
+    let mut got: Vec<String> = Vec::new();
+    for v in &report.violations {
+        got.push(who(&graph, v).await?);
+    }
+    assert_eq!(got, vec!["sal".to_string()]);
+    Ok(())
+}

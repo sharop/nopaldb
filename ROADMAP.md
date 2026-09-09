@@ -47,14 +47,16 @@ module docs. The work is to make it faithful:
   0.5.12): symmetric with the importer, emitting the document's own namespaces
   and all edges, with a verified import → export → import round trip and an
   `ExportReport` that lists what Turtle cannot carry; export exposed in Python.
-- **Declarative SHACL**: the constraint engine exists; shapes now load from
-  a standard `.ttl` with a report of what is not checked
-  ([#98](https://github.com/sharop/nopaldb/issues/98), shipped in 0.5.14).
-  `sh:targetClass` honours the class hierarchy
-  ([#99](https://github.com/sharop/nopaldb/issues/99), 0.5.15); logical
-  constraints `sh:and`/`sh:or`/`sh:not`/`sh:xone`, `sh:node` and
-  `sh:severity`/`sh:message` ([#100](https://github.com/sharop/nopaldb/issues/100),
-  0.5.16). Still open: multi-hop paths ([#101](https://github.com/sharop/nopaldb/issues/101)).
+- **Declarative SHACL** (shipped, 0.5.14–0.5.17): shapes load from a standard
+  `.ttl` with a report of what is not checked
+  ([#98](https://github.com/sharop/nopaldb/issues/98)); `sh:targetClass`
+  honours the class hierarchy ([#99](https://github.com/sharop/nopaldb/issues/99));
+  `sh:and`/`sh:or`/`sh:not`/`sh:xone`, `sh:node`, `sh:severity`/`sh:message`
+  ([#100](https://github.com/sharop/nopaldb/issues/100)); sequence paths
+  `sh:path ( :a :b )` ([#101](https://github.com/sharop/nopaldb/issues/101)).
+  Not covered, and reported as such when a shape uses them: inverse,
+  alternative and closure paths, `sh:closed`, qualified shapes, property
+  comparisons, SHACL-SPARQL. See `docs/SHACL.md`.
 
 ### 3. Retrieval honesty and control
 
@@ -142,14 +144,16 @@ sus límites exactos están en `docs/ADOPTION.md` y en el doc del módulo
   0.5.12): simétrico al importer, con los namespaces del documento y todas las
   aristas, round trip import → export → import verificado y un `ExportReport`
   que lista lo que Turtle no puede llevar; export expuesto en Python.
-- **SHACL declarativo**: el motor de constraints existe; las shapes ya se
-  cargan desde un `.ttl` estándar con reporte de lo que no se comprueba
-  ([#98](https://github.com/sharop/nopaldb/issues/98), liberado en 0.5.14).
-  `sh:targetClass` respeta la jerarquía de clases
-  ([#99](https://github.com/sharop/nopaldb/issues/99), 0.5.15); constraints
-  lógicas `sh:and`/`sh:or`/`sh:not`/`sh:xone`, `sh:node` y
-  `sh:severity`/`sh:message` ([#100](https://github.com/sharop/nopaldb/issues/100),
-  0.5.16). Falta: paths multi-salto ([#101](https://github.com/sharop/nopaldb/issues/101)).
+- **SHACL declarativo** (liberado, 0.5.14–0.5.17): las shapes se cargan desde
+  un `.ttl` estándar con reporte de lo que no se comprueba
+  ([#98](https://github.com/sharop/nopaldb/issues/98)); `sh:targetClass`
+  respeta la jerarquía de clases ([#99](https://github.com/sharop/nopaldb/issues/99));
+  `sh:and`/`sh:or`/`sh:not`/`sh:xone`, `sh:node`, `sh:severity`/`sh:message`
+  ([#100](https://github.com/sharop/nopaldb/issues/100)); secuencias
+  `sh:path ( :a :b )` ([#101](https://github.com/sharop/nopaldb/issues/101)).
+  No cubierto, y reportado como tal cuando una shape lo usa: paths inversos,
+  alternativos y cierres, `sh:closed`, qualified shapes, comparaciones entre
+  propiedades, SHACL-SPARQL. Ver `docs/SHACL.md`.
 
 ### 3. Honestidad y control del retrieval
 

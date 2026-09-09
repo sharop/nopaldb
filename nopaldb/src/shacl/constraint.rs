@@ -105,7 +105,8 @@ pub fn evaluate_shape(shape: &Shape, value: &PathValue, ctx: &mut EvalContext) -
             PathValue::Node(id) => ctx.paths.get(&(*id, ps.path.clone())).cloned().unwrap_or_default(),
             PathValue::Literal(_) => vec![],
         };
-        let mut vs = evaluate_constraints(&ps.constraints, &values, focus, shape.id, Some(ps.path.as_str()), ctx);
+        let path = ps.path.to_sparql();
+        let mut vs = evaluate_constraints(&ps.constraints, &values, focus, shape.id, Some(&path), ctx);
         for v in &mut vs {
             apply_author(v, ps.severity.unwrap_or(shape.severity), ps.message.as_deref().or(shape.message.as_deref()));
         }
