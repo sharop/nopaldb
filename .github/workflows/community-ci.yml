@@ -28,6 +28,9 @@ jobs:
       - name: Check default features
         run: cargo check -p nopaldb
 
+      - name: Benches compile (hnsw_ops, gc_removals, graph_ops)
+        run: cargo bench -p nopaldb --features core --no-run
+
       - name: Clippy (semantic)
         run: cargo clippy -p nopaldb --features semantic -- -D warnings
 

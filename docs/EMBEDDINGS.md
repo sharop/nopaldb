@@ -305,6 +305,37 @@ For best results, normalize vectors to unit length before storing.
 
 See `docs/HNSW_ALGORITHM.md` for a deep dive into how HNSW works.
 
+### Measuring it: the `hnsw_ops` bench
+
+`cargo bench -p nopaldb --features core --bench hnsw_ops` measures the index on
+synthetic 384-dimensional vectors (fixed seed; sizes via `NOPALDB_HNSW_N`,
+default `10000,100000`). Orders of magnitude on an Apple Silicon laptop,
+0.5.18, k = 10:
+
+| what | N = 10k | N = 100k |
+|---|---|---|
+| `build_batch` (index from scratch) | 2.35 s | 90.7 s |
+| `rebuild_after_insert` (one new embedding + full rebuild: today's cost) | 2.38 s | 102.7 s |
+| `insert_incremental` (one `HnswIndex::insert` on a live index) | 4.1 ms | 9.6 ms |
+| `search_knn`, `ef_search` 30 / 60 | 0.55 ms / 1.1 ms | 0.95 ms / 1.7 ms |
+| `search_knn_filtered`, filter passes 1 % / 10 % / 100 % of ids | 12.1 / 6.0 / 2.5 ms | 63.6 / 27.6 / 4.6 ms |
+| `open_first_search` (open a persisted database + first search) | 2.71 s | 107 s |
+
+What the numbers say:
+
+- A new embedding currently costs a full rebuild on the next search
+  (`add_node_embedding` invalidates the cached index): ~580× the cost of the
+  incremental insert the index already supports at 10k, ~10 000× at 100k. That
+  gap is what [#113](https://github.com/sharop/nopaldb/issues/113) closes.
+- Opening a database and searching once pays the whole build, because the HNSW
+  graph lives only in RAM: almost two minutes at 100k vectors.
+  [#114](https://github.com/sharop/nopaldb/issues/114) persists the graph.
+- `search_knn_filtered` is the index's native filtered traversal, which
+  escalates `ef_search` while the filter starves it; that is why a 1 % filter
+  is the most expensive row here. Graph-level searches do not take this path
+  for very selective filters: the planner ranks the allowed set exactly when it
+  is small (≤ 1024 candidates), see `HYBRID_SEARCH.md`.
+
 ---
 
 ## Current boundaries

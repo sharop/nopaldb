@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.18] - unreleased
+
+### Added
+
+- **Bench del índice HNSW** (`benches/hnsw_ops.rs`) — cierra [#112](https://github.com/sharop/nopaldb/issues/112). Primera medición del índice vectorial: construcción, rebuild tras un embedding nuevo (el costo real de hoy), inserción incremental, búsqueda con `ef_search` default y 2×, búsqueda filtrada por selectividad (1 %, 10 %, 100 %) y apertura de base + primera búsqueda; vectores sintéticos de 384 dims con semilla fija, tamaños por `NOPALDB_HNSW_N`, motor por `NOPALDB_BENCH_ENGINE`. Los órdenes de magnitud van en `docs/EMBEDDINGS.md`: un embedding nuevo cuesta hoy un rebuild completo (~580× la inserción incremental a 10k vectores, ~10 000× a 100k) y abrir una base con 100k embeddings paga casi dos minutos antes de la primera búsqueda. Son los números que motivan [#113](https://github.com/sharop/nopaldb/issues/113) y [#114](https://github.com/sharop/nopaldb/issues/114). CI compila los tres benches (`cargo bench --no-run`) para que no vuelvan a quedar sin cobertura de compilación.
+
+---
+
 ## [0.5.17] - 2026-09-10
 
 ### Added
