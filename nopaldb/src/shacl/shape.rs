@@ -240,14 +240,35 @@ pub enum PathSpec {
     /// de la propiedad con ese nombre MÁS los destinos de las aristas con ese
     /// tipo. Es lo que produce `sh:path` al cargar shapes desde Turtle.
     Predicate(String),
+    /// Secuencia de saltos (`sh:path ( :usa :origen )`): los valores de un
+    /// paso son los focus del siguiente; un literal intermedio corta esa rama
+    /// (no hay más saltos posibles). El resultado es la unión de todas las
+    /// ramas, sin duplicados.
+    Sequence(Vec<PathSpec>),
 }
 
 impl PathSpec {
-    /// Representacion como string para mensajes de error.
-    pub fn as_str(&self) -> &str {
+    /// El path como se escribe en SPARQL/SHACL: `usa`, `usa/origen`.
+    pub fn to_sparql(&self) -> String {
         match self {
-            PathSpec::Property(s) | PathSpec::Edge(s) | PathSpec::Predicate(s) => s.as_str(),
+            PathSpec::Property(s) | PathSpec::Edge(s) | PathSpec::Predicate(s) => s.clone(),
+            PathSpec::Sequence(steps) => steps.iter().map(PathSpec::to_sparql).collect::<Vec<_>>().join("/"),
         }
+    }
+
+    /// Representacion como string para mensajes de error (un salto: el
+    /// predicado; secuencia: `a/b`).
+    pub fn as_str(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            PathSpec::Property(s) | PathSpec::Edge(s) | PathSpec::Predicate(s) => std::borrow::Cow::Borrowed(s.as_str()),
+            PathSpec::Sequence(_) => std::borrow::Cow::Owned(self.to_sparql()),
+        }
+    }
+}
+
+impl std::fmt::Display for PathSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_sparql())
     }
 }
 

@@ -59,6 +59,7 @@ A shapes file, for a fictional cookbook:
 | `sh:targetClass :C` | Focus nodes = the instances of `C` **and of its subclasses**, through the graph's class hierarchy, by any of their declared types; `C` may be a label, a `prefix:Local` or a full IRI (the same resolution as `instanceOf` in NQL). The class node itself is never one. Without a hierarchy (a graph built by hand) it is the individuals labelled `C`. |
 | `sh:targetNode <iri>` | The node whose `iri` property is that IRI. An IRI that matches nothing is reported in `report.notes`, not ignored. |
 | `sh:property [ sh:path :p ; … ]` | Constraints on the values of `p`: the property `p` of the node (a list counts one value per element) **and** the targets of its edges of type `p`. Turtle does not say which one a predicate became in NopalDB, so both are the path. |
+| `sh:path ( :a :b … )` | A sequence: the values of one hop are the focus of the next, through nodes only (a literal ends its branch); the result is the union of all branches without duplicates. Violations show the path as `a/b`. |
 | `sh:minCount`, `sh:maxCount` | Number of values. |
 | `sh:datatype xsd:*` | Read with the importer's own table: the integer family → integer, `decimal`/`double`/`float` → float, `boolean`, everything else (`xsd:string`, `xsd:date`, …) → text, with a warning when a datatype is checked as text. A node value never satisfies a datatype. |
 | `sh:minInclusive` … `sh:maxExclusive` | Numeric ranges; a non-number does not satisfy them. |
@@ -83,13 +84,15 @@ code as property shapes: there is one evaluator, `evaluate_shape`.
 Everything else in the `sh:` vocabulary is **reported, never ignored in
 silence**: each unsupported or malformed term is one line in
 `ShapesReport.ignored` with the reason, and the rest of the shape still loads.
-Today that covers composite paths (sequences, inverse, alternatives,
-closures; [#101](https://github.com/sharop/nopaldb/issues/101)), `sh:closed`,
+Today that covers the other path forms (`sh:inversePath`,
+`sh:alternativePath`, `sh:zeroOrMorePath`, `sh:oneOrMorePath`,
+`sh:zeroOrOnePath`: each changes what cardinality means over a closure and
+deserves its own design with the taxonomy), `sh:closed`,
 `sh:qualifiedValueShape`, property comparisons (`sh:equals`, `sh:lessThan`, …),
 `sh:languageIn`/`sh:uniqueLang` (language tags are not kept by the import),
 `sh:flags`, `sh:targetSubjectsOf`/`sh:targetObjectsOf` and SHACL-SPARQL. A
-property shape without `sh:path`, or with a composite one, is dropped with a
-line saying so.
+property shape without `sh:path`, or with one of those path forms, is dropped
+with a line saying so.
 
 `ShapesReport` also carries `shapes`, `property_shapes`, `constraints` counts
 and the Turtle parser's `warnings` (a missing `@prefix :`, a relative IRI

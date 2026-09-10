@@ -406,6 +406,8 @@ impl ShaclValidator {
     ///   (una `List`, un valor por elemento)
     /// - `PathSpec::Edge(edge_type)` → nodos destino de aristas salientes
     /// - `PathSpec::Predicate(name)` → ambos
+    /// - `PathSpec::Sequence(steps)` → paso a paso sobre los valores-nodo;
+    ///   un literal intermedio corta su rama; unión sin duplicados
     async fn resolve_path_values(
         &self,
         graph: &Graph,
@@ -413,11 +415,42 @@ impl ShaclValidator {
         path: &PathSpec,
         ctx: &mut EvalContext,
     ) -> Result<Vec<PathValue>> {
+        if let PathSpec::Sequence(steps) = path {
+            let mut current: Vec<PathValue> = vec![PathValue::Node(node.id)];
+            for step in steps {
+                let mut next: Vec<PathValue> = Vec::new();
+                for v in &current {
+                    let PathValue::Node(id) = v else { continue }; // a literal has no further hops
+                    let n = match ctx.nodes.get(id) {
+                        Some(n) => n.clone(),
+                        None => match graph.get_node(*id).await {
+                            Ok(n) => {
+                                ctx.nodes.insert(*id, n.clone());
+                                n
+                            }
+                            Err(_) => continue,
+                        },
+                    };
+                    for value in Box::pin(self.resolve_path_values(graph, &n, step, ctx)).await? {
+                        if !next.contains(&value) {
+                            next.push(value);
+                        }
+                    }
+                }
+                current = next;
+                if current.is_empty() {
+                    break;
+                }
+            }
+            return Ok(current);
+        }
+
         let mut values = Vec::new();
         let (property, edge) = match path {
             PathSpec::Property(k) => (Some(k), None),
             PathSpec::Edge(e) => (None, Some(e)),
             PathSpec::Predicate(p) => (Some(p), Some(p)),
+            PathSpec::Sequence(_) => unreachable!("handled above"),
         };
         if let Some(key) = property
             && let Some(v) = node.properties.get(key)
