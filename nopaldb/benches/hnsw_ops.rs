@@ -235,7 +235,7 @@ fn bench_open_first_search(c: &mut Criterion) {
                 rt.block_on(async {
                     let graph = Graph::open_with_options(&path, bench_options()).await.expect("reopen");
                     let index = graph.get_or_build_embedding_index(MODEL).await.expect("index");
-                    let hits = index.search_knn(&query, K).expect("search");
+                    let hits = index.read().unwrap().search_knn(&query, K).expect("search");
                     graph.close().await.expect("close");
                     black_box(hits)
                 })
