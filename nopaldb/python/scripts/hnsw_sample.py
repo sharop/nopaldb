@@ -25,7 +25,10 @@ def main() -> None:
     hits = g.knn_nodes([1.0] + [0.01] * 7, 3, "m")
     assert len(hits) == 3 and hits[0][0] in ids, hits
     st = g.embedding_index_stats("m")
-    assert st == {"model": "m", "size": 20, "tombstones": 0, "dimension": 8, "needs_rebuild": False}, st
+    assert st == {
+    "model": "m", "size": 20, "tombstones": 0, "dimension": 8, "needs_rebuild": False,
+    "persisted": False, "loaded_from_disk_ms": None,
+}, st  # 20 puntos: bajo el umbral de persistencia (1024), nada en disco
 
     _, new_id = g.upsert("Doc", "i", {"i": 99})
     q = [0.0] * 8

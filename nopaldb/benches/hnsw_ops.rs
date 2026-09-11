@@ -10,8 +10,9 @@
 //! - `search_knn`: k=10 con `ef_search` default y 2×
 //! - `search_filtered`: selectividad 1 % / 10 % / 100 % (la lección de #71:
 //!   el filtrado se encarece cuanto más selectivo)
-//! - `open_first_search`: abrir una base persistida + primera búsqueda (la
-//!   línea base para #114)
+//! - `open_first_search`: abrir una base persistida + primera búsqueda. Desde
+//!   #114 carga el índice de `<data_dir>/hnsw/`; con `NOPALDB_HNSW_COLD=1`
+//!   se borra el dump y se mide el rebuild desde storage.
 //!
 //! Escala por env `NOPALDB_HNSW_N` (lista separada por comas; default
 //! `10000,100000`); motor por `NOPALDB_BENCH_ENGINE=sled|redb` para
@@ -227,11 +228,22 @@ fn bench_open_first_search(c: &mut Criterion) {
             for (id, v) in &data {
                 graph.add_node_embedding(*id, v.clone(), MODEL).await.expect("embedding");
             }
+            // Una búsqueda antes de cerrar deja el dump escrito (#114): lo
+            // que se mide es abrir + cargar el índice de disco + buscar.
+            // Con `NOPALDB_HNSW_COLD=1` se borra el dump y se mide el
+            // rebuild desde storage (el número anterior a #114).
+            graph.get_or_build_embedding_index(MODEL).await.expect("index");
             graph.close().await.expect("close");
         });
         let query = queries(1).remove(0);
+        let cold = std::env::var_os("NOPALDB_HNSW_COLD").is_some();
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
+                if cold {
+                    // El rebuild reescribe el dump; borrarlo en cada iteración
+                    // mantiene la medición en frío.
+                    let _ = std::fs::remove_dir_all(path.join("hnsw"));
+                }
                 rt.block_on(async {
                     let graph = Graph::open_with_options(&path, bench_options()).await.expect("reopen");
                     let index = graph.get_or_build_embedding_index(MODEL).await.expect("index");

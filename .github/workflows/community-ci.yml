@@ -70,7 +70,7 @@ jobs:
         run: cargo test -p nopaldb --features core --test hybrid_test --test hybrid_explain_test --test fulltext_analyzer_test
 
       - name: Test filtered KNN recall (exact path + native HNSW filter)
-        run: cargo test -p nopaldb --features core --test knn_filtered_recall_test --test knn_exact_test --test hnsw_incremental_test
+        run: cargo test -p nopaldb --features core --test knn_filtered_recall_test --test knn_exact_test --test hnsw_incremental_test --test hnsw_persistence_test
 
       - name: Test indexed-node lifecycle (overwrite retracts, delete purges)
         run: cargo test -p nopaldb --features core --test index_lifecycle_test
@@ -94,7 +94,7 @@ jobs:
         run: cargo test -p nopaldb --no-default-features --features storage-redb --lib
 
       - name: Cross-engine migration (copy_database round-trip, checksum-verified)
-        run: cargo test -p nopaldb --features core,storage-redb --test kv_migrate_test --test open_lock_same_process_test
+        run: cargo test -p nopaldb --features core,storage-redb --test kv_migrate_test --test open_lock_same_process_test --test hnsw_persistence_test
 
       - name: Layout v2 migration (v1→v2 state machine)
         run: cargo test -p nopaldb --features core --test layout_v2_migration_test

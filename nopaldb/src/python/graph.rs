@@ -906,6 +906,8 @@ impl PyGraph {
         dict.set_item("tombstones", st.tombstones)?;
         dict.set_item("dimension", st.dimension)?;
         dict.set_item("needs_rebuild", st.needs_rebuild)?;
+        dict.set_item("persisted", st.persisted)?;
+        dict.set_item("loaded_from_disk_ms", st.loaded_from_disk_ms)?;
         Ok(Some(dict.into()))
     }
 

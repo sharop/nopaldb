@@ -80,6 +80,9 @@ pub struct Graph {
     auto_gc_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     /// Sello de solo-lectura. `None` en una apertura normal de escritura.
     read_only_seal: Option<crate::storage::kv::WriteSeal>,
+    /// Directorio de la base (`None` en memoria). Lo usan los caches que
+    /// persisten a disco fuera del motor KV, como el índice HNSW.
+    data_dir: Option<std::path::PathBuf>,
     auto_gc_stop_tx: Arc<Mutex<Option<watch::Sender<bool>>>>,
     auto_gc_config: Arc<RwLock<Option<AutoGcConfig>>>,
 
@@ -136,6 +139,14 @@ pub struct EmbeddingIndexStats {
     pub dimension: usize,
     /// `true` si la próxima búsqueda va a reconstruir (demasiados tombstones).
     pub needs_rebuild: bool,
+    /// `true` si el estado actual del índice está escrito en disco
+    /// (`<data_dir>/hnsw/`), es decir, si reabrir la base lo cargaría en vez
+    /// de reconstruirlo. `false` en memoria, bajo el umbral de persistencia
+    /// o con cambios desde el último dump (se escribe en `close`).
+    pub persisted: bool,
+    /// Milisegundos que tardó cargar el índice desde disco al construirlo;
+    /// `None` si se reconstruyó desde los embeddings de storage.
+    pub loaded_from_disk_ms: Option<u64>,
 }
 
 /// Estado de un nodo en el algoritmo de shortest path
@@ -437,6 +448,7 @@ impl Graph {
 
             auto_gc_task: Arc::new(Mutex::new(None)),
             read_only_seal: None,
+            data_dir: Some(path_ref.to_path_buf()),
             auto_gc_stop_tx: Arc::new(Mutex::new(None)),
             auto_gc_config: Arc::new(RwLock::new(None)),
             write_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -828,6 +840,7 @@ impl Graph {
 
             auto_gc_task: Arc::new(Mutex::new(None)),
             read_only_seal: None,
+            data_dir: None,
             auto_gc_stop_tx: Arc::new(Mutex::new(None)),
             auto_gc_config: Arc::new(RwLock::new(None)),
             write_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -1888,6 +1901,8 @@ impl Graph {
             tombstones: idx.tombstones(),
             dimension: idx.dimension(),
             needs_rebuild: idx.needs_rebuild(),
+            persisted: self.data_dir.is_some() && !idx.is_dirty(),
+            loaded_from_disk_ms: idx.loaded_in().map(|d| d.as_millis() as u64),
         })
     }
 
@@ -2017,8 +2032,8 @@ impl Graph {
                 }
             }
         }
-        // Construir índice (costoso) fuera del lock
-        let idx = self.build_embedding_index(model).await?;
+        // Cargar de disco o construir (costoso) fuera del lock
+        let idx = self.load_or_build_embedding_index(model).await?;
         let arc: SharedHnswIndex = Arc::new(std::sync::RwLock::new(idx));
         // Escribir en caché con write-lock
         self.embedding_indices
@@ -2026,6 +2041,134 @@ impl Graph {
             .await
             .insert(model.to_string(), Arc::clone(&arc));
         Ok(arc)
+    }
+
+    /// Carga el índice de `model` desde `<data_dir>/hnsw/` si el dump
+    /// describe exactamente los embeddings que hay en storage; si no hay
+    /// dump, está desfasado o no pasa la verificación, lo construye desde
+    /// storage y, si es persistible, lo escribe. Ver
+    /// [`crate::embeddings::persistence`].
+    #[cfg(feature = "embeddings-index")]
+    async fn load_or_build_embedding_index(
+        &self,
+        model: &str,
+    ) -> std::result::Result<crate::embeddings::HnswIndex, NopalError> {
+        use crate::embeddings::persistence::{self, LoadOutcome};
+
+        let Some(data_dir) = self.data_dir.clone() else {
+            return self.build_embedding_index(model).await;
+        };
+        let storage = Arc::clone(&self.storage);
+        let model_owned = model.to_string();
+        let (outcome, digest_before) = tokio::task::spawn_blocking(move || {
+            let digest = storage.node_embeddings_digest_for_model_sync(&model_owned)?;
+            Ok::<_, NopalError>((persistence::load(&model_owned, &data_dir, &digest), digest))
+        })
+        .await
+        .map_err(|e| NopalError::custom(format!("load_or_build_embedding_index join error: {e}")))??;
+
+        match outcome {
+            LoadOutcome::Loaded(idx) => {
+                log::info!(
+                    "HNSW '{}': cargado de disco ({} puntos, {} tombstones) en {:?}",
+                    model,
+                    idx.len(),
+                    idx.tombstones(),
+                    idx.loaded_in().unwrap_or_default()
+                );
+                return Ok(*idx);
+            }
+            LoadOutcome::Missing => {}
+            LoadOutcome::Stale(why) => log::info!("HNSW '{}': dump desfasado, se reconstruye ({why})", model),
+            LoadOutcome::Corrupt(why) => {
+                log::warn!("HNSW '{}': dump inutilizable, se reconstruye ({why})", model)
+            }
+        }
+
+        let mut idx = self.build_embedding_index(model).await?;
+        // Solo se certifica el dump si nadie escribió embeddings mientras se
+        // construía: la huella de después tiene que ser la de antes.
+        if !self.is_read_only() && persistence::is_persistable(idx.len()) {
+            let storage = Arc::clone(&self.storage);
+            let model_owned = model.to_string();
+            let data_dir = self.data_dir.clone().expect("data_dir comprobado arriba");
+            idx = tokio::task::spawn_blocking(move || {
+                match storage.node_embeddings_digest_for_model_sync(&model_owned) {
+                    Ok(after) if after == digest_before => {
+                        if let Err(e) = persistence::dump(&mut idx, &data_dir, after) {
+                            log::warn!("HNSW '{}': no se pudo escribir el dump ({e}); se reintenta en close()", model_owned);
+                        }
+                    }
+                    Ok(_) => log::info!(
+                        "HNSW '{}': embeddings escritos durante la construcción; el dump se escribe en close()",
+                        model_owned
+                    ),
+                    Err(e) => log::warn!("HNSW '{}': huella de embeddings falló ({e}); sin dump", model_owned),
+                }
+                idx
+            })
+            .await
+            .map_err(|e| NopalError::custom(format!("load_or_build_embedding_index join error: {e}")))?;
+        }
+        Ok(idx)
+    }
+
+    /// Escribe a disco los índices HNSW cacheados que cambiaron desde su
+    /// último dump (o que nunca se escribieron), para que el próximo `open`
+    /// los cargue en vez de reconstruirlos. `close()` lo llama; conviene
+    /// llamarlo a mano tras una carga masiva en un proceso de larga vida.
+    ///
+    /// Devuelve los modelos escritos. No hace nada en memoria, en
+    /// solo-lectura, ni con índices bajo el umbral de persistencia (a esos
+    /// les borra un dump viejo si lo hubiera). Si storage recibió embeddings
+    /// que el índice no tiene, ese modelo se salta con un aviso: un dump que
+    /// certifique un estado que no describe sería peor que ninguno.
+    #[cfg(feature = "embeddings-index")]
+    pub async fn persist_embedding_indices(&self) -> std::result::Result<Vec<String>, NopalError> {
+        use crate::embeddings::persistence;
+
+        let Some(data_dir) = self.data_dir.clone() else { return Ok(vec![]) };
+        if self.is_read_only() {
+            return Ok(vec![]);
+        }
+        let snapshot: Vec<(String, SharedHnswIndex)> = {
+            let cache = self.embedding_indices.read().await;
+            cache.iter().map(|(m, idx)| (m.clone(), Arc::clone(idx))).collect()
+        };
+        let mut written = Vec::new();
+        for (model, shared) in snapshot {
+            let storage = Arc::clone(&self.storage);
+            let data_dir = data_dir.clone();
+            let model_for_task = model.clone();
+            let wrote = tokio::task::spawn_blocking(move || -> std::result::Result<bool, NopalError> {
+                let mut idx = shared.write().unwrap_or_else(|e| e.into_inner());
+                if !persistence::is_persistable(idx.len()) {
+                    persistence::remove(&model_for_task, &data_dir)?;
+                    return Ok(false);
+                }
+                if !idx.is_dirty() {
+                    return Ok(false);
+                }
+                let digest = storage.node_embeddings_digest_for_model_sync(&model_for_task)?;
+                if digest.count != idx.len() {
+                    log::warn!(
+                        "HNSW '{}': storage tiene {} embeddings y el índice {} puntos; no se escribe el dump",
+                        model_for_task,
+                        digest.count,
+                        idx.len()
+                    );
+                    return Ok(false);
+                }
+                persistence::dump(&mut idx, &data_dir, digest)?;
+                Ok(true)
+            })
+            .await
+            .map_err(|e| NopalError::custom(format!("persist_embedding_indices join error: {e}")))??;
+            if wrote {
+                written.push(model);
+            }
+        }
+        Ok(written)
     }
 
     /// Obtiene los vecinos de un nodo
@@ -3722,6 +3865,15 @@ impl Graph {
         // 3. Flush storage (sled database)
         self.storage.flush().await?;
         log::debug!("  ✓ Storage flushed");
+
+        // 4. Índices HNSW con cambios → disco (caché derivada: si falla, el
+        // próximo open reconstruye; no es motivo para que close() falle).
+        #[cfg(feature = "embeddings-index")]
+        match self.persist_embedding_indices().await {
+            Ok(models) if !models.is_empty() => log::debug!("  ✓ HNSW persisted: {models:?}"),
+            Ok(_) => {}
+            Err(e) => log::warn!("  ✗ HNSW dump failed: {e}"),
+        }
 
         log::info!("✅ Database closed successfully");
         Ok(())

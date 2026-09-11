@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.20] - unreleased
+
+### Added
+
+- **El índice HNSW se persiste y se carga al reabrir** — cierra [#114](https://github.com/sharop/nopaldb/issues/114). Hasta ahora el índice vivía solo en RAM y la primera búsqueda tras abrir lo reconstruía desde storage (2.7 s con 10k vectores, 107 s con 100k; con el dump, 108 ms y 1.02 s). Ahora el grafo de `hnsw_rs` va a disco con su `file_dump` nativo en `<data_dir>/hnsw/<modelo>.hnsw.{graph,data}` más un `.meta` (mapa `DataId → NodeId`, tombstones, huella FNV-1a de los embeddings de storage y longitud+hash de los dos archivos). Se escribe tras construir el índice completo y en `close()` si hubo `insert`/`remove` desde el último dump; todo por archivo temporal + rename. Al abrir, `get_or_build_embedding_index` calcula la huella de los embeddings en storage y carga el dump solo si coincide; si no hay dump, está desfasado (embeddings escritos sin `close`, un proceso que murió) o no pasa la verificación (bytes cambiados, truncado), reconstruye y reescribe. Solo se persisten índices con más de `EXACT_SEARCH_THRESHOLD` (1024) puntos: por debajo el rebuild cuesta milisegundos. Nuevo `Graph::persist_embedding_indices()` para escribir a mano (devuelve los modelos escritos); `EmbeddingIndexStats` y el dict de Python ganan `persisted` y `loaded_from_disk_ms`. Docs: `EMBEDDINGS.md` §"Persistence across reopens". El bench `open_first_search` mide ahora el camino con dump; `NOPALDB_HNSW_COLD=1` mide el rebuild.
+
+### Changed
+
+- **`embeddings::persistence` reemplazado.** El módulo anterior (metadata en bincode sin el grafo, nunca conectado a `Graph`) desaparece; sus funciones `save_index_metadata`/`load_index_metadata`/`index_metadata_exists`/`remove_index_metadata` y el tipo `HnswIndexMeta` no tienen sustituto directo: el grafo completo se persiste ahora desde `Graph`.
+
 ## [0.5.19] - 2026-09-11
 
 ### Added
