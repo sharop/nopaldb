@@ -118,6 +118,8 @@ fn discard_incomplete_creation(path: &std::path::Path) -> Result<()> {
 
 pub(crate) struct SledEngine {
     db: ::sled::Db,
+    /// Reserva de la ruta en el registro del proceso; se suelta con el engine.
+    _lease: Option<super::PathLease>,
 }
 
 impl SledEngine {
@@ -170,7 +172,7 @@ impl SledEngine {
         let inicio = std::time::Instant::now();
         loop {
             match Self::config_for(profile).path(path).open() {
-                Ok(db) => return Ok(Self { db }),
+                Ok(db) => return Ok(Self { db, _lease: None }),
                 Err(e) if es_lock_ocupado(&e) && inicio.elapsed() < ESPERA_LOCK => {
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 }
@@ -196,7 +198,13 @@ impl SledEngine {
             .temporary(true)
             .open()
             .map_err(NopalError::from)?;
-        Ok(Self { db })
+        Ok(Self { db, _lease: None })
+    }
+
+    /// Adjunta la reserva de ruta del proceso (ver `kv::open_engine`).
+    pub(crate) fn with_lease(mut self, lease: super::PathLease) -> Self {
+        self._lease = Some(lease);
+        self
     }
 }
 
@@ -382,6 +390,11 @@ mod tests {
     /// deja de funcionar (p. ej. sled cambia la frase), el error vuelve a ser
     /// el crudo y la espera desaparece. Cualquiera de las dos cosas rompe
     /// este test.
+    ///
+    /// Abre el engine directamente, saltándose el registro de rutas de
+    /// `kv::open_engine`: por eso ve el camino "otro proceso" aunque el
+    /// ocupante viva en este mismo proceso. Es el comportamiento del motor
+    /// ante un flock ajeno, que es lo que aquí se prueba.
     #[test]
     fn retry_engages_on_a_locked_directory() {
         let dir = tempfile::tempdir().unwrap();

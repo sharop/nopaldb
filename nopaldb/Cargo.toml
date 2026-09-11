@@ -180,6 +180,10 @@ required-features = ["core"]
 name = "kv_migrate_test"
 required-features = ["storage-sled", "storage-redb"]
 
+[[test]]
+name = "open_lock_same_process_test"
+required-features = ["storage-sled", "storage-redb"]
+
 # Hybrid search tests call `Graph::search_hybrid`, which only exists with the
 # `hybrid` feature; without this gate they fail to compile under `--features
 # fulltext` alone.

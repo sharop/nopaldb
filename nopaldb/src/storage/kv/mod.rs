@@ -14,8 +14,8 @@
 // de los motores: `mod sled` dentro de `storage` ocultaría al crate `sled`
 // para todas las rutas del módulo padre.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::error::Result;
 use crate::storage::backend::{StorageOptions, StorageProfile};
@@ -146,19 +146,76 @@ pub(crate) trait KvEngine: Send + Sync {
     fn flush(&self) -> Result<()>;
 }
 
+/// Rutas de las bases abiertas en ESTE proceso (canonicalizadas).
+///
+/// Ningún motor puede decir si el lock del directorio lo tiene otro proceso
+/// o este mismo: el flock no lleva PID, y en redb `DatabaseAlreadyOpen` es
+/// justamente la doble apertura en el mismo proceso. Sin este registro,
+/// reabrir una ruta que este proceso todavía tiene abierta —el caso típico:
+/// `graph.close()` sin soltar el valor— esperaba el reintento completo del
+/// lock y fallaba culpando a "otro proceso". Un `Vec` porque `Vec::new` es
+/// `const` y aquí caben pocas rutas.
+static OPEN_PATHS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Reserva de una ruta en [`OPEN_PATHS`] que se libera al soltarla. Vive
+/// dentro del engine, así que se libera exactamente cuando el engine muere,
+/// que es cuando el motor suelta el flock.
+pub(crate) struct PathLease(PathBuf);
+
+impl PathLease {
+    /// Registra `path`; `Err` inmediato (sin reintento) si este proceso ya
+    /// tiene esa ruta abierta.
+    pub(crate) fn acquire(path: &Path) -> Result<Self> {
+        // Canonicalizar exige que exista; los motores crean el directorio
+        // igual, así que hacerlo aquí no cambia nada observable.
+        std::fs::create_dir_all(path)?;
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let mut open = OPEN_PATHS.lock().unwrap_or_else(|e| e.into_inner());
+        if open.contains(&canonical) {
+            return Err(crate::error::StorageError::new(
+                crate::error::StorageErrorKind::Unsupported,
+                format!(
+                    "la base en {} ya está abierta en este proceso: el lock del directorio se \
+                     libera al soltar el `Graph` (drop), no en `close()`. Descarta el valor \
+                     anterior antes de reabrir, o abre una copia.",
+                    path.display()
+                ),
+            )
+            .into());
+        }
+        open.push(canonical.clone());
+        Ok(Self(canonical))
+    }
+}
+
+impl Drop for PathLease {
+    fn drop(&mut self) {
+        let mut open = OPEN_PATHS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = open.iter().position(|p| *p == self.0) {
+            open.swap_remove(i);
+        }
+    }
+}
+
 /// Abre un motor persistente en `path` según las opciones. Único punto del
 /// crate con dispatch por engine — un backend nuevo agrega su brazo aquí.
+///
+/// Antes de tocar el motor se reserva la ruta en [`OPEN_PATHS`]: si este
+/// proceso ya la tiene abierta, el error es inmediato y dice cómo salir
+/// (soltar el `Graph`), en vez de esperar el reintento del lock y culpar a
+/// otro proceso.
 pub(crate) fn open_engine(
     path: &Path,
     profile: StorageProfile,
     options: &StorageOptions,
 ) -> Result<Arc<dyn KvEngine>> {
     use crate::storage::backend::StorageEngine;
+    let lease = PathLease::acquire(path)?;
     match options.engine {
         #[cfg(feature = "storage-sled")]
-        StorageEngine::Sled => Ok(Arc::new(sled::SledEngine::open(path, profile)?)),
+        StorageEngine::Sled => Ok(Arc::new(sled::SledEngine::open(path, profile)?.with_lease(lease))),
         #[cfg(feature = "storage-redb")]
-        StorageEngine::Redb => Ok(Arc::new(redb::RedbEngine::open(path, profile)?)),
+        StorageEngine::Redb => Ok(Arc::new(redb::RedbEngine::open(path, profile)?.with_lease(lease))),
         #[allow(unreachable_patterns)]
         other => Err(engine_not_compiled(other)),
     }
