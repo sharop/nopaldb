@@ -353,10 +353,13 @@ impl Graph {
     /// The exact branch is skipped when the index itself is under the threshold:
     /// there `search_knn_filtered` is already exact over every point, without
     /// touching storage.
+    ///
+    /// The index lock is taken only around the synchronous index calls, never
+    /// across an `await`: the exact branch reads storage with the lock released.
     #[cfg(feature = "hybrid")]
     pub(crate) async fn vector_path(
         &self,
-        index: &crate::embeddings::HnswIndex,
+        index: &super::SharedHnswIndex,
         vector: &[f32],
         model: &str,
         allowed: Option<&HashSet<NodeId>>,
@@ -364,11 +367,15 @@ impl Graph {
         ef: usize,
     ) -> Result<(Vec<(NodeId, f32)>, VectorPath)> {
         let Some(set) = allowed else {
-            let hits = index.search_knn_with_ef(vector, candidates, ef)?;
+            let hits = index.read().unwrap_or_else(|e| e.into_inner()).search_knn_with_ef(vector, candidates, ef)?;
             return Ok((hits, VectorPath::Unfiltered));
         };
 
-        if set.len() <= EXACT_SEARCH_THRESHOLD && index.len() > EXACT_SEARCH_THRESHOLD {
+        let (index_len, dim) = {
+            let idx = index.read().unwrap_or_else(|e| e.into_inner());
+            (idx.len(), idx.dimension())
+        };
+        if set.len() <= EXACT_SEARCH_THRESHOLD && index_len > EXACT_SEARCH_THRESHOLD {
             let embeddings = self
                 .storage
                 .load_node_embeddings_for(set.iter().copied(), model)
@@ -377,7 +384,6 @@ impl Graph {
             // rechaza la query por dimensión, así que aquí solo pueden venir
             // de embeddings viejos del mismo modelo. Se omiten en vez de
             // envenenar el ranking con una distancia sin sentido.
-            let dim = index.dimension();
             let hits = rank_exact(
                 vector,
                 embeddings
@@ -389,7 +395,10 @@ impl Graph {
             return Ok((hits, VectorPath::ExactOverAllowed));
         }
 
-        let hits = index.search_knn_filtered(vector, candidates, ef, |id| set.contains(id))?;
+        let hits = index
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .search_knn_filtered(vector, candidates, ef, |id| set.contains(id))?;
         Ok((hits, VectorPath::HnswFiltered))
     }
 
@@ -525,8 +534,9 @@ mod tests {
             }
         }
 
-        let index = graph.get_or_build_embedding_index("m").await.unwrap();
-        assert!(index.len() > EXACT_SEARCH_THRESHOLD, "índice por encima del umbral");
+        let shared = graph.get_or_build_embedding_index("m").await.unwrap();
+        let index = &shared;
+        assert!(index.read().unwrap().len() > EXACT_SEARCH_THRESHOLD, "índice por encima del umbral");
         assert!(allowed_ids.len() <= EXACT_SEARCH_THRESHOLD, "permitidos por debajo");
 
         let allowed: HashSet<NodeId> = allowed_ids.iter().map(|(id, _)| *id).collect();
@@ -534,7 +544,7 @@ mod tests {
         let k = 10;
 
         let (hits, path) = graph
-            .vector_path(&index, query, "m", Some(&allowed), k, 30)
+            .vector_path(index, query, "m", Some(&allowed), k, 30)
             .await
             .unwrap();
 
@@ -570,9 +580,10 @@ mod tests {
             let id = graph.add_node(Node::new("Frag")).await.unwrap();
             graph.add_node_embedding(id, v, "m").await.unwrap();
         }
-        let index = graph.get_or_build_embedding_index("m").await.unwrap();
+        let shared = graph.get_or_build_embedding_index("m").await.unwrap();
+        let index = &shared;
         let (hits, path) = graph
-            .vector_path(&index, &[1.0, 0.0, 0.0, 0.0], "m", None, 5, 30)
+            .vector_path(index, &[1.0, 0.0, 0.0, 0.0], "m", None, 5, 30)
             .await
             .unwrap();
         assert_eq!(path, VectorPath::Unfiltered);
@@ -599,11 +610,12 @@ mod tests {
             }
         }
 
-        let index = graph.get_or_build_embedding_index("m").await.unwrap();
+        let shared = graph.get_or_build_embedding_index("m").await.unwrap();
+        let index = &shared;
         assert!(allowed.len() > EXACT_SEARCH_THRESHOLD, "permitidos por encima del umbral");
 
         let (hits, path) = graph
-            .vector_path(&index, &vecs[3], "m", Some(&allowed), 10, 30)
+            .vector_path(index, &vecs[3], "m", Some(&allowed), 10, 30)
             .await
             .unwrap();
 

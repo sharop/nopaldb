@@ -64,6 +64,13 @@ const PARALLEL_INSERT_THRESHOLD: usize = 128;
 /// exacto ([`rank_exact`]), que además es más barato.
 pub const MAX_FILTERED_EF_SEARCH: usize = 4096;
 
+/// A partir de esta fracción de tombstones sobre puntos vivos, el índice pide
+/// rebuild ([`HnswIndex::needs_rebuild`]).
+pub const REBUILD_TOMBSTONE_RATIO: f64 = 0.20;
+/// Mínimo absoluto de tombstones para pedir rebuild: reconstruir un índice
+/// de 10 puntos por 3 borrados no vale el trabajo.
+pub const REBUILD_TOMBSTONE_MIN: usize = 64;
+
 /// Factor de crecimiento de `ef_search` entre intentos de la escalada.
 const EF_ESCALATION_FACTOR: usize = 4;
 
@@ -151,6 +158,12 @@ pub struct HnswIndex {
     /// el índice no soporta remociones). El costo de memoria es acotado:
     /// a lo sumo `EXACT_SEARCH_THRESHOLD` vectores duplicados.
     exact_store: Vec<(NodeId, Vec<f32>)>,
+    /// Puntos retirados del índice (`remove`). `hnsw_rs` no borra del grafo,
+    /// así que el borrado es lógico: el `DataId` sale de `id_map` y las
+    /// búsquedas lo descartan. Cada tombstone sigue ocupando un vecino en el
+    /// recorrido, por eso las búsquedas piden `k + tombstones` y por eso,
+    /// pasado [`Self::needs_rebuild`], conviene reconstruir.
+    tombstones: usize,
 }
 
 impl HnswIndex {
@@ -177,6 +190,7 @@ impl HnswIndex {
             dimension,
             next_data_id: 0,
             exact_store: Vec::new(),
+            tombstones: 0,
         }
     }
 
@@ -204,6 +218,7 @@ impl HnswIndex {
             dimension,
             next_data_id: 0,
             exact_store: Vec::new(),
+            tombstones: 0,
         }
     }
 
@@ -320,6 +335,46 @@ impl HnswIndex {
         Ok(())
     }
 
+    /// Retira un punto del índice. Devuelve `false` si no estaba.
+    ///
+    /// Borrado lógico: `hnsw_rs` no elimina puntos del grafo, así que el
+    /// `DataId` queda como tombstone (sigue en el recorrido, ya no se
+    /// devuelve). Actualizar el vector de un nodo = `remove` + `insert`.
+    pub fn remove(&mut self, node_id: NodeId) -> bool {
+        let Some(data_id) = self.reverse_map.remove(&node_id) else { return false };
+        self.id_map.remove(&data_id);
+        if !self.exact_store.is_empty() {
+            self.exact_store.retain(|(id, _)| *id != node_id);
+        }
+        self.tombstones += 1;
+        true
+    }
+
+    /// `true` si `node_id` está indexado (y no retirado).
+    pub fn contains(&self, node_id: NodeId) -> bool {
+        self.reverse_map.contains_key(&node_id)
+    }
+
+    /// Puntos retirados que siguen ocupando sitio en el grafo HNSW.
+    pub fn tombstones(&self) -> usize {
+        self.tombstones
+    }
+
+    /// `true` cuando los tombstones superan [`REBUILD_TOMBSTONE_RATIO`] de los
+    /// puntos vivos (y al menos [`REBUILD_TOMBSTONE_MIN`]): cada búsqueda paga
+    /// vecinos muertos y el recall se degrada; reconstruir desde storage
+    /// devuelve un grafo limpio. Quien tiene el índice en caché decide cuándo.
+    pub fn needs_rebuild(&self) -> bool {
+        self.tombstones >= REBUILD_TOMBSTONE_MIN
+            && self.tombstones as f64 > self.id_map.len() as f64 * REBUILD_TOMBSTONE_RATIO
+    }
+
+    /// `k` a pedir al grafo para devolver `k` vivos: los tombstones pueden
+    /// ocupar hasta `tombstones` de los vecinos devueltos.
+    fn k_with_tombstones(&self, k: usize) -> usize {
+        k.saturating_add(self.tombstones).min(self.id_map.len().max(k))
+    }
+
     /// Busca los `k` nodos más cercanos al vector `query` en el espacio de embeddings.
     ///
     /// Retorna `Vec<(NodeId, f32)>` ordenado por distancia ascendente (más cercano primero).
@@ -361,17 +416,20 @@ impl HnswIndex {
         if self.uses_exact_path() {
             return Ok(self.search_exact(query, k));
         }
-
-        let neighbors = self.inner.search(query, k, ef_search);
-
-        let mut results = Vec::with_capacity(neighbors.len());
+        // Los tombstones siguen en el grafo y ocupan vecinos: pedir de más y
+        // descartar los retirados (no están en `id_map`).
+        let k_eff = self.k_with_tombstones(k);
+        let neighbors = self.inner.search(query, k_eff, ef_search.max(k_eff));
+        let mut results = Vec::with_capacity(k);
         for neighbor in neighbors {
             let data_id = neighbor.d_id;
             if let Some(&node_id) = self.id_map.get(&data_id) {
                 results.push((node_id, neighbor.distance));
+                if results.len() == k {
+                    break;
+                }
             }
         }
-
         Ok(results)
     }
 

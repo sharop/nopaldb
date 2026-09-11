@@ -109,9 +109,33 @@ pub struct Graph {
     #[cfg(feature = "algorithms")]
     leiden_partition_cache: Arc<RwLock<Option<CommunityPartitionCache>>>,
 
-    /// Caché en memoria de índices HNSW por modelo (evita reconstruir desde Sled en cada query).
+    /// Caché en memoria de índices HNSW por modelo (evita reconstruir desde
+    /// storage en cada query). Cada índice va bajo su propio `std::sync::RwLock`
+    /// porque desde 0.5.19 los embeddings nuevos se INSERTAN en él en vez de
+    /// tirarlo (#113); las búsquedas toman el read-lock, síncrono y sin
+    /// `await` dentro.
     #[cfg(feature = "embeddings-index")]
-    embedding_indices: Arc<RwLock<HashMap<String, Arc<crate::embeddings::HnswIndex>>>>,
+    embedding_indices: Arc<RwLock<HashMap<String, SharedHnswIndex>>>,
+}
+
+/// Un índice HNSW compartido y mutable: `Arc<std::sync::RwLock<HnswIndex>>`.
+/// Leer: `index.read().unwrap().search_knn(..)`; el `Graph` es quien escribe.
+#[cfg(feature = "embeddings-index")]
+pub type SharedHnswIndex = Arc<std::sync::RwLock<crate::embeddings::HnswIndex>>;
+
+/// Estado del índice HNSW de un modelo, para introspección
+/// ([`Graph::embedding_index_stats`]).
+#[cfg(feature = "embeddings-index")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingIndexStats {
+    pub model: String,
+    /// Puntos vivos.
+    pub size: usize,
+    /// Puntos retirados que siguen en el grafo hasta el próximo rebuild.
+    pub tombstones: usize,
+    pub dimension: usize,
+    /// `true` si la próxima búsqueda va a reconstruir (demasiados tombstones).
+    pub needs_rebuild: bool,
 }
 
 /// Estado de un nodo en el algoritmo de shortest path
@@ -1527,9 +1551,12 @@ impl Graph {
             let purged = self.storage.delete_node_embeddings(id).await?;
             #[cfg(feature = "embeddings-index")]
             if purged > 0 {
-                // El índice en caché todavía contiene el vector; invalidarlo
-                // fuerza el rebuild, igual que hace `add_node_embedding`.
-                self.embedding_indices.write().await.clear();
+                // Retirar el punto de cada índice en caché (tombstone): la
+                // búsqueda deja de devolverlo sin reconstruir nada (#113).
+                let cache = self.embedding_indices.read().await;
+                for index in cache.values() {
+                    index.write().unwrap_or_else(|e| e.into_inner()).remove(id);
+                }
             }
         }
 
@@ -1819,10 +1846,39 @@ impl Graph {
         }
         let embedding = crate::embeddings::Embedding::new(node_id, vector, model);
         self.storage.save_node_embedding(&embedding).await?;
-        // Invalidar índice HNSW en caché: el nuevo embedding lo desactualiza
+        // El índice en caché se actualiza en sitio (#113). Antes se tiraba y la
+        // siguiente búsqueda pagaba un rebuild O(N): 2.4 s con 10k vectores,
+        // 103 s con 100k, por cada embedding nuevo. Sin índice en caché no hay
+        // nada que hacer: se construirá completo en la primera búsqueda.
         #[cfg(feature = "embeddings-index")]
-        self.embedding_indices.write().await.remove(model);
+        {
+            let cache = self.embedding_indices.read().await;
+            if let Some(index) = cache.get(model) {
+                let mut idx = index.write().unwrap_or_else(|e| e.into_inner());
+                if idx.contains(node_id) {
+                    // Actualización: el punto viejo queda como tombstone.
+                    idx.remove(node_id);
+                }
+                idx.insert(node_id, embedding.vector.clone())?;
+            }
+        }
         Ok(())
+    }
+
+    /// Estado del índice HNSW en caché para `model`; `None` si todavía no se
+    /// construyó (se construye en la primera búsqueda).
+    #[cfg(feature = "embeddings-index")]
+    pub async fn embedding_index_stats(&self, model: &str) -> Option<EmbeddingIndexStats> {
+        let cache = self.embedding_indices.read().await;
+        let index = cache.get(model)?;
+        let idx = index.read().unwrap_or_else(|e| e.into_inner());
+        Some(EmbeddingIndexStats {
+            model: model.to_string(),
+            size: idx.len(),
+            tombstones: idx.tombstones(),
+            dimension: idx.dimension(),
+            needs_rebuild: idx.needs_rebuild(),
+        })
     }
 
     /// Obtiene el embedding de un nodo
@@ -1926,26 +1982,34 @@ impl Graph {
     }
 
     /// Devuelve el índice HNSW para `model` desde la caché en memoria,
-    /// construyéndolo desde Sled si no existe todavía.
+    /// construyéndolo desde storage si no existe todavía.
     ///
-    /// Cada llamada subsecuente para el mismo `model` retorna el índice ya construido
-    /// sin tocar el storage. La caché se invalida automáticamente cuando se guarda
-    /// un nuevo embedding via `add_node_embedding()`.
+    /// Cada llamada subsecuente para el mismo `model` retorna el índice ya
+    /// construido sin tocar el storage. Un embedding nuevo o actualizado se
+    /// inserta en él (`add_node_embedding`); un nodo borrado se retira. Solo
+    /// cuando los tombstones superan la fracción de rebuild
+    /// ([`crate::embeddings::REBUILD_TOMBSTONE_RATIO`]) se reconstruye desde
+    /// storage, aquí, antes de devolverlo.
+    ///
+    /// Leer: `index.read().unwrap().search_knn(..)`.
     #[cfg(feature = "embeddings-index")]
     pub async fn get_or_build_embedding_index(
         &self,
         model: &str,
-    ) -> std::result::Result<Arc<crate::embeddings::HnswIndex>, NopalError> {
+    ) -> std::result::Result<SharedHnswIndex, NopalError> {
         // Ruta rápida: leer con read-lock
         {
             let cache = self.embedding_indices.read().await;
             if let Some(idx) = cache.get(model) {
-                return Ok(Arc::clone(idx));
+                let stale = idx.read().unwrap_or_else(|e| e.into_inner()).needs_rebuild();
+                if !stale {
+                    return Ok(Arc::clone(idx));
+                }
             }
         }
         // Construir índice (costoso) fuera del lock
         let idx = self.build_embedding_index(model).await?;
-        let arc = Arc::new(idx);
+        let arc: SharedHnswIndex = Arc::new(std::sync::RwLock::new(idx));
         // Escribir en caché con write-lock
         self.embedding_indices
             .write()

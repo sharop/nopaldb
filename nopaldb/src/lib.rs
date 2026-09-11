@@ -123,6 +123,8 @@ pub use types::{Node, Edge, NodeId, EdgeId, PropertyValue, Properties};
 pub use storage::{MigrationReport, Storage};
 pub use storage::{StorageEngine, StorageOptions, StorageProfile, StorageTuning};
 pub use graph::{Graph, Direction, BulkLoader, BulkLoadStats, AutoGcConfig, AutoGcStatus, GraphView, Subgraph, LinkSpec, UpsertOutcome, UpsertRequest};
+#[cfg(feature = "embeddings-index")]
+pub use graph::{EmbeddingIndexStats, SharedHnswIndex};
 #[cfg(feature = "hybrid")]
 pub use graph::{
     BranchReport, ExplainedHit, HybridExplain, HybridFilter, HybridHit, HybridQuery, VectorPath,

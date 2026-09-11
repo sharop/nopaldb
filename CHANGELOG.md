@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.19] - unreleased
+
+### Added
+
+- **HNSW: inserción incremental en vez de invalidar el índice** — cierra [#113](https://github.com/sharop/nopaldb/issues/113). `add_node_embedding` inserta el vector en el índice cacheado del modelo (o lo reemplaza si el nodo ya tenía uno: el punto viejo queda como tombstone) y `delete_node` lo retira; antes cada embedding nuevo tiraba el índice completo y la siguiente búsqueda pagaba un rebuild O(N): 2.4 s con 10k vectores, 103 s con 100k, medidos en #112. Las búsquedas piden `k + tombstones` al grafo para no devolver ni menos de `k` ni puntos retirados; cuando los tombstones superan el 20 % de los puntos vivos (y al menos 64), la siguiente `get_or_build_embedding_index` reconstruye desde storage. Sin índice en caché el comportamiento es el de siempre (build completo en la primera búsqueda). Nuevo `HnswIndex::{remove, contains, tombstones, needs_rebuild}` y `Graph::embedding_index_stats(model)` (también en Python).
+
+### Changed
+
+- `Graph::get_or_build_embedding_index` devuelve `SharedHnswIndex = Arc<std::sync::RwLock<HnswIndex>>` en vez de `Arc<HnswIndex>`: el índice ahora se muta en sitio y las búsquedas toman el read-lock (`index.read().unwrap().search_knn(..)`). Migración de una línea.
+
+### Fixed
+
+- **Python `knn_nodes` reconstruía el índice completo en cada llamada** (`build_embedding_index`, no la caché): con 100k vectores eran ~90 s por consulta. Ahora usa el índice cacheado del `Graph`, como NQL y `search_hybrid`.
+
+---
+
 ## [0.5.18] - 2026-09-11
 
 ### Added

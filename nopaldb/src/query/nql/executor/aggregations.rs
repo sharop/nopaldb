@@ -120,7 +120,7 @@ struct QueryContext {
     #[cfg_attr(not(feature = "algorithms"), allow(dead_code))]
     algo: AlgoResults,
     #[cfg(feature = "embeddings-index")]
-    emb_indices: HashMap<String, std::sync::Arc<crate::embeddings::HnswIndex>>,
+    emb_indices: HashMap<String, crate::graph::SharedHnswIndex>,
 }
 
 impl QueryContext {
@@ -1085,7 +1085,7 @@ async fn execute_knn_nodes(
         ))
     })?;
 
-    let results = index.search_knn(&emb.vector, k)?;
+    let results = index.read().unwrap_or_else(|e| e.into_inner()).search_knn(&emb.vector, k)?;
     let json = format!(
         "[{}]",
         results.iter()

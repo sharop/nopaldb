@@ -876,13 +876,37 @@ impl PyGraph {
         let graph = self.graph()?;
         let model = model.to_string();
 
+        // Índice cacheado del Graph (antes se reconstruía COMPLETO en cada
+        // llamada: 90 s por consulta con 100k vectores).
         let idx = to_py_result(crate::python::runtime::block_on(py, async move {
-            graph.build_embedding_index(&model).await
+            graph.get_or_build_embedding_index(&model).await
         }))?;
 
         let ef = ef_search.unwrap_or(crate::embeddings::DEFAULT_EF_SEARCH);
-        to_py_result(idx.search_knn_with_ef(&query_vector, k, ef))
+        let guard = idx.read().unwrap_or_else(|e| e.into_inner());
+        to_py_result(guard.search_knn_with_ef(&query_vector, k, ef))
             .map(|hits| hits.into_iter().map(|(id, dist)| (id.to_string(), dist)).collect())
+    }
+
+    /// Estado del índice HNSW en caché para `model`.
+    ///
+    /// Returns:
+    ///     dict | None: {model, size, tombstones, dimension, needs_rebuild}, o
+    ///     None si el índice no se ha construido todavía (se construye en la
+    ///     primera búsqueda).
+    #[cfg(feature = "embeddings-index")]
+    fn embedding_index_stats(&self, py: Python<'_>, model: &str) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
+        let graph = self.graph()?;
+        let model = model.to_string();
+        let stats = crate::python::runtime::block_on(py, async move { graph.embedding_index_stats(&model).await });
+        let Some(st) = stats else { return Ok(None) };
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("model", st.model)?;
+        dict.set_item("size", st.size)?;
+        dict.set_item("tombstones", st.tombstones)?;
+        dict.set_item("dimension", st.dimension)?;
+        dict.set_item("needs_rebuild", st.needs_rebuild)?;
+        Ok(Some(dict.into()))
     }
 
     /// Importa una fuente Turtle (OWL/RDF) en el grafo.
