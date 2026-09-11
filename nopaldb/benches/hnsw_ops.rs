@@ -18,8 +18,11 @@
 //! `open_first_search`. Vectores sintéticos de dimensión 384 con semilla fija:
 //! los números son comparables entre corridas y entre máquinas del mismo tipo.
 //!
-//! Correr: `cargo bench -p nopaldb --features core --bench hnsw_ops`
-//! (o `--features embeddings-index` como mínimo).
+//! Correr: `make bench BENCH=hnsw_ops`, que equivale a
+//! `CARGO_PROFILE_RELEASE_PANIC=unwind cargo bench -p nopaldb --features core --bench hnsw_ops`.
+//! El override es obligatorio: el perfil release del workspace lleva
+//! `panic = "abort"` y el harness de bench exige `unwind`; sin él, desde un
+//! target limpio, las dependencias chocan ("requires panic strategy abort").
 
 use std::hint::black_box;
 use std::time::Duration;

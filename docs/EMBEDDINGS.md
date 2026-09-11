@@ -307,9 +307,10 @@ See `docs/HNSW_ALGORITHM.md` for a deep dive into how HNSW works.
 
 ### Measuring it: the `hnsw_ops` bench
 
-`cargo bench -p nopaldb --features core --bench hnsw_ops` measures the index on
-synthetic 384-dimensional vectors (fixed seed; sizes via `NOPALDB_HNSW_N`,
-default `10000,100000`). Orders of magnitude on an Apple Silicon laptop,
+`make bench BENCH=hnsw_ops` measures the index on synthetic 384-dimensional
+vectors (fixed seed; sizes via `NOPALDB_HNSW_N`, default `10000,100000`). The
+target wraps `cargo bench` with `CARGO_PROFILE_RELEASE_PANIC=unwind`: the
+workspace's release profile aborts on panic, and bench harnesses need unwind. Orders of magnitude on an Apple Silicon laptop,
 0.5.18, k = 10:
 
 | what | N = 10k | N = 100k |
