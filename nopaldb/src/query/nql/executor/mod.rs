@@ -5341,7 +5341,7 @@ impl<'a> Executor<'a> {
 
         // Obtener índice HNSW desde caché (o construirlo si no existe)
         let index = self.graph.get_or_build_embedding_index(&model).await?;
-        let results = index.search_knn(&ref_embedding.vector, k)?;
+        let results = index.read().unwrap_or_else(|e| e.into_inner()).search_knn(&ref_embedding.vector, k)?;
 
         let node_ids: HashSet<crate::types::NodeId> = results.into_iter().map(|(id, _)| id).collect();
         Ok(Some(node_ids))

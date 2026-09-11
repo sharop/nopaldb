@@ -70,7 +70,7 @@ jobs:
         run: cargo test -p nopaldb --features core --test hybrid_test --test hybrid_explain_test --test fulltext_analyzer_test
 
       - name: Test filtered KNN recall (exact path + native HNSW filter)
-        run: cargo test -p nopaldb --features core --test knn_filtered_recall_test --test knn_exact_test
+        run: cargo test -p nopaldb --features core --test knn_filtered_recall_test --test knn_exact_test --test hnsw_incremental_test
 
       - name: Test indexed-node lifecycle (overwrite retracts, delete purges)
         run: cargo test -p nopaldb --features core --test index_lifecycle_test
@@ -139,4 +139,5 @@ jobs:
           python nopaldb/python/scripts/turtle_roundtrip_sample.py
           python nopaldb/python/scripts/fulltext_analyzer_sample.py
           python nopaldb/python/scripts/shacl_sample.py
+          python nopaldb/python/scripts/hnsw_sample.py
           mypy --strict nopaldb/python/scripts/typecheck_sample.py

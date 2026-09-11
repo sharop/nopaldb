@@ -184,8 +184,9 @@ Deleting a node deletes its vectors, for every model. This is not just space
 hygiene: the HNSW index is rebuilt from this keyspace, so a vector left behind
 would put the deleted node back into search results after the next rebuild.
 
-Overwriting a node's vector for the same model replaces it and invalidates the
-cached index, so the next query rebuilds.
+Overwriting a node's vector for the same model replaces it in storage **and in
+the cached HNSW index** (the old point stays as a tombstone; see below). Nothing
+is rebuilt.
 
 What the engine does **not** do is notice that the *text* changed. Nothing
 re-runs your embedding model, so a node whose content was rewritten keeps
@@ -250,11 +251,44 @@ an opaque closure, so it does not know the allowed cardinality. `search_hybrid`
 does know it, and switches automatically; see
 [HYBRID_SEARCH.md](HYBRID_SEARCH.md).
 
-### Incremental inserts
+### Incremental inserts, updates and deletes
+
+Since 0.5.19 the index the graph keeps in memory is updated in place:
+
+- `add_node_embedding` for a new node **inserts** the vector into the cached
+  index (`HnswIndex::insert`, milliseconds) instead of discarding the index;
+  before 0.5.19 the next search paid a full rebuild (2.4 s at 10k vectors,
+  103 s at 100k, per new embedding — see the bench table below).
+- `add_node_embedding` for a node that already has a vector **replaces** it:
+  the old point becomes a *tombstone* (hnsw_rs cannot delete from its graph),
+  the new one is inserted.
+- `delete_node` **removes** the node's points from every cached index the same
+  way.
+- Tombstones still occupy neighbours during a traversal, so searches over-fetch
+  by their count and never return them. When they exceed 20 % of the live
+  points (and at least 64), the next `get_or_build_embedding_index` rebuilds
+  the index from storage, which resets them.
+- If no index is cached yet, nothing happens: it is built whole on the first
+  search, as before.
+
+`graph.embedding_index_stats(model)` (Rust and Python) reports `size`,
+`tombstones`, `dimension` and `needs_rebuild`.
+
+The index handle is `SharedHnswIndex = Arc<std::sync::RwLock<HnswIndex>>`;
+searches take the read lock:
+
+```rust
+let index = graph.get_or_build_embedding_index("minilm").await?;
+let hits = index.read().unwrap().search_knn(&query, 10)?;
+```
+
+The programmatic API is unchanged for a standalone index:
 
 ```rust
 let mut index = HnswIndex::new("minilm", 384, 100_000);
-index.insert(node_id, vector)?;  // No rebuild needed
+index.insert(node_id, vector)?;   // no rebuild needed
+index.remove(node_id);            // logical delete: one tombstone
+index.needs_rebuild();            // true past the tombstone ratio
 ```
 
 ### NQL: `similar_to()` in WHERE
@@ -342,8 +376,9 @@ What the numbers say:
 ## Current boundaries
 
 - **Batch upsert** — `add_node_embedding` is one-at-a-time.
-- **Persistent HNSW graph** — the HNSW index lives in RAM and rebuilds from Sled on
-  startup.
+- **Persistent HNSW graph** — the HNSW index lives in RAM and rebuilds from
+  storage on the first search after opening (107 s at 100k vectors);
+  [#114](https://github.com/sharop/nopaldb/issues/114) persists it.
 - **Edge embedding HNSW** — `EdgeEmbedding` storage exists but the HNSW index only
   covers node embeddings currently.
 - **Automatic invalidation** — updating a node's properties does not invalidate its
