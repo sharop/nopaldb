@@ -455,6 +455,14 @@ pub enum Expression {
 
     // Wildcard * (used in function arguments like count(*))
     Wildcard,
+
+    /// Argumento con nombre dentro de una llamada: `hybrid(n, "t", "ref", "m", rrf_k = 30)`.
+    /// Solo vive en `FunctionCall.args`; el validador lo admite únicamente en
+    /// `hybrid(...)`. `value` es siempre un `Literal`.
+    NamedArg {
+        name: String,
+        value: Box<Expression>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

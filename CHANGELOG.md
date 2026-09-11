@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **NQL `hybrid(...)` con parámetros y filtro por el label del patrón** — cierra [#115](https://github.com/sharop/nopaldb/issues/115). Opciones con nombre tras los cuatro posicionales: `rrf_k`, `ef_search`, `overfetch`, `text_index` (`hybrid(n, "t", "ref", "m", rrf_k = 30, text_index = "Doc_body")`); hasta ahora estaban fijos en el código y afinar el híbrido obligaba a salir de NQL. El top-K se calcula **dentro del label del patrón** (`(n:Doc)` pasa como `HybridFilter`): antes la búsqueda corría sobre todos los labels y el stream tiraba los ajenos después, así que con `limit 1` un nodo de otro label que ganara dejaba la consulta en cero filas. `explain` imprime los parámetros efectivos, defaults incluidos. Gramática: argumentos con nombre en llamadas (`Expression::NamedArg`), admitidos solo en `hybrid`. Referencia NQL EN/ES: sección nueva "Búsqueda vectorial e híbrida en WHERE" (ni `similar_to` ni `hybrid` estaban documentados ahí).
 - **HNSW: inserción incremental en vez de invalidar el índice** — cierra [#113](https://github.com/sharop/nopaldb/issues/113). `add_node_embedding` inserta el vector en el índice cacheado del modelo (o lo reemplaza si el nodo ya tenía uno: el punto viejo queda como tombstone) y `delete_node` lo retira; antes cada embedding nuevo tiraba el índice completo y la siguiente búsqueda pagaba un rebuild O(N): 2.4 s con 10k vectores, 103 s con 100k, medidos en #112. Las búsquedas piden `k + tombstones` al grafo para no devolver ni menos de `k` ni puntos retirados; cuando los tombstones superan el 20 % de los puntos vivos (y al menos 64), la siguiente `get_or_build_embedding_index` reconstruye desde storage. Sin índice en caché el comportamiento es el de siempre (build completo en la primera búsqueda). Nuevo `HnswIndex::{remove, contains, tombstones, needs_rebuild}` y `Graph::embedding_index_stats(model)` (también en Python).
 
 ### Changed
@@ -19,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`hybrid(...)` mal escrito era un no-op silencioso**: `hybrid` y `similar_to` no se validaban; con una aridad incorrecta el executor no precomputaba nada y el predicado pasaba como `true`, devolviendo TODOS los nodos. Ahora la aridad, los tipos de los argumentos y las opciones se validan con un error que nombra el problema.
 - **Python `knn_nodes` reconstruía el índice completo en cada llamada** (`build_embedding_index`, no la caché): con 100k vectores eran ~90 s por consulta. Ahora usa el índice cacheado del `Graph`, como NQL y `search_hybrid`.
 
 ---

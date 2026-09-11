@@ -14,6 +14,7 @@
 - [Predicados de Ontología](#predicados-de-ontología-instanceof--subclassof)
 - [Operaciones de Escritura (ADD/UPDATE/DELETE)](#operaciones-de-escritura-addupdatedelete)
 - [Índices (CREATE INDEX / DROP INDEX)](#índices-create-index--drop-index)
+- [Búsqueda vectorial e híbrida en WHERE](#búsqueda-vectorial-e-híbrida-en-where)
 - [Agregaciones y Funciones](#agregaciones-y-funciones)
 - [Exportación de Datos (EXPORT)](#exportación-de-datos-export)
 - [Operadores](#operadores)
@@ -280,6 +281,41 @@ lo dice exactamente así. El analyzer se guarda junto al índice y sobrevive a
 reabrir la base; los índices creados antes de 0.5.13 conservan el default.
 
 Rust: `graph.create_index_with(label, property, IndexType::FullText, IndexOptions { analyzer: Some(FullTextAnalyzer::for_language("spanish")) })` y `graph.describe_index(name)`. Python: `graph.create_index("Nota", "cuerpo", "fulltext", analyzer={"language": "spanish"})` y `graph.describe_index("Nota_cuerpo")`.
+
+---
+
+## Búsqueda vectorial e híbrida en WHERE
+
+Con las features `embeddings-index` / `hybrid`, dos predicados convierten un
+patrón en una búsqueda top-K en vez de un scan. Ambos toman el vector de
+consulta de un **nodo de referencia** buscado por su propiedad `name`, y K del
+`LIMIT` (default 10).
+
+```nql
+-- Vecinos más cercanos del nodo llamado "q" en el espacio de embeddings "minilm"
+find n.titulo from (n:Articulo) where similar_to(n, "q", "minilm") limit 10
+
+-- Texto completo + vector, fusionados por Reciprocal Rank Fusion
+find n.titulo from (n:Articulo) where hybrid(n, "memoria de grafo", "q", "minilm") limit 10
+
+-- Afinado: cada parámetro de HybridQuery es una opción con nombre tras los cuatro posicionales
+find n.titulo from (n:Articulo)
+where hybrid(n, "memoria de grafo", "q", "minilm", rrf_k = 30, ef_search = 128, overfetch = 8, text_index = "Articulo_cuerpo")
+limit 10
+```
+
+| Función | Argumentos | Notas |
+|---|---|---|
+| `similar_to(n, "ref_name", "modelo")` | variable del patrón, nombre del nodo de referencia, modelo | k-NN por HNSW; exacto por debajo de 1024 vectores |
+| `hybrid(n, "texto", "ref_name", "modelo", opciones…)` | + el texto de la consulta full-text | RRF de texto y vector; el top-K se calcula dentro del label del patrón |
+
+Opciones con nombre de `hybrid`: `rrf_k` (número > 0, default 60), `ef_search`
+(entero ≥ 1, default 30), `overfetch` (entero ≥ 1, default 4), `text_index`
+(cadena; default: el primer índice full-text del label). Una opción
+desconocida, un valor del tipo equivocado o un número incorrecto de
+posicionales es un error de validación que nombra el problema; ninguna otra
+función acepta opciones con nombre. `explain` imprime los parámetros efectivos.
+Detalle y API Rust/Python: [HYBRID_SEARCH.md](../HYBRID_SEARCH.md), [EMBEDDINGS.md](../EMBEDDINGS.md).
 
 ---
 

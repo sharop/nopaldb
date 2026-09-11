@@ -147,14 +147,37 @@ explanation cannot change the result.
 `hybrid(n, "text", "ref_name", "model")` in a WHERE clause filters the pattern to
 the top-K hybrid results. The vector is the embedding of the reference node
 resolved by its `name` property (the same convention as `similar_to`); K comes
-from the query `LIMIT` (default 10). The FROM pattern's own label filter narrows
-the result downstream.
+from the query `LIMIT` (default 10). The top-K is computed **inside the FROM
+pattern's label**: `(n:Chunk)` becomes the hybrid filter, so a better-matching
+node of another label cannot push a `Chunk` out of the K (before 0.5.19 the
+search ran over every label and the stream dropped the foreign hits afterwards,
+which with `limit 1` could leave the query with zero rows).
+
+Every parameter of `HybridQuery` is reachable through named options after the
+four positional arguments:
 
 ```nql
 find n.name, n.body
 from (n:Chunk)
-where hybrid(n, "graph memory", "current_query", "e5-large")
+where hybrid(n, "graph memory", "current_query", "e5-large",
+             rrf_k = 30, ef_search = 128, overfetch = 8, text_index = "Chunk_body")
 limit 10
+```
+
+| option | type | default | meaning |
+|---|---|---|---|
+| `rrf_k` | number > 0 | 60 | the RRF constant; lower makes rank 1 weigh more |
+| `ef_search` | integer ≥ 1 | 30 | HNSW beam width for the vector branch |
+| `overfetch` | integer ≥ 1 | 4 | each branch fetches `K × overfetch` candidates before fusion |
+| `text_index` | string | auto | full-text index name (`Label_property`); auto picks the first one matching the label |
+
+An unknown option, a value of the wrong kind, or a wrong number of positional
+arguments is a validation error that names the problem. (Until 0.5.19 a
+malformed `hybrid(...)` was silently ignored and the predicate passed every
+node.) `explain find ...` prints the effective parameters, defaults included:
+
+```
+Hybrid: hybrid(n): text="graph memory" ref="current_query" model="e5-large" k=10 rrf_k=30 overfetch=8 ef_search=128 text_index=Chunk_body filter.label=Chunk
 ```
 
 ## Limits & notes (v1)
@@ -163,7 +186,8 @@ limit 10
   two branches whose numbers are not comparable. The raw scores are still
   available for inspection via `search_hybrid_explain`. Choose the right
   property when creating the full-text index (it is per-property).
-- `search_hybrid` sees **committed** state; a freshly added embedding is visible
-  after its `add_node_embedding` invalidates the cached HNSW index.
-- Follow-ups: per-path weights; range/OR filters; wiring `hybrid()`'s
-  parameters in NQL, which are still hardcoded.
+- `search_hybrid` sees **committed** state; a freshly added embedding is
+  inserted into the cached HNSW index by `add_node_embedding` (0.5.19) and is
+  visible to the next search.
+- Follow-ups: per-path weights; range/OR filters; property filters from the
+  NQL `where` (today only the pattern label reaches the hybrid filter).

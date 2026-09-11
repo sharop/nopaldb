@@ -2687,6 +2687,9 @@ impl<'a> Executor<'a> {
             Expression::FunctionCall { .. } => Err(NopalError::QueryExecutionError(
                 "Function calls are not supported inside quoted VM expressions in Path Queries F4-B".into(),
             )),
+            Expression::NamedArg { name, .. } => Err(NopalError::QueryExecutionError(format!(
+                "named argument `{name}` is only valid inside hybrid(...)"
+            ))),
             Expression::Wildcard => Err(NopalError::QueryExecutionError(
                 "Wildcard is not supported inside quoted VM expressions in Path Queries F4-B".into(),
             )),
@@ -3031,6 +3034,9 @@ impl<'a> Executor<'a> {
                     None => Ok(None),
                 }
             }
+            Expression::NamedArg { name, .. } => Err(NopalError::QueryExecutionError(format!(
+                "named argument `{name}` is only valid inside hybrid(...)"
+            ))),
             Expression::Wildcard => Ok(None),
         }
     }
@@ -4620,6 +4626,7 @@ impl<'a> Executor<'a> {
             Expression::FunctionCall { args, .. } => args
                 .iter()
                 .find_map(|arg| self.find_invalid_path_property_in_expr(arg)),
+            Expression::NamedArg { value, .. } => self.find_invalid_path_property_in_expr(value),
             Expression::Literal(_) | Expression::Wildcard | Expression::Property { .. } => None,
         }
     }
@@ -4654,6 +4661,7 @@ impl<'a> Executor<'a> {
                     self.collect_path_property_kinds_inner(arg, kinds);
                 }
             }
+            Expression::NamedArg { value, .. } => self.collect_path_property_kinds_inner(value, kinds),
             Expression::Literal(_) | Expression::Wildcard | Expression::Property { .. } => {}
         }
     }
@@ -5124,6 +5132,11 @@ impl<'a> Executor<'a> {
                         "\nCost note: community_fast() uses approximate local partitioning for lower latency.",
                     );
                 }
+                #[cfg(feature = "hybrid")]
+                if let Some(call) = query.filter.as_ref().and_then(|f| extract_hybrid_params(&f.condition)) {
+                    explanation.push_str("\nHybrid: ");
+                    explanation.push_str(&describe_hybrid(&call, &query));
+                }
                 if self.query_uses_function(&query, &["leiden"]) {
                     explanation.push_str(
                         "\nCost note: leiden() runs Leiden CPM community detection (Traag et al. 2019). \
@@ -5347,23 +5360,31 @@ impl<'a> Executor<'a> {
         Ok(Some(node_ids))
     }
 
-    /// Pre-compute `hybrid(n, "text", "ref_name", "model")` in WHERE into an
+    /// Pre-compute `hybrid(n, "text", "ref_name", "model", …)` in WHERE into an
     /// allowed NodeId set (RRF fusion of full-text + vector). The vector is the
     /// embedding of the reference node resolved by `name`, mirroring
-    /// `precompute_similar_to`. The FROM pattern's own label filter narrows the
-    /// results downstream, so no filter is passed here.
+    /// `precompute_similar_to`.
+    ///
+    /// The FROM pattern's label is passed as the hybrid filter (#115): the
+    /// top-k is computed INSIDE the label. Before, the search ran over every
+    /// label and the stream dropped the foreign hits afterwards, so with
+    /// `limit 1` a better-matching node of another label could leave the query
+    /// with zero rows.
     #[cfg(feature = "hybrid")]
     async fn precompute_hybrid(
         &self,
         condition: &Expression,
         query: &Query,
     ) -> Result<Option<HashSet<crate::types::NodeId>>> {
-        let (_variable, text, ref_name, model) = match extract_hybrid_params(condition) {
+        let call = match extract_hybrid_params(condition) {
             Some(p) => p,
             None => return Ok(None),
         };
+        let HybridCall { variable, text, ref_name, model, options } = call;
 
         let k = query.limit.as_ref().map(|l| l.limit).unwrap_or(10);
+        let filter = pattern_label_for(query, &variable)
+            .map(|label| crate::graph::HybridFilter { label: Some(label), props: vec![] });
 
         let ref_node = self
             .graph
@@ -5388,13 +5409,13 @@ impl<'a> Executor<'a> {
 
         let hq = crate::graph::HybridQuery {
             text: Some(text),
-            text_index: None,
+            text_index: options.text_index,
             vector: Some((ref_embedding.vector, model.clone())),
             k,
-            ef_search: None,
-            rrf_k: 60.0,
-            overfetch: 4,
-            filter: None,
+            ef_search: options.ef_search,
+            rrf_k: options.rrf_k.unwrap_or(60.0) as f32,
+            overfetch: options.overfetch.unwrap_or(4),
+            filter,
         };
         let hits = self.graph.search_hybrid(hq).await?;
         Ok(Some(hits.into_iter().map(|h| h.node_id).collect()))
@@ -5440,16 +5461,41 @@ fn extract_similar_to_params(expr: &Expression) -> Option<(String, String, Strin
     }
 }
 
-/// Extrae `hybrid(variable, "text", "ref_name", "model")` de un árbol de
-/// expresiones (recursivo sobre AND/OR). Los 4 args son requeridos.
+/// Opciones con nombre de `hybrid(...)` (#115): `rrf_k`, `ef_search`,
+/// `overfetch`, `text_index`. `None` = el default de `HybridQuery`.
 #[cfg(feature = "hybrid")]
-fn extract_hybrid_params(expr: &Expression) -> Option<(String, String, String, String)> {
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct HybridOptions {
+    pub rrf_k: Option<f64>,
+    pub ef_search: Option<usize>,
+    pub overfetch: Option<usize>,
+    pub text_index: Option<String>,
+}
+
+/// Lo que `hybrid(...)` pidió, ya validado por el validador.
+#[cfg(feature = "hybrid")]
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HybridCall {
+    pub variable: String,
+    pub text: String,
+    pub ref_name: String,
+    pub model: String,
+    pub options: HybridOptions,
+}
+
+/// Extrae `hybrid(variable, "text", "ref_name", "model", opción = valor, …)`
+/// de un árbol de expresiones (recursivo sobre AND/OR). Los 4 posicionales
+/// son requeridos (el validador ya lo garantiza; aquí `None` solo significa
+/// "no hay hybrid en esta expresión").
+#[cfg(feature = "hybrid")]
+fn extract_hybrid_params(expr: &Expression) -> Option<HybridCall> {
     match expr {
         Expression::FunctionCall { name, args } if name.to_lowercase() == "hybrid" => {
-            if args.len() != 4 {
+            let positional: Vec<&Expression> = args.iter().filter(|a| !matches!(a, Expression::NamedArg { .. })).collect();
+            if positional.len() != 4 {
                 return None;
             }
-            let variable = match &args[0] {
+            let variable = match positional[0] {
                 Expression::Property { variable, .. } => variable.clone(),
                 _ => "n".to_string(),
             };
@@ -5457,7 +5503,26 @@ fn extract_hybrid_params(expr: &Expression) -> Option<(String, String, String, S
                 Expression::Literal(PropertyValue::String(s)) => Some(s.clone()),
                 _ => None,
             };
-            Some((variable, as_str(&args[1])?, as_str(&args[2])?, as_str(&args[3])?))
+            let mut options = HybridOptions::default();
+            for arg in args {
+                if let Expression::NamedArg { name, value } = arg {
+                    match (name.as_str(), value.as_ref()) {
+                        ("rrf_k", Expression::Literal(PropertyValue::Int(v))) => options.rrf_k = Some(*v as f64),
+                        ("rrf_k", Expression::Literal(PropertyValue::Float(v))) => options.rrf_k = Some(*v),
+                        ("ef_search", Expression::Literal(PropertyValue::Int(v))) => options.ef_search = Some(*v as usize),
+                        ("overfetch", Expression::Literal(PropertyValue::Int(v))) => options.overfetch = Some(*v as usize),
+                        ("text_index", Expression::Literal(PropertyValue::String(s))) => options.text_index = Some(s.clone()),
+                        _ => {}
+                    }
+                }
+            }
+            Some(HybridCall {
+                variable,
+                text: as_str(positional[1])?,
+                ref_name: as_str(positional[2])?,
+                model: as_str(positional[3])?,
+                options,
+            })
         }
         Expression::BinaryOp { left, op: BinaryOperator::And, right }
         | Expression::BinaryOp { left, op: BinaryOperator::Or, right } => {
@@ -5465,6 +5530,48 @@ fn extract_hybrid_params(expr: &Expression) -> Option<(String, String, String, S
         }
         _ => None,
     }
+}
+
+/// Label del patrón de nodo cuya variable es `variable` (o del primer patrón
+/// si ninguna coincide), para que `hybrid(...)` calcule su top-k DENTRO del
+/// label en vez de dejar que el stream tire lo que sobra después.
+#[cfg(feature = "hybrid")]
+fn pattern_label_for(query: &Query, variable: &str) -> Option<String> {
+    let mut first: Option<&NodePattern> = None;
+    for pattern in &query.from.patterns {
+        for element in &pattern.elements {
+            if let PatternElement::Node(n) = element {
+                if first.is_none() {
+                    first = Some(n);
+                }
+                if n.variable.as_deref() == Some(variable) {
+                    return n.label.clone();
+                }
+            }
+        }
+    }
+    first.and_then(|n| n.label.clone())
+}
+
+/// Texto de EXPLAIN con los parámetros efectivos de `hybrid(...)`: los dados
+/// y los default, para que lo que se ve sea lo que corre.
+#[cfg(feature = "hybrid")]
+fn describe_hybrid(call: &HybridCall, query: &Query) -> String {
+    let k = query.limit.as_ref().map(|l| l.limit).unwrap_or(10);
+    let o = &call.options;
+    format!(
+        "hybrid({}): text={:?} ref={:?} model={:?} k={} rrf_k={} overfetch={} ef_search={} text_index={} filter.label={}",
+        call.variable,
+        call.text,
+        call.ref_name,
+        call.model,
+        k,
+        o.rrf_k.unwrap_or(60.0),
+        o.overfetch.unwrap_or(4),
+        o.ef_search.map(|v| v.to_string()).unwrap_or_else(|| format!("default ({})", crate::embeddings::DEFAULT_EF_SEARCH)),
+        o.text_index.as_deref().unwrap_or("auto"),
+        pattern_label_for(query, &call.variable).unwrap_or_else(|| "none".to_string()),
+    )
 }
 
 #[cfg(test)]

@@ -311,16 +311,19 @@ impl SemanticValidator {
             if let Projection::Expression { expr, .. } = projection {
                 self.validate_pattern_embedding_usage(expr, EmbeddingExprContext::Find, query)?;
                 self.validate_path_embedding_usage(expr, EmbeddingExprContext::Find, query)?;
+                self.validate_hybrid_usage(expr)?;
             }
         }
         if let Some(filter) = &query.filter {
             self.validate_pattern_embedding_usage(&filter.condition, EmbeddingExprContext::Where, query)?;
             self.validate_path_embedding_usage(&filter.condition, EmbeddingExprContext::Where, query)?;
+            self.validate_hybrid_usage(&filter.condition)?;
         }
         if let Some(order_by) = &query.order_by {
             for item in &order_by.items {
                 self.validate_pattern_embedding_usage(&item.expression, EmbeddingExprContext::OrderBy, query)?;
                 self.validate_path_embedding_usage(&item.expression, EmbeddingExprContext::OrderBy, query)?;
+                self.validate_hybrid_usage(&item.expression)?;
             }
         }
         if let Some(group_by) = &query.group_by {
@@ -394,6 +397,11 @@ impl SemanticValidator {
             Expression::UnaryOp { expr, .. } => {
                 self.validate_having_expression(expr, group_by_exprs)?;
             }
+            Expression::NamedArg { name, .. } => {
+                return Err(NopalError::SemanticError(format!(
+                    "named argument `{name}` is only valid inside hybrid(...)"
+                )));
+            }
             Expression::Literal(_) | Expression::Wildcard => {
                 // Literals and wildcards are OK
             }
@@ -436,6 +444,80 @@ impl SemanticValidator {
                 .elements
                 .iter()
                 .any(|e| matches!(e, PatternElement::Relationship(_)))
+    }
+
+    /// `hybrid(var, "text", "ref", "model", opción = valor, …)` (#115) y el
+    /// único sitio donde un argumento con nombre es legal.
+    ///
+    /// Hasta 0.5.19 `hybrid` no se validaba: una aridad incorrecta hacía que
+    /// el executor no precomputara nada y el predicado pasara como `true`,
+    /// devolviendo TODOS los nodos en silencio. Ahora es un error con nombre.
+    fn validate_hybrid_usage(&self, expr: &Expression) -> Result<()> {
+        match expr {
+            Expression::FunctionCall { name, args } if name.eq_ignore_ascii_case("hybrid") => {
+                let (positional, named): (Vec<&Expression>, Vec<&Expression>) =
+                    args.iter().partition(|a| !matches!(a, Expression::NamedArg { .. }));
+                if positional.len() != 4 {
+                    return Err(NopalError::SemanticError(format!(
+                        "hybrid(var, \"text\", \"ref_name\", \"model\") requires exactly 4 positional arguments, got {}",
+                        positional.len()
+                    )));
+                }
+                if !matches!(positional[0], Expression::Property { .. }) {
+                    return Err(NopalError::SemanticError(
+                        "hybrid: the first argument must be the pattern variable (e.g. `n`)".to_string(),
+                    ));
+                }
+                for (i, what) in [(1usize, "text"), (2, "ref_name"), (3, "model")] {
+                    if !matches!(positional[i], Expression::Literal(PropertyValue::String(_))) {
+                        return Err(NopalError::SemanticError(format!(
+                            "hybrid: argument {} ({what}) must be a string literal",
+                            i + 1
+                        )));
+                    }
+                }
+                for arg in named {
+                    let Expression::NamedArg { name, value } = arg else { unreachable!() };
+                    let ok = match (name.as_str(), value.as_ref()) {
+                        ("rrf_k", Expression::Literal(PropertyValue::Int(v))) => *v > 0,
+                        ("rrf_k", Expression::Literal(PropertyValue::Float(v))) => *v > 0.0,
+                        ("ef_search" | "overfetch", Expression::Literal(PropertyValue::Int(v))) => *v >= 1,
+                        ("text_index", Expression::Literal(PropertyValue::String(s))) => !s.is_empty(),
+                        ("rrf_k" | "ef_search" | "overfetch" | "text_index", _) => false,
+                        (other, _) => {
+                            return Err(NopalError::SemanticError(format!(
+                                "hybrid: unknown option `{other}`; valid options are rrf_k, ef_search, overfetch, text_index"
+                            )));
+                        }
+                    };
+                    if !ok {
+                        return Err(NopalError::SemanticError(format!(
+                            "hybrid: option `{name}` has an invalid value (rrf_k: number > 0; ef_search, overfetch: integer >= 1; text_index: non-empty string)"
+                        )));
+                    }
+                }
+                Ok(())
+            }
+            Expression::FunctionCall { name, args } => {
+                if let Some(Expression::NamedArg { name: arg, .. }) =
+                    args.iter().find(|a| matches!(a, Expression::NamedArg { .. }))
+                {
+                    return Err(NopalError::SemanticError(format!(
+                        "named argument `{arg}` is not accepted by {name}(...): only hybrid(...) takes named options"
+                    )));
+                }
+                for a in args {
+                    self.validate_hybrid_usage(a)?;
+                }
+                Ok(())
+            }
+            Expression::BinaryOp { left, right, .. } => {
+                self.validate_hybrid_usage(left)?;
+                self.validate_hybrid_usage(right)
+            }
+            Expression::UnaryOp { expr, .. } => self.validate_hybrid_usage(expr),
+            _ => Ok(()),
+        }
     }
 
     fn validate_pattern_embedding_usage(

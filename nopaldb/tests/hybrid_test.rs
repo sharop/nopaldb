@@ -279,3 +279,84 @@ async fn small_allowed_set_over_large_index_is_exact() {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// #115: hybrid(...) en NQL con opciones con nombre y filtro por el label
+// del patrón.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Fixture donde el nodo de OTRO label es el mejor match en texto y vector.
+async fn fixture_with_dominant_other() -> Graph {
+    let (graph, _) = fixture().await;
+    // x0 ("apple apple", vector [1,0,0]) ya es el mejor en ambas ramas; el
+    // nodo de referencia toma exactamente ese vector.
+    let refn = Node::new("Ref").with_property("name", s("q"));
+    let rid = graph.add_node(refn).await.unwrap();
+    graph.add_node_embedding(rid, vec![1.0, 0.0, 0.0], "m").await.unwrap();
+    graph
+}
+
+#[tokio::test]
+async fn nql_hybrid_topk_is_computed_inside_the_pattern_label() {
+    let graph = fixture_with_dominant_other().await;
+    // limit 1 → k = 1. Antes de #115 el top-1 era x0 (label Other), el stream
+    // lo tiraba y la consulta devolvía 0 filas. Con el filtro por label dentro
+    // del híbrido, el top-1 se calcula entre los Doc.
+    let result = graph
+        .execute_nql(r#"find n.name from (n:Doc) where hybrid(n, "apple", "q", "m") limit 1"#)
+        .await
+        .unwrap();
+    let names: Vec<String> = result
+        .rows()
+        .iter()
+        .filter_map(|r| r.get("n.name").and_then(|v| v.as_str().map(String::from)))
+        .collect();
+    assert_eq!(names, vec!["d0".to_string()], "top-1 dentro de Doc, no 0 filas");
+}
+
+#[tokio::test]
+async fn nql_hybrid_accepts_named_options_and_explain_shows_them() {
+    let graph = fixture_with_dominant_other().await;
+    let result = graph
+        .execute_nql(
+            r#"find n.name from (n:Doc) where hybrid(n, "apple", "q", "m", rrf_k = 30, ef_search = 64, overfetch = 8, text_index = "Doc_body") limit 5"#,
+        )
+        .await
+        .unwrap();
+    assert!(!result.rows().is_empty());
+
+    let explain = graph
+        .execute_nql(r#"explain find n.name from (n:Doc) where hybrid(n, "apple", "q", "m", rrf_k = 30) limit 5"#)
+        .await
+        .unwrap();
+    let text = format!("{:?}", explain.rows());
+    assert!(text.contains("rrf_k=30"), "{text}");
+    assert!(text.contains("overfetch=4"), "default shown: {text}");
+    assert!(text.contains("filter.label=Doc"), "{text}");
+    assert!(text.contains("text_index=auto"), "{text}");
+}
+
+#[tokio::test]
+async fn nql_hybrid_rejects_bad_options_arity_and_named_args_elsewhere() {
+    let graph = fixture_with_dominant_other().await;
+    let cases = [
+        (r#"find n.name from (n:Doc) where hybrid(n, "apple", "q", "m", rrf = 1)"#, "unknown option `rrf`"),
+        (r#"find n.name from (n:Doc) where hybrid(n, "apple", "q", "m", rrf_k = "x")"#, "option `rrf_k`"),
+        (r#"find n.name from (n:Doc) where hybrid(n, "apple", "q", "m", ef_search = 0)"#, "option `ef_search`"),
+        (r#"find n.name from (n:Doc) where hybrid(n, "apple")"#, "exactly 4 positional"),
+        (r#"find count(x = 1) from (n:Doc)"#, "only hybrid(...) takes named options"),
+        (r#"find n.name from (n:Doc) where hybrid(n, "apple", "q", "m", text_index = "no_existe")"#, "no_existe"),
+    ];
+    for (nql, needle) in cases {
+        let err = graph.execute_nql(nql).await.unwrap_err().to_string();
+        assert!(err.contains(needle), "{nql}\n  got: {err}\n  want: {needle}");
+    }
+}
+
+#[tokio::test]
+async fn nql_hybrid_with_wrong_arity_no_longer_returns_everything() {
+    let graph = fixture_with_dominant_other().await;
+    // Antes de #115 esto pasaba la validación, no precomputaba nada y el
+    // predicado era `true`: devolvía TODOS los Doc en silencio.
+    assert!(graph.execute_nql(r#"find n.name from (n:Doc) where hybrid(n, "apple", "q")"#).await.is_err());
+}
