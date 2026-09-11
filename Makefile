@@ -15,7 +15,7 @@ WORKSPACE_VERSION := $(shell awk '/^\[workspace.package\]/{flag=1;next}/^\[/{fla
 	test test-core test-semantic test-full \
 	clippy clippy-core clippy-semantic clippy-full \
 	build-rust build-wheel build-wheel-all \
-	package-bin package-qa checksums clean check-on-main publish-crate
+	package-bin package-qa checksums clean check-on-main publish-crate bench
 
 help:
 	@echo "Targets:"
@@ -29,6 +29,7 @@ help:
 	@echo "  make clippy-full        - clippy full public feature set"
 	@echo "  make check-doc-links    - links relativos de docs/ y READMEs apuntan a archivos que existen"
 	@echo "  make publish-crate      - cargo publish SOLO desde main al dia (check-on-main + checks)"
+	@echo "  make bench BENCH=x      - cargo bench con panic=unwind (hnsw_ops | gc_removals | graph_ops)"
 	@echo "  make package-qa         - valida y empaqueta nopaldb (binario + wheel python)"
 	@echo "  make build-wheel        - wheel para PYTHON (default: python3), ej: PYTHON=python3.12"
 	@echo "  make build-wheel-all    - wheels para Python 3.10, 3.11, 3.12 y 3.13 (los que existan)"
@@ -45,6 +46,16 @@ ifeq ($(ALLOW_DIRTY),1)
 else
 	@test -z "$$(git status --porcelain)" || (echo "Hay cambios sin commit. Limpia el árbol antes de empaquetar." && exit 1)
 endif
+
+bench:
+	@# `cargo bench` a secas falla desde un target limpio: el perfil release
+	@# lleva panic = "abort" y el harness de criterion exige unwind, así que
+	@# las dependencias compiladas para release chocan ("requires panic
+	@# strategy abort"). El override compila las deps con unwind solo aquí.
+	@# Uso: make bench BENCH=hnsw_ops   (o gc_removals, graph_ops)
+	@#      NOPALDB_BENCH_ENGINE=redb make bench BENCH=gc_removals
+	@test -n "$(BENCH)" || { echo "uso: make bench BENCH=hnsw_ops|gc_removals|graph_ops"; exit 1; }
+	CARGO_PROFILE_RELEASE_PANIC=unwind cargo bench -p nopaldb --features core,storage-redb --bench $(BENCH)
 
 check-on-main:
 	@# `cargo publish` salió desde una rama dos veces (0.5.3 y 0.5.9). Las dos

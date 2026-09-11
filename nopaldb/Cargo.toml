@@ -1,6 +1,6 @@
 [package]
 name = "nopaldb"
-version = "0.5.17"
+version = "0.5.18"
 authors = ["Sharop <sharop@gmail.com>"]
 description = "High-performance graph database with ACID transactions, MVCC time-travel, and Arrow analytics"
 keywords = ["graph", "database", "embedded", "mvcc", "arrow"]
@@ -135,6 +135,12 @@ harness = false
 [[bench]]
 name = "gc_removals"
 harness = false
+
+# Índice HNSW: build, rebuild, inserción incremental, búsqueda, apertura (#112).
+[[bench]]
+name = "hnsw_ops"
+harness = false
+required-features = ["embeddings-index"]
 
 [[test]]
 name = "owl_import_integration_test"
