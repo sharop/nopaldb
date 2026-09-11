@@ -1225,15 +1225,15 @@ impl AstBuilder {
                     }
                 }
                 Rule::function_arg => {
-                    // function_arg = { "*" | expression }
+                    // function_arg = { named_arg | "*" | expression }
                     // Check if it's wildcard directly
                     if inner.as_str().trim() == "*" {
                         args.push(Expression::Wildcard);
-                    } else {
-                        // Extract expression from inside function_arg
-                        if let Some(expr_pair) = inner.into_inner().next()
-                            && expr_pair.as_rule() == Rule::expression {
-                                args.push(self.build_expression(expr_pair)?);
+                    } else if let Some(arg_pair) = inner.into_inner().next() {
+                        match arg_pair.as_rule() {
+                            Rule::expression => args.push(self.build_expression(arg_pair)?),
+                            Rule::named_arg => args.push(self.build_named_arg(arg_pair)?),
+                            _ => {}
                         }
                     }
                 }
@@ -1394,6 +1394,39 @@ impl AstBuilder {
             }
         }
         Ok(opts)
+    }
+
+    /// `identifier = literal` dentro de una llamada a función.
+    fn build_named_arg(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
+        let mut inner = pair.into_inner();
+        let name = inner
+            .next()
+            .ok_or_else(|| NopalError::QueryParseError("named argument without a name".into()))?
+            .as_str()
+            .to_lowercase();
+        let value_pair = inner
+            .next()
+            .ok_or_else(|| NopalError::QueryParseError(format!("named argument `{name}` without a value")))?;
+        let value = match value_pair.as_rule() {
+            Rule::string => Expression::Literal(PropertyValue::String(Self::unquote_string(value_pair.as_str()))),
+            Rule::number => {
+                let text = value_pair.as_str();
+                if let Ok(i) = text.parse::<i64>() {
+                    Expression::Literal(PropertyValue::Int(i))
+                } else {
+                    Expression::Literal(PropertyValue::Float(text.parse::<f64>().map_err(|_| {
+                        NopalError::QueryParseError(format!("named argument `{name}`: `{text}` is not a number"))
+                    })?))
+                }
+            }
+            Rule::boolean => Expression::Literal(PropertyValue::Bool(value_pair.as_str().eq_ignore_ascii_case("true"))),
+            other => {
+                return Err(NopalError::QueryParseError(format!(
+                    "named argument `{name}`: unsupported value {other:?}"
+                )))
+            }
+        };
+        Ok(Expression::NamedArg { name, value: Box::new(value) })
     }
 
     fn unquote_string(input: &str) -> String {

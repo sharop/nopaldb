@@ -14,6 +14,7 @@
 - [Ontology Predicates](#ontology-predicates-instanceof--subclassof)
 - [Write Operations (ADD/UPDATE/DELETE)](#write-operations-addupdatedelete)
 - [Indexes (CREATE INDEX / DROP INDEX)](#indexes-create-index--drop-index)
+- [Vector and hybrid search in WHERE](#vector-and-hybrid-search-in-where)
 - [Aggregations & Functions](#aggregations--functions)
 - [Data Export (EXPORT)](#data-export-export)
 - [Operators](#operators)
@@ -280,6 +281,41 @@ exists tells you exactly that. The analyzer is stored next to the index and
 survives reopening the database; indexes created before 0.5.13 keep the default.
 
 Rust: `graph.create_index_with(label, property, IndexType::FullText, IndexOptions { analyzer: Some(FullTextAnalyzer::for_language("spanish")) })` and `graph.describe_index(name)`. Python: `graph.create_index("Nota", "cuerpo", "fulltext", analyzer={"language": "spanish"})` and `graph.describe_index("Nota_cuerpo")`.
+
+---
+
+## Vector and hybrid search in WHERE
+
+With the `embeddings-index` / `hybrid` features, two predicates turn a pattern
+into a top-K search instead of a scan. Both resolve the query vector from a
+**reference node** looked up by its `name` property, and take K from `LIMIT`
+(default 10).
+
+```nql
+-- Nearest neighbours of the node named "q" in the "minilm" embedding space
+find n.title from (n:Article) where similar_to(n, "q", "minilm") limit 10
+
+-- Full-text + vector, fused by Reciprocal Rank Fusion
+find n.title from (n:Article) where hybrid(n, "graph memory", "q", "minilm") limit 10
+
+-- Tuned: every HybridQuery parameter is a named option after the four positionals
+find n.title from (n:Article)
+where hybrid(n, "graph memory", "q", "minilm", rrf_k = 30, ef_search = 128, overfetch = 8, text_index = "Article_body")
+limit 10
+```
+
+| Function | Arguments | Notes |
+|---|---|---|
+| `similar_to(n, "ref_name", "model")` | pattern variable, reference node name, model | HNSW k-NN; exact below 1024 vectors |
+| `hybrid(n, "text", "ref_name", "model", options…)` | + the full-text query text | RRF of full-text and vector; the top-K is computed inside the pattern's label |
+
+Named options of `hybrid`: `rrf_k` (number > 0, default 60), `ef_search`
+(integer ≥ 1, default 30), `overfetch` (integer ≥ 1, default 4), `text_index`
+(string, default: the first full-text index matching the label). Unknown
+options, wrong value kinds, or a wrong number of positional arguments are
+validation errors that name the problem; named options are not accepted by any
+other function. `explain` prints the effective parameters. Details and the
+Rust/Python API: [HYBRID_SEARCH.md](../HYBRID_SEARCH.md), [EMBEDDINGS.md](../EMBEDDINGS.md).
 
 ---
 

@@ -382,8 +382,16 @@ function_call = {
     identifier ~ "(" ~ (function_arg ~ ("," ~ function_arg)*)? ~ ")"
 }
 
+// `named_arg` va PRIMERO: `expression` reduce a `property_access` (un
+// identificador), así que `rrf_k = 30` se leería como propiedad antes de ver
+// el `=`. Hoy solo `hybrid(...)` acepta argumentos con nombre (el validador
+// rechaza el resto).
 function_arg = {
-    "*" | expression
+    named_arg | "*" | expression
+}
+
+named_arg = {
+    identifier ~ "=" ~ (string | number | boolean)
 }
 
 // ═══════════════════════════════════════════════════════════
