@@ -28,8 +28,13 @@ jobs:
       - name: Check default features
         run: cargo check -p nopaldb
 
-      - name: Benches compile (hnsw_ops, gc_removals, graph_ops)
-        run: cargo bench -p nopaldb --features core --no-run
+      # `cargo bench --no-run` no sirve aquí: el perfil release lleva
+      # `panic = "abort"` y el harness de los benches exige `unwind`, así que
+      # las dependencias compiladas para release chocan ("requires panic
+      # strategy abort"). `cargo check --benches` compila los tres benches en
+      # perfil dev, que es lo que este paso necesita: que no se rompan.
+      - name: Benches compile-check (hnsw_ops, gc_removals, graph_ops)
+        run: cargo check -p nopaldb --features core --benches
 
       - name: Clippy (semantic)
         run: cargo clippy -p nopaldb --features semantic -- -D warnings
