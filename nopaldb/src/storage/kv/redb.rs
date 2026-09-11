@@ -64,6 +64,8 @@ pub(crate) struct RedbEngine {
     db: Arc<::redb::Database>,
     stop: Arc<AtomicBool>,
     flusher: Option<std::thread::JoinHandle<()>>,
+    /// Reserva de la ruta en el registro del proceso; se suelta con el engine.
+    _lease: Option<super::PathLease>,
 }
 
 impl RedbEngine {
@@ -142,10 +144,14 @@ impl RedbEngine {
                     if inicio.elapsed() >= ESPERA_LOCK {
                         return Err(StorageError::new(
                             StorageErrorKind::Unsupported,
+                            // `DatabaseAlreadyOpen` es el registro interno de redb:
+                            // la tiene abierta ESTE proceso (otro handle vivo, o un
+                            // `Graph` cerrado pero no soltado). Un lock de otro
+                            // proceso llega como error de I/O, no como este.
                             format!(
-                                "la base redb en {} ya está abierta por otro proceso \
-                                 (NopalDB admite un solo escritor por directorio). \
-                                 Cerrar el otro proceso, o abrir una copia.",
+                                "la base redb en {} ya está abierta en este proceso: el lock se \
+                                 libera al soltar el `Graph` (drop), no en `close()`. Descarta el \
+                                 valor anterior antes de reabrir, o abre una copia.",
                                 path.display()
                             ),
                         )
@@ -209,7 +215,13 @@ impl RedbEngine {
                 }
             })
         });
-        Self { db, stop, flusher }
+        Self { db, stop, flusher, _lease: None }
+    }
+
+    /// Adjunta la reserva de ruta del proceso (ver `kv::open_engine`).
+    pub(crate) fn with_lease(mut self, lease: super::PathLease) -> Self {
+        self._lease = Some(lease);
+        self
     }
 }
 
@@ -523,7 +535,7 @@ mod tests {
 
         let msg = format!("{err}");
         assert!(
-            msg.contains("ya está abierta por otro proceso"),
+            msg.contains("ya está abierta en este proceso"),
             "el error debe estar traducido, no ser el crudo de redb: {msg}"
         );
         assert!(

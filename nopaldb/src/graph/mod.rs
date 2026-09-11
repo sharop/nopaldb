@@ -219,7 +219,17 @@ impl Graph {
         Arc::clone(&self.storage)
     }
 
-    /// Crea un nuevo grafo con storage persistente (carga índices automáticamente)
+    /// Crea un nuevo grafo con storage persistente (carga índices automáticamente).
+    ///
+    /// # Un escritor por directorio
+    ///
+    /// Abrir toma un lock exclusivo sobre el directorio, y ese lock vive
+    /// **hasta que el `Graph` se suelta (drop)**, no hasta `close()`: `close`
+    /// solo vacía índices, WAL y storage. Para reabrir la misma ruta en el
+    /// mismo proceso, deja que el valor anterior salga de scope o llama
+    /// `drop(graph)` antes; si no, la apertura falla de inmediato diciendo
+    /// exactamente eso. Una base abierta por **otro** proceso también falla
+    /// (tras un reintento breve), con su propio mensaje.
     pub async fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         Self::open_with_options(path, crate::storage::StorageOptions::default()).await
     }
@@ -3675,10 +3685,15 @@ impl Graph {
         }
     }
 
-    /// Close the database and flush all pending data
+    /// Flush all pending data: indexes, the WAL and the storage engine.
     ///
-    /// This method ensures all data is persisted before closing.
-    /// The Graph instance should not be used after calling close().
+    /// What it does **not** do: release the directory lock. The lock belongs
+    /// to the storage engine and is released when the `Graph` is dropped
+    /// (every clone of it), so to reopen the same path in this process let
+    /// the value go out of scope or `drop(graph)` explicitly after `close()`.
+    /// Reopening while the old value is still alive fails immediately with a
+    /// message that says so. The Graph instance should not be used after
+    /// calling close().
     ///
     /// # Example
     /// ```no_run
@@ -3687,6 +3702,9 @@ impl Graph {
     /// let graph = Graph::open("my.db").await?;
     /// // ... use graph ...
     /// graph.close().await?;
+    /// drop(graph);                          // releases the directory lock
+    /// let graph = Graph::open("my.db").await?; // reopen in the same process
+    /// # let _ = graph;
     /// # Ok(())
     /// # }
     /// ```

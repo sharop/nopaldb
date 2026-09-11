@@ -94,7 +94,7 @@ jobs:
         run: cargo test -p nopaldb --no-default-features --features storage-redb --lib
 
       - name: Cross-engine migration (copy_database round-trip, checksum-verified)
-        run: cargo test -p nopaldb --features core,storage-redb --test kv_migrate_test
+        run: cargo test -p nopaldb --features core,storage-redb --test kv_migrate_test --test open_lock_same_process_test
 
       - name: Layout v2 migration (v1→v2 state machine)
         run: cargo test -p nopaldb --features core --test layout_v2_migration_test

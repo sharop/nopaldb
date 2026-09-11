@@ -153,9 +153,11 @@ async fn read_only_does_not_grant_concurrent_access() {
         panic!("no debe poder abrirse en solo-lectura con un escritor vivo");
     };
     let msg = format!("{err}");
+    // El escritor vive en ESTE proceso: desde 0.5.19 el error lo dice así y
+    // explica que el lock se suelta al drop (antes culpaba a "otro proceso").
     assert!(
-        msg.contains("ya está abierta por otro proceso"),
-        "debe explicar que hay otro handle, no un error críptico: {msg}"
+        msg.contains("ya está abierta en este proceso"),
+        "debe explicar que hay otro handle en este proceso, no un error críptico: {msg}"
     );
     escritor.close().await.unwrap();
 }

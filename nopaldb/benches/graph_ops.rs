@@ -30,7 +30,8 @@ fn rt() -> tokio::runtime::Runtime {
         .expect("tokio runtime")
 }
 
-/// Grafo persistente pre-poblado con `n` nodos; retorna también sus ids.
+// Grafo persistente pre-poblado con `n` nodos; retorna también sus ids
+// (`seeded_graph`, más abajo).
 
 /// Motor por env (NOPALDB_BENCH_ENGINE=sled|redb); default = el del build.
 /// Permite comparar engines con el MISMO bench sin tocar código.
