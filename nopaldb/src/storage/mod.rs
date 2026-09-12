@@ -1208,6 +1208,40 @@ impl Storage {
         Ok(result)
     }
 
+    /// Huella del conjunto de embeddings de nodo de `model` tal como está en
+    /// storage: cuántos hay y un FNV-1a de sus claves y valores en orden de
+    /// clave. Es lo que un dump del índice HNSW guarda para saber, al
+    /// reabrir, si sigue describiendo estos embeddings
+    /// ([`crate::embeddings::persistence`]).
+    ///
+    /// Recorre valores completos a propósito: `Embedding::version` no cambia
+    /// al reemplazar un vector, así que una huella solo de claves no vería
+    /// un vector sustituido. Un contador de generación en storage sería O(1)
+    /// pero exigiría escribirlo atómicamente con cada embedding; la huella
+    /// sobre los datos no depende de que ningún escritor coopere.
+    #[cfg(feature = "embeddings-index")]
+    pub fn node_embeddings_digest_for_model_sync(
+        &self,
+        model: &str,
+    ) -> Result<crate::embeddings::persistence::EmbeddingsDigest> {
+        use crate::embeddings::persistence::Fnv1a;
+        let suffix = format!(":{}", model);
+        let tree = self.open_embeddings_tree_sync()?;
+        let mut hasher = Fnv1a::new();
+        let mut count = 0usize;
+        for item in tree.iter() {
+            let (key_bytes, val_bytes) = item?;
+            let key = std::str::from_utf8(&key_bytes)
+                .map_err(|e| NopalError::custom(e.to_string()))?;
+            if !key.starts_with("e:") && key.ends_with(&suffix) {
+                hasher.write(&key_bytes);
+                hasher.write(&val_bytes);
+                count += 1;
+            }
+        }
+        Ok(crate::embeddings::persistence::EmbeddingsDigest { count, hash: hasher.finish() })
+    }
+
     // ═════════════════════════════════════════════════════════
     // ✅ MÉTODOS MVCC
     // ═════════════════════════════════════════════════════════

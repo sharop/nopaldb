@@ -291,6 +291,52 @@ index.remove(node_id);            // logical delete: one tombstone
 index.needs_rebuild();            // true past the tombstone ratio
 ```
 
+### Persistence across reopens
+
+Since 0.5.20 the HNSW graph survives a restart. The index is written with
+`hnsw_rs`'s native dump to `<data_dir>/hnsw/`, three files per model:
+`<base>.hnsw.graph`, `<base>.hnsw.data` and `<base>.meta` (`<base>` is the
+model name made filesystem-safe plus a short hash). The `.meta` file carries
+what the graph does not know: the `DataId → NodeId` map, the tombstone count,
+a FNV-1a fingerprint of the model's embeddings as stored in the KV engine, and
+the length and hash of the two dump files.
+
+When it is written:
+
+- after `get_or_build_embedding_index` builds an index from storage, and
+- in `close()` (or `persist_embedding_indices()`, which returns the models it
+  wrote) when the cached index has inserts or removals since its last dump.
+
+Not on every insert: a process that dies without `close()` changes the
+fingerprint, so the next open rebuilds anyway, and per-insert dumps would only
+add cost. Every write goes to a temporary name and is renamed; the `.meta`
+goes last, so an interrupted write leaves either the previous complete set or
+a `.meta` that does not match its files.
+
+When it is read: the first `get_or_build_embedding_index` after opening
+fingerprints the embeddings in storage and loads the dump only if the
+fingerprint matches. Otherwise it logs why and rebuilds, then rewrites the
+dump:
+
+| situation | outcome |
+|---|---|
+| no dump | build from storage |
+| embeddings written without `close()` (crash, `drop` without close) | `Stale` → rebuild |
+| dump files changed or truncated | `Corrupt` → rebuild, never handed to `hnsw_rs` (its loader panics on bad input) |
+| fewer than 1024 live points (`EXACT_SEARCH_THRESHOLD`) | not persisted at all: the rebuild costs milliseconds and the exact path keeps its own vectors |
+| in-memory graph, read-only handle | loads if a dump exists (read-only), never writes |
+
+`embedding_index_stats(model)` reports `persisted` (the current in-memory
+state is on disk, i.e. reopening would load it) and `loaded_from_disk_ms`
+(`None` when the index was built from storage). A failed dump in `close()` is
+a warning, not an error: the index is a derived cache and storage remains the
+source of truth.
+
+Layout note: the fingerprint hashes keys **and values** because
+`Embedding::version` does not change when a vector is replaced. It is a full
+scan of the model's embeddings at open (the same read the rebuild would do,
+minus deserialising and indexing).
+
 ### NQL: `similar_to()` in WHERE
 
 ```sql
@@ -354,7 +400,8 @@ workspace's release profile aborts on panic, and bench harnesses need unwind. Or
 | `insert_incremental` (one `HnswIndex::insert` on a live index) | 4.1 ms | 9.6 ms |
 | `search_knn`, `ef_search` 30 / 60 | 0.55 ms / 1.1 ms | 0.95 ms / 1.7 ms |
 | `search_knn_filtered`, filter passes 1 % / 10 % / 100 % of ids | 12.1 / 6.0 / 2.5 ms | 63.6 / 27.6 / 4.6 ms |
-| `open_first_search` (open a persisted database + first search) | 2.71 s | 107 s |
+| `open_first_search` (open a persisted database + first search), rebuild from storage (`NOPALDB_HNSW_COLD=1`; the only path before 0.5.20) | 2.71 s | 107 s |
+| `open_first_search`, loading the dump written by the previous `close()` (0.5.20) | 108 ms | 1.02 s |
 
 What the numbers say:
 
@@ -362,9 +409,11 @@ What the numbers say:
   (`add_node_embedding` invalidates the cached index): ~580× the cost of the
   incremental insert the index already supports at 10k, ~10 000× at 100k. That
   gap is what [#113](https://github.com/sharop/nopaldb/issues/113) closes.
-- Opening a database and searching once pays the whole build, because the HNSW
-  graph lives only in RAM: almost two minutes at 100k vectors.
-  [#114](https://github.com/sharop/nopaldb/issues/114) persists the graph.
+- Opening a database and searching once used to pay the whole build, because
+  the HNSW graph lived only in RAM: almost two minutes at 100k vectors. With
+  the dump ([#114](https://github.com/sharop/nopaldb/issues/114)) the same
+  open + first search takes about a second at 100k, which is mostly the
+  fingerprint scan of the stored embeddings plus reading 240 MB of dump.
 - `search_knn_filtered` is the index's native filtered traversal, which
   escalates `ef_search` while the filter starves it; that is why a 1 % filter
   is the most expensive row here. Graph-level searches do not take this path
@@ -376,9 +425,11 @@ What the numbers say:
 ## Current boundaries
 
 - **Batch upsert** — `add_node_embedding` is one-at-a-time.
-- **Persistent HNSW graph** — the HNSW index lives in RAM and rebuilds from
-  storage on the first search after opening (107 s at 100k vectors);
-  [#114](https://github.com/sharop/nopaldb/issues/114) persists it.
+- **HNSW dumps are per process lifecycle** — the graph is written after a
+  full build and in `close()`, not per insert; a crash before `close()` means
+  a rebuild on the next open (correct, just slow at 100k). Indexes under 1024
+  points are never persisted. No `mmap` reload yet: the whole graph is loaded
+  into RAM.
 - **Edge embedding HNSW** — `EdgeEmbedding` storage exists but the HNSW index only
   covers node embeddings currently.
 - **Automatic invalidation** — updating a node's properties does not invalidate its

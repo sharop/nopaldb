@@ -164,6 +164,13 @@ pub struct HnswIndex {
     /// recorrido, por eso las búsquedas piden `k + tombstones` y por eso,
     /// pasado [`Self::needs_rebuild`], conviene reconstruir.
     tombstones: usize,
+    /// `true` cuando el estado en memoria difiere de lo que hay (o no hay)
+    /// en disco: recién construido, o con `insert`/`remove` desde el último
+    /// dump. Lo limpia [`crate::embeddings::persistence`] al escribir/cargar.
+    dirty: bool,
+    /// Cuánto tardó cargarlo desde el dump (`None` si se construyó desde
+    /// storage). Solo informativo: alimenta `EmbeddingIndexStats`.
+    loaded_in: Option<std::time::Duration>,
 }
 
 impl HnswIndex {
@@ -191,6 +198,8 @@ impl HnswIndex {
             next_data_id: 0,
             exact_store: Vec::new(),
             tombstones: 0,
+            dirty: true,
+            loaded_in: None,
         }
     }
 
@@ -219,6 +228,8 @@ impl HnswIndex {
             next_data_id: 0,
             exact_store: Vec::new(),
             tombstones: 0,
+            dirty: true,
+            loaded_in: None,
         }
     }
 
@@ -322,6 +333,7 @@ impl HnswIndex {
         self.inner.insert((&vector, data_id));
         self.id_map.insert(data_id, node_id);
         self.reverse_map.insert(node_id, data_id);
+        self.dirty = true;
 
         // Mantener el store exacto mientras estemos bajo el umbral; al
         // cruzarlo, liberarlo — la lectura pasa a HNSW y no hay vuelta atrás
@@ -347,6 +359,7 @@ impl HnswIndex {
             self.exact_store.retain(|(id, _)| *id != node_id);
         }
         self.tombstones += 1;
+        self.dirty = true;
         true
     }
 
@@ -358,6 +371,55 @@ impl HnswIndex {
     /// Puntos retirados que siguen ocupando sitio en el grafo HNSW.
     pub fn tombstones(&self) -> usize {
         self.tombstones
+    }
+
+    /// `true` si el estado en memoria no está reflejado en un dump en disco
+    /// (índice recién construido, o con inserciones/retiros desde el último
+    /// dump). Ver [`crate::embeddings::persistence`].
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Cuánto tardó cargar este índice desde disco; `None` si se construyó
+    /// desde los embeddings de storage.
+    pub fn loaded_in(&self) -> Option<std::time::Duration> {
+        self.loaded_in
+    }
+
+    pub(crate) fn mark_clean(&mut self) {
+        self.dirty = false;
+    }
+
+    /// Rearma un índice a partir de un grafo HNSW recargado de disco y los
+    /// mapas persistidos junto a él. Solo lo usa `persistence::load`, que ya
+    /// verificó que el grafo y los mapas son coherentes entre sí.
+    ///
+    /// El índice queda en modo búsqueda y sin `exact_store`: un dump solo se
+    /// escribe por encima de [`EXACT_SEARCH_THRESHOLD`], donde el camino
+    /// exacto no aplica.
+    pub(crate) fn from_parts(
+        mut inner: Hnsw<'static, f32, DistCosine>,
+        model: String,
+        dimension: usize,
+        id_map: HashMap<usize, NodeId>,
+        next_data_id: usize,
+        tombstones: usize,
+        loaded_in: std::time::Duration,
+    ) -> Self {
+        inner.set_searching_mode(true);
+        let reverse_map = id_map.iter().map(|(d, n)| (*n, *d)).collect();
+        Self {
+            inner,
+            id_map,
+            reverse_map,
+            model,
+            dimension,
+            next_data_id,
+            exact_store: Vec::new(),
+            tombstones,
+            dirty: false,
+            loaded_in: Some(loaded_in),
+        }
     }
 
     /// `true` cuando los tombstones superan [`REBUILD_TOMBSTONE_RATIO`] de los
