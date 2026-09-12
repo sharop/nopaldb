@@ -81,7 +81,8 @@ pub struct Graph {
     /// Sello de solo-lectura. `None` en una apertura normal de escritura.
     read_only_seal: Option<crate::storage::kv::WriteSeal>,
     /// Directorio de la base (`None` en memoria). Lo usan los caches que
-    /// persisten a disco fuera del motor KV, como el índice HNSW.
+    /// persisten a disco fuera del motor KV, hoy solo el índice HNSW.
+    #[cfg(feature = "embeddings-index")]
     data_dir: Option<std::path::PathBuf>,
     auto_gc_stop_tx: Arc<Mutex<Option<watch::Sender<bool>>>>,
     auto_gc_config: Arc<RwLock<Option<AutoGcConfig>>>,
@@ -448,6 +449,7 @@ impl Graph {
 
             auto_gc_task: Arc::new(Mutex::new(None)),
             read_only_seal: None,
+            #[cfg(feature = "embeddings-index")]
             data_dir: Some(path_ref.to_path_buf()),
             auto_gc_stop_tx: Arc::new(Mutex::new(None)),
             auto_gc_config: Arc::new(RwLock::new(None)),
@@ -840,6 +842,7 @@ impl Graph {
 
             auto_gc_task: Arc::new(Mutex::new(None)),
             read_only_seal: None,
+            #[cfg(feature = "embeddings-index")]
             data_dir: None,
             auto_gc_stop_tx: Arc::new(Mutex::new(None)),
             auto_gc_config: Arc::new(RwLock::new(None)),
