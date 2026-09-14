@@ -15,10 +15,22 @@ const DIM: usize = 8;
 const MODEL: &str = "m";
 
 fn vec_for(i: usize) -> Vec<f32> {
-    // Deterministic, well separated: a one-hot-ish vector with a small tail.
+    // Deterministic and pairwise distinct: a one-hot-ish vector plus a small
+    // per-index tail. The earlier version only had 8 × 8 × 7 distinct vectors,
+    // so above ~450 points the set was mostly exact duplicates, and hnsw_rs
+    // builds a poorly navigable graph over duplicates: on some CI runners the
+    // search for a freshly inserted vector did not reach it (flaky in the
+    // test above the exact threshold). Distinct points keep the graph sane.
     let mut v = vec![0.01f32; DIM];
     v[i % DIM] = 1.0;
     v[(i / DIM) % DIM] += 0.1 * ((i % 7) as f32);
+    let mut s = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    for x in v.iter_mut() {
+        s ^= s >> 12;
+        s ^= s << 25;
+        s ^= s >> 27;
+        *x += ((s.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40) as f32 / (1u64 << 24) as f32) * 0.02;
+    }
     v
 }
 
@@ -67,13 +79,16 @@ async fn updating_an_embedding_replaces_it_with_one_tombstone() -> Result<()> {
 
     let again = graph.get_or_build_embedding_index(MODEL).await?;
     assert!(Arc::ptr_eq(&index, &again));
-    let idx = again.read().unwrap();
-    assert_eq!(idx.len(), 50, "same number of live points");
-    assert_eq!(idx.tombstones(), 1);
-    assert_eq!(idx.search_knn(&moved, 1)?[0].0, target, "the NEW vector is what the index answers");
-    let old_hits = idx.search_knn(&vec_for(7), 3)?;
-    assert!(old_hits.iter().all(|(id, _)| *id != target) || old_hits[0].0 != target,
-        "the old position is no longer the best match for the node: {old_hits:?}");
+    {
+        // Scoped: the std guard must not live across the await below.
+        let idx = again.read().unwrap();
+        assert_eq!(idx.len(), 50, "same number of live points");
+        assert_eq!(idx.tombstones(), 1);
+        assert_eq!(idx.search_knn(&moved, 1)?[0].0, target, "the NEW vector is what the index answers");
+        let old_hits = idx.search_knn(&vec_for(7), 3)?;
+        assert!(old_hits.iter().all(|(id, _)| *id != target) || old_hits[0].0 != target,
+            "the old position is no longer the best match for the node: {old_hits:?}");
+    }
     let stats = graph.embedding_index_stats(MODEL).await.unwrap();
     assert_eq!((stats.size, stats.tombstones, stats.needs_rebuild), (50, 1, false));
     Ok(())
