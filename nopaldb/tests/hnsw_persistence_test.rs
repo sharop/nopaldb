@@ -31,9 +31,7 @@ fn node_id(i: u128) -> NodeId {
 }
 
 fn options(engine: StorageEngine) -> StorageOptions {
-    let mut o = StorageOptions::default();
-    o.engine = engine;
-    o
+    StorageOptions { engine, ..Default::default() }
 }
 
 async fn populate(graph: &Graph, n: usize) {
@@ -185,19 +183,26 @@ async fn writes_without_close_invalidate_the_dump() {
 
 /// Un dump con bytes cambiados o truncado nunca llega a `hnsw_rs`: se
 /// detecta y se reconstruye.
+///
+/// Tras un rebuild no se compara la lista completa de vecinos: el grafo se
+/// construye con `parallel_insert` y el quinto vecino puede cambiar entre
+/// máquinas (falló así en CI). Lo determinista es que el vector consultado
+/// es el de un nodo existente, que tiene que salir primero, y que una
+/// recarga del MISMO dump devuelve exactamente lo que devolvió el índice
+/// que lo escribió.
 #[tokio::test]
 async fn corrupt_or_truncated_dump_falls_back_to_rebuild() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db");
     let n = EXACT_SEARCH_THRESHOLD + 10;
     let query = vector(5);
-    let before = {
+    let own = node_id(5);
+    {
         let graph = Graph::open(&path).await.unwrap();
         populate(&graph, n).await;
-        let hits = search(&graph, &query).await;
+        assert_eq!(search(&graph, &query).await[0], own);
         graph.close().await.unwrap();
-        hits
-    };
+    }
     let graph_file = path.join("hnsw").join(
         dump_files(&path).into_iter().find(|f| f.ends_with(".hnsw.graph")).unwrap(),
     );
@@ -210,7 +215,9 @@ async fn corrupt_or_truncated_dump_falls_back_to_rebuild() {
     std::fs::write(&graph_file, &bytes).unwrap();
     {
         let graph = Graph::open(&path).await.unwrap();
-        assert_eq!(search(&graph, &query).await, before);
+        let hits = search(&graph, &query).await;
+        assert_eq!(hits[0], own);
+        assert_eq!(hits.len(), 5);
         let stats = graph.embedding_index_stats(MODEL).await.unwrap();
         assert_eq!(stats.loaded_from_disk_ms, None, "corrupto ⇒ rebuild: {stats:?}");
         assert!(stats.persisted, "y el rebuild reescribe un dump sano");
@@ -220,15 +227,17 @@ async fn corrupt_or_truncated_dump_falls_back_to_rebuild() {
     let f = std::fs::OpenOptions::new().write(true).open(&graph_file).unwrap();
     f.set_len(200).unwrap();
     drop(f);
-    {
+    let rebuilt = {
         let graph = Graph::open(&path).await.unwrap();
-        assert_eq!(search(&graph, &query).await, before);
+        let hits = search(&graph, &query).await;
+        assert_eq!(hits[0], own);
         assert_eq!(graph.embedding_index_stats(MODEL).await.unwrap().loaded_from_disk_ms, None);
-        graph.close().await.unwrap();
-    }
-    // 3. sano otra vez
+        graph.close().await.unwrap(); // reescribe el dump con este grafo
+        hits
+    };
+    // 3. sano otra vez: carga el dump del paso 2 ⇒ resultados idénticos
     let graph = Graph::open(&path).await.unwrap();
-    assert_eq!(search(&graph, &query).await, before);
+    assert_eq!(search(&graph, &query).await, rebuilt);
     assert!(graph.embedding_index_stats(MODEL).await.unwrap().loaded_from_disk_ms.is_some());
 }
 
