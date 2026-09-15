@@ -1638,14 +1638,12 @@ impl Graph {
         // serializado; para tipos ya vistos es lookup RAM O(1)).
         let etype_id = self.storage.intern_edge_type(&edge.edge_type)?;
 
-        // Registro de la arista (keyspace "edges") + sus DOS claves de
-        // adyacencia (O y espejo I) en UN apply_multi atómico: jamás edges
-        // sin su adyacencia, ni a medias tras un crash. Antes esto eran la
-        // escritura del Edge y DOS reescrituras O(deg) de listas completas.
-        self.storage.insert_edge_with_adjacency(&edge, etype_id).await?;
-
-        // Guardar versión MVCC (árbol "versioned_edges") — sin cambios.
-        self.storage.insert_versioned_edge(&edge, timestamp).await?;
+        // Registro de la arista (keyspace "edges"), sus DOS claves de
+        // adyacencia (O y espejo I), su versión MVCC y la cota del reloj en
+        // UN apply_multi atómico: jamás edges sin su adyacencia ni sin su
+        // versión, ni a medias tras un crash. Antes eran cuatro commits
+        // (ver `Storage::insert_edge_full`).
+        self.storage.insert_edge_full(&edge, etype_id, timestamp).await?;
 
         // Actualizar índices RAM.
         let mut adj_out = self.adjacency_out.write().await;

@@ -3,8 +3,9 @@
 // Línea base de rendimiento para el trabajo de concurrencia (roadmap M2):
 //   (a) throughput de commit de transacciones pequeñas (fsync-bound hoy)
 //   (b) lecturas get_node con 1/4/8 tasks concurrentes
-//   (c) lecturas concurrentes con un escritor activo
-//   (d) ingesta con BulkLoader
+//   (c) lecturas concurrentes con un escritor activo (esperado: mide el
+//       máximo de leer y escribir) y con un escritor de fondo (solo lectura)
+//   (d) ingesta con BulkLoader, en base nueva y en base abierta
 //
 // Correr: cargo bench -p nopaldb
 // Registrar los números ANTES de aterrizar el applier (I8), el commit atómico
@@ -195,22 +196,105 @@ fn bench_reads_with_active_writer(c: &mut Criterion) {
     group.finish();
 }
 
-// (d) Ingesta con BulkLoader: 1000 nodos por iteración en una base nueva.
+// (c'') Lecturas (8 tasks) con un escritor DE FONDO que no se espera: la
+// degradación real del lector. (c) espera a sus 4 escrituras, así que su
+// tiempo es el máximo de leer y escribir, y en un motor con commits caros
+// mide al escritor. Aquí el escritor corre durante todo el grupo a un ritmo
+// FIJO (10 aristas cada 1 ms ≈ 10k/s, la misma carga en los dos motores) y
+// solo se cronometra el lote de lecturas. El escritor tiene ritmo fijo y un
+// tope de aristas: sin ritmo, la carga dependería del motor; sin tope, en
+// sled el grupo no terminaba (la base crecía sin parar, 1.7 GB de RAM a los
+// 20 min) porque criterion sigue iterando mientras el tiempo por lote sube.
+// 100k aristas cubren con holgura los ~8 s de calentamiento + medición.
+fn bench_reads_with_background_writer(c: &mut Criterion) {
+    let rt = rt();
+    let dir = tempfile::tempdir().unwrap();
+    let (graph, ids) = rt.block_on(seeded_graph(dir.path(), 1024));
+    let ids = Arc::new(ids);
+
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer = {
+        let g = Arc::clone(&graph);
+        let ids = Arc::clone(&ids);
+        let stop = Arc::clone(&stop);
+        rt.spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_millis(1));
+            let mut i = 0usize;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) && i < 100_000 {
+                tick.tick().await;
+                for _ in 0..10 {
+                    let s = ids[i % ids.len()];
+                    let t = ids[(i + 7) % ids.len()];
+                    let _ = g.add_edge(Edge::new(s, t, "BG")).await;
+                    i += 1;
+                }
+            }
+            i
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let mut group = c.benchmark_group("reads_64_background_writer");
+    group.sample_size(30);
+    group.bench_function("8_tasks", |b| {
+        b.to_async(&rt).iter(|| {
+            let g = Arc::clone(&graph);
+            let ids = Arc::clone(&ids);
+            async move { read_batch(&g, &ids, 8).await }
+        });
+    });
+    group.finish();
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let written = rt.block_on(writer).expect("writer task");
+    eprintln!("reads_64_background_writer: el escritor de fondo insertó {written} aristas");
+}
+
+// (d) Ingesta con BulkLoader: 1000 nodos por iteración. `fresh_db` abre una
+// base nueva en cada iteración (crear + abrir + cerrar van dentro de la
+// medición: ~18 ms en sled, ~75 ms en redb, casi todo fsync); `open_db`
+// carga sobre una base ya abierta y mide solo la ingesta. Tamaño de lote
+// del loader por `NOPALDB_BENCH_BATCH` (default 256): en un motor que
+// escribe páginas en cada commit, el lote decide cuántos commits paga.
 fn bench_bulk_load(c: &mut Criterion) {
     let rt = rt();
+    let batch: usize = std::env::var("NOPALDB_BENCH_BATCH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(256);
 
     let mut group = c.benchmark_group("bulk_load");
     group.sample_size(10);
-    group.bench_function("1k_nodes", |b| {
+    group.bench_function("1k_nodes_fresh_db", |b| {
         b.to_async(&rt).iter(|| async {
             let dir = tempfile::tempdir().unwrap();
             let graph = Graph::open_with_options(dir.path(), bench_options()).await.expect("open");
-            let mut loader = graph.bulk_loader(256);
+            let mut loader = graph.bulk_loader(batch);
             for i in 0..1000usize {
                 loader.add_node(person(i)).await.expect("bulk add");
             }
             let stats = loader.finish().await.expect("finish");
             assert_eq!(stats.nodes_inserted, 1000);
+        });
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let graph = Arc::new(rt.block_on(async {
+        Graph::open_with_options(dir.path(), bench_options()).await.expect("open")
+    }));
+    let mut next = 0usize;
+    group.bench_function("1k_nodes_open_db", |b| {
+        b.to_async(&rt).iter(|| {
+            let g = Arc::clone(&graph);
+            let base = next;
+            next += 1000;
+            async move {
+                let mut loader = g.bulk_loader(batch);
+                for i in base..base + 1000 {
+                    loader.add_node(person(i)).await.expect("bulk add");
+                }
+                let stats = loader.finish().await.expect("finish");
+                assert_eq!(stats.nodes_inserted, 1000);
+            }
         });
     });
     group.finish();
@@ -222,6 +306,7 @@ criterion_group!(
     bench_commit_concurrent,
     bench_read_concurrency,
     bench_reads_with_active_writer,
+    bench_reads_with_background_writer,
     bench_bulk_load
 );
 criterion_main!(benches);

@@ -25,7 +25,7 @@ use std::collections::VecDeque;
 use std::ops::Bound;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use crate::error::{NopalError, Result, StorageError, StorageErrorKind};
 use crate::storage::backend::StorageProfile;
@@ -58,6 +58,47 @@ impl From<::redb::StorageError> for NopalError {
     }
 }
 
+// ─── Caché de lectura ───────────────────────────────────────────────────────
+
+type ReadOnlyTable = ::redb::ReadOnlyTable<&'static [u8], &'static [u8]>;
+
+/// La tabla de solo-lectura que un keyspace reutiliza entre `get`s hasta el
+/// siguiente commit del proceso. `None` = hay que abrir una nueva.
+type ReadSlot = RwLock<Option<ReadOnlyTable>>;
+
+/// Estado compartido entre el engine y sus keyspaces: los slots de lectura
+/// de todos los keyspaces vivos (`Weak`: un keyspace que ya nadie usa no
+/// retiene su snapshot) y si hubo commits de datos desde el último
+/// checkpoint durable.
+#[derive(Default)]
+struct Shared {
+    slots: Mutex<Vec<Weak<ReadSlot>>>,
+    /// `true` desde el primer commit de datos tras un checkpoint durable.
+    /// Un checkpoint sobre una base sin cambios es un fsync gratis (~7 ms
+    /// en un Mac por `F_FULLFSYNC`): el flusher periódico y el cierre lo
+    /// omiten cuando no hay nada que persistir.
+    dirty: AtomicBool,
+}
+
+type ReadSlots = Arc<Shared>;
+
+/// Se llama DESPUÉS de cada `commit()` de datos: vacía los slots de lectura
+/// (cualquier snapshot anterior es viejo, y soltarlo deja que redb recicle
+/// las páginas que el commit liberó) y marca la base como pendiente de
+/// checkpoint. Un checkpoint durable (commit vacío) no cambia datos y no
+/// pasa por aquí.
+fn invalidate_reads(shared: &ReadSlots) {
+    shared.dirty.store(true, Ordering::Release);
+    let mut slots = shared.slots.lock().unwrap_or_else(|e| e.into_inner());
+    slots.retain(|w| match w.upgrade() {
+        Some(slot) => {
+            *slot.write().unwrap_or_else(|e| e.into_inner()) = None;
+            true
+        }
+        None => false,
+    });
+}
+
 // ─── Engine ─────────────────────────────────────────────────────────────────
 
 pub(crate) struct RedbEngine {
@@ -66,6 +107,8 @@ pub(crate) struct RedbEngine {
     flusher: Option<std::thread::JoinHandle<()>>,
     /// Reserva de la ruta en el registro del proceso; se suelta con el engine.
     _lease: Option<super::PathLease>,
+    /// Ver [`ReadSlots`].
+    read_slots: ReadSlots,
 }
 
 impl RedbEngine {
@@ -201,9 +244,11 @@ impl RedbEngine {
     fn with_flusher(db: ::redb::Database, profile: StorageProfile) -> Self {
         let db = Arc::new(db);
         let stop = Arc::new(AtomicBool::new(false));
+        let shared: ReadSlots = Arc::new(Shared::default());
         let flusher = profile.tuning().flush_every_ms.map(|ms| {
             let db = Arc::clone(&db);
             let stop = Arc::clone(&stop);
+            let shared = Arc::clone(&shared);
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
                     std::thread::park_timeout(std::time::Duration::from_millis(ms));
@@ -211,11 +256,11 @@ impl RedbEngine {
                         break;
                     }
                     // Commit vacío durable: persiste todos los commits None previos.
-                    let _ = durable_checkpoint(&db);
+                    let _ = checkpoint_if_dirty(&db, &shared);
                 }
             })
         });
-        Self { db, stop, flusher, _lease: None }
+        Self { db, stop, flusher, _lease: None, read_slots: shared }
     }
 
     /// Adjunta la reserva de ruta del proceso (ver `kv::open_engine`).
@@ -233,6 +278,15 @@ fn durable_checkpoint(db: &::redb::Database) -> Result<()> {
     Ok(())
 }
 
+/// Checkpoint durable solo si hubo commits de datos desde el anterior. Si
+/// el fsync falla, la base vuelve a quedar marcada para reintentarlo.
+fn checkpoint_if_dirty(db: &::redb::Database, shared: &Shared) -> Result<()> {
+    if !shared.dirty.swap(false, Ordering::AcqRel) {
+        return Ok(());
+    }
+    durable_checkpoint(db).inspect_err(|_| shared.dirty.store(true, Ordering::Release))
+}
+
 impl Drop for RedbEngine {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -241,7 +295,7 @@ impl Drop for RedbEngine {
             let _ = h.join();
         }
         // Cierre limpio: lo escrito queda durable aunque el timer no alcanzara.
-        let _ = durable_checkpoint(&self.db);
+        let _ = checkpoint_if_dirty(&self.db, &self.read_slots);
     }
 }
 
@@ -257,9 +311,18 @@ impl KvEngine for RedbEngine {
         txn.set_durability(::redb::Durability::None).map_err(internal)?;
         txn.open_table(table_def(name)).map_err(internal)?;
         txn.commit().map_err(internal)?;
+        invalidate_reads(&self.read_slots);
+        let slot: Arc<ReadSlot> = Arc::new(RwLock::new(None));
+        self.read_slots
+            .slots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(Arc::downgrade(&slot));
         Ok(Arc::new(RedbKeyspace {
             db: Arc::clone(&self.db),
             name: name.to_string(),
+            slot,
+            read_slots: Arc::clone(&self.read_slots),
         }))
     }
 
@@ -288,19 +351,44 @@ impl KvEngine for RedbEngine {
             }
         }
         txn.commit().map_err(internal)?;
+        invalidate_reads(&self.read_slots);
         Ok(())
     }
 
     fn flush(&self) -> Result<()> {
-        durable_checkpoint(&self.db)
+        checkpoint_if_dirty(&self.db, &self.read_slots)
     }
 }
 
 // ─── Keyspace ───────────────────────────────────────────────────────────────
 
+/// Un keyspace = una tabla de redb.
+///
+/// # Lecturas: una tabla de solo-lectura reutilizada hasta el próximo commit
+///
+/// `begin_read` + `open_table` por cada `get` costaba 0.30 µs/get sin
+/// escritor y 0.70 µs/get con uno (medido aparte sobre redb 4.1: 0.42 vs
+/// 0.12 µs/get, y 0.93 vs 0.22), y era todo el exceso de redb frente a sled
+/// en lecturas puntuales. Aquí la tabla abierta se guarda en `slot` y se
+/// reutiliza; **todo** commit de datos del proceso (`write`, `apply_multi`,
+/// `clear`, la creación de tablas) vacía los slots de todos los keyspaces
+/// ([`invalidate_reads`]), así que:
+///
+/// - una lectura nunca ve un snapshot anterior al último commit (redb es
+///   single-writer y ese escritor somos nosotros: no hay commits ajenos);
+/// - el snapshot solo vive durante fases sin escritura, donde no retiene
+///   nada que redb quisiera liberar; en cuanto hay un commit se suelta.
+///
+/// Descartado: un snapshot por operación de grafo (obliga a cambiar el
+/// contrato `KvKeyspace`/`Storage` y no ayuda a `get_node`, que es un solo
+/// `get`); un contador de generación sin vaciado por el escritor (retendría
+/// el snapshot viejo durante una fase de solo escritura, p. ej. un bulk, y
+/// el archivo crecería mientras tanto).
 pub(crate) struct RedbKeyspace {
     db: Arc<::redb::Database>,
     name: String,
+    slot: Arc<ReadSlot>,
+    read_slots: ReadSlots,
 }
 
 impl RedbKeyspace {
@@ -315,13 +403,36 @@ impl RedbKeyspace {
             f(&mut table)?
         };
         txn.commit().map_err(internal)?;
+        invalidate_reads(&self.read_slots);
         Ok(out)
     }
 
-    fn read_table(&self) -> Result<::redb::ReadOnlyTable<&'static [u8], &'static [u8]>> {
+    fn open_read_table(&self) -> Result<ReadOnlyTable> {
         use ::redb::ReadableDatabase;
         let txn = self.db.begin_read().map_err(internal)?;
         txn.open_table(table_def(&self.name)).map_err(internal)
+    }
+
+    /// Ejecuta `f` sobre la tabla de lectura vigente: la cacheada si ningún
+    /// commit la invalidó, o una recién abierta que queda cacheada. El
+    /// read-lock del slot se sostiene durante `f`, así que un commit
+    /// concurrente vacía el slot justo después, nunca a medias.
+    fn with_read_table<R>(&self, f: impl FnOnce(&ReadOnlyTable) -> Result<R>) -> Result<R> {
+        {
+            let guard = self.slot.read().unwrap_or_else(|e| e.into_inner());
+            if let Some(table) = guard.as_ref() {
+                return f(table);
+            }
+        }
+        let table = self.open_read_table()?;
+        let mut guard = self.slot.write().unwrap_or_else(|e| e.into_inner());
+        let out = f(&table);
+        // Solo se cachea si nadie la invalidó mientras se abría: si un commit
+        // entró en medio, esta tabla ya es vieja y el slot se queda vacío.
+        if guard.is_none() {
+            *guard = Some(table);
+        }
+        out
     }
 }
 
@@ -368,28 +479,36 @@ impl ChunkedIter {
     }
 
     fn fill(&mut self) -> Result<()> {
-        let table = self.ks.read_table()?;
         let from = match &self.next_from {
             Bound::Included(k) => Bound::Included(k.as_slice()),
             Bound::Excluded(k) => Bound::Excluded(k.as_slice()),
             Bound::Unbounded => Bound::Unbounded,
         };
-        let range = table
-            .range::<&[u8]>((from, Bound::Unbounded))
-            .map_err(internal)?;
-
-        let mut last: Option<Vec<u8>> = None;
-        for item in range.take(CHUNK) {
-            let (k, v) = item.map_err(NopalError::from)?;
-            let key = k.value().to_vec();
-            if let Some(p) = &self.prefix
-                && !key.starts_with(p)
-            {
-                self.done = true;
-                return Ok(());
+        let prefix = self.prefix.as_deref();
+        // (pares del chunk, se cortó por prefijo)
+        let (chunk, stopped_by_prefix) = self.ks.with_read_table(|table| {
+            let range = table
+                .range::<&[u8]>((from, Bound::Unbounded))
+                .map_err(internal)?;
+            let mut chunk: Vec<super::KvPair> = Vec::with_capacity(CHUNK);
+            for item in range.take(CHUNK) {
+                let (k, v) = item.map_err(NopalError::from)?;
+                let key = k.value().to_vec();
+                if let Some(p) = prefix
+                    && !key.starts_with(p)
+                {
+                    return Ok((chunk, true));
+                }
+                chunk.push((key, v.value().to_vec()));
             }
-            last = Some(key.clone());
-            self.buf.push_back((key, v.value().to_vec()));
+            Ok((chunk, false))
+        })?;
+
+        let last = chunk.last().map(|(k, _)| k.clone());
+        self.buf.extend(chunk);
+        if stopped_by_prefix {
+            self.done = true;
+            return Ok(());
         }
         match last {
             Some(k) => self.next_from = Bound::Excluded(k),
@@ -401,11 +520,12 @@ impl ChunkedIter {
 
 impl KvKeyspace for RedbKeyspace {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let table = self.read_table()?;
-        Ok(table
-            .get(key)
-            .map_err(NopalError::from)?
-            .map(|v| v.value().to_vec()))
+        self.with_read_table(|table| {
+            Ok(table
+                .get(key)
+                .map_err(NopalError::from)?
+                .map(|v| v.value().to_vec()))
+        })
     }
 
     fn insert(&self, key: &[u8], value: &[u8]) -> Result<()> {
@@ -488,6 +608,7 @@ impl KvKeyspace for RedbKeyspace {
         // Recrear vacía: el handle sigue siendo usable tras clear().
         txn.open_table(table_def(&self.name)).map_err(internal)?;
         txn.commit().map_err(internal)?;
+        invalidate_reads(&self.read_slots);
         Ok(())
     }
 }
@@ -497,6 +618,8 @@ impl RedbKeyspace {
         RedbKeyspace {
             db: Arc::clone(&self.db),
             name: self.name.clone(),
+            slot: Arc::clone(&self.slot),
+            read_slots: Arc::clone(&self.read_slots),
         }
     }
 }
@@ -546,5 +669,63 @@ mod tests {
             esperado >= std::time::Duration::from_millis(500),
             "debe haber reintentado antes de rendirse; se rindió en {esperado:?}"
         );
+    }
+
+    fn slot_is_cached(ks: &Arc<dyn KvKeyspace>) -> bool {
+        // Solo el test conoce el tipo concreto; el contrato no expone el slot.
+        let raw = Arc::as_ptr(ks) as *const RedbKeyspace;
+        // SAFETY: todos los keyspaces de RedbEngine son RedbKeyspace; el
+        // puntero viene de un Arc vivo y solo se lee.
+        let ks = unsafe { &*raw };
+        ks.slot.read().unwrap().is_some()
+    }
+
+    /// El mecanismo de la caché de lectura: un `get` deja la tabla cacheada,
+    /// y CUALQUIER commit de datos (propio, de otro keyspace vía
+    /// `apply_multi`, `clear`) la vacía, de modo que la siguiente lectura ve
+    /// lo escrito. Fija el comportamiento por el que redb dejó de pagar
+    /// `begin_read` + `open_table` en cada lectura.
+    #[test]
+    fn read_table_is_reused_until_the_next_commit_and_never_stale() {
+        let engine = RedbEngine::open_temporary(StorageProfile::Default).unwrap();
+        let a = engine.keyspace("a").unwrap();
+        let b = engine.keyspace("b").unwrap();
+
+        assert!(!slot_is_cached(&a), "nada cacheado antes de leer");
+        assert_eq!(a.get(b"k").unwrap(), None);
+        assert!(slot_is_cached(&a), "la primera lectura deja la tabla cacheada");
+        assert_eq!(a.get(b"k").unwrap(), None);
+        assert!(slot_is_cached(&a));
+
+        // Escritura propia: invalida y la lectura siguiente ve el valor.
+        a.insert(b"k", b"1").unwrap();
+        assert!(!slot_is_cached(&a), "un commit vacía el slot");
+        assert_eq!(a.get(b"k").unwrap().as_deref(), Some(&b"1"[..]));
+        assert!(slot_is_cached(&a));
+
+        // Escritura en OTRO keyspace vía apply_multi: también invalida a `a`
+        // (el snapshot es de toda la base, no de una tabla).
+        let mut batch = WriteBatch::default();
+        batch.insert(b"x".to_vec(), b"y".to_vec());
+        engine.apply_multi(vec![("b".to_string(), batch)]).unwrap();
+        assert!(!slot_is_cached(&a));
+        assert_eq!(b.get(b"x").unwrap().as_deref(), Some(&b"y"[..]));
+
+        // rmw y clear pasan por commits: lo escrito se ve de inmediato.
+        a.rmw(b"k", &mut |old| old.map(|v| [v, b"2"].concat())).unwrap();
+        assert_eq!(a.get(b"k").unwrap().as_deref(), Some(&b"12"[..]));
+        a.clear().unwrap();
+        assert_eq!(a.get(b"k").unwrap(), None);
+
+        // Un scan por chunks intercalado con un commit continúa sobre el
+        // estado nuevo (la clave insertada por delante del cursor aparece).
+        for i in 0..5u8 {
+            a.insert(&[i], b"v").unwrap();
+        }
+        let mut it = a.iter();
+        assert_eq!(it.next().unwrap().unwrap().0, vec![0]);
+        a.insert(&[9], b"late").unwrap();
+        let rest: Vec<Vec<u8>> = it.map(|r| r.unwrap().0).collect();
+        assert_eq!(rest, vec![vec![1], vec![2], vec![3], vec![4], vec![9]]);
     }
 }
