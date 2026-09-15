@@ -35,7 +35,7 @@ Las capas se comunican unicamente hacia abajo. El query engine llama a la API de
 
 ```rust
 pub struct Node {
-    pub id:         NodeId,           // UUID v4
+    pub id:         NodeId,           // UUID v7 (time-ordered; v4 before 0.5.22)
     pub label:      String,           // tipo del nodo ("Person", "Viral", "sh:NodeShape")
     pub kind:       NodeKind,         // Individual | Class | ObjectProperty | ...
     pub properties: HashMap<String, PropertyValue>,
