@@ -47,6 +47,8 @@ const INDEXES_TREE: &str = "indexes";
 /// Nombre del keyspace de catálogo v2 (F5): metas (`m|`) + interning de
 /// edge-types (`et*`).
 const CATALOG_TREE: &str = "catalog";
+const VERSIONED_EDGES_TREE: &str = "versioned_edges";
+const VERSIONED_EDGES_CURRENT_TREE: &str = "versioned_edges_current";
 /// Nombre meta con la cota superior persistida del contador de transaction
 /// ids. Vive en `catalog` (F5.4); legacy: `meta:next_tx_id` (F5.5).
 pub const META_NEXT_TX_ID: &str = "next_tx_id";
@@ -261,8 +263,8 @@ impl Storage {
     fn from_engine(engine: Arc<dyn kv::KvEngine>, profile: StorageProfile) -> Result<Self> {
         let default_ks = engine.keyspace(kv::DEFAULT_KEYSPACE)?;
         let edges_ks = engine.keyspace(EDGES_TREE)?;
-        let versioned_edges_ks = engine.keyspace("versioned_edges")?;
-        let versioned_edges_current_ks = engine.keyspace("versioned_edges_current")?;
+        let versioned_edges_ks = engine.keyspace(VERSIONED_EDGES_TREE)?;
+        let versioned_edges_current_ks = engine.keyspace(VERSIONED_EDGES_CURRENT_TREE)?;
         let prop_idx_ks = engine.keyspace(PROP_IDX_TREE)?;
         let catalog_ks = engine.keyspace(CATALOG_TREE)?;
         let entities_ks = engine.keyspace(ENTITIES_TREE)?;
@@ -688,6 +690,56 @@ impl Storage {
         self.engine.apply_multi(vec![
             (EDGES_TREE.to_string(), edges_batch),
             (ADJACENCY_TREE.to_string(), adj_batch),
+        ])
+    }
+
+    /// Todo lo que persiste una arista nueva, en UN `apply_multi`: el
+    /// registro (`edges`), sus dos claves de adyacencia, su primera versión
+    /// MVCC y el puntero current (`versioned_edges*`) y la cota del reloj
+    /// lógico (`catalog`). Es `insert_edge_with_adjacency` +
+    /// `insert_versioned_edge` fundidos.
+    ///
+    /// Por qué existe: como cuatro llamadas eran cuatro commits del motor
+    /// (apply_multi + insert + insert + rmw del reloj). En sled un commit
+    /// es memoria; en redb cada uno escribe páginas al archivo, y esos
+    /// cuatro sumaban ~118 µs por arista frente a ~23 µs en sled: era la
+    /// componente entera de `reads_64_with_writer` en el gate del flip. Un
+    /// commit deja además la arista y su versión atómicas entre sí, que
+    /// antes no lo eran.
+    ///
+    /// Solo debe llamarse bajo el single-writer apply: el reloj se lee y
+    /// se escribe sin RMW, así que el escritor tiene que ser único.
+    pub async fn insert_edge_full(&self, edge: &Edge, etype_id: u32, timestamp: u64) -> Result<()> {
+        let mut edges_batch = kv::WriteBatch::default();
+        edges_batch.insert(edge.id.to_string().as_bytes(), serialize(edge)?);
+
+        let mut adj_batch = kv::WriteBatch::default();
+        adj_batch.insert(keys::v2::adj_out_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
+        adj_batch.insert(keys::v2::adj_in_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
+
+        let versioned = VersionedEdge::new(edge.clone(), timestamp);
+        let value = serialize(&versioned)?;
+        let mut versions_batch = kv::WriteBatch::default();
+        versions_batch.insert(keys::edge_version_key(edge.id, versioned.version).as_bytes(), value.clone());
+        let mut current_batch = kv::WriteBatch::default();
+        current_batch.insert(edge.id.to_string().as_bytes(), value);
+
+        // Cota del reloj (nunca retrocede): mismo cálculo que `bump_clock`,
+        // sin su transacción propia.
+        let clock_key = keys::v2::catalog_meta_key(META_NEXT_TIMESTAMP);
+        let current_clock = self.catalog_ks.get(&clock_key)?.map(|v| Self::decode_meta_u64(&v)).unwrap_or(0);
+        let mut catalog_batch = kv::WriteBatch::default();
+        catalog_batch.insert(
+            clock_key,
+            current_clock.max(timestamp.saturating_add(1)).to_be_bytes().to_vec(),
+        );
+
+        self.engine.apply_multi(vec![
+            (EDGES_TREE.to_string(), edges_batch),
+            (ADJACENCY_TREE.to_string(), adj_batch),
+            (VERSIONED_EDGES_TREE.to_string(), versions_batch),
+            (VERSIONED_EDGES_CURRENT_TREE.to_string(), current_batch),
+            (CATALOG_TREE.to_string(), catalog_batch),
         ])
     }
 

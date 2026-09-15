@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.21] - unreleased
+
+### Changed
+
+- **redb: camino de lectura sin transacción por `get`.** Cada `get`/`contains_key`/chunk de scan abría una `ReadTransaction` y hacía `open_table`; medido aparte sobre redb 4.1 eso era 0.30 µs por lectura sin escritor y 0.70 µs con uno, todo el exceso de redb frente a sled en lecturas puntuales. Ahora cada keyspace reutiliza su tabla de solo-lectura hasta el siguiente commit de datos del proceso, que vacía las de todos los keyspaces (redb es single-writer y el escritor es NopalDB, así que ninguna lectura ve un snapshot anterior al último commit, y el snapshot no retiene páginas durante fases de escritura). 64 `get_node`: redb 30 µs frente a 36 µs de sled; con un escritor de fondo, 43 µs frente a 153 µs. Sin cambio de contrato.
+- **redb: checkpoint durable solo si hubo commits.** El flusher periódico, `flush()` y el cierre hacían un commit `Immediate` (un fsync) aunque la base no hubiera cambiado; `close()` seguido del `drop` eran dos fsync seguidos. Ahora se omite cuando no hay nada que persistir.
+- **`add_edge` directo escribe en un solo commit.** Registro, adyacencia, primera versión MVCC, puntero current y cota del reloj eran cuatro commits del motor (`Storage::insert_edge_full` los funde en un `apply_multi`): en redb, donde cada commit escribe páginas al archivo, 4 aristas pasan de 470 a 345 µs; arista y versión quedan además atómicas entre sí. `insert_edge_with_adjacency` e `insert_versioned_edge` siguen existiendo.
+- **Bench `graph_ops`:** grupo nuevo `reads_64_background_writer` (lectores con un escritor de fondo a ritmo fijo que no se espera: la degradación real del lector; `reads_64_with_writer` espera a sus escrituras y mide el máximo de ambas) y `bulk_load` dividido en `1k_nodes_fresh_db` (crear + abrir + cerrar dentro de la medición) y `1k_nodes_open_db` (solo la ingesta; lote por `NOPALDB_BENCH_BATCH`). Con esta versión, redb frente a sled: `reads_64` 1.05×, `reads_64_background_writer` 0.93×, `commit/*` 2.2–2.4×, `reads_64_with_writer` 0.21× y `bulk_load` 0.5× (el costo por commit de redb y la localidad de claves; sin cambio en esta versión).
+
 ## [0.5.20] - 2026-09-12
 
 ### Added
