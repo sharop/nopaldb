@@ -117,7 +117,7 @@ impl Graph {
 
         let (outcome, node_id) = match existing.len() {
             0 => {
-                let node = Node::with_id(NodeId::new_v4(), req.label.clone())
+                let node = Node::with_id(crate::types::fresh_id(), req.label.clone())
                     .with_properties(req.props.clone());
                 let id = node.id;
                 tx.add_node(node).await?;
@@ -262,7 +262,7 @@ impl Graph {
         match found.len() {
             0 => {
                 if link.create_target_stub {
-                    let stub = Node::with_id(NodeId::new_v4(), link.target_label.clone())
+                    let stub = Node::with_id(crate::types::fresh_id(), link.target_label.clone())
                         .with_property(link.target_key.clone(), link.target_key_value.clone());
                     let id = stub.id;
                     tx.add_node(stub).await?;

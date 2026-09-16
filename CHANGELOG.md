@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.22] - unreleased
+
+### Changed
+
+- **Los ids nuevos de nodos y aristas son UUID v7** (ordenados en el tiempo) — cierra [#128](https://github.com/sharop/nopaldb/issues/128). Hasta ahora eran v4: como el id encabeza las claves de `entities`, `history`, `adjacency` y `edges`, cada lote de nodos nuevos caía en posiciones aleatorias del B+tree de cada keyspace, y en redb (copy-on-write) eso cuesta 3× frente a claves ordenadas. Mismo tipo, anchura, texto y serialización; los ids v4 ya guardados conviven sin migración. Cambio de comportamiento observable: ordenar ids da orden de creación, no aleatorio, y un id revela el milisegundo en que se creó. Los ids fijados a mano (`Node::with_id`, `node.id = …`) siguen aceptando cualquier UUID. Generador: `nopaldb::types::fresh_id()`. Medido en `graph_ops` (misma máquina, 0.5.21 → esta versión): `bulk_load/1k_nodes_open_db` sled 5.30 → 3.33 ms, redb 9.89 → **2.34 ms** (redb pasa de 0.54× a 1.42× sled); `reads_64_with_writer` sled 142 → 119 µs, redb 667 → 548 µs; `commit/*` sin cambio (manda el fsync del WAL).
+
 ## [0.5.21] - 2026-09-15
 
 ### Changed

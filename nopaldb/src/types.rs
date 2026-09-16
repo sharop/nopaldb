@@ -11,6 +11,25 @@ pub type NodeId = uuid::Uuid;
 /// Identificador único para una arista
 pub type EdgeId = uuid::Uuid;
 
+/// Id nuevo para un nodo o una arista: UUID **v7** (48 bits de milisegundos
+/// Unix + 74 bits aleatorios, monótono dentro del proceso).
+///
+/// Hasta 0.5.21 eran v4 (aleatorios). El id encabeza las claves de
+/// `entities`, `history`, `adjacency` y `edges`, así que con v4 un lote de
+/// nodos nuevos caía en posiciones aleatorias del B+tree de cada keyspace;
+/// en redb (copy-on-write: cada commit reescribe toda página tocada) eso
+/// costaba 3× frente a claves ordenadas en el tiempo (#128). Con v7 los ids
+/// creados seguidos son vecinos en el árbol. Mismo tipo, anchura, texto y
+/// serialización; los ids v4 ya persistidos conviven sin migración porque
+/// ninguna clave depende de la versión del UUID.
+///
+/// Lo que implica: el id revela el milisegundo de creación, y ordenar ids
+/// da orden temporal en vez de aleatorio. Descartado un contador
+/// secuencial: no es único entre procesos ni tras `copy_database`.
+pub fn fresh_id() -> uuid::Uuid {
+    uuid::Uuid::now_v7()
+}
+
 /// Valor de una propiedad — la lingua franca de valores del motor.
 ///
 /// Todo valor que entra al grafo, se evalúa en NQL, se indexa o cruza una
@@ -494,7 +513,7 @@ pub struct Edge {
 impl Node {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
-            id: NodeId::new_v4(),
+            id: fresh_id(),
             label: label.into(),
             properties: HashMap::new(),
             kind: NodeKind::Individual,
@@ -526,7 +545,7 @@ impl Node {
 impl Edge {
     pub fn new(source: NodeId, target: NodeId, edge_type: impl Into<String>) -> Self {
         Self {
-            id: EdgeId::new_v4(),
+            id: fresh_id(),
             source,
             target,
             edge_type: edge_type.into(),
@@ -586,6 +605,22 @@ impl From<NodeId> for EdgeTarget {
 
 #[cfg(test)]
 mod tests {
+
+    /// #128: los ids nuevos son v7 y salen ordenados en el tiempo; los
+    /// fijados a mano no se tocan.
+    #[test]
+    fn fresh_ids_are_v7_and_time_ordered() {
+        let node = Node::new("Planta");
+        assert_eq!(node.id.get_version_num(), 7);
+        let edge = Edge::new(node.id, node.id, "REL");
+        assert_eq!(edge.id.get_version_num(), 7);
+        let ids: Vec<NodeId> = (0..1000).map(|_| Node::new("x").id).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted, "creados seguidos ⇒ ordenados");
+        let manual = NodeId::new_v4();
+        assert_eq!(Node::with_id(manual, "y").id, manual);
+    }
     use super::*;
 
     #[test]
