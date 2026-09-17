@@ -21,11 +21,37 @@ pub enum StorageEngine {
     Redb,
 }
 
+/// Durabilidad de las escrituras **directas** (`add_node`, `add_edge`,
+/// borrados, sin transacción). Desde 0.5.23 cada una se registra en el WAL
+/// como una transacción automática antes de aplicarse; esta opción decide
+/// cuándo ese registro llega al disco.
+///
+/// Las transacciones (`begin_transaction` + `commit`) siempre hacen fsync
+/// por lote del applier; esta opción no las afecta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DirectWriteDurability {
+    /// El registro se escribe al archivo del WAL sin fsync por operación;
+    /// el fsync lo hacen un sincronizador periódico (cada `flush_every_ms`
+    /// del perfil) y `close()`. Sobrevive a que el proceso muera (el sistema
+    /// operativo conserva lo escrito); ante un apagón se pierde como mucho
+    /// el último periodo. Coste por escritura: microsegundos.
+    #[default]
+    ProcessCrash,
+    /// fsync por lote del applier, igual que las transacciones. Sobrevive a
+    /// un apagón. Coste: el fsync (milisegundos por escritura aislada).
+    Immediate,
+}
+
 /// Storage creation options.
+///
+/// Construir con `..Default::default()` para no depender de la lista de
+/// campos (crece en versiones menores).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StorageOptions {
     pub engine: StorageEngine,
     pub profile: StorageProfile,
+    /// Ver [`DirectWriteDurability`].
+    pub direct_write_durability: DirectWriteDurability,
 }
 
 impl Default for StorageOptions {
@@ -41,6 +67,7 @@ impl Default for StorageOptions {
             #[cfg(all(not(feature = "storage-sled"), feature = "storage-redb"))]
             engine: StorageEngine::Redb,
             profile: StorageProfile::Default,
+            direct_write_durability: DirectWriteDurability::default(),
         }
     }
 }

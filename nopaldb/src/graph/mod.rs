@@ -15,6 +15,7 @@ pub use hybrid::{
 use std::collections::{HashMap, BinaryHeap, VecDeque, HashSet};
 use std::cmp::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
@@ -74,6 +75,13 @@ pub struct Graph {
     schema_manager: Arc<SchemaManager>,
 
     wal: Arc<WalManager>,
+    /// Cómo llegan al disco los registros WAL de las escrituras directas.
+    direct_write_durability: crate::storage::DirectWriteDurability,
+    /// `true` mientras `replay_wal` reproduce el log al abrir: las
+    /// escrituras que genera ya están en el WAL y el applier no las vuelve
+    /// a registrar (si no, cada reapertura tras un crash duplicaría el
+    /// sufijo reproducido).
+    replaying: Arc<AtomicBool>,
 
     index_manager: Arc<IndexManager>,
 
@@ -254,6 +262,7 @@ impl Graph {
         let options = crate::storage::StorageOptions {
             engine: crate::storage::StorageEngine::Sled,
             profile,
+            ..Default::default()
         };
         Self::open_with_options(path, options).await
     }
@@ -444,6 +453,8 @@ impl Graph {
             schema_manager: Arc::new(Default::default()),
 
             wal: Arc::new(wal),
+            direct_write_durability: options.direct_write_durability,
+            replaying: Arc::new(AtomicBool::new(false)),
 
             index_manager: Arc::new(index_manager),
 
@@ -465,6 +476,17 @@ impl Graph {
             #[cfg(feature = "embeddings-index")]
             embedding_indices: Arc::new(RwLock::new(HashMap::new())),
         };
+
+        // Sincronizador del WAL: con `ProcessCrash` los registros de las
+        // escrituras directas se escriben sin fsync; este task los hace
+        // durables cada `flush_every_ms` (y `close()` al cerrar).
+        if options.direct_write_durability == crate::storage::DirectWriteDurability::ProcessCrash {
+            let period = options.profile.tuning().flush_every_ms.unwrap_or(1000);
+            crate::wal::spawn_syncer(
+                Arc::downgrade(&graph.wal),
+                std::time::Duration::from_millis(period),
+            );
+        }
 
         if recovery_info.total_records>0 {
             log::info!("Replaying committed operations from WAL...");
@@ -787,6 +809,7 @@ impl Graph {
         let options = crate::storage::StorageOptions {
             engine: crate::storage::StorageEngine::Sled,
             profile,
+            ..Default::default()
         };
         Self::in_memory_with_options(options).await
     }
@@ -802,7 +825,11 @@ impl Graph {
 
         let _index_manager = IndexManager::new(None);
 
-        Ok(Self::from_storage(storage, wal))
+        let mut graph = Self::from_storage(storage, wal);
+
+        graph.direct_write_durability = options.direct_write_durability;
+
+        Ok(graph)
     }
 
     /// Crea un grafo desde un storage existente
@@ -839,6 +866,8 @@ impl Graph {
             index_manager: Arc::new(IndexManager::new(None)),
 
             wal: Arc::new(wal),
+            direct_write_durability: Default::default(),
+            replaying: Arc::new(AtomicBool::new(false)),
 
             auto_gc_task: Arc::new(Mutex::new(None)),
             read_only_seal: None,
@@ -877,8 +906,14 @@ impl Graph {
     }
 
 
+    /// Asigna el siguiente id de transacción (también para las transacciones
+    /// automáticas con que el applier registra las escrituras directas).
+    pub(crate) fn next_transaction_id(&self) -> TransactionId {
+        self.next_tx_id.fetch_add(1, AtomicOrdering::SeqCst)
+    }
+
     pub async fn begin_transaction(&self) -> Result<Transaction> {
-        let tx_id = self.next_tx_id.fetch_add(1, AtomicOrdering::SeqCst);
+        let tx_id = self.next_transaction_id();
         let timestamp = self.next_logical_timestamp();
 
         log::info!("Starting transaction {} at t={}", tx_id, timestamp);
@@ -2534,6 +2569,13 @@ impl Graph {
     }
 
     async fn replay_wal(&self) -> Result<()> {
+        self.replaying.store(true, AtomicOrdering::Release);
+        let out = self.replay_wal_inner().await;
+        self.replaying.store(false, AtomicOrdering::Release);
+        out
+    }
+
+    async fn replay_wal_inner(&self) -> Result<()> {
         let operations = self.wal.get_replay_operations_with_ts().await?;
 
         // Marca de progreso (H4, #65): todo commit con ts ≤ marca ya quedó
@@ -3859,9 +3901,10 @@ impl Graph {
         self.flush_indices().await?;
         log::debug!("  ✓ Indices flushed (adjacency is persisted per-operation)");
 
-        // 2. Flush Write-Ahead Log
-        self.wal.flush().await?;
-        log::debug!("  ✓ WAL flushed");
+        // 2. fsync del WAL: los registros de escrituras directas escritos
+        // sin fsync (`DirectWriteDurability::ProcessCrash`) quedan durables.
+        self.wal.sync().await?;
+        log::debug!("  ✓ WAL synced");
 
         // 3. Flush storage (sled database)
         self.storage.flush().await?;

@@ -100,10 +100,11 @@ https://github.com/Anxious-Mind-Group/ndbstudio.
    (cheap, `Arc`-backed): clone the handle into every thread/task. All writes
    are serialized through a single-writer applier; concurrent commits share
    WAL fsyncs (group commit).
-3. **Durability:** committed transactions survive `SIGKILL`; direct
-   (non-transactional) writes have weaker guarantees — see
-   [DURABILITY.md](DURABILITY.md). Use transactions when each operation must
-   be durable.
+3. **Durability:** committed transactions survive `SIGKILL` and power loss;
+   direct (non-transactional) writes survive `SIGKILL` by default and power
+   loss with `StorageOptions::direct_write_durability = Immediate` — see
+   [DURABILITY.md](DURABILITY.md). Use transactions when several operations
+   must land together.
 4. **Isolation:** default is ReadCommitted. RepeatableRead/Serializable (with
    conflict detection and deadlock aborts) require the `full-isolation`
    feature — semantics in [ISOLATION_LEVELS.md](ISOLATION_LEVELS.md). On

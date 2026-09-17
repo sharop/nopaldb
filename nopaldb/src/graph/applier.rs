@@ -28,6 +28,17 @@
 // fue encolado, la operación se aplica de todas formas (es atómica y válida);
 // el ack se descarta. Es la misma clase de semántica "committed but
 // unacknowledged" documentada en docs/DURABILITY.md.
+//
+// ESCRITURAS DIRECTAS EN EL WAL (0.5.23): cada `WriteOp` de nodo o arista se
+// registra como una transacción automática (Begin + registro + Commit) en el
+// MISMO lote que los commits, antes de aplicarse. Hasta entonces no dejaban
+// rastro en el log: una caída del proceso perdía hasta `flush_every_ms` de
+// escrituras directas, y en redb incluso lo que ya estaba en la caché del
+// SO (descarta los commits no durables al reabrir). Si el lote solo trae
+// escrituras directas y la base está en `DirectWriteDurability::ProcessCrash`
+// (default), el lote se escribe sin fsync — el sincronizador periódico y
+// `close()` lo hacen durable; con `Immediate`, o si el lote lleva algún
+// commit transaccional, se fsynca como siempre.
 
 use crate::error::Result;
 use crate::transaction::TransactionId;
@@ -215,12 +226,70 @@ pub(crate) async fn validate_commit_set(
 
 /// Plan de la FASE 1 para cada mensaje del lote.
 enum Plan {
-    /// Operación directa: no depende del WAL.
-    Op,
+    /// Operación directa. `logged` = la transacción automática con que se
+    /// registró en el WAL (`None` para las ops que no dejan registro: las
+    /// entradas puntuales del índice de propiedades, que derivan del nodo y
+    /// el redo recalcula, y los borrados de entidades que ya no existen).
+    Op { logged: Option<(TransactionId, u64)> },
     /// Commit validado: sus registros van en el grupo con este timestamp.
     Commit { ts: u64 },
     /// Commit rechazado por la prevalidación: sin registros WAL, ack Err.
     Rejected(crate::error::NopalError),
+}
+
+/// Registros WAL de una escritura directa como transacción automática, con
+/// su `(tx_id, timestamp)`. Los borrados llevan la entidad entera (como en
+/// los commits): se lee aquí, bajo el gate, para que el redo no dependa del
+/// estado posterior.
+async fn direct_op_records(
+    graph: &super::Graph,
+    op: &WriteOp,
+) -> Option<(TransactionId, u64, Vec<WalRecord>)> {
+    // Durante el replay del log las escrituras son re-derivaciones de
+    // registros que YA están en el WAL: no se vuelven a registrar.
+    if graph.replaying.load(std::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
+    let (ts, body) = match op {
+        WriteOp::AddNode { node, .. } => (
+            graph.next_logical_timestamp(),
+            WalRecord::InsertNode { tx_id: 0, node: node.clone() },
+        ),
+        WriteOp::AddEdgeAt { edge, timestamp } => {
+            (*timestamp, WalRecord::InsertEdge { tx_id: 0, edge: edge.clone() })
+        }
+        WriteOp::DeleteNode { id } => {
+            let node = graph.storage.get_node(*id).await.ok()?;
+            (
+                graph.next_logical_timestamp(),
+                WalRecord::DeleteNode { tx_id: 0, node_id: *id, node },
+            )
+        }
+        WriteOp::DeleteEdgeAt { id, timestamp } => {
+            let edge = graph.storage.get_edge(*id).await.ok()?;
+            (*timestamp, WalRecord::DeleteEdge { tx_id: 0, edge_id: *id, edge })
+        }
+        WriteOp::AddPropertyIndexEntry { .. } | WriteOp::RemovePropertyIndexEntry { .. } => {
+            return None
+        }
+    };
+    let tx_id = graph.next_transaction_id();
+    let body = match body {
+        WalRecord::InsertNode { node, .. } => WalRecord::InsertNode { tx_id, node },
+        WalRecord::InsertEdge { edge, .. } => WalRecord::InsertEdge { tx_id, edge },
+        WalRecord::DeleteNode { node_id, node, .. } => WalRecord::DeleteNode { tx_id, node_id, node },
+        WalRecord::DeleteEdge { edge_id, edge, .. } => WalRecord::DeleteEdge { tx_id, edge_id, edge },
+        other => other,
+    };
+    Some((
+        tx_id,
+        ts,
+        vec![
+            WalRecord::Begin { tx_id, timestamp: ts },
+            body,
+            WalRecord::Commit { tx_id, timestamp: ts },
+        ],
+    ))
 }
 
 /// Procesa un lote: group-fsync del WAL de todos los commits, luego apply en
@@ -272,14 +341,31 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
                     Err(e) => plans.push(Plan::Rejected(e)),
                 }
             }
-            Work::Op(_) => plans.push(Plan::Op),
+            Work::Op(op) => {
+                let logged = match direct_op_records(&msg.graph, op).await {
+                    Some((tx_id, ts, records)) => {
+                        group_records.extend(records);
+                        Some((tx_id, ts))
+                    }
+                    None => None,
+                };
+                plans.push(Plan::Op { logged });
+            }
         }
     }
 
+    // fsync si el lote lleva algún commit transaccional o la base pide
+    // durabilidad inmediata para las escrituras directas.
+    let sync = commits_in_group > 0
+        || anchor.direct_write_durability == crate::storage::DirectWriteDurability::Immediate;
     let wal_ok = if group_records.is_empty() {
         Ok(())
     } else {
-        anchor.wal().append_batch(&group_records).await.map(|_| ())
+        anchor
+            .wal()
+            .append_batch_with(&group_records, sync)
+            .await
+            .map(|_| ())
     };
 
     if commits_in_group > 1 {
@@ -301,9 +387,53 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
 
     for (msg, plan) in batch.into_iter().zip(plans) {
         let result = match msg.work {
-            // Las ops directas no dependen del WAL y se aplican de todas
-            // formas (misma semántica que hoy).
-            Work::Op(op) => msg.graph.apply_write_op(op).await,
+            Work::Op(op) => match plan {
+                // Sin registro (índice de propiedades, borrado de algo que
+                // no existe): se aplica igual que siempre.
+                Plan::Op { logged: None } => msg.graph.apply_write_op(op).await,
+                Plan::Op { logged: Some((tx_id, ts)) } => match &wal_ok {
+                    // Si el log no se pudo escribir, la op no se aplica: un
+                    // estado que el WAL no conoce no es recuperable.
+                    Err(e) => {
+                        prefix_intact = false;
+                        Err(crate::error::NopalError::custom(format!(
+                            "WAL append failed, direct write not applied: {}",
+                            e
+                        )))
+                    }
+                    Ok(()) => match msg.graph.apply_write_op(op).await {
+                        Ok(()) => {
+                            if prefix_intact {
+                                settled_upto = Some(ts);
+                            }
+                            Ok(())
+                        }
+                        Err(apply_err) => {
+                            // Mismo backstop que los commits: el registro ya
+                            // está en el log con su Commit; sin Abort el redo
+                            // lo materializaría aunque la op reportó Err.
+                            match anchor.wal().append(WalRecord::Abort { tx_id }).await {
+                                Ok(_) => {
+                                    if prefix_intact {
+                                        settled_upto = Some(ts);
+                                    }
+                                }
+                                Err(abort_err) => {
+                                    prefix_intact = false;
+                                    log::warn!(
+                                        "applier: direct write {} failed AND its Abort record could not be written ({}); \
+                                         the next open's redo will retry it",
+                                        tx_id,
+                                        abort_err
+                                    );
+                                }
+                            }
+                            Err(apply_err)
+                        }
+                    },
+                },
+                _ => unreachable!("plan de commit para un Work::Op"),
+            },
             Work::Commit(set) => match plan {
                 Plan::Rejected(e) => Err(e),
                 Plan::Commit { ts } => match &wal_ok {
@@ -356,7 +486,7 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
                         }
                     },
                 },
-                Plan::Op => unreachable!("Plan::Op para un Work::Commit"),
+                Plan::Op { .. } => unreachable!("Plan::Op para un Work::Commit"),
             },
         };
         let _ = msg.ack.send(result);
