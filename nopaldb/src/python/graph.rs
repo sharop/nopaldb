@@ -123,7 +123,7 @@ impl PyGraph {
     fn open_with_options(py: Python<'_>, path: &str, engine: &str, profile: &str) -> PyResult<Self> {
         let engine = parse_engine(engine)?;
         let profile = parse_profile(profile)?;
-        let options = StorageOptions { engine, profile };
+        let options = StorageOptions { engine, profile, ..Default::default() };
 
         let graph = crate::python::runtime::block_on(py, async { RustGraph::open_with_options(path, options).await });
         to_py_result(graph).map(|g| PyGraph {
@@ -166,7 +166,7 @@ impl PyGraph {
     fn in_memory_with_options(py: Python<'_>, engine: &str, profile: &str) -> PyResult<Self> {
         let engine = parse_engine(engine)?;
         let profile = parse_profile(profile)?;
-        let options = StorageOptions { engine, profile };
+        let options = StorageOptions { engine, profile, ..Default::default() };
 
         let graph = crate::python::runtime::block_on(py, async { RustGraph::in_memory_with_options(options).await });
         to_py_result(graph).map(|g| PyGraph {

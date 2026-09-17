@@ -11,13 +11,43 @@
 
 #![cfg(unix)]
 
-use nopaldb::{Direction, Edge, Graph, Node, PropertyValue};
+use nopaldb::{Direction, Edge, Graph, Node, PropertyValue, StorageEngine, StorageOptions};
 use std::collections::HashSet;
+use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use uuid::Uuid;
 
 const ENV_DB_DIR: &str = "NOPAL_CRASH_DB_DIR";
+/// Motor del harness: `sled` (default) o `redb`.
+const ENV_ENGINE: &str = "NOPAL_CRASH_ENGINE";
+/// Archivo (junto a la base) donde el hijo anota cada escritura DIRECTA dos
+/// veces: la INTENCIÓN antes de pedirla (`n?:<uuid>`, `e?:<uuid>`,
+/// `d?:<uuid>`) y el ACK después (`n:`, `e:`, `d:`). Un kill entre la op y
+/// su línea de ack deja solo la intención: esa entidad queda en estado
+/// desconocido y no se afirma nada sobre ella. Sin fsync a propósito: un
+/// SIGKILL conserva lo que el proceso ya escribió al archivo, igual que
+/// conserva el WAL, y eso es exactamente la garantía de
+/// `DirectWriteDurability::ProcessCrash` que aquí se comprueba: todo lo
+/// confirmado antes del kill está tras reabrir.
+const ACKED_FILE: &str = "direct_acked.log";
+
+/// Motor: `NOPAL_CRASH_ENGINE=sled|redb`; sin la variable, el default del
+/// build (sled si está compilado; redb si es el único backend, que es como
+/// lo corre el paso redb de CI).
+fn engine() -> StorageEngine {
+    match std::env::var(ENV_ENGINE).as_deref() {
+        Ok("redb") => StorageEngine::Redb,
+        Ok("sled") => StorageEngine::Sled,
+        _ => StorageOptions::default().engine,
+    }
+}
+
+async fn open(dir: &std::path::Path) -> Graph {
+    Graph::open_with_options(dir, StorageOptions { engine: engine(), ..Default::default() })
+        .await
+        .expect("open")
+}
 
 /// Rondas de kill por corrida: 20 por default; el job nightly sube el número
 /// vía NOPAL_CRASH_ROUNDS.
@@ -38,7 +68,13 @@ async fn crash_child_writer() {
         return;
     };
 
-    let graph = Graph::open(std::path::Path::new(&dir)).await.expect("child open");
+    let dir = std::path::PathBuf::from(dir);
+    let graph = open(&dir).await;
+    let mut acked = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(ACKED_FILE))
+        .expect("acked log");
 
     // Nodo contador estable para acumular cadena de versiones entre rondas.
     let counter_id = Uuid::from_u128(0xC0FFEE);
@@ -69,7 +105,90 @@ async fn crash_child_writer() {
             .expect("add node");
         tx.add_edge(Edge::new(a, counter_id, "TOUCHES")).expect("add edge");
         tx.commit().await.expect("commit");
+
+        // Escrituras DIRECTAS (sin transacción): nodo, arista y, cada tres
+        // rondas, el borrado del nodo directo anterior. Cada una se anota
+        // tras su ack; el padre exige que todas estén tras el crash.
+        let node = Node::new("Direct")
+            .with_property("round", PropertyValue::Int(i))
+            .with_property("team", PropertyValue::String("crash".into()));
+        let d = node.id;
+        writeln!(acked, "n?:{d}").expect("log");
+        graph.add_node(node).await.expect("direct add_node");
+        writeln!(acked, "n:{d}").expect("log");
+        let edge = Edge::new(d, counter_id, "DIRECT");
+        let e = edge.id;
+        writeln!(acked, "e?:{e}").expect("log");
+        graph.add_edge(edge).await.expect("direct add_edge");
+        writeln!(acked, "e:{e}").expect("log");
+        if i % 3 == 0 {
+            writeln!(acked, "d?:{d}").expect("log");
+            graph.delete_node(d).await.expect("direct delete_node");
+            writeln!(acked, "d:{d}").expect("log");
+        }
     }
+}
+
+/// Todo lo que el hijo confirmó (ack) de sus escrituras directas está tras
+/// reabrir: nodos y aristas creados existen (salvo los borrados o en
+/// borrado incierto), y los borrados confirmados no están. Las entidades
+/// con intención sin ack (kill en medio) no se afirman.
+async fn assert_direct_writes_recovered(graph: &Graph, dir: &std::path::Path) -> nopaldb::Result<()> {
+    let Ok(log) = std::fs::read_to_string(dir.join(ACKED_FILE)) else { return Ok(()) };
+    let mut created: Vec<Uuid> = Vec::new();
+    let mut edges: Vec<(Uuid, usize)> = Vec::new(); // (arista, índice del nodo origen en `created`)
+    let mut deleted: HashSet<Uuid> = HashSet::new();
+    let mut maybe_deleted: HashSet<Uuid> = HashSet::new();
+    let mut intents = 0usize;
+    for line in log.lines() {
+        // Una última línea rasgada por el kill se ignora.
+        let Some((kind, id)) = line.split_once(':') else { continue };
+        let Ok(id) = Uuid::parse_str(id) else { continue };
+        match kind {
+            "n?" => intents += 1,
+            "n" => created.push(id),
+            "e" => edges.push((id, created.len().saturating_sub(1))),
+            "d?" => {
+                maybe_deleted.insert(id);
+            }
+            "d" => {
+                deleted.insert(id);
+            }
+            _ => {}
+        }
+    }
+    let _ = intents;
+    let nodes: HashSet<Uuid> = graph.get_all_nodes().await?.into_iter().map(|n| n.id).collect();
+    let all_edges = graph.get_all_edges().await?;
+    for id in &created {
+        if deleted.contains(id) {
+            if nodes.contains(id) {
+                return Err(nopaldb::NopalError::custom(format!(
+                    "nodo directo {id} borrado (ack) sigue tras el crash"
+                )));
+            }
+        } else if !maybe_deleted.contains(id) && !nodes.contains(id) {
+            return Err(nopaldb::NopalError::custom(format!(
+                "nodo directo {id} confirmado se perdió en el crash"
+            )));
+        }
+    }
+    for (eid, src_idx) in &edges {
+        let present = all_edges.iter().any(|e| e.id == *eid);
+        let src = created.get(*src_idx).copied();
+        let src_gone = src.is_some_and(|s| deleted.contains(&s) || maybe_deleted.contains(&s));
+        if !present && !src_gone {
+            return Err(nopaldb::NopalError::custom(format!(
+                "arista directa {eid} confirmada se perdió en el crash"
+            )));
+        }
+        if present && src.is_some_and(|s| deleted.contains(&s)) {
+            return Err(nopaldb::NopalError::custom(format!(
+                "arista {eid} de un nodo borrado (ack) sigue tras el crash"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Verifica los invariantes estructurales del grafo tras un crash + reopen.
@@ -175,12 +294,17 @@ async fn assert_invariants(graph: &Graph) -> nopaldb::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn commit_crash_recovery_survives_sigkill_rounds() -> nopaldb::Result<()> {
     let dir = tempfile::tempdir().unwrap();
+    // Depuración: con NOPAL_CRASH_KEEP el directorio no se borra y se imprime.
+    if std::env::var_os("NOPAL_CRASH_KEEP").is_some() {
+        eprintln!("crash harness dir: {}", dir.path().display());
+    }
     let exe = std::env::current_exe().expect("current_exe");
 
     for round in 0..rounds() {
         let mut child = Command::new(&exe)
             .args(["crash_child_writer", "--ignored", "--exact", "--nocapture"])
             .env(ENV_DB_DIR, dir.path())
+            .env(ENV_ENGINE, if engine() == StorageEngine::Redb { "redb" } else { "sled" })
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -194,9 +318,15 @@ async fn commit_crash_recovery_survives_sigkill_rounds() -> nopaldb::Result<()> 
         let _ = child.wait();
 
         // Reabrir y verificar invariantes (recovery + redo + rebuild)
-        let graph = Graph::open(dir.path()).await?;
+        let graph = open(dir.path()).await;
         assert_invariants(&graph).await?;
+        let direct = assert_direct_writes_recovered(&graph, dir.path()).await;
         drop(graph);
+        if direct.is_err() && std::env::var_os("NOPAL_CRASH_KEEP").is_some() {
+            let _ = dir.into_path();
+            return direct;
+        }
+        direct?;
     }
 
     Ok(())

@@ -5,7 +5,8 @@
 use std::path::{Path, PathBuf};
 use std::fs::{File, OpenOptions};
 use std::io::{Write, Read, Seek, SeekFrom};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 use tokio::sync::Mutex;
 use serde::{Serialize, Deserialize};
 
@@ -103,6 +104,10 @@ pub struct WalManager {
 
     /// Last checkpoint timestamp
     last_checkpoint: Arc<Mutex<u64>>,
+
+    /// `true` si hay registros escritos al archivo sin fsync
+    /// (`append_batch_with(.., false)`), pendientes de `sync()`.
+    unsynced: AtomicBool,
 }
 
 impl WalManager {
@@ -143,6 +148,7 @@ impl WalManager {
             file: Arc::new(Mutex::new(file)),
             position: Arc::new(Mutex::new(position)),
             last_checkpoint: Arc::new(Mutex::new(position)),
+            unsynced: AtomicBool::new(false),
         })
     }
 
@@ -159,6 +165,15 @@ impl WalManager {
     ///
     /// Retorna la posición del primer registro del lote.
     pub async fn append_batch(&self, records: &[WalRecord]) -> Result<u64> {
+        self.append_batch_with(records, true).await
+    }
+
+    /// Como `append_batch`, eligiendo si el lote se fsynca. Con `sync =
+    /// false` el lote queda en el archivo (caché del sistema operativo):
+    /// sobrevive a que el proceso muera, no a un apagón, hasta el siguiente
+    /// [`Self::sync`]. Es el modo `DirectWriteDurability::ProcessCrash` de
+    /// las escrituras directas; las transacciones siempre pasan `true`.
+    pub async fn append_batch_with(&self, records: &[WalRecord], sync: bool) -> Result<u64> {
         if records.is_empty() {
             let position = self.position.lock().await;
             return Ok(*position);
@@ -177,7 +192,12 @@ impl WalManager {
         let mut position = self.position.lock().await;
 
         file.write_all(&buffer)?;
-        file.sync_all()?;
+        if sync {
+            file.sync_all()?;
+            self.unsynced.store(false, Ordering::Release);
+        } else {
+            self.unsynced.store(true, Ordering::Release);
+        }
 
         let batch_position = *position;
         *position += buffer.len() as u64;
@@ -503,15 +523,45 @@ impl WalManager {
         Ok(replay_ops)
     }
 
-    /// Flush the Write-Ahead Log to disk
-    ///
-    /// Ensures all buffered WAL entries are written to disk.
-    pub async fn flush(&self) -> Result<()> {
-        let mut file = self.file.lock().await;
-        file.flush()
-            .map_err(|e| NopalError::custom(format!("WAL flush failed: {}", e)))?;
+    /// fsync del WAL si hay registros escritos sin fsync. Hasta 0.5.22 este
+    /// método solo vaciaba el buffer del proceso (`File::flush`), que con
+    /// `write_all` directo no hacía nada; `close()` lo llamaba creyendo que
+    /// dejaba el log durable.
+    pub async fn sync(&self) -> Result<()> {
+        if !self.unsynced.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let file = self.file.lock().await;
+        if let Err(e) = file.sync_all() {
+            self.unsynced.store(true, Ordering::Release);
+            return Err(NopalError::custom(format!("WAL sync failed: {}", e)));
+        }
         Ok(())
     }
+
+    /// Alias de [`Self::sync`] (nombre histórico).
+    pub async fn flush(&self) -> Result<()> {
+        self.sync().await
+    }
+}
+
+/// Task que hace `sync()` del WAL cada `period` mientras la base viva.
+/// Retiene solo un `Weak`: cuando el último `Graph` se suelta, el siguiente
+/// tick no puede promoverlo y la task termina sola (misma regla que el
+/// applier: ningún task de fondo mantiene viva la base).
+pub(crate) fn spawn_syncer(wal: Weak<WalManager>, period: std::time::Duration) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(period);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            let Some(wal) = wal.upgrade() else { break };
+            if let Err(e) = wal.sync().await {
+                log::warn!("WAL syncer: {}", e);
+            }
+        }
+        log::debug!("WAL syncer task exited (database dropped)");
+    });
 }
 
 #[cfg(test)]

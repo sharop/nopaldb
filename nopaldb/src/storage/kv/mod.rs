@@ -297,6 +297,7 @@ mod engine_availability_tests {
         let opts = crate::storage::backend::StorageOptions {
             engine: StorageEngine::Redb,
             profile: crate::storage::backend::StorageProfile::Default,
+            ..Default::default()
         };
         let Err(err) = open_in_memory(crate::storage::backend::StorageProfile::Default, &opts)
         else {

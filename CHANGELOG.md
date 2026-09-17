@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.23] - unreleased
+
+### Added
+
+- **Las escrituras directas se registran en el WAL y se recuperan tras una caída.** `add_node`, `add_edge`, `delete_node` y `delete_edge` sin transacción no dejaban rastro en el log: su única durabilidad era el checkpoint periódico del motor (cada `flush_every_ms`), y una caída del proceso perdía hasta ese intervalo de escrituras confirmadas (en redb, incluso las que ya estaban en la caché del sistema operativo). Ahora el applier registra cada una como transacción automática (`Begin` + registro + `Commit`) en el mismo lote que los commits, antes de aplicarla, y el redo al abrir las reproduce. Nueva opción `StorageOptions::direct_write_durability`: `ProcessCrash` (default: el lote se escribe sin fsync y un sincronizador cada `flush_every_ms` más `close()` lo hacen durable; sobrevive a la muerte del proceso, ante apagón se pierde como mucho el último periodo, coste de microsegundos) o `Immediate` (fsync por lote como las transacciones). El harness de crash (`crash_commit_test`) confirma en cada ronda que todo lo confirmado antes del SIGKILL está tras reabrir, en sled y en redb. Construir `StorageOptions` con `..Default::default()`: el struct gana un campo. Coste medido de una escritura directa (mismo equipo, macOS): redb 39 µs (antes 50); **sled ~4 ms**: en macOS un `write()` al WAL espera a cualquier `F_FULLFSYNC` en curso en el volumen y sled fsynca su log continuamente bajo carga (`write_to_log` hace `sync_all` en cada búfer fuera de Linux); reproducido con redb y una tormenta de fsync artificial (39 µs → p90 4 ms). En Linux sled usa `sync_file_range` y el efecto no debería aparecer. Es el precio de registrar la escritura en el motor que se retira; con `Immediate` ambos motores pagan además el fsync del WAL.
+
+### Changed
+
+- **redb: ventana de commit.** El motor mantiene una write-transaction abierta y acumula en ella las escrituras de varias operaciones; la commitea a los 2 ms, a las 256 operaciones, antes de cualquier scan, en `flush()`/checkpoint y al cerrar. Las lecturas ven lo pendiente por un overlay en memoria. redb escribe al archivo toda página tocada en cada commit aunque sea `Durability::None`, así que una escritura directa pagaba ~50 µs de `pwrite`s por ~10 µs de trabajo; con la ventana el commit se reparte entre cientos de operaciones. La durabilidad no cambia: esos commits no eran durables (redb vuelve al último checkpoint ante un crash) y la recuperación la da ahora el WAL.
+- **`WalManager::flush` hace fsync de verdad.** Solo vaciaba el buffer del proceso (no hacía nada con `write_all`); `close()` lo llamaba creyendo que dejaba el log durable. Ahora es alias de `sync()`.
+- Un nodo creado con `add_node` directo y recuperado del WAL tras un crash queda con una primera versión MVCC (la misma reconstrucción que usan los commits); antes de 0.5.23 simplemente se perdía.
+
 ## [0.5.22] - 2026-09-16
 
 ### Changed
