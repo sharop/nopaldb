@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.24] - unreleased
+
+### Changed
+
+- **redb: crear una base nueva cuesta menos.** Segundo PR del plan previo a 0.6.0. Tres cambios en `RedbEngine::open` y `Storage`: (1) en Unix el handle recién creado se conserva y se renombra el archivo abierto, en vez de cerrarlo (un fsync de cierre de redb) y volver a abrirlo; en Windows se mantiene la secuencia anterior. (2) Los diez keyspaces de `Storage` se crean en **una** transacción (`KvEngine::keyspaces`), antes eran diez commits. (3) Crear tablas ya no marca la base como pendiente de checkpoint (desde 0.5.23), así que abrir y cerrar sin escribir no fsynca. Medido en un Mac, abrir + cerrar una base nueva: 66 → 60 ms (sled: 19 ms); el `open` baja de 48 a 34 ms y el cierre sube de 18 a 26 ms porque el primer `Drop` de la base de redb (que escribe su tabla de estado del allocator y fsynca) ya no ocurre durante la creación sino al cerrar. En el bench `bulk_load/1k_nodes_fresh_db` (crear + cargar 1 000 nodos + soltar): redb 80.5 → 54.7 ms, sled 38.7 ms (de 0.48× a 0.71×). Lo que queda es de redb: la creación inicial del archivo y el `Drop` de la base hacen fsync; es un coste único por base, no por carga, y así queda documentado en `DURABILITY.md`.
+
 ## [0.5.23] - 2026-09-17
 
 ### Added

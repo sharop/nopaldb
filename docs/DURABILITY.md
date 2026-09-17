@@ -47,5 +47,6 @@ Two details of the redo:
 ## Scope
 
 - Durability is at the `fsync` level; disks or VMs that lie about `fsync` weaken every layer equally.
+- Creating a **new** database is a one-time cost dominated by fsyncs: with redb about 60 ms on a Mac (the engine fsyncs when it creates the file and again when the handle is dropped), with sled about 20 ms. It is paid once per database directory, never per write; the `bulk_load/1k_nodes_fresh_db` bench includes it on purpose and `bulk_load/1k_nodes_open_db` excludes it.
 - The storage engine's own commits are not the durability boundary: NopalDB applies them without fsync (redb batches several operations into one commit window of a few milliseconds; sled buffers in its page cache) and relies on the WAL plus the periodic engine checkpoint. The WAL is what survives; the engine state is rebuilt from it.
 - One process per data directory (see the Operational Model in the README); the on-disk state is only defined when the owning process is the single writer.

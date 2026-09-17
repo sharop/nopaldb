@@ -127,6 +127,13 @@ pub(crate) trait KvKeyspace: Send + Sync {
 pub(crate) trait KvEngine: Send + Sync {
     fn engine_name(&self) -> &'static str;
     fn keyspace(&self, name: &str) -> Result<Arc<dyn KvKeyspace>>;
+    /// Varios keyspaces de una vez, en el mismo orden que `names`. Igual
+    /// que llamar a `keyspace` por cada nombre, salvo que un motor puede
+    /// crear todas las tablas en una sola transacción (`Storage` abre diez
+    /// al arrancar; en redb cada creación era un commit).
+    fn keyspaces(&self, names: &[&str]) -> Result<Vec<Arc<dyn KvKeyspace>>> {
+        names.iter().map(|n| self.keyspace(n)).collect()
+    }
     /// Aplica varios `WriteBatch` — cada uno sobre el keyspace nombrado —
     /// como UNA transacción TODO-o-nada CRUZANDO keyspaces, incluso ante
     /// crash: o se ven todos los cambios de todos los batches, o ninguno
@@ -379,6 +386,16 @@ impl KvEngine for SealedEngine {
         }
         let inner = self.inner.keyspace(name)?;
         Ok(Arc::new(SealedKeyspace { inner, seal: self.seal.clone() }))
+    }
+
+    fn keyspaces(&self, names: &[&str]) -> Result<Vec<Arc<dyn KvKeyspace>>> {
+        // Misma regla que `keyspace`: sellado o no, el handle se envuelve.
+        Ok(self
+            .inner
+            .keyspaces(names)?
+            .into_iter()
+            .map(|inner| Arc::new(SealedKeyspace { inner, seal: self.seal.clone() }) as Arc<dyn KvKeyspace>)
+            .collect())
     }
 
     fn apply_multi(&self, batches: Vec<(String, WriteBatch)>) -> Result<()> {
