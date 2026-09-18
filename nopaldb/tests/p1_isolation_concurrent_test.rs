@@ -13,6 +13,7 @@
 use nopaldb::mvcc::GCConfig;
 use nopaldb::{Edge, Graph, IsolationLevel, Node, NopalError, PropertyValue};
 use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
 
 fn counter(id: Uuid, v: i64) -> Node {
@@ -39,11 +40,18 @@ async fn concurrent_serializable_write_write_conflict() -> nopaldb::Result<()> {
     let mut wins = 0usize;
     let mut conflicts = 0usize;
 
-    // Repetir varias rondas para ejercitar interleavings distintos
+    // Repetir varias rondas para ejercitar interleavings distintos. Las dos
+    // transacciones se sincronizan tras leer y antes de escribir: sin esa
+    // barrera, en un runner lento la primera podía leer, escribir y
+    // commitear antes de que la segunda empezara, y la ronda no producía
+    // conflicto alguno (pasó en CI con redb, cuyos commits son más rápidos).
+    // El solapamiento es lo que el test quiere probar, así que se fuerza.
     for round in 0..8 {
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
         let mut handles = Vec::new();
         for k in 0..2 {
             let g = Arc::clone(&graph);
+            let barrier = Arc::clone(&barrier);
             handles.push(tokio::spawn(async move {
                 let mut tx = g
                     .begin_transaction()
@@ -53,6 +61,8 @@ async fn concurrent_serializable_write_write_conflict() -> nopaldb::Result<()> {
                 // conflicto), hacer rollback explícito para liberar locks.
                 let body = async {
                     let _current = tx.get_node(id).await?; // read lock + read set
+                    // Ambas han leído: ahora las dos intentan escribir.
+                    let _ = tokio::time::timeout(Duration::from_secs(5), barrier.wait()).await;
                     tx.add_node(counter(id, round * 10 + k)).await?; // write
                     Ok::<(), NopalError>(())
                 }
