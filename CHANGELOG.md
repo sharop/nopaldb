@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.0] - unreleased
+## [0.6.0] - 2026-09-18
 
 Cierra [#131](https://github.com/sharop/nopaldb/issues/131). Guía de migración: [docs/MIGRATION_0.6.md](docs/MIGRATION_0.6.md) · [docs/es/MIGRACION_0.6.md](docs/es/MIGRACION_0.6.md).
 
