@@ -261,16 +261,33 @@ impl Storage {
     /// handles de keyspace que se usan en caliente (los de embeddings se
     /// abren on-demand, igual que antes del rewire).
     fn from_engine(engine: Arc<dyn kv::KvEngine>, profile: StorageProfile) -> Result<Self> {
-        let default_ks = engine.keyspace(kv::DEFAULT_KEYSPACE)?;
-        let edges_ks = engine.keyspace(EDGES_TREE)?;
-        let versioned_edges_ks = engine.keyspace(VERSIONED_EDGES_TREE)?;
-        let versioned_edges_current_ks = engine.keyspace(VERSIONED_EDGES_CURRENT_TREE)?;
-        let prop_idx_ks = engine.keyspace(PROP_IDX_TREE)?;
-        let catalog_ks = engine.keyspace(CATALOG_TREE)?;
-        let entities_ks = engine.keyspace(ENTITIES_TREE)?;
-        let history_ks = engine.keyspace(HISTORY_TREE)?;
-        let adjacency_ks = engine.keyspace(ADJACENCY_TREE)?;
-        let indexes_ks = engine.keyspace(INDEXES_TREE)?;
+        // Los diez keyspaces en una llamada: un motor que crea tablas por
+        // transacción (redb) lo hace en una sola.
+        let mut ks = engine
+            .keyspaces(&[
+                kv::DEFAULT_KEYSPACE,
+                EDGES_TREE,
+                VERSIONED_EDGES_TREE,
+                VERSIONED_EDGES_CURRENT_TREE,
+                PROP_IDX_TREE,
+                CATALOG_TREE,
+                ENTITIES_TREE,
+                HISTORY_TREE,
+                ADJACENCY_TREE,
+                INDEXES_TREE,
+            ])?
+            .into_iter();
+        let mut next = || ks.next().expect("keyspaces devuelve uno por nombre");
+        let default_ks = next();
+        let edges_ks = next();
+        let versioned_edges_ks = next();
+        let versioned_edges_current_ks = next();
+        let prop_idx_ks = next();
+        let catalog_ks = next();
+        let entities_ks = next();
+        let history_ks = next();
+        let adjacency_ks = next();
+        let indexes_ks = next();
         let interner = EdgeTypeInterner::load(&catalog_ks)?;
 
         Ok(Self {

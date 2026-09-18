@@ -388,21 +388,31 @@ impl RedbEngine {
         // `nopal.redb` existe, es una base completa y válida. Morir antes del
         // rename solo deja el temporal, que la siguiente apertura descarta.
         //
-        // Se cierra el handle ANTES de renombrar a propósito: renombrar un
-        // archivo abierto funciona en Unix pero falla en Windows, y esta
-        // librería publica wheels para Windows. El costo es una apertura
-        // extra, y solo la primera vez.
+        // En Unix el handle recién creado se conserva y se renombra el
+        // archivo abierto (válido: el descriptor y su lock siguen al inodo);
+        // eso ahorra cerrar (fsync de cierre de redb) y volver a abrir la
+        // base, ~20 ms de los ~75 que costaba crear una base en un Mac. En
+        // Windows renombrar un archivo abierto falla, y esta librería
+        // publica wheels para Windows: ahí se cierra antes de renombrar y se
+        // reabre, como siempre. El invariante es el mismo en los dos: el
+        // rename es el punto de publicación y ocurre con la base completa.
         if !path.exists() {
             let tmp = dir.join(TMP_DB_FILE);
             // Restos de un intento anterior que murió antes del rename.
             if tmp.exists() {
                 std::fs::remove_file(&tmp)?;
             }
+            let created = Self::builder_for(profile).create(&tmp).map_err(internal)?;
+            #[cfg(unix)]
             {
-                let db = Self::builder_for(profile).create(&tmp).map_err(internal)?;
-                drop(db);
+                std::fs::rename(&tmp, &path)?;
+                return Ok(Self::with_flusher(created, profile));
             }
-            std::fs::rename(&tmp, &path)?;
+            #[cfg(not(unix))]
+            {
+                drop(created);
+                std::fs::rename(&tmp, &path)?;
+            }
         }
 
         let db = Self::open_existing(&path, profile)?;
@@ -586,31 +596,41 @@ impl KvEngine for RedbEngine {
     }
 
     fn keyspace(&self, name: &str) -> Result<Arc<dyn KvKeyspace>> {
-        // Crea la tabla si no existe: los reads posteriores no lidian con
-        // TableDoesNotExist y el handle queda usable de inmediato.
+        Ok(self.keyspaces(&[name])?.remove(0))
+    }
+
+    fn keyspaces(&self, names: &[&str]) -> Result<Vec<Arc<dyn KvKeyspace>>> {
+        // Crea las tablas que falten en UNA transacción: los reads
+        // posteriores no lidian con TableDoesNotExist y los handles quedan
+        // usables de inmediato. `Storage` abre diez al arrancar; antes eran
+        // diez commits (y diez `pwrite` de raíz) por apertura.
         {
             let mut guard = self.read_slots.window.lock().unwrap_or_else(|e| e.into_inner());
             commit_window_locked(&mut guard, &self.read_slots)?;
             let mut txn = self.db.begin_write().map_err(internal)?;
             txn.set_durability(::redb::Durability::None).map_err(internal)?;
-            txn.open_table(table_def(name)).map_err(internal)?;
+            for name in names {
+                txn.open_table(table_def(name)).map_err(internal)?;
+            }
             txn.commit().map_err(internal)?;
         }
-        // Crear una tabla vacía no marca la base como sucia: un checkpoint
-        // solo por esto sería un fsync inútil (al reabrir se recrea igual).
+        // Crear tablas vacías no marca la base como sucia: un checkpoint
+        // solo por esto sería un fsync inútil (al reabrir se recrean igual).
         drop_read_slots(&self.read_slots);
-        let slot: Arc<ReadSlot> = Arc::new(RwLock::new(None));
-        self.read_slots
-            .slots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(Arc::downgrade(&slot));
-        Ok(Arc::new(RedbKeyspace {
-            db: Arc::clone(&self.db),
-            name: name.to_string(),
-            slot,
-            read_slots: Arc::clone(&self.read_slots),
-        }))
+        let mut slots = self.read_slots.slots.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(names
+            .iter()
+            .map(|name| {
+                let slot: Arc<ReadSlot> = Arc::new(RwLock::new(None));
+                slots.push(Arc::downgrade(&slot));
+                Arc::new(RedbKeyspace {
+                    db: Arc::clone(&self.db),
+                    name: name.to_string(),
+                    slot,
+                    read_slots: Arc::clone(&self.read_slots),
+                }) as Arc<dyn KvKeyspace>
+            })
+            .collect())
     }
 
     fn apply_multi(&self, batches: Vec<(String, WriteBatch)>) -> Result<()> {
