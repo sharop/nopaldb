@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.1] - unreleased
+
+### Fixed
+
+- **Deuda del camino de escritura** — cierra [#143](https://github.com/sharop/nopaldb/issues/143). (1) El commit transaccional escribía dos veces el registro del nodo en `entities` (una en el batch atómico de la versión y otra en `apply_add_node`); ahora tras el batch solo se registra la RAM. (2) `Storage::insert_node_version` eran cinco commits del motor no atómicos; ahora es un `apply_multi`: una versión ya no puede quedar sin puntero current ni sin su entrada del índice tras un crash. (3) La deduplicación de la adyacencia en RAM al insertar una arista era `Vec::contains`, O(grado) por arista y cuadrática en un supernodo; ahora es una lectura puntual `edge_exists`, O(1). Bench nuevo `supernode_fanout/20k_edges_one_source`. (4) `BulkLoader::finish` hace un checkpoint durable del motor: lo cargado ya no depende del flusher periódico ni de un `close()` posterior. (5) El test de "adyacencia perdida ⇒ rebuild desde aristas" corre en ambos motores mediante la seam de tests `Storage::debug_clear_adjacency` (antes solo abría sled en crudo).
+
 ## [0.6.0] - 2026-09-18
 
 Cierra [#131](https://github.com/sharop/nopaldb/issues/131). Guía de migración: [docs/MIGRATION_0.6.md](docs/MIGRATION_0.6.md) · [docs/es/MIGRACION_0.6.md](docs/es/MIGRACION_0.6.md).

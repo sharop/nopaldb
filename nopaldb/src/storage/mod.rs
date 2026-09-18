@@ -1315,52 +1315,52 @@ impl Storage {
     // ✅ MÉTODOS MVCC
     // ═════════════════════════════════════════════════════════
 
-    /// Inserta una versión de nodo (MVCC): versión + puntero current + lista
-    /// de versiones en `history`, entrada del índice ts en `indexes`.
+    /// Inserta una versión de nodo (MVCC) en UN `apply_multi`: versión,
+    /// puntero current (si es la vigente), lista de versiones y entrada del
+    /// índice por timestamp; la cota del reloj va aparte con CAS-max.
+    ///
+    /// Camino legado y de bajo nivel: el commit transaccional usa
+    /// [`Self::commit_node_version_atomic`], que además escribe el registro
+    /// del nodo. Hasta 0.6.0 esto eran cinco commits del motor no atómicos:
+    /// un crash a medias dejaba una versión sin puntero current o sin su
+    /// entrada en el índice (#143).
     pub async fn insert_node_version(&self, versioned: &VersionedNode) -> Result<()> {
-        // 1. Guardar versión
-        let version_key = keys::v2::history_version_key(versioned.id, versioned.version);
-        let version_value = serialize(versioned)?;
+        let mut history_batch = kv::WriteBatch::default();
+        let mut indexes_batch = kv::WriteBatch::default();
 
-        self.history_ks.insert(&version_key, &version_value)?;
-
-        // 2. Actualizar puntero current (si es la versión más reciente)
+        history_batch.insert(
+            keys::v2::history_version_key(versioned.id, versioned.version),
+            serialize(versioned)?,
+        );
         if versioned.valid_to.is_none() {
-            let current_key = keys::v2::history_current_key(versioned.id);
-            let version_bytes = versioned.version.to_le_bytes();
-            self.history_ks.insert(&current_key, version_bytes.as_ref())?;
+            history_batch.insert(
+                keys::v2::history_current_key(versioned.id),
+                versioned.version.to_le_bytes().as_ref(),
+            );
         }
-
-        // 3. Agregar a lista de versiones
         let versions_key = keys::v2::history_versions_key(versioned.id);
         let mut versions: Vec<u64> = match self.history_ks.get(&versions_key)? {
             Some(v) => deserialize(&v)?,
             None => Vec::new(),
         };
-
         if !versions.contains(&versioned.version) {
             versions.push(versioned.version);
             versions.sort_unstable();
             versions.reverse(); // Más reciente primero
-
-            let versions_value = serialize(&versions)?;
-            self.history_ks.insert(&versions_key, &versions_value)?;
         }
-
-        // 4. Indexar por timestamp — des-blobeado (F5.4): una clave
-        // `t|ts|nodo|versión` con valor vacío por entrada, en vez del RMW
-        // del blob `ts:{n}` → Vec<NodeId>. El put es idempotente por clave
-        // (la versión desambigua; el dedup por nodo del v1 sobra).
-        self.indexes_ks.insert(
-            &keys::v2::ts_index_key(versioned.timestamp, versioned.id, versioned.version),
+        history_batch.insert(versions_key, serialize(&versions)?);
+        indexes_batch.insert(
+            keys::v2::ts_index_key(versioned.timestamp, versioned.id, versioned.version),
             EMPTY_VALUE,
-        )?;
+        );
 
-        // 5. Avanzar la cota persistida del reloj lógico (nunca retrocede)
+        self.engine.apply_multi(vec![
+            (HISTORY_TREE.to_string(), history_batch),
+            (INDEXES_TREE.to_string(), indexes_batch),
+        ])?;
         self.bump_clock(META_NEXT_TIMESTAMP, versioned.timestamp.saturating_add(1))?;
 
         log::debug!("Inserted node version: {} v{}", versioned.id, versioned.version);
-
         Ok(())
     }
 
@@ -1900,6 +1900,17 @@ impl Storage {
     ///
     /// Forces the underlying storage engine to persist all buffered data.
     pub async fn flush(&self) -> Result<()> {
+        self.engine.flush()
+    }
+
+    /// Vacía el keyspace `adjacency` en disco. SOLO para tests: fabrica el
+    /// estado "adyacencia perdida" que `Graph::open` debe reparar
+    /// reconstruyéndola desde las aristas, con cualquier motor (antes el
+    /// único test abría el árbol de sled en crudo, #143). No hay motivo
+    /// legítimo para llamarlo en producción.
+    #[doc(hidden)]
+    pub async fn debug_clear_adjacency(&self) -> Result<()> {
+        self.adjacency_ks.clear()?;
         self.engine.flush()
     }
 

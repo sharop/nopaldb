@@ -588,19 +588,7 @@ impl Graph {
         // Guardar en storage
         self.storage.insert_node(&node).await?;
 
-        // Inicializar adyacencia RAM SOLO si el nodo es nuevo: un upsert de
-        // un nodo existente (update de commit o replay del WAL) NO debe
-        // borrar sus aristas (bug histórico: se re-insertaba Vec::new()).
-        // En disco ya no se persiste nada aquí (v2): un nodo sin aristas
-        // simplemente no tiene claves en el keyspace `adjacency`.
-        let mut adj_out = self.adjacency_out.write().await;
-        let mut adj_in = self.adjacency_in.write().await;
-
-        adj_out.entry(node_id).or_default();
-        adj_in.entry(node_id).or_default();
-
-        drop(adj_out);
-        drop(adj_in);
+        self.register_node_in_ram(node_id, existed).await;
 
         // Indexar propiedades SOLO si no se debe skip (el commit transaccional
         // indexa sus nodos al final, una sola vez).
@@ -615,11 +603,27 @@ impl Graph {
         self.mark_modified(node_id, self.next_timestamp.load(AtomicOrdering::SeqCst))
             .await?;
 
+        Ok(node_id)
+    }
+
+    /// Lo que un nodo escrito en storage necesita en RAM: su entrada de
+    /// adyacencia (sin borrar la existente: un upsert de un nodo con aristas
+    /// NO debe perderlas, bug histórico) y la versión de topología si es
+    /// nuevo. Compartido por la escritura directa (`apply_add_node`) y el
+    /// commit transaccional, que ya escribió el registro del nodo dentro de
+    /// `commit_node_version_atomic` y no debe escribirlo dos veces (#143).
+    /// En disco no se persiste nada aquí: un nodo sin aristas no tiene claves
+    /// en el keyspace `adjacency`.
+    async fn register_node_in_ram(&self, node_id: NodeId, existed: bool) {
+        let mut adj_out = self.adjacency_out.write().await;
+        let mut adj_in = self.adjacency_in.write().await;
+        adj_out.entry(node_id).or_default();
+        adj_in.entry(node_id).or_default();
+        drop(adj_out);
+        drop(adj_in);
         if !existed {
             self.bump_topology_version();
         }
-
-        Ok(node_id)
     }
 
     /// Indexa las propiedades de un nodo (uso interno)
@@ -1665,6 +1669,13 @@ impl Graph {
         // serializado; para tipos ya vistos es lookup RAM O(1)).
         let etype_id = self.storage.intern_edge_type(&edge.edge_type)?;
 
+        // ¿Ya estaba? Solo pasa en el redo del WAL (una arista aplicada
+        // antes del crash) o si el llamador reutiliza un id. En disco los
+        // puts son idempotentes; en RAM decide si se añade a la adyacencia.
+        // Es UNA lectura puntual O(1), frente al `Vec::contains` O(grado)
+        // por arista que había antes (#143: cuadrático en un supernodo).
+        let already_present = self.storage.edge_exists(edge_id).await?;
+
         // Registro de la arista (keyspace "edges"), sus DOS claves de
         // adyacencia (O y espejo I), su versión MVCC y la cota del reloj en
         // UN apply_multi atómico: jamás edges sin su adyacencia ni sin su
@@ -1677,15 +1688,14 @@ impl Graph {
         let mut adj_in = self.adjacency_in.write().await;
 
         // Idempotente: el WAL replay puede re-aplicar una arista ya aplicada
-        // antes de un crash; no debe duplicar la entrada de adyacencia (en
-        // disco los puts v2 ya son idempotentes por construcción).
-        let out = adj_out.entry(source).or_insert_with(Vec::new);
-        if !out.contains(&edge_id) {
-            out.push(edge_id);
-        }
-        let inn = adj_in.entry(target).or_insert_with(Vec::new);
-        if !inn.contains(&edge_id) {
-            inn.push(edge_id);
+        // antes de un crash; no debe duplicar la entrada de adyacencia. La
+        // pregunta la respondió `edge_exists` arriba, en O(1).
+        if !already_present {
+            adj_out.entry(source).or_insert_with(Vec::new).push(edge_id);
+            adj_in.entry(target).or_insert_with(Vec::new).push(edge_id);
+        } else {
+            adj_out.entry(source).or_insert_with(Vec::new);
+            adj_in.entry(target).or_insert_with(Vec::new);
         }
 
         drop(adj_out);
@@ -3257,7 +3267,7 @@ impl Graph {
         }
 
         for node in &set.pending_nodes {
-            match self.storage.get_current_version(node.id).await {
+            let existed = match self.storage.get_current_version(node.id).await {
                 Ok(current_version_num) => {
                     let current_version = self
                         .storage
@@ -3273,18 +3283,25 @@ impl Graph {
                     self.storage
                         .commit_node_version_atomic(node, Some(&invalidated_prev), &new_version)
                         .await?;
+                    true
                 }
                 Err(_) => {
-                    // Sin cadena: primera versión con el timestamp del commit
+                    // Sin cadena: primera versión con el timestamp del commit.
+                    // El registro `entities` puede existir igual (nodo creado
+                    // con add_node directo): para la topología cuenta como
+                    // existente.
+                    let existed = self.storage.node_exists(node.id).await?;
                     let first_version = VersionedNode::new(node.clone(), commit_timestamp);
                     self.storage
                         .commit_node_version_atomic(node, None, &first_version)
                         .await?;
+                    existed
                 }
-            }
+            };
 
-            // Registro legacy + inicialización de adyacencia (sin indexar aquí)
-            self.apply_add_node(node.clone(), true).await?;
+            // El registro del nodo ya lo escribió el batch atómico de arriba;
+            // aquí solo falta la RAM (antes se reescribía `entities`, #143).
+            self.register_node_in_ram(node.id, existed).await;
 
             #[cfg(feature = "full-isolation")]
             self.mark_modified(node.id, commit_timestamp).await?;
@@ -4052,6 +4069,11 @@ impl BulkLoader {
         self.flush_nodes().await?;
         self.flush_edges().await?;
         self.graph.flush_indices().await?;
+        // Checkpoint durable del motor: lo cargado no queda a merced del
+        // flusher periódico (hasta `flush_every_ms`) ni de un `close()`
+        // que alguien tiene que acordarse de llamar (#143). Los lotes del
+        // bulk no pasan por el WAL, así que este es su único fsync.
+        self.graph.storage.flush().await?;
 
         let duration = self.start_time.elapsed();
         let nodes_per_second = if duration.as_secs_f64() > 0.0 {

@@ -178,7 +178,11 @@ async fn hnsw_path_above_the_exact_threshold_also_inserts_and_removes_in_place()
     let idx = same.read().unwrap();
     assert_eq!(idx.len(), n);
     assert_eq!(idx.tombstones(), 1);
-    let hits = idx.search_knn(&q, 5)?;
+    // ef alto: este test afirma el MECANISMO (insert en sitio, tombstone),
+    // no el recall a ef por defecto. Con ef pequeño el grafo que construye
+    // `parallel_insert` en un runner de 2 cores a veces no alcanza al punto
+    // recién insertado (falló en CI aun con distancia 0).
+    let hits = idx.search_knn_with_ef(&q, 5, 512)?;
     assert_eq!(hits[0].0, new_id);
     assert!(hits.iter().all(|(id, _)| *id != ids[0]));
     assert_eq!(hits.len(), 5, "tombstones must not underfill k");

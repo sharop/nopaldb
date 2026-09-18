@@ -14,6 +14,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use nopaldb::{Edge, Graph, Node, PropertyValue};
 use std::sync::Arc;
+use std::time::Duration;
 
 const READ_BATCH: usize = 64;
 
@@ -249,6 +250,39 @@ fn bench_reads_with_background_writer(c: &mut Criterion) {
     eprintln!("reads_64_background_writer: el escritor de fondo insertó {written} aristas");
 }
 
+// (e) Supernodo: 20k aristas directas desde el mismo origen. Hasta 0.6.0 la
+// deduplicación de la adyacencia en RAM era `Vec::contains` por arista
+// insertada (O(grado)): cuadrático en este patrón (#143). Correr con
+// `NOPALDB_BENCH_ENGINE=redb`: en sled sobre macOS cada arista directa
+// paga ~4 ms por la interacción WAL/F_FULLFSYNC (DURABILITY.md) y la
+// iteración de 20k aristas tarda más de un minuto.
+fn bench_supernode_fanout(c: &mut Criterion) {
+    let rt = rt();
+    let dir = tempfile::tempdir().unwrap();
+    let (graph, ids) = rt.block_on(seeded_graph(dir.path(), 1024));
+    let ids = Arc::new(ids);
+
+    let mut group = c.benchmark_group("supernode_fanout");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(20));
+    let mut round = 0usize;
+    group.bench_function("20k_edges_one_source", |b| {
+        b.to_async(&rt).iter(|| {
+            round += 1;
+            let g = Arc::clone(&graph);
+            let ids = Arc::clone(&ids);
+            async move {
+                let hub = ids[round % ids.len()];
+                for k in 0..20_000usize {
+                    let t = ids[(k + round) % ids.len()];
+                    g.add_edge(Edge::new(hub, t, "FAN")).await.expect("add_edge");
+                }
+            }
+        });
+    });
+    group.finish();
+}
+
 // (d) Ingesta con BulkLoader: 1000 nodos por iteración. `fresh_db` abre una
 // base nueva en cada iteración (crear + abrir + cerrar van dentro de la
 // medición: ~18 ms en sled, ~75 ms en redb, casi todo fsync); `open_db`
@@ -307,6 +341,7 @@ criterion_group!(
     bench_read_concurrency,
     bench_reads_with_active_writer,
     bench_reads_with_background_writer,
-    bench_bulk_load
+    bench_bulk_load,
+    bench_supernode_fanout
 );
 criterion_main!(benches);
