@@ -250,6 +250,53 @@ fn bench_reads_with_background_writer(c: &mut Criterion) {
     eprintln!("reads_64_background_writer: el escritor de fondo insertó {written} aristas");
 }
 
+// (f) Escritores directos concurrentes: `tasks` tareas, cada una `per_task`
+// `add_edge` sin transacción. Mide el throughput del applier con la cola
+// llena. Es el bench con el que se cerró #139 (group commit de write-sets
+// en el applier): en redb 8 tareas rinden igual que 1 (~31 µs por op, de los
+// que solo ~3 son fusionables: el resto es canal, WAL y ack); en sled el
+// `append_batch` por drenaje ya amortiza el WAL entre escritores (5×).
+fn bench_writes_direct_concurrent(c: &mut Criterion) {
+    let rt = rt();
+    let dir = tempfile::tempdir().unwrap();
+    let (graph, ids) = rt.block_on(seeded_graph(dir.path(), 1024));
+    let ids = Arc::new(ids);
+
+    let mut group = c.benchmark_group("writes_direct_concurrent");
+    group.sample_size(10);
+    let mut round = 0usize;
+    for tasks in [1usize, 8] {
+        // 64 aristas por iteración en total, repartidas: mismo trabajo,
+        // distinto paralelismo, así el tiempo por iteración es comparable.
+        let per_task = 64 / tasks;
+        group.bench_with_input(BenchmarkId::from_parameter(tasks), &tasks, |b, &tasks| {
+            b.to_async(&rt).iter(|| {
+                round += 1;
+                let g = Arc::clone(&graph);
+                let ids = Arc::clone(&ids);
+                async move {
+                    let mut handles = Vec::with_capacity(tasks);
+                    for t in 0..tasks {
+                        let g = Arc::clone(&g);
+                        let ids = Arc::clone(&ids);
+                        handles.push(tokio::spawn(async move {
+                            for k in 0..per_task {
+                                let s = ids[(round * 131 + t * 17 + k) % ids.len()];
+                                let d = ids[(round * 131 + t * 17 + k + 1) % ids.len()];
+                                g.add_edge(Edge::new(s, d, "CONC")).await.expect("add_edge");
+                            }
+                        }));
+                    }
+                    for h in handles {
+                        h.await.expect("writer task");
+                    }
+                }
+            });
+        });
+    }
+    group.finish();
+}
+
 // (e) Supernodo: 20k aristas directas desde el mismo origen. Hasta 0.6.0 la
 // deduplicación de la adyacencia en RAM era `Vec::contains` por arista
 // insertada (O(grado)): cuadrático en este patrón (#143). Correr con
@@ -342,6 +389,7 @@ criterion_group!(
     bench_reads_with_active_writer,
     bench_reads_with_background_writer,
     bench_bulk_load,
-    bench_supernode_fanout
+    bench_supernode_fanout,
+    bench_writes_direct_concurrent
 );
 criterion_main!(benches);
