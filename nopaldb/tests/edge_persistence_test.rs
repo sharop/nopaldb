@@ -4,7 +4,7 @@
 // Bug: rebuild_indices was scanning the wrong sled tree,
 // causing all edges to be lost after restart.
 
-use nopaldb::{Graph, Node, Edge, PropertyValue, Result};
+use nopaldb::{Edge, Graph, Node, PropertyValue, Result, Storage, StorageEngine, StorageOptions};
 use tempfile::TempDir;
 
 /// Core persistence test: create edges, reopen graph, verify they exist
@@ -84,24 +84,22 @@ async fn test_edges_persist_after_reopen() -> Result<()> {
     Ok(())
 }
 
-/// Test that rebuild_indices is triggered when adjacency indices are missing
-///
-/// Gated on `storage-sled`: fabrica el estado "adyacencia perdida" abriendo
-/// la DB con sled DIRECTO y vaciando el tree `adjacency` (layout v2: dos
-/// claves binarias por arista) — acceso crudo al motor a propósito (no hay
-/// API pública para corromper índices, ni debe haberla).
-#[cfg(feature = "storage-sled")]
-#[tokio::test]
-async fn test_rebuild_indices_from_edges_tree() -> Result<()> {
+/// La adyacencia perdida se reconstruye desde las aristas al abrir, con
+/// cualquier motor. El estado "adyacencia vacía" se fabrica con la seam de
+/// tests `Storage::debug_clear_adjacency` (antes solo existía una variante
+/// que abría el árbol de sled en crudo y el motor por defecto quedaba sin
+/// cobertura, #143).
+async fn rebuild_indices_from_edges(engine: StorageEngine) -> Result<()> {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("test_rebuild_fallback");
+    let opts = StorageOptions { engine, ..Default::default() };
 
     // Phase 1: Create data
     let alice_id;
     let bob_id;
     let edge_id;
     {
-        let graph = Graph::open(&path).await?;
+        let graph = Graph::open_with_options(&path, opts).await?;
         alice_id = graph.add_node(
             Node::new("Person").with_property("name", PropertyValue::String("Alice".into()))
         ).await?;
@@ -109,27 +107,24 @@ async fn test_rebuild_indices_from_edges_tree() -> Result<()> {
             Node::new("Person").with_property("name", PropertyValue::String("Bob".into()))
         ).await?;
         edge_id = graph.add_edge(Edge::new(alice_id, bob_id, "KNOWS")).await?;
+        graph.close().await?;
     }
 
-    // Phase 2: Manually clear the adjacency keyspace to force rebuild path
+    // Phase 2: vaciar el keyspace de adyacencia para forzar el rebuild
     {
-        let db = sled::open(&path).unwrap();
-        let tree = db.open_tree("adjacency").unwrap();
-        tree.clear().unwrap();
-        db.flush().unwrap();
-        drop(db);
+        let storage = Storage::new_with_options(&path, opts).await?;
+        storage.debug_clear_adjacency().await?;
+        drop(storage);
     }
 
     // Phase 3: Reopen - should trigger rebuild_indices and recover edges
     {
-        let graph = Graph::open(&path).await?;
+        let graph = Graph::open_with_options(&path, opts).await?;
 
-        // Edge should still be retrievable from storage
         let edge = graph.get_edge(edge_id).await?;
         assert_eq!(edge.source, alice_id);
         assert_eq!(edge.target, bob_id);
 
-        // Adjacency should be rebuilt from edges tree
         let alice_out = graph.get_outgoing_edges(alice_id).await?;
         assert_eq!(alice_out.len(), 1,
                    "rebuild_indices should recover Alice's outgoing edge, got {}", alice_out.len());
@@ -140,4 +135,21 @@ async fn test_rebuild_indices_from_edges_tree() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[tokio::test]
+async fn test_rebuild_indices_from_edges_default_engine() -> Result<()> {
+    rebuild_indices_from_edges(StorageOptions::default().engine).await
+}
+
+#[cfg(feature = "storage-sled")]
+#[tokio::test]
+async fn test_rebuild_indices_from_edges_sled() -> Result<()> {
+    rebuild_indices_from_edges(StorageEngine::Sled).await
+}
+
+#[cfg(feature = "storage-redb")]
+#[tokio::test]
+async fn test_rebuild_indices_from_edges_redb() -> Result<()> {
+    rebuild_indices_from_edges(StorageEngine::Redb).await
 }
