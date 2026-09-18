@@ -47,10 +47,14 @@ async fn populate(graph: &Graph, n: usize) {
     }
 }
 
+/// ef alto a propósito: estos tests afirman el MECANISMO de persistencia
+/// (dump, recarga, rebuild), no el recall a ef por defecto. Tras un rebuild
+/// con `parallel_insert` en un runner de 2 cores, a ef pequeño la búsqueda
+/// a veces no alcanzaba ni al vector exacto de un nodo (falló en CI).
 async fn search(graph: &Graph, query: &[f32]) -> Vec<NodeId> {
     let index = graph.get_or_build_embedding_index(MODEL).await.unwrap();
     let guard = index.read().unwrap();
-    guard.search_knn(query, 5).unwrap().into_iter().map(|(id, _)| id).collect()
+    guard.search_knn_with_ef(query, 5, 512).unwrap().into_iter().map(|(id, _)| id).collect()
 }
 
 fn dump_files(path: &Path) -> Vec<String> {
