@@ -84,12 +84,23 @@ assert!(report.verified);
 
 ### Command line
 
+The `nopaldb` binary (feature `cli`, both engines built in) wraps the same
+function:
+
+```bash
+cargo install nopaldb --features cli
+nopaldb engine data/plantas.db                       # sled | redb | ninguno
+nopaldb migrate data/plantas.db data/plantas_redb.db  # --from auto --to redb by default
+```
+
+It prints one line per keyspace (pairs and bytes), the totals and the
+verification result. Exit codes: 0 verified; 1 usage or invalid arguments;
+2 the copy failed or the destination was not empty. Without installing, the
+repository example does the same:
+
 ```bash
 cargo run --example migrate_engine --features storage-sled -- data/plantas.db auto data/plantas_redb.db redb
 ```
-
-The example prints one line per keyspace (pairs and bytes) and the
-verification result.
 
 ### Going back
 

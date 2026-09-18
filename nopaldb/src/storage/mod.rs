@@ -1903,6 +1903,15 @@ impl Storage {
         self.engine.flush()
     }
 
+    /// Qué motor dejó la base que ya hay en `dir`, por sus archivos
+    /// (`nopal.redb` ⇒ redb; `conf` + `db` ⇒ sled); `None` si no hay base.
+    /// Es lo que `StorageEngine::Auto` consulta al abrir, expuesto para
+    /// herramientas (`nopaldb engine <dir>`) y para quien quiera decidir
+    /// antes de abrir.
+    pub fn detect_engine(dir: impl AsRef<Path>) -> Option<StorageEngine> {
+        kv::detect_engine(dir.as_ref())
+    }
+
     /// Vacía el keyspace `adjacency` en disco. SOLO para tests: fabrica el
     /// estado "adyacencia perdida" que `Graph::open` debe reparar
     /// reconstruyéndola desde las aristas, con cualquier motor (antes el
