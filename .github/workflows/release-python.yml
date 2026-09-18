@@ -5,9 +5,10 @@ name: Release Python
 #
 # ⚠️ LAS FEATURES NO SE PASAN AQUÍ. Ningún `args:` de abajo lleva `--features`:
 # maturin las toma de `[tool.maturin] features` en `nopaldb/pyproject.toml`
-# (hoy `python-full`, que arrastra `storage-sled` y NO `storage-redb`). Si
-# alguna vez hay que cambiar qué backend viaja en la wheel, se cambia allí —
-# leer este archivo no basta para saber con qué se compila lo publicado.
+# (desde 0.6.0: `python-full` + `storage-sled`, es decir, AMBOS motores: redb
+# como default y sled para abrir y migrar bases de 0.5.x). Si alguna vez hay
+# que cambiar qué backend viaja en la wheel, se cambia allí — leer este
+# archivo no basta para saber con qué se compila lo publicado.
 on:
   push:
     tags:

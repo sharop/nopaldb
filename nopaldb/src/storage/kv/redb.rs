@@ -359,11 +359,12 @@ pub(crate) struct RedbEngine {
 impl RedbEngine {
     pub(crate) fn open(dir: &Path, profile: StorageProfile) -> Result<Self> {
         // Sentinel estructural: una base sled se identifica por sus archivos.
-        if dir.join("conf").exists() && dir.join("db").exists() && !dir.join(DB_FILE).exists() {
+        if super::detect_engine(dir) == Some(crate::storage::backend::StorageEngine::Sled) {
             return Err(StorageError::new(
                 StorageErrorKind::InvalidData,
                 format!(
-                    "el directorio {} contiene una base sled; ábrela con engine=sled o migra los datos",
+                    "el directorio {} contiene una base sled; ábrela con engine=sled (o deja el motor en \
+                     Auto, que la detecta) o mígrala con `Storage::copy_database` / `Graph.migrate`",
                     dir.display()
                 ),
             )
@@ -916,13 +917,6 @@ impl RedbKeyspace {
     }
 }
 
-/// ¿El directorio contiene una base redb? (para el sentinel inverso de sled;
-/// cfg: su único caller vive en kv/sled.rs — sin sled compilado es dead code
-/// y el CI compila con -D warnings).
-#[cfg(feature = "storage-sled")]
-pub(crate) fn sled_dir_has_redb(dir: &Path) -> bool {
-    dir.join(DB_FILE).exists()
-}
 
 #[cfg(test)]
 mod tests {

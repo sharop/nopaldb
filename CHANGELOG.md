@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] - unreleased
+
+Cierra [#131](https://github.com/sharop/nopaldb/issues/131). Guía de migración: [docs/MIGRATION_0.6.md](docs/MIGRATION_0.6.md) · [docs/es/MIGRACION_0.6.md](docs/es/MIGRACION_0.6.md).
+
+### Changed
+
+- **redb es el motor de almacenamiento por defecto.** `default = ["storage-redb"]` y el tier `core` (y por herencia `semantic`, `full`, `python-full`) llevan redb; `storage-sled` deja de venir en los tiers y pasa a ser una feature opcional. Una base creada con 0.5.x **se abre igual**: `StorageOptions::default().engine` es ahora `StorageEngine::Auto`, que usa el motor del directorio si ya hay una base (redb deja `nopal.redb`; sled deja `conf` y `db`) y redb si el directorio es nuevo; al abrir una base sled deja un aviso con la receta de migración. Un motor explícito sobre un directorio del otro motor sigue siendo error, ahora con la receta de migración en el mensaje; un build sin `storage-sled` que encuentra una base sled dice qué feature falta y cómo migrar. Los constructores con perfil (`open_with_profile`, `in_memory_with_profile`) ya no fuerzan sled. El gate que decidió el cambio y sus números están en #131: nightly de crash sobre redb verde durante cuatro semanas, commits 2.4–2.9×, lecturas 1.03×, ingesta 1.42×, GC 69×, disco 0.03×, round-trip verificado de un millón de pares; los dos trade-offs que quedan (creación de base ~60 ms una vez por directorio; escritura directa fuera de transacción más lenta por operación) están medidos en `DURABILITY.md`.
+- **Python:** `engine` vale `"auto"` por defecto en `Graph.open_with_options` e `in_memory_with_options`; `"redb"` y `"sled"` siguen aceptándose. **La wheel de PyPI lleva ambos motores** (antes solo sled), así `Graph.open` abre bases de 0.5.x y `Graph.migrate` puede convertirlas. Los mensajes de `ValueError` nombran los motores del build.
+- Los sentinels de directorio de ambos motores usan la misma detección (`kv::detect_engine`) y ya no dependen de qué features estén compiladas.
+- CI: el default (redb) corre la suite completa y el harness de crash; sled la corre como motor opcional (`--no-default-features --features storage-sled`), incluido el nightly de 100 rondas de SIGKILL.
+
+### Added
+
+- `StorageEngine::Auto` y `nopaldb::storage::kv::detect_engine(dir)`.
+- `Graph.migrate(src, dst, src_engine="auto", dst_engine="auto", profile="default") -> dict` en Python: copia verificada entre motores (`Storage::copy_database`); devuelve pares y bytes por keyspace y `verified`. `Graph.storage_engine() -> "redb" | "sled"`.
+- Test `engine_autodetect_test` (ambos motores) y `migrate_sample.py` en el job de stubs.
+
+### Deprecated
+
+- **sled como motor por defecto.** `storage-sled` sigue disponible al menos en 0.6 y 0.7 para abrir y migrar bases existentes; su retirada se decidirá con datos de uso en 0.8 y se anunciará un minor antes. Para crear una base sled nueva hay que pedir `engine = StorageEngine::Sled` / `engine="sled"` explícitamente.
+
 ## [0.5.24] - 2026-09-18
 
 ### Changed

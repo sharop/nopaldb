@@ -15,7 +15,7 @@ fn opts(engine: StorageEngine) -> StorageOptions {
 /// Base chica pero representativa: nodos con propiedades indexadas, aristas,
 /// historia MVCC (updates + delete) y checkpoint (WAL aplicado al cerrar).
 async fn build_fixture(dir: &std::path::Path) -> Result<(uuid::Uuid, uuid::Uuid)> {
-    let graph = Graph::open(dir).await?;
+    let graph = Graph::open_with_options(dir, opts(StorageEngine::Sled)).await?;
     let (a, b) = {
         let mut tx = graph.begin_transaction().await?;
         let a = tx
@@ -77,7 +77,7 @@ async fn time_travel_survives_migration() -> Result<()> {
 
     // Historia esperada, leída del ORIGEN antes de migrar.
     let expected: Vec<i64> = {
-        let graph = Graph::open(&src).await?;
+        let graph = Graph::open_with_options(&src, opts(StorageEngine::Sled)).await?;
         let history = graph.history(a).await?;
         history
             .iter()

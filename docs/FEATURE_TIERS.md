@@ -15,7 +15,7 @@ full
             └─ default
 ```
 
-Tiers are additive: `full` includes `semantic` plus `full-isolation`, `semantic` includes `core`, and `core` includes the default Sled storage backend. These tiers are Rust-only; they do not build the Python wrapper.
+Tiers are additive: `full` includes `semantic` plus `full-isolation`, `semantic` includes `core`, and `core` includes the default redb storage backend (`storage-sled` is a separate, optional feature that opens and migrates databases created before 0.6.0). These tiers are Rust-only; they do not build the Python wrapper.
 
 ---
 
@@ -23,7 +23,7 @@ Tiers are additive: `full` includes `semantic` plus `full-isolation`, `semantic`
 
 ### `default` — Minimal Graph Storage
 
-The default build enables the Sled-backed graph database with MVCC, transactions, WAL, indexing, and NQL basics.
+The default build enables the redb-backed graph database with MVCC, transactions, WAL, indexing, and NQL basics. Add `storage-sled` to also open databases created with 0.5.x (they are detected automatically) and to migrate them; see [MIGRATION_0.6.md](MIGRATION_0.6.md).
 
 ```bash
 cargo build -p nopaldb
@@ -123,8 +123,8 @@ cargo clippy -p nopaldb --features full -- -D warnings
 
 | Feature | Dependencies |
 |---------|--------------|
-| `storage-sled` | `sled` — default backend; the one the PyPI wheels ship |
-| `storage-redb` | `redb` — **experimental**, opt-in, not in the PyPI wheels |
+| `storage-redb` | `redb` — default backend since 0.6.0 |
+| `storage-sled` | `sled` — optional since 0.6.0: opens and migrates 0.5.x databases; available at least through 0.7. The PyPI wheels ship both |
 | `analytics` | `arrow`, `parquet` |
 | `ml` | `analytics` |
 | `algorithms` | none |
@@ -173,7 +173,7 @@ full
             └─ default
 ```
 
-Los tiers son aditivos: `full` incluye `semantic` mas `full-isolation` (niveles de aislamiento, lock manager y deteccion de deadlocks — ver [ISOLATION_LEVELS.md](ISOLATION_LEVELS.md)), `semantic` incluye `core`, y `core` incluye el backend Sled por defecto. Estos tiers son solo Rust; no construyen el wrapper Python.
+Los tiers son aditivos: `full` incluye `semantic` mas `full-isolation` (niveles de aislamiento, lock manager y deteccion de deadlocks — ver [ISOLATION_LEVELS.md](ISOLATION_LEVELS.md)), `semantic` incluye `core`, y `core` incluye el backend redb por defecto (`storage-sled` es una feature aparte, opcional, que abre y migra bases creadas antes de 0.6.0). Estos tiers son solo Rust; no construyen el wrapper Python.
 
 ### Compilacion rapida por tier
 

@@ -101,6 +101,7 @@ async fn reopen_loads_from_disk(engine: StorageEngine) {
     graph.close().await.unwrap();
 }
 
+#[cfg(feature = "storage-sled")]
 #[tokio::test]
 async fn reopen_loads_from_disk_sled() {
     reopen_loads_from_disk(StorageEngine::Sled).await;

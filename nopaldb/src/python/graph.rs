@@ -26,37 +26,42 @@ fn parse_profile(profile: &str) -> PyResult<StorageProfile> {
 /// Traduce el nombre del engine, rechazando los que ESTE build no trae.
 ///
 /// El engine se valida contra lo compilado, no contra lo que el enum sabe
-/// nombrar. Antes se aceptaba cualquiera de los dos y el fallo llegaba dentro
-/// de `open()` como `RuntimeError: ... activa su feature storage-*` — un
-/// remedio imposible para quien instaló una wheel: no puede recompilar lo que
-/// ya viene compilado. Ahora el rechazo ocurre en la llamada, con un
-/// `ValueError` que dice qué backends tiene ESTE build y qué hacer.
+/// nombrar: el rechazo ocurre en la llamada, con un `ValueError` que dice qué
+/// backends tiene ESTE build. `"auto"` (default desde 0.6.0) elige el motor
+/// del directorio si ya hay una base y, si no, el del build.
 fn parse_engine(engine: &str) -> PyResult<StorageEngine> {
+    let available = {
+        let mut v = vec!["auto"];
+        if cfg!(feature = "storage-redb") {
+            v.push("redb");
+        }
+        if cfg!(feature = "storage-sled") {
+            v.push("sled");
+        }
+        v.join(", ")
+    };
     match engine.to_ascii_lowercase().as_str() {
-        #[cfg(feature = "storage-sled")]
-        "sled" => Ok(StorageEngine::Sled),
+        "auto" => Ok(StorageEngine::Auto),
         #[cfg(feature = "storage-redb")]
         "redb" => Ok(StorageEngine::Redb),
-
-        // Nombre conocido, pero sin backend en este build.
-        #[cfg(not(feature = "storage-redb"))]
-        "redb" => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "engine 'redb' is not available in this build. The wheels published on PyPI ship \
-             the sled backend only; redb is experimental and must be built from source with \
-             `--features storage-redb`. This build supports: 'sled'."
-                .to_string(),
-        )),
-        #[cfg(not(feature = "storage-sled"))]
-        "sled" => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "engine 'sled' is not available in this build (compiled without `storage-sled`). \
-             This build supports: 'redb'."
-                .to_string(),
-        )),
-
-        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Invalid engine '{}'. Use 'sled' or 'redb'",
-            engine
+        #[cfg(feature = "storage-sled")]
+        "sled" => Ok(StorageEngine::Sled),
+        #[allow(unreachable_patterns)]
+        known @ ("redb" | "sled") => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "engine '{known}' is not available in this build (compiled without `storage-{known}`). \
+             This build supports: {available}. The wheels published on PyPI ship both engines."
         ))),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Invalid engine '{engine}'. Use one of: {available}"
+        ))),
+    }
+}
+
+fn engine_str(name: &str) -> &'static str {
+    match name {
+        "redb" => "redb",
+        "sled" => "sled",
+        _ => "unknown",
     }
 }
 
@@ -64,7 +69,7 @@ fn parse_engine(engine: &str) -> PyResult<StorageEngine> {
 #[pyclass(name = "Graph")]
 pub struct PyGraph {
     // Mutex<Option<...>> permite que close() extraiga y suelte el Arc, liberando
-    // el lock de Sled aunque el objeto Python siga vivo.
+    // el lock del motor aunque el objeto Python siga vivo.
     inner: Mutex<Option<Arc<RustGraph>>>,
 }
 
@@ -113,13 +118,13 @@ impl PyGraph {
 
     /// Open a graph database with explicit storage options.
     ///
-    /// engine: "sled" (the only backend in the wheels published on PyPI) or
-    ///     "redb" (experimental; requires building from source with
-    ///     `--features storage-redb`). Asking for a backend this build does
-    ///     not have raises ValueError.
+    /// engine: "auto" (default: the engine of the database already in
+    ///     `path`, or redb for a new one), "redb" or "sled". The wheels on
+    ///     PyPI ship both engines; asking for one this build does not have
+    ///     raises ValueError. Use `storage_engine()` to see which one opened.
     /// profile: "default" | "mobile" | "server"
     #[staticmethod]
-    #[pyo3(signature = (path, engine="sled", profile="default"))]
+    #[pyo3(signature = (path, engine="auto", profile="default"))]
     fn open_with_options(py: Python<'_>, path: &str, engine: &str, profile: &str) -> PyResult<Self> {
         let engine = parse_engine(engine)?;
         let profile = parse_profile(profile)?;
@@ -158,11 +163,11 @@ impl PyGraph {
 
     /// Create in-memory graph with explicit storage options.
     ///
-    /// engine: same values and build-dependent availability as
-    ///     `open_with_options`.
+    /// engine: same values as `open_with_options`; "auto" means the build's
+    ///     default engine (redb).
     /// profile: "default" | "mobile" | "server"
     #[staticmethod]
-    #[pyo3(signature = (engine="sled", profile="default"))]
+    #[pyo3(signature = (engine="auto", profile="default"))]
     fn in_memory_with_options(py: Python<'_>, engine: &str, profile: &str) -> PyResult<Self> {
         let engine = parse_engine(engine)?;
         let profile = parse_profile(profile)?;
@@ -695,6 +700,76 @@ impl PyGraph {
         result.insert("avg_degree".to_string(), format!("{:.2}", stats.avg_degree));
 
         Ok(result)
+    }
+
+    /// Name of the storage engine this handle opened: "redb" or "sled".
+    ///
+    /// With `engine="auto"` (the default) an existing database keeps the
+    /// engine it was created with, so a 0.5.x database reports "sled" until
+    /// it is migrated with `Graph.migrate`.
+    fn storage_engine(&self) -> PyResult<&'static str> {
+        let graph = self.graph()?;
+        Ok(engine_str(graph.storage().backend_name()))
+    }
+
+    /// Copy a whole database directory to another engine, verifying the copy.
+    ///
+    /// Byte-for-byte copy of every keyspace (nodes, MVCC versions, edges,
+    /// adjacency, indexes, clocks, embeddings) followed by a re-scan of the
+    /// destination that checks counts and checksums. Time-travel and indexes
+    /// survive intact because nothing is reinterpreted.
+    ///
+    /// Preconditions: both directories closed (no open Graph on them); the
+    /// source opened and closed cleanly at least once with NopalDB (so its
+    /// WAL is applied); the destination directory empty or absent. Both
+    /// engines must be present in the build (the PyPI wheels have both).
+    ///
+    /// Args:
+    ///     src (str): source directory.
+    ///     dst (str): destination directory (empty or absent).
+    ///     src_engine (str): "auto" (detect from the directory), "sled" or "redb".
+    ///     dst_engine (str): "auto" (the build's default, redb), "sled" or "redb".
+    ///     profile (str): tuning profile used to open both.
+    ///
+    /// Returns:
+    ///     dict: {"keyspaces": [{"name", "pairs", "bytes"}, ...], "verified": bool}.
+    ///     A failed verification is raised as an error and the destination
+    ///     must not be used.
+    ///
+    /// Example:
+    ///     >>> report = nopaldb.Graph.migrate("old_sled.db", "new_redb.db")
+    ///     >>> report["verified"]
+    ///     True
+    #[staticmethod]
+    #[pyo3(signature = (src, dst, src_engine="auto", dst_engine="auto", profile="default"))]
+    fn migrate(
+        py: Python<'_>,
+        src: &str,
+        dst: &str,
+        src_engine: &str,
+        dst_engine: &str,
+        profile: &str,
+    ) -> PyResult<Py<PyDict>> {
+        let profile = parse_profile(profile)?;
+        let src_opts = StorageOptions { engine: parse_engine(src_engine)?, profile, ..Default::default() };
+        let dst_opts = StorageOptions { engine: parse_engine(dst_engine)?, profile, ..Default::default() };
+        let (src, dst) = (src.to_string(), dst.to_string());
+        let report = crate::python::runtime::block_on(py, async move {
+            crate::Storage::copy_database(&src, src_opts, &dst, dst_opts).await
+        });
+        let report = to_py_result(report)?;
+        let dict = PyDict::new(py);
+        let keyspaces = PyList::empty(py);
+        for (name, pairs, bytes) in &report.keyspaces {
+            let ks = PyDict::new(py);
+            ks.set_item("name", name)?;
+            ks.set_item("pairs", *pairs)?;
+            ks.set_item("bytes", *bytes)?;
+            keyspaces.append(ks)?;
+        }
+        dict.set_item("keyspaces", keyspaces)?;
+        dict.set_item("verified", report.verified)?;
+        Ok(dict.into())
     }
 
     /// Close the database

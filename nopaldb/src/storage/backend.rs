@@ -13,11 +13,27 @@ pub enum StorageProfile {
 ///
 /// `#[non_exhaustive]`: new engines (behind their own feature flags) can be
 /// added without a breaking change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Desde 0.6.0 el motor por defecto es redb y `Auto` es lo que usa
+/// `StorageOptions::default()`. `Auto` existe para que una base creada con
+/// sled en 0.5.x se abra con el binario nuevo **sin tocar código**: mira el
+/// directorio y elige el motor que ya está ahí (redb deja `nopal.redb`; sled
+/// deja `conf` y `db`); si el directorio es nuevo, usa el motor por defecto
+/// del build. Un motor explícito sigue siendo explícito: pedir `Redb` sobre
+/// una base sled es un error que dice cómo migrar, no una sorpresa
+/// silenciosa. Se descartó "redb salvo que…" sin variante propia porque
+/// entonces un valor explícito y el default serían indistinguibles al abrir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum StorageEngine {
+    /// El motor del directorio si ya contiene una base; si no, el motor por
+    /// defecto del build (redb si está compilado, si no sled).
+    #[default]
+    Auto,
+    /// Motor de 0.5.x. Opcional desde 0.6.0 (feature `storage-sled`), para
+    /// leer y migrar bases existentes; disponible al menos hasta 0.7.
     Sled,
-    /// Experimental (0.5.x): requiere la feature `storage-redb`.
+    /// Motor por defecto desde 0.6.0 (feature `storage-redb`).
     Redb,
 }
 
@@ -57,15 +73,11 @@ pub struct StorageOptions {
 impl Default for StorageOptions {
     fn default() -> Self {
         Self {
-            // Precedencia sled: nada cambia para nadie mientras la feature
-            // default esté activa. Con SOLO storage-redb compilado, el
-            // default cae a Redb — así la suite completa corre contra redb
-            // sin tocar un solo test (`--no-default-features --features
-            // storage-redb`).
-            #[cfg(feature = "storage-sled")]
-            engine: StorageEngine::Sled,
-            #[cfg(all(not(feature = "storage-sled"), feature = "storage-redb"))]
-            engine: StorageEngine::Redb,
+            // `Auto`: el motor del directorio si ya hay base; si no, el del
+            // build (`kv::default_engine`: redb si está compilado, si no
+            // sled). Así la suite entera corre contra el único motor
+            // compilado sin tocar un test, y una base de 0.5.x abre igual.
+            engine: StorageEngine::Auto,
             profile: StorageProfile::Default,
             direct_write_durability: DirectWriteDurability::default(),
         }

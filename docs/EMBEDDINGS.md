@@ -166,7 +166,7 @@ eliminate most candidates upfront.
 
 ## Storage details
 
-Embeddings are persisted in a dedicated Sled tree (`embeddings`), separate from node
+Embeddings are persisted in a dedicated storage keyspace (`embeddings`), separate from node
 and edge data. The key is `{node_id}:{model}` and the value is the `Embedding` struct
 serialized with MessagePack.
 

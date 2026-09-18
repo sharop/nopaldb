@@ -8,7 +8,7 @@ Currently, NopalDB aims for a **zero-configuration** experience. It provides san
 
 When you initialize a graph with `Graph.open("path")`, the following configuration is applied automatically:
 
-### 💾 Storage Engine (Sled)
+### 💾 Storage Engine (redb by default; sled optional)
 - **Backend**: Hybrid Log-Structured Merge Tree (LSM).
 - **Caching**: Automatic page cache management. No manual size limit configured yet.
 - **Compression**: Enabled by default (Zstd/Snappy depending on build).

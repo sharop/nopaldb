@@ -259,11 +259,7 @@ impl Graph {
         path: impl AsRef<std::path::Path>,
         profile: crate::storage::StorageProfile,
     ) -> Result<Self> {
-        let options = crate::storage::StorageOptions {
-            engine: crate::storage::StorageEngine::Sled,
-            profile,
-            ..Default::default()
-        };
+        let options = crate::storage::StorageOptions { profile, ..Default::default() };
         Self::open_with_options(path, options).await
     }
 
@@ -806,11 +802,7 @@ impl Graph {
 
     /// Crea un grafo en memoria con perfil de tuning.
     pub async fn in_memory_with_profile(profile: crate::storage::StorageProfile) -> Result<Self> {
-        let options = crate::storage::StorageOptions {
-            engine: crate::storage::StorageEngine::Sled,
-            profile,
-            ..Default::default()
-        };
+        let options = crate::storage::StorageOptions { profile, ..Default::default() };
         Self::in_memory_with_options(options).await
     }
 

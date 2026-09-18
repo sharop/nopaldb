@@ -184,14 +184,12 @@ mod tests {
     use crate::storage::kv::KvEngine;
 
     fn engine() -> Arc<dyn KvEngine> {
-        #[cfg(feature = "storage-sled")]
-        return Arc::new(
-            crate::storage::kv::sled::SledEngine::open_temporary(StorageProfile::Default).unwrap(),
-        );
-        #[cfg(all(not(feature = "storage-sled"), feature = "storage-redb"))]
-        return Arc::new(
-            crate::storage::kv::redb::RedbEngine::open_temporary(StorageProfile::Default).unwrap(),
-        );
+        // El motor por defecto del build (redb si está; si no, sled).
+        crate::storage::kv::open_in_memory(
+            StorageProfile::Default,
+            &crate::storage::backend::StorageOptions::default(),
+        )
+        .unwrap()
     }
 
     fn catalog() -> Arc<dyn KvKeyspace> {

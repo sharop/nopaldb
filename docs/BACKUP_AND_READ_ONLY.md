@@ -75,5 +75,6 @@ place, stop the writer, move the directory, and open it.
 
 ## Which engine
 
-Everything on this page works with both storage backends. The wheels published
-on PyPI ship sled; see [ADOPTION.md](ADOPTION.md).
+Everything on this page works with both storage backends. Since 0.6.0 redb is
+the default and the wheels published on PyPI ship both engines; see
+[ADOPTION.md](ADOPTION.md) and [MIGRATION_0.6.md](MIGRATION_0.6.md).

@@ -87,37 +87,39 @@ jobs:
       - name: Test property index v2 (typed keys + migration)
         run: cargo test -p nopaldb --features core --test prop_index_v2_test
 
-      - name: KV conformance with both engines (sled + redb)
-        run: cargo test -p nopaldb --features core,storage-redb --lib conformance
+      - name: KV conformance with both engines (redb + sled)
+        run: cargo test -p nopaldb --features core,storage-sled --lib conformance
 
-      - name: Full lib suite with redb as only backend (experimental)
-        run: cargo test -p nopaldb --no-default-features --features storage-redb --lib
+      # sled es el motor opcional desde 0.6.0: sigue teniendo que pasar la
+      # suite entera solo, porque abre y migra las bases de 0.5.x.
+      - name: Full lib suite with sled as only backend
+        run: cargo test -p nopaldb --no-default-features --features storage-sled --lib
 
-      - name: Cross-engine migration (copy_database round-trip, checksum-verified)
-        run: cargo test -p nopaldb --features core,storage-redb --test kv_migrate_test --test open_lock_same_process_test --test hnsw_persistence_test
+      - name: Engine autodetection + cross-engine migration (copy_database round-trip, checksum-verified)
+        run: cargo test -p nopaldb --features core,storage-sled --test engine_autodetect_test --test kv_migrate_test --test open_lock_same_process_test --test hnsw_persistence_test
 
       - name: Layout v2 migration (v1→v2 state machine)
         run: cargo test -p nopaldb --features core --test layout_v2_migration_test
 
-      - name: Layout v2 migration with redb as only backend
-        run: cargo test -p nopaldb --no-default-features --features storage-redb --test layout_v2_migration_test
+      - name: Layout v2 migration with sled as only backend
+        run: cargo test -p nopaldb --no-default-features --features storage-sled --test layout_v2_migration_test
 
       # Los dos motores: el agujero estaba en ambos y cada uno lo cierra a su
       # manera, así que el invariante se exige por separado en cada backend.
-      - name: Read-only mode + cold backup — sled
+      - name: Read-only mode + cold backup — redb
         run: cargo test -p nopaldb --features core --test read_only_and_backup_test
 
-      - name: Read-only mode + cold backup — redb
-        run: cargo test -p nopaldb --no-default-features --features storage-redb --test read_only_and_backup_test
-
-      - name: Cold-start crash (kill while creating the database) — sled
-        run: cargo test -p nopaldb --features core --test cold_start_crash_test
+      - name: Read-only mode + cold backup — sled
+        run: cargo test -p nopaldb --no-default-features --features storage-sled --test read_only_and_backup_test
 
       - name: Cold-start crash (kill while creating the database) — redb
-        run: cargo test -p nopaldb --no-default-features --features storage-redb --test cold_start_crash_test
+        run: cargo test -p nopaldb --features core --test cold_start_crash_test
 
-      - name: Crash + persistence harness with redb backend
-        run: cargo test -p nopaldb --no-default-features --features storage-redb --test crash_commit_test --test clock_persistence_test --test edge_persistence_test --test adjacency_update_regression_test
+      - name: Cold-start crash (kill while creating the database) — sled
+        run: cargo test -p nopaldb --no-default-features --features storage-sled --test cold_start_crash_test
+
+      - name: Crash + persistence harness with sled backend
+        run: cargo test -p nopaldb --no-default-features --features storage-sled --test crash_commit_test --test clock_persistence_test --test edge_persistence_test --test adjacency_update_regression_test
 
   python-stubs:
     runs-on: ubuntu-latest
@@ -140,4 +142,5 @@ jobs:
           python nopaldb/python/scripts/fulltext_analyzer_sample.py
           python nopaldb/python/scripts/shacl_sample.py
           python nopaldb/python/scripts/hnsw_sample.py
+          python nopaldb/python/scripts/migrate_sample.py
           mypy --strict nopaldb/python/scripts/typecheck_sample.py

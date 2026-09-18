@@ -39,6 +39,7 @@ fn engine() -> StorageEngine {
     match std::env::var(ENV_ENGINE).as_deref() {
         Ok("redb") => StorageEngine::Redb,
         Ok("sled") => StorageEngine::Sled,
+        // `Auto`: el motor del directorio si ya hay base, si no el del build.
         _ => StorageOptions::default().engine,
     }
 }
@@ -304,7 +305,7 @@ async fn commit_crash_recovery_survives_sigkill_rounds() -> nopaldb::Result<()> 
         let mut child = Command::new(&exe)
             .args(["crash_child_writer", "--ignored", "--exact", "--nocapture"])
             .env(ENV_DB_DIR, dir.path())
-            .env(ENV_ENGINE, if engine() == StorageEngine::Redb { "redb" } else { "sled" })
+            .env(ENV_ENGINE, std::env::var(ENV_ENGINE).unwrap_or_else(|_| "auto".to_string()))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()

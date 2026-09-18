@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "nopaldb"
-version = "0.5.24"
+version = "0.6.0"
 description = "Graph database with MVCC and NQL query language"
 authors = [{name = "NopalDB Contributors"}]
 readme = "README.pypi.md"
@@ -21,7 +21,9 @@ classifiers = [
 ]
 
 [tool.maturin]
-features = ["python-full"]
+# Ambos motores: redb (default desde 0.6.0) y sled, para que `Graph.open`
+# abra bases creadas con 0.5.x y exista `Graph.migrate`.
+features = ["python-full", "storage-sled"]
 python-source = "python"
 module-name = "nopaldb.nopaldb"
 python-packages = ["nopaldb"]

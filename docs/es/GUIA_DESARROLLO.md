@@ -28,7 +28,7 @@ full  ⊃  semantic  ⊃  core  ⊃  default
 
 | Tier | Qué incluye | Para quién |
 |------|-------------|------------|
-| `default` | Solo Sled backend | Build mínimo, CI rápido |
+| `default` | Solo el backend redb | Build mínimo, CI rápido |
 | `core` | + analytics, ML, algoritmos, hipergrafos, full-text | Investigadores, data scientists |
 | `semantic` | + reasoner OWL-EL, Turtle import/export | Ingenieros de knowledge graphs |
 | `full` | Conjunto público completo | CI completo, desarrollo full-stack |
@@ -56,7 +56,7 @@ cd nopaldb && maturin develop --release --features python-full
 NopalDB desacopla la **topología** del grafo del **almacenamiento** físico.
 
 *   **Abstracción**: `Graph` encapsula `Storage` y opera contra una capa de backend desacoplada (`StorageBackend` trait).
-*   **Físico**: Backend por defecto **Sled** (embebido).
+*   **Físico**: Backend por defecto **redb** (embebido); `storage-sled` opcional para bases de 0.5.x.
     *   Clave: `u64` (NodeId) -> Valor: `bincode(Node)`
 *   **Perfiles runtime**: `Default` (predeterminado), `Mobile` (opcional, memoria conservadora), `Server` (cache agresivo).
 *   **Indices**: Mantenemos índices secundarios (ej. búsqueda por propiedad) sincronizados atómicamente con los datos.
@@ -262,7 +262,7 @@ self.save_metadata_internal(&index_name)?;
 nopaldb/src/
 ├── graph/mod.rs          # Punto de entrada público. Graph::open, execute_nql
 ├── types.rs              # Node, Edge, NodeKind, PropertyValue, EdgeTarget
-├── storage/              # KV embebido + capa pluggable basada en Sled
+├── storage/              # KV embebido (redb default, sled opcional) + contrato pluggable
 ├── index/                # IndexManager: Hash, B-Tree, Full-Text (Tantivy), Taxonomy
 ├── transaction/          # Transaction + MVCC + Snapshot Isolation
 ├── mvcc/                 # Watermark, versioning, GC horizon

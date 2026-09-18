@@ -1,7 +1,10 @@
 //! Migra una base entre motores KV (sled ↔ redb), con verificación.
 //!
 //! Uso:
-//!   cargo run --example migrate_engine --features storage-redb -- <src_dir> <sled|redb> <dst_dir> <sled|redb>
+//!   cargo run --example migrate_engine --features storage-sled -- <src_dir> <auto|sled|redb> <dst_dir> <auto|sled|redb>
+//!
+//! `auto` en el origen detecta el motor por los archivos del directorio; en
+//! el destino es el motor por defecto del build (redb).
 //!
 //! El origen debe estar cerrado y con su WAL aplicado (abre y cierra la base
 //! con NopalDB normalmente antes de migrar). El destino debe estar vacío.
@@ -10,6 +13,7 @@ use nopaldb::{Result, Storage, StorageEngine, StorageOptions};
 
 fn parse_engine(s: &str) -> StorageEngine {
     match s.to_ascii_lowercase().as_str() {
+        "auto" => StorageEngine::Auto,
         "sled" => StorageEngine::Sled,
         "redb" => StorageEngine::Redb,
         other => {
