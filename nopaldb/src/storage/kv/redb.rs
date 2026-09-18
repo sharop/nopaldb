@@ -970,6 +970,11 @@ mod tests {
         engine.read_slots.window_open.load(Ordering::Acquire)
     }
 
+    /// Operaciones acumuladas en la ventana abierta (`None` = cerrada).
+    fn pending_ops(engine: &RedbEngine) -> Option<usize> {
+        engine.read_slots.window.lock().unwrap().as_ref().map(|w| w.ops)
+    }
+
     /// El mecanismo de la caché de lectura: un `get` deja la tabla cacheada
     /// y cualquier commit de datos (propio, de otro keyspace vía
     /// `apply_multi`, `clear`, cierre de ventana) la vacía. Con la ventana
@@ -1036,16 +1041,20 @@ mod tests {
         let a = engine.keyspace("a").unwrap();
         let b = engine.keyspace("b").unwrap();
 
-        // 1. read-your-writes con la ventana abierta
+        // Nota: el tick del flusher puede cerrar la ventana por edad (2 ms)
+        // en cualquier momento en una máquina lenta, así que este test
+        // afirma RESULTADOS (lo escrito se lee) y cotas (nunca hay
+        // WINDOW_MAX_OPS operaciones pendientes), no que la ventana siga
+        // abierta justo después de escribir.
+
+        // 1. read-your-writes (con o sin ventana abierta, el valor se ve)
         a.insert(b"k", b"v1").unwrap();
-        assert!(window_open(&engine));
         assert_eq!(a.get(b"k").unwrap().as_deref(), Some(&b"v1"[..]));
         assert!(a.contains_key(b"k").unwrap());
 
         // 2. borrado pendiente tapa el valor commiteado; rmw ve lo pendiente
         engine.flush().unwrap(); // v1 commiteado
         a.remove(b"k").unwrap();
-        assert!(window_open(&engine));
         assert_eq!(a.get(b"k").unwrap(), None, "el borrado pendiente se ve");
         a.insert(b"k", b"v2").unwrap();
         a.rmw(b"k", &mut |old| {
@@ -1062,21 +1071,25 @@ mod tests {
         assert_eq!(b.get(b"x").unwrap().as_deref(), Some(&b"y"[..]));
 
         // 4. un scan cierra la ventana y devuelve lo pendiente
-        assert!(window_open(&engine));
         let keys: Vec<Vec<u8>> = a.iter().map(|r| r.unwrap().0).collect();
         assert_eq!(keys, vec![b"k".to_vec()]);
         assert!(!window_open(&engine), "el scan commiteó la ventana");
         assert_eq!(a.get(b"k").unwrap().as_deref(), Some(&b"v3"[..]));
 
-        // 5. tope de operaciones: tras WINDOW_MAX_OPS escrituras la ventana
-        //    se cerró sola (y las claves están, ventana nueva o no)
+        // 5. tope de operaciones: nunca quedan WINDOW_MAX_OPS pendientes
+        //    (la op que llega al tope commitea; el flusher puede haber
+        //    cerrado antes por edad, y entonces la ventana nueva trae menos)
         for i in 0..WINDOW_MAX_OPS {
             a.insert(&(i as u32).to_be_bytes(), b"n").unwrap();
+            assert!(
+                pending_ops(&engine).is_none_or(|n| n < WINDOW_MAX_OPS),
+                "la ventana acumuló {:?} ops, el tope es {WINDOW_MAX_OPS}",
+                pending_ops(&engine)
+            );
         }
-        assert!(!window_open(&engine), "la op número WINDOW_MAX_OPS commitea");
         a.insert(b"one-more", b"n").unwrap();
-        assert!(window_open(&engine));
         assert_eq!(a.get(&0u32.to_be_bytes()).unwrap().as_deref(), Some(&b"n"[..]));
+        assert_eq!(a.get(b"one-more").unwrap().as_deref(), Some(&b"n"[..]));
 
         // 6. tope de edad: el tick del flusher cierra una ventana sola
         let deadline = Instant::now() + Duration::from_secs(2);
