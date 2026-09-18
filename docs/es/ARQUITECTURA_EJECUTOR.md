@@ -344,7 +344,7 @@ cargo test --test streaming_executor
 
 ## Parte 4 — Storage Pluggable y Perfil Mobile (Opcional)
 
-NopalDB mantiene su identidad de base **embebida**: el backend por defecto sigue siendo `sled`.
+NopalDB mantiene su identidad de base **embebida**: el backend por defecto es `redb` desde 0.6.0 (`sled` se conserva como motor opcional para abrir y migrar bases anteriores).
 
 Cambios estructurales relevantes:
 

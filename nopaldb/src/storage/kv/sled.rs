@@ -146,12 +146,12 @@ impl SledEngine {
         // base redb, abrir con sled crearía una base sled vacía al lado y
         // "desaparecerían" los datos. Ningún lock del OS protege el cruce
         // (cada motor lockea archivos distintos).
-        #[cfg(feature = "storage-redb")]
-        if super::redb::sled_dir_has_redb(path) && !path.join("conf").exists() {
+        if super::detect_engine(path) == Some(crate::storage::backend::StorageEngine::Redb) {
             return Err(StorageError::new(
                 StorageErrorKind::InvalidData,
                 format!(
-                    "el directorio {} contiene una base redb; ábrela con engine=redb o migra los datos",
+                    "el directorio {} contiene una base redb; ábrela con engine=redb (o deja el motor en \
+                     Auto, que la detecta) o mígrala con `Storage::copy_database` / `Graph.migrate`",
                     path.display()
                 ),
             )

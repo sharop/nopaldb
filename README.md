@@ -32,7 +32,7 @@ This repository contains the **engine** (Rust library + Python wrapper), license
 
 #### Core Database
 - ✅ **Property Graph Model** - Nodes, edges, and properties
-- ✅ **Persistent Storage** - Sled-based backend
+- ✅ **Persistent Storage** - redb backend (sled kept to open and migrate 0.5.x databases, see [docs/MIGRATION_0.6.md](docs/MIGRATION_0.6.md))
 - ✅ **ACID Transactions** - Full transaction support
 - ✅ **MVCC** - Multi-Version Concurrency Control with snapshot isolation
 - ✅ **Isolation Levels** - `ReadCommitted` (default), `RepeatableRead`, `Serializable` with per-node locking and deadlock detection, via the `full-isolation` feature ([guide](docs/ISOLATION_LEVELS.md), [deadlock detection](docs/DEADLOCK_DETECTION.md))
@@ -352,7 +352,7 @@ Integrates with:
 │    (MVCC + ACID + WAL)              │
 ├─────────────────────────────────────┤
 │       Storage Engine                │
-│    (Sled + Indices)                 │
+│    (redb + Indices)                 │
 └─────────────────────────────────────┘
         ↕                    ↕
    Persistent            Apache Arrow
@@ -432,7 +432,7 @@ Built with:
 - 🦀 **Rust** - Systems programming language
 - 🐍 **Python** - ML/Data science integration
 - 🏹 **Apache Arrow** - Columnar data format
-- 🗄️ **Sled** - Embedded database
+- 🗄️ **redb** - Embedded database (sled optional for 0.5.x databases)
 - ⚡ **Tokio** - Async runtime
 
 ---
@@ -461,7 +461,7 @@ Este repositorio contiene el **motor** (librería Rust + wrapper Python), con li
 
 #### Base de Datos Principal
 - ✅ **Modelo de Grafo de Propiedades** - Nodos, aristas y propiedades
-- ✅ **Almacenamiento Persistente** - Backend basado en Sled
+- ✅ **Almacenamiento Persistente** - Backend redb (sled se conserva para abrir y migrar bases de 0.5.x, ver [docs/es/MIGRACION_0.6.md](docs/es/MIGRACION_0.6.md))
 - ✅ **Transacciones ACID** - Soporte completo de transacciones
 - ✅ **MVCC** - Control de Concurrencia Multi-Versión con aislamiento snapshot
 - ✅ **Niveles de Aislamiento** - `ReadCommitted` (default), `RepeatableRead`, `Serializable` con locking por nodo y detección de deadlocks, vía la feature `full-isolation` ([guía](docs/ISOLATION_LEVELS.md), [detección de deadlocks](docs/DEADLOCK_DETECTION.md))

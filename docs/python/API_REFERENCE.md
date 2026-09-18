@@ -31,12 +31,12 @@ graph = nopaldb.Graph.open("data/my_graph.db")
 
 ---
 
-##### `Graph.open_with_options(path: str, engine: str = "sled", profile: str = "default") -> Graph`
+##### `Graph.open_with_options(path: str, engine: str = "auto", profile: str = "default") -> Graph`
 
 Open a database with an explicit storage backend and tuning profile.
 
 ```python
-graph = nopaldb.Graph.open_with_options("data/my_graph.db", engine="sled", profile="default")
+graph = nopaldb.Graph.open_with_options("data/my_graph.db", engine="redb", profile="default")
 ```
 
 **Parameters:**
@@ -44,35 +44,51 @@ graph = nopaldb.Graph.open_with_options("data/my_graph.db", engine="sled", profi
 - `engine` (str): storage backend — see the table below
 - `profile` (str): `"default"` | `"mobile"` | `"server"`
 
-**Backends and availability:**
+**Backends and availability (0.6.0):**
 
-| `engine` | In the PyPI wheel? | Status |
+| `engine` | In the PyPI wheel? | Meaning |
 |---|---|---|
-| `"sled"` | yes — the only one | supported; what `Graph.open` uses |
-| `"redb"` | **no** | experimental; requires building from source |
+| `"auto"` (default) | — | the engine of the database already at `path`; redb for a new directory. What `Graph.open` uses |
+| `"redb"` | yes | the default engine since 0.6.0 |
+| `"sled"` | yes | the 0.5.x engine; kept to open and migrate existing databases (at least through 0.7) |
 
-Asking for a backend this build does not contain raises `ValueError` at the
-call, naming what is available:
-
-```python
->>> nopaldb.Graph.open_with_options("data/g.db", engine="redb")
-ValueError: engine 'redb' is not available in this build. The wheels published
-on PyPI ship the sled backend only; redb is experimental and must be built from
-source with `--features storage-redb`. This build supports: 'sled'.
-```
-
-To evaluate redb, build the wheel yourself — and treat it as an experiment, not
-a supported configuration:
-
-```bash
-maturin build --release --features python-full,storage-redb -m nopaldb/Cargo.toml
-```
+A database created with 0.5.x opens unchanged: `"auto"` sees the sled files
+and uses sled (a warning suggests migrating). Asking explicitly for the other
+engine on an existing database raises an error that says how to migrate;
+asking for a backend this build does not contain raises `ValueError` naming
+what is available. `graph.storage_engine()` returns `"redb"` or `"sled"`.
 
 **Returns:** Graph instance
 
 ---
 
-##### `Graph.in_memory_with_options(engine: str = "sled", profile: str = "default") -> Graph`
+##### `Graph.migrate(src: str, dst: str, src_engine: str = "auto", dst_engine: str = "auto", profile: str = "default") -> dict`
+
+Copy a **closed** database directory to another engine, byte for byte, and
+verify the copy (counts and checksums per keyspace, re-scanned on the
+destination). Time-travel, indexes, embeddings and clocks survive intact.
+
+```python
+report = nopaldb.Graph.migrate("data/old_sled.db", "data/new_redb.db")
+assert report["verified"]
+graph = nopaldb.Graph.open("data/new_redb.db")   # storage_engine() == "redb"
+```
+
+Preconditions: no open `Graph` on either directory; the source was opened and
+closed at least once with NopalDB (its WAL is applied); the destination is
+empty or absent. A failed verification raises and the destination must not be
+used. Returns `{"keyspaces": [{"name", "pairs", "bytes"}, ...], "verified": bool}`.
+See [MIGRATION_0.6.md](../MIGRATION_0.6.md).
+
+---
+
+##### `Graph.storage_engine() -> str`
+
+`"redb"` or `"sled"`: the engine this handle actually opened.
+
+---
+
+##### `Graph.in_memory_with_options(engine: str = "auto", profile: str = "default") -> Graph`
 
 Same options as `open_with_options`, without persistence.
 

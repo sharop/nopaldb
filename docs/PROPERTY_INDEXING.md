@@ -14,7 +14,7 @@ post-verificación de transacciones y el filtro del hybrid search.
 
 ## Formato v2 (0.4.36+)
 
-Las entradas viven en un árbol sled propio (`prop_idx_v2`), separado del
+Las entradas viven en un keyspace propio del motor (`prop_idx_v2`), separado del
 tree default. La clave la produce una única función
 (`encode_property_index_key`, `src/storage/mod.rs`):
 

@@ -21,7 +21,7 @@
 │                                  src/index/              │
 │                                  src/embeddings/         │
 ├──────────────────────────────────────────────────────────┤
-│  Storage (Sled)                  src/storage/            │
+│  Storage (redb; sled optional)   src/storage/            │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -84,7 +84,8 @@ Abstraccion KV sobre el backend embebido publico:
 
 | Backend | Feature | Uso recomendado |
 |---------|---------|-----------------|
-| Sled | `storage-sled` (default) | desarrollo y despliegues embebidos |
+| redb | `storage-redb` (default desde 0.6.0) | desarrollo y despliegues embebidos |
+| Sled | `storage-sled` (opcional) | abrir y migrar bases creadas con 0.5.x; ver [MIGRATION_0.6.md](MIGRATION_0.6.md) |
 
 El storage expone `insert`, `get`, `delete` y operaciones de scan sobre tres namespaces: nodos, aristas y versiones MVCC.
 
@@ -261,7 +262,7 @@ Ver `docs/FEATURE_TIERS.md` para los comandos de compilacion por feature tier.
 ## Feature tiers
 
 ```
-default (storage-sled)
+default (storage-redb)
   └─ core (+ analytics + ml + algorithms + hypergraph + embeddings)
        └─ semantic (+ reasoner + owl-import + shacl)
             └─ full (conjunto publico completo)

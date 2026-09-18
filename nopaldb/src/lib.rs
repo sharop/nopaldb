@@ -39,7 +39,7 @@
 //!
 //! | Tier | What you get |
 //! |------|--------------|
-//! | *default* | Property graph + NQL + MVCC + WAL (sled storage) |
+//! | *default* | Property graph + NQL + MVCC + WAL (redb storage; `storage-sled` opens and migrates 0.5.x databases) |
 //! | `core` | + Arrow/Parquet export, graph algorithms, embeddings + HNSW, full-text search, ML helpers |
 //! | `semantic` | + OWL-EL reasoner, Turtle import/export, SHACL validation |
 //! | `full` | + `full-isolation`: isolation levels, per-node lock manager, deadlock detection |
@@ -61,7 +61,7 @@
 // accionable. (Cuando exista más de un backend, esto pasa a `not(any(...))`.)
 #[cfg(not(any(feature = "storage-sled", feature = "storage-redb")))]
 compile_error!(
-    "NopalDB requires a storage backend: enable `storage-sled` (default) or `storage-redb`."
+    "NopalDB requires a storage backend: enable `storage-redb` (default) or `storage-sled`."
 );
 
 pub mod error;

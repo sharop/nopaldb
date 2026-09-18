@@ -183,6 +183,17 @@ pub(crate) fn copy_database_dirs(
     dst_dir: &Path,
     dst_opts: StorageOptions,
 ) -> Result<MigrationReport> {
+    // `Auto` en el origen exige que haya una base que detectar: migrar
+    // "nada" a un destino nuevo sería crear dos bases vacías sin avisar.
+    if src_opts.engine == crate::storage::backend::StorageEngine::Auto
+        && super::detect_engine(src_dir).is_none()
+    {
+        return Err(StorageError::new(
+            StorageErrorKind::InvalidData,
+            format!("no hay una base NopalDB en {} (ni sled ni redb)", src_dir.display()),
+        )
+        .into());
+    }
     let src = super::open_engine(src_dir, src_opts.profile, &src_opts)?;
     let dst = super::open_engine(dst_dir, dst_opts.profile, &dst_opts)?;
     let report = copy_between_engines(src.as_ref(), dst.as_ref())?;

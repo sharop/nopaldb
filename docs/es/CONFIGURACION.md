@@ -8,7 +8,7 @@ Actualmente, NopalDB está diseñado para ofrecer una experiencia **"zero-config
 
 Cuando inicializas un grafo con `Graph.open("ruta")`, se aplica automáticamente la siguiente configuración:
 
-### 💾 Motor de Almacenamiento (Sled)
+### 💾 Motor de Almacenamiento (redb por defecto; sled opcional)
 - **Backend**: Árbol LSM (Hybrid Log-Structured Merge Tree).
 - **Caché**: Gestión automática de caché de páginas. Sin límite manual configurado por ahora.
 - **Compresión**: habilitada por defecto (Zstd/Snappy según la compilación).

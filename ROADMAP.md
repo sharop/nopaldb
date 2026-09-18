@@ -16,16 +16,16 @@ that shape.
 
 ### 1. Storage hardening: switching the default engine
 
-Two storage engines ship today: sled (default) and redb (experimental, behind
-`storage-redb`), with verified migration between them. The plan is to make redb
-the default in the next minor release, keeping sled available as a
-read/migration engine for at least two minors afterwards so nobody is forced
-to migrate on upgrade.
-
-The switch is gated on evidence, not on a date: a multi-week nightly soak on
-redb without incidents, a verified round trip of a large database, and no
-performance regression on the benchmark set. Until the gate passes, redb stays
-opt-in and the prebuilt Python wheels keep shipping sled only.
+Done in 0.6.0: redb is the default engine and sled stays available behind
+`storage-sled` as a read/migration engine for at least 0.6 and 0.7, so nobody
+is forced to migrate on upgrade — an existing sled database opens as before
+(`StorageEngine::Auto` detects it) and `Graph.migrate` / `copy_database`
+convert it with verification. The switch was gated on evidence: four weeks of
+nightly crash harness on redb without incidents, a verified round trip of a
+million-pair database, and the benchmark set at or above sled (reads,
+transactional commits, bulk ingest, GC), with the two remaining trade-offs
+measured and documented in [DURABILITY.md](docs/DURABILITY.md). The prebuilt
+Python wheels ship both engines. Migration guide: [MIGRATION_0.6.md](docs/MIGRATION_0.6.md).
 
 ### 2. Semantic cycle: a faithful Turtle bridge, then declarative SHACL
 
@@ -113,16 +113,16 @@ MVCC y su propio lenguaje de consulta (NQL). Todo lo de abajo sirve a esa forma.
 
 ### 1. Endurecimiento del storage: cambio del motor por defecto
 
-Hoy se distribuyen dos motores: sled (por defecto) y redb (experimental, tras
-`storage-redb`), con migración verificada entre ambos. El plan es hacer de redb
-el default en el siguiente minor, manteniendo sled como motor de
-lectura/migración al menos dos minors más para que nadie se vea forzado a
-migrar al actualizar.
-
-El cambio se decide con evidencia, no con fecha: un soak nightly de varias
-semanas sobre redb sin incidentes, un round trip verificado de una base grande
-y cero regresión en el set de benchmarks. Hasta que el gate pase, redb sigue
-siendo opt-in y las wheels de Python traen solo sled.
+Hecho en 0.6.0: redb es el motor por defecto y sled sigue disponible tras
+`storage-sled` como motor de lectura/migración al menos en 0.6 y 0.7, para que
+nadie se vea forzado a migrar al actualizar: una base sled existente abre como
+antes (`StorageEngine::Auto` la detecta) y `Graph.migrate` / `copy_database`
+la convierten con verificación. El cambio se decidió con evidencia: cuatro
+semanas de harness de crash nightly sobre redb sin incidentes, un round trip
+verificado de una base de un millón de pares y el set de benchmarks igual o
+mejor que sled (lecturas, commits transaccionales, ingesta, GC), con los dos
+trade-offs restantes medidos y documentados en [DURABILITY.md](docs/DURABILITY.md).
+Las wheels de Python traen ambos motores. Guía: [MIGRACION_0.6.md](docs/es/MIGRACION_0.6.md).
 
 ### 2. Ciclo semántico: puente Turtle fiel y luego SHACL declarativo
 

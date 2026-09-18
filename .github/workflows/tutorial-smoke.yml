@@ -20,7 +20,8 @@ permissions:
 
 jobs:
   # Compila las combinaciones de features que el smoke de tutoriales no cubre.
-  # El build default (sled, sin algorithms) se rompió en el pasado sin que CI lo viera.
+  # El build default (un motor, sin algorithms) se rompió en el pasado sin que
+  # CI lo viera; desde 0.6.0 el default es redb y sled es el motor opcional.
   feature-matrix-check:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -31,8 +32,11 @@ jobs:
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      - name: Check default features
+      - name: Check default features (redb)
         run: cargo check -p nopaldb
+
+      - name: Check sled as the only backend
+        run: cargo check -p nopaldb --no-default-features --features storage-sled
 
   tutorial-smoke:
     runs-on: ubuntu-latest
