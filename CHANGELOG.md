@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.2] - unreleased
+
+### Added
+
+- **Binario `nopaldb`** (feature `cli`, con ambos motores; `cargo install nopaldb --features cli`) — cierra [#140](https://github.com/sharop/nopaldb/issues/140). `nopaldb migrate <src> <dst> [--from auto|sled|redb] [--to auto|sled|redb] [--profile …]` copia una base a otro motor con verificación e imprime una línea por keyspace y el veredicto; códigos de salida 0/1/2 (verificado / uso / falló). `nopaldb engine <dir>` dice qué motor tiene una base. Sin dependencias nuevas: los argumentos se parsean a mano. La misma implementación vive en el módulo público `nopaldb::migrate` (`migrate`, `render_report`, `parse_engine`, `parse_profile`), que también usa el ejemplo `migrate_engine`. `Storage::detect_engine(dir)` pasa a ser público.
+
 ## [0.6.1] - 2026-09-18
 
 ### Fixed

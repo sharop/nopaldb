@@ -38,6 +38,9 @@ jobs:
       - name: Check sled as the only backend
         run: cargo check -p nopaldb --no-default-features --features storage-sled
 
+      - name: Check the CLI binary
+        run: cargo check -p nopaldb --features cli --bins
+
   tutorial-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 45

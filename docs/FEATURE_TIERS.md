@@ -125,6 +125,7 @@ cargo clippy -p nopaldb --features full -- -D warnings
 |---------|--------------|
 | `storage-redb` | `redb` — default backend since 0.6.0 |
 | `storage-sled` | `sled` — optional since 0.6.0: opens and migrates 0.5.x databases; available at least through 0.7. The PyPI wheels ship both |
+| `cli` | both engines — builds the `nopaldb` binary (`nopaldb migrate`, `nopaldb engine`); `cargo install nopaldb --features cli` |
 | `analytics` | `arrow`, `parquet` |
 | `ml` | `analytics` |
 | `algorithms` | none |
