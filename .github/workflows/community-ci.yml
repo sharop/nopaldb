@@ -95,6 +95,9 @@ jobs:
       - name: Full lib suite with sled as only backend
         run: cargo test -p nopaldb --no-default-features --features storage-sled --lib
 
+      - name: CLI `nopaldb migrate` / `nopaldb engine` (binary run end to end)
+        run: cargo test -p nopaldb --features cli --test cli_migrate_test
+
       - name: Engine autodetection + cross-engine migration (copy_database round-trip, checksum-verified)
         run: cargo test -p nopaldb --features core,storage-sled --test engine_autodetect_test --test kv_migrate_test --test open_lock_same_process_test --test hnsw_persistence_test
 

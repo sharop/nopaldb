@@ -74,6 +74,7 @@ pub mod traversal;
 pub mod planner;
 
 pub mod wal;
+pub mod migrate;
 pub mod schema;
 pub mod index;
 #[cfg(feature = "algorithms")]

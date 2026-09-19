@@ -84,12 +84,23 @@ assert!(report.verified);
 
 ### Línea de comandos
 
+El binario `nopaldb` (feature `cli`, con ambos motores) envuelve la misma
+función:
+
+```bash
+cargo install nopaldb --features cli
+nopaldb engine data/plantas.db                       # sled | redb | ninguno
+nopaldb migrate data/plantas.db data/plantas_redb.db  # --from auto --to redb por defecto
+```
+
+Imprime una línea por keyspace (pares y bytes), los totales y el resultado
+de la verificación. Códigos de salida: 0 verificado; 1 uso o argumentos
+inválidos; 2 la copia falló o el destino no estaba vacío. Sin instalar nada,
+el ejemplo del repositorio hace lo mismo:
+
 ```bash
 cargo run --example migrate_engine --features storage-sled -- data/plantas.db auto data/plantas_redb.db redb
 ```
-
-El ejemplo imprime una línea por keyspace (pares y bytes) y el resultado de la
-verificación.
 
 ### Volver atrás
 
