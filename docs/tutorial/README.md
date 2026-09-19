@@ -101,4 +101,4 @@ Si un día los resultados divergen → algo se rompió en el camino (cambio de A
 
 ## Versión validada
 
-Actos 1-4 probados contra **NopalDB v0.4.27**. Si tu versión es distinta, algunas queries pueden requerir ajustes; revisa el changelog del repo.
+Los cuatro actos se ejecutan en CI en cada push (`Tutorial Smoke`), así que están validados contra la versión del repositorio en `main`. Si usas una release anterior, revisa el CHANGELOG por cambios de sintaxis.

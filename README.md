@@ -600,7 +600,7 @@ Ver **[Guía de Feature Tiers](docs/FEATURE_TIERS.md)** para opciones de compila
 - **[NQL Tutorial (English)](docs/en/NQL_TUTORIAL.md)** - Learn step-by-step
 
 #### Documentación API
-- **[Índice de Documentación (Español)](docs/es/README.md)** - Guía central de docs y runbooks
+- **[Índice de Documentación](docs/README.md)** - Guía central de docs (bilingüe)
 - **[Guía de Adopción](docs/ADOPTION.md)** - La ruta rápida para Rust y Python, con pointers a las apps MCP y Studio
 - **[Roadmap](ROADMAP.md)** - Dirección por temas, y qué queda explícitamente fuera del alcance
 - **[Guía API Python](python/README.md)** - Bindings Python
