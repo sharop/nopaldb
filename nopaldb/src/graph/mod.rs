@@ -3841,6 +3841,21 @@ impl Graph {
         self.deny_if_read_only("drop_index")?;
         self.index_manager.drop_index(index_name).await
     }
+    /// Reconstruye los índices de usuario desde `<dir>/indexes/metadata.bin`
+    /// y los nodos actuales, exactamente como lo hace `Graph::open`. Devuelve
+    /// cuántos índices quedaron cargados.
+    ///
+    /// Para quien copia una base con herramientas propias (no con
+    /// `Storage::copy_database`, que ya lleva el catálogo, #152): tras poner
+    /// `indexes/` en su sitio, esto los levanta sin cerrar y reabrir. Si el
+    /// catálogo no existe no hay nada que reconstruir y devuelve 0: los
+    /// índices se declaran con `create_index`, no se infieren.
+    pub async fn rebuild_indexes(&self) -> Result<usize> {
+        self.deny_if_read_only("rebuild_indexes")?;
+        self.index_manager.load_indices(&self.storage).await?;
+        Ok(self.index_manager.list_indexes().await.len())
+    }
+
     /// List all indexes
     pub async fn list_indexes(&self) -> Vec<crate::index::IndexMetadata> {
         self.index_manager.list_indexes().await

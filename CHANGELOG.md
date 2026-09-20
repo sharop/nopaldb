@@ -42,7 +42,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fila del mismo lote resuelve a su nodo (o al stub que se creó, que la fila
   rellena después). Firmas sin cambio.
 
+- **La migración entre motores lleva los índices de usuario y el HNSW**
+  (#152). `Storage::copy_database` (y con ella `nopaldb migrate`, el ejemplo y
+  `Graph.migrate` en Python) copiaba los 12 keyspaces KV, pero los índices
+  hash/btree/full-text/taxonomy viven en `<dir>/indexes/` (catálogo
+  `metadata.bin` y, los full-text, sus segmentos y `analyzer.json`) y el dump
+  HNSW en `<dir>/hnsw/`: el destino abría sin índices, sin el analizador
+  configurado y con `verified=true`. Ahora los dos directorios se copian
+  archivo por archivo, verificados por tamaño y checksum, y `docs/MIGRATION_0.6.md`
+  deja de afirmar que "los índices sobreviven" sin más.
+
 ### Added
+- `MigrationReport` con tres secciones: `keyspaces`/`verified` (datos),
+  `indexes` (cada índice de usuario con tipo y analizador) y `sidecars` +
+  `hnsw_copied` (si no había dump, el destino reconstruye el HNSW desde
+  `embeddings` en la primera búsqueda). `render_report`, el CLI y el `dict`
+  de `Graph.migrate` los muestran. Añadir campos a `MigrationReport` rompe a
+  quien lo construyera a mano; nadie fuera del crate debería.
+- `Graph::rebuild_indexes()` / `Graph.rebuild_indexes()` (Python): reconstruye
+  los índices desde el catálogo como hace `open`, para quien copia bases con
+  herramientas propias.
+- Matriz de compatibilidad (versión ↔ formato en disco ↔ apertura directa o
+  migración ↔ vuelta atrás) en `docs/MIGRATION_0.6.md`.
 - Bench `upsert_batch` en `graph_ops` (1 000 filas nuevas sobre una base de 1k
   y de 8k) y suite `upsert_batch_test` con la regresión de complejidad.
 

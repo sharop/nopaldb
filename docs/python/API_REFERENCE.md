@@ -66,7 +66,9 @@ what is available. `graph.storage_engine()` returns `"redb"` or `"sled"`.
 
 Copy a **closed** database directory to another engine, byte for byte, and
 verify the copy (counts and checksums per keyspace, re-scanned on the
-destination). Time-travel, indexes, embeddings and clocks survive intact.
+destination; size and checksum per file for `indexes/` and `hnsw/`).
+Time-travel, embeddings, clocks, user indexes with their analyzers and the
+HNSW dump travel with it (indexes and HNSW since 0.6.3).
 
 ```python
 report = nopaldb.Graph.migrate("data/old_sled.db", "data/new_redb.db")
@@ -77,8 +79,30 @@ graph = nopaldb.Graph.open("data/new_redb.db")   # storage_engine() == "redb"
 Preconditions: no open `Graph` on either directory; the source was opened and
 closed at least once with NopalDB (its WAL is applied); the destination is
 empty or absent. A failed verification raises and the destination must not be
-used. Returns `{"keyspaces": [{"name", "pairs", "bytes"}, ...], "verified": bool}`.
-See [MIGRATION_0.6.md](../MIGRATION_0.6.md).
+used. Returns a dict with three sections:
+
+```python
+{
+  "keyspaces": [{"name": str, "pairs": int, "bytes": int}, ...],
+  "verified": bool,                       # KV counts/checksums and sidecar files match
+  "indexes": [{"name": str, "label": str, "property": str,
+               "type": "Hash" | "BTree" | "FullText" | "Taxonomy",
+               "analyzer": str | None}],  # user indexes that travelled
+  "sidecars": [{"dir": "indexes" | "hnsw", "files": int, "bytes": int}],
+  "hnsw_copied": bool,                    # False: no dump in the source; rebuilt on first search
+}
+```
+
+See [MIGRATION_0.6.md](../MIGRATION_0.6.md) for what travels and what is rebuilt.
+
+##### `Graph.rebuild_indexes() -> int`
+
+Rebuild the user indexes from `<dir>/indexes/metadata.bin` and the current
+nodes, exactly as `Graph.open` does, and return how many are loaded. For
+databases copied with your own tools (`Graph.migrate` already carries the
+catalog): put `indexes/` in place, then call this instead of reopening.
+Returns 0 when there is no catalog: indexes are declared with `create_index`,
+never inferred.
 
 ---
 

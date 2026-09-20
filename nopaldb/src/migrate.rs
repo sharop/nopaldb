@@ -76,5 +76,27 @@ pub fn render_report(report: &MigrationReport) -> String {
     } else {
         "Verificación: FALLÓ — no uses el destino\n"
     });
+
+    out.push_str("\nÍndices de usuario:");
+    if report.indexes.is_empty() {
+        out.push_str(" ninguno declarado en el origen\n");
+    } else {
+        out.push('\n');
+        for ix in &report.indexes {
+            out.push_str(&format!("  {:<28} {:<9} {}.{}", ix.name, ix.kind, ix.label, ix.property));
+            if let Some(a) = &ix.analyzer {
+                out.push_str(&format!("  analizador: {a}"));
+            }
+            out.push('\n');
+        }
+    }
+    for sc in &report.sidecars {
+        out.push_str(&format!("  copiado `{}/`: {} archivos, {} bytes, verificados\n", sc.dir, sc.files, sc.bytes));
+    }
+    out.push_str(if report.hnsw_copied {
+        "Índice HNSW: copiado (el destino lo carga de disco en la primera búsqueda)\n"
+    } else {
+        "Índice HNSW: sin dump en el origen; el destino lo reconstruye desde `embeddings` en la primera búsqueda\n"
+    });
     out
 }
