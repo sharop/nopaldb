@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.3] - unreleased
+## [0.6.3] - 2026-09-20
 
 ### Fixed
 - **`upsert` ya no recorre toda la base por fila** (#151). La búsqueda de
