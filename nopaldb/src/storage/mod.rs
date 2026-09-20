@@ -205,6 +205,15 @@ const TAG_STRING: u8 = 0x04;
 
 /// Clave v2 para `(property, value)`, o `None` si la variante no se indexa
 /// (Bytes/List/Object — decisión F2 conservada) o el nombre excede u16.
+/// `true` si `prop_idx_v2` indexa valores de este tipo (todo salvo `Bytes`,
+/// `List` y `Object`, que `encode_property_index_key` no codifica).
+pub(crate) fn property_value_is_indexable(value: &PropertyValue) -> bool {
+    !matches!(
+        value,
+        PropertyValue::Bytes(_) | PropertyValue::List(_) | PropertyValue::Object(_)
+    )
+}
+
 pub(crate) fn encode_property_index_key(property: &str, value: &PropertyValue) -> Option<Vec<u8>> {
     let prop_bytes = property.as_bytes();
     let prop_len = u16::try_from(prop_bytes.len()).ok()?;

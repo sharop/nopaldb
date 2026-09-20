@@ -46,8 +46,15 @@ index (rebuilt on demand).
   unique index is the structural fix (tracked follow-up).
 - **Links are additive** — v1 adds missing edges but does not delete edges that
   are no longer in `links` (tracked follow-up).
-- **Batch** currently loops `upsert_node`; a batched fast path (one tx per batch,
-  HNSW batch build) is a tracked follow-up.
+- **Batch** runs one transaction (one WAL fsync) per chunk of `UPSERT_TX_ROWS`
+  (1 024) rows. A chunk is atomic: if one row fails, nothing of that chunk is
+  written and the error is returned; earlier chunks stay committed. Inside a
+  batch a repeated key updates the row created earlier (never a duplicate), and
+  a link to another row of the batch resolves to that row's node.
+- **Cost per row is independent of the graph size** since 0.6.3: identity is
+  resolved through the property index (`prop_idx_v2`, fed on every write path,
+  the bulk loader included). Keys of type bytes/list/object are not indexable
+  and fall back to a scan; use strings or integers as business keys.
 
 ## See also
 

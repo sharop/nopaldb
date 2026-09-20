@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.3] - unreleased
+
+### Fixed
+- **`upsert` ya no recorre toda la base por fila** (#151). La búsqueda de
+  identidad `(label, key, value)` deserializaba TODOS los nodos de la base en
+  cada upsert (no solo los del label), así que una ingesta incremental era
+  cuadrática: 5.8 ms/fila con 1k nodos, 11.8 con 8k, ~160 con 100k. Ahora
+  resuelve por el índice de propiedades `prop_idx_v2` (O(coincidencias); las
+  claves `Bytes`/`List`/`Object`, que el índice no codifica, conservan el
+  recorrido). Aplica a `upsert_node`, `upsert_batch`, `delete_node_by_key`, a
+  los targets de `links` y a la validación de fantasmas de
+  `get_nodes_by_label_and_property` en `RepeatableRead`/`Serializable`.
+- **El bulk loader alimenta los índices.** `add_nodes_batch` (y con él
+  `BulkLoader`) escribía los nodos sin entradas en `prop_idx_v2` ni en los
+  índices de usuario: eran invisibles para `find_nodes_by_property`, para el
+  planner y, con el cambio anterior, para `upsert`, que habría duplicado cada
+  nodo cargado en bulk. Ahora indexa como cualquier escritura. Coste medido
+  (redb, 1k nodos de 2 propiedades): `bulk_load/1k_nodes_open_db` 7.3 → 11.8 ms,
+  `fresh_db` 48 → 54 ms; unos 4.5 µs por nodo que compran índices que dicen la
+  verdad.
+
+### Performance
+- `upsert_batch` de 1 000 filas nuevas: **21.7 ms** (21.7 µs/fila) tanto con
+  1k como con 8k nodos en la base, frente a 5.8 s y 11.8 s antes (5.8 y 11.8
+  ms/fila): 270–540×, y plano respecto al tamaño de la base.
+
+### Changed
+- **`upsert_batch` / `upsert_many`: una transacción por bloque de
+  `UPSERT_TX_ROWS` (1 024) filas** en vez de una por fila: un fsync por bloque.
+  Un bloque es atómico (si una fila falla no se escribe ninguna de su bloque;
+  los bloques anteriores quedan). Una clave repetida dentro de un lote actualiza
+  el nodo creado por la fila anterior en vez de duplicarlo, y un `link` a una
+  fila del mismo lote resuelve a su nodo (o al stub que se creó, que la fila
+  rellena después). Firmas sin cambio.
+
+### Added
+- Bench `upsert_batch` en `graph_ops` (1 000 filas nuevas sobre una base de 1k
+  y de 8k) y suite `upsert_batch_test` con la regresión de complejidad.
+
+---
+
 ## [0.6.2] - 2026-09-19
 
 ### Added

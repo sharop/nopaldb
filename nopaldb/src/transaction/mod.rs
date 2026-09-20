@@ -1241,17 +1241,41 @@ impl Transaction {
         Ok(pairs)
     }
 
+    /// Estado comprometido de los nodos con `label` y `property = value`.
+    ///
+    /// Resuelve por el índice de propiedades (`prop_idx_v2`, que se alimenta
+    /// para toda propiedad en cada camino de escritura) y filtra por label:
+    /// O(coincidencias). Hasta 0.6.2 hacía `get_nodes_by_label`, que
+    /// deserializa TODOS los nodos de la base; como `upsert_node` pasa por
+    /// aquí en cada fila, la ingesta era cuadrática (#151). Los valores que el
+    /// índice no codifica (`Bytes`, `List`, `Object`) conservan el scan: son
+    /// claves de negocio raras y la corrección va antes que el atajo.
     async fn scan_nodes_by_label_property_current(
         &self,
         label: &str,
         property: &str,
         value: &PropertyValue,
     ) -> Result<Vec<Node>> {
-        let nodes = self.graph.get_nodes_by_label(label).await?;
-        Ok(nodes
-            .into_iter()
-            .filter(|n| n.properties.get(property) == Some(value))
-            .collect())
+        if !crate::storage::property_value_is_indexable(value) {
+            let nodes = self.graph.get_nodes_by_label(label).await?;
+            return Ok(nodes
+                .into_iter()
+                .filter(|n| n.properties.get(property) == Some(value))
+                .collect());
+        }
+        let ids = self.graph.get_all_nodes_by_property(property, value).await?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            // El índice puede ir un paso por delante del nodo (borrado en
+            // vuelo): un id sin nodo se ignora, igual que hacía el filtro.
+            if let Ok(node) = self.graph.get_node(id).await
+                && node.label == label
+                && node.properties.get(property) == Some(value)
+            {
+                out.push(node);
+            }
+        }
+        Ok(out)
     }
 
     async fn scan_pattern_triples_two_hop_current(

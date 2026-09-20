@@ -1160,6 +1160,12 @@ impl PyGraph {
     /// Upsert many nodes. Each item is a dict with the same fields as `upsert`:
     /// {"label", "key", "props", "vector"?, "model"?, "links"?}.
     ///
+    /// One transaction (one fsync) per chunk of 1 024 items. A chunk is
+    /// atomic: if an item fails, nothing of its chunk is written and the error
+    /// is raised; earlier chunks stay committed. A key repeated inside the
+    /// list updates the node created by the earlier item, and a link to
+    /// another item of the list resolves to that item's node.
+    ///
     /// Returns:
     ///     list[tuple[str, str]]: (outcome, node_id) per item, in order.
     fn upsert_many(

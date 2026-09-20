@@ -7,7 +7,15 @@
 // costs zero writes.
 //
 // Design notes (see the module tests and issue M1-4):
-//   * Identity lookup uses `Transaction::get_nodes_by_label_and_property`.
+//   * Identity lookup uses `Transaction::get_nodes_by_label_and_property`,
+//     which since 0.6.3 resolves through the property index (O(matches));
+//     before that it deserialized every node of the database per row, so a
+//     batch was quadratic in the size of the graph (#151).
+//   * `upsert_batch` runs one transaction per chunk of `UPSERT_TX_ROWS` rows
+//     (one WAL fsync per chunk instead of one per row). Rows of a chunk are
+//     atomic together; rows that repeat a key inside a chunk see the earlier
+//     row's node (the same NodeId, no duplicate). Per-key locks of a chunk are
+//     taken in hash order so two concurrent batches cannot deadlock.
 //   * Update overwrites the node under its existing NodeId (re-adding the same
 //     id in a tx overwrites on commit). Retracting the entries the overwrite
 //     invalidates is the applier's job — it reads the previous node before
@@ -23,14 +31,20 @@
 //     demand), sidestepping the incremental index's no-reindex rule.
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::error::{NopalError, Result};
+use crate::transaction::Transaction;
 use crate::types::{Edge, Node, NodeId, PropertyValue};
 
 use super::Graph;
+
+/// Rows per transaction in [`Graph::upsert_batch`]. Bounds the write set held
+/// in memory and the time the per-key locks of a chunk stay taken; a caller
+/// that needs a whole batch to be atomic sends at most this many rows.
+pub const UPSERT_TX_ROWS: usize = 1024;
 
 /// What an upsert did to the target node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,130 +98,220 @@ fn key_locks() -> &'static Mutex<HashMap<u64, Arc<tokio::sync::Mutex<()>>>> {
     LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn key_lock_for(label: &str, key: &str, value: &PropertyValue) -> Arc<tokio::sync::Mutex<()>> {
+fn key_lock_id(label: &str, key: &str, value: &PropertyValue) -> u64 {
     let mut h = DefaultHasher::new();
     label.hash(&mut h);
     key.hash(&mut h);
     // PropertyValue isn't Hash; hash its debug form — stable enough for a lock key.
     format!("{value:?}").hash(&mut h);
-    let id = h.finish();
+    h.finish()
+}
+
+fn key_lock_by_id(id: u64) -> Arc<tokio::sync::Mutex<()>> {
     let mut map = key_locks().lock().unwrap();
     map.entry(id).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone()
+}
+
+fn key_lock_for(label: &str, key: &str, value: &PropertyValue) -> Arc<tokio::sync::Mutex<()>> {
+    key_lock_by_id(key_lock_id(label, key, value))
+}
+
+/// Exact identity of a business key inside one batch (no hashing: a collision
+/// here would silently merge two rows into one node).
+fn key_id(label: &str, key: &str, value: &PropertyValue) -> String {
+    format!("{label}\0{key}\0{value:?}")
+}
+
+/// What one row did inside the transaction, before commit.
+struct RowPlan {
+    outcome: UpsertOutcome,
+    node_id: NodeId,
+    /// The row added something to the tx (node, edge) — or its embedding
+    /// changed, which is written after commit.
+    wrote: bool,
+    embedding_changed: bool,
+}
+
+/// Nodes and edges this transaction has already added, so later rows of the
+/// same chunk resolve against them instead of the committed state.
+#[derive(Default)]
+struct TxState {
+    /// key id → (node, its props as written in this tx)
+    nodes: HashMap<String, (NodeId, HashMap<String, PropertyValue>)>,
+    edges: HashSet<(NodeId, String, NodeId)>,
 }
 
 impl Graph {
     /// Idempotently write the desired state of a node keyed by `(label, key)`.
     /// Returns the outcome and the node's id.
     pub async fn upsert_node(&self, req: UpsertRequest) -> Result<(UpsertOutcome, NodeId)> {
-        let key_value = req.props.get(&req.key).cloned().ok_or_else(|| {
-            NopalError::Custom(format!(
-                "upsert: key '{}' missing from props for label '{}'",
-                req.key, req.label
-            ))
-        })?;
+        let key_value = req.key_value()?;
 
         // Serialize concurrent upserts of the same business key.
         let lock = key_lock_for(&req.label, &req.key, &key_value);
         let _guard = lock.lock().await;
 
         let mut tx = self.begin_transaction().await?;
-        let existing = tx
-            .get_nodes_by_label_and_property(&req.label, &req.key, &key_value)
-            .await?;
+        let mut state = TxState::default();
+        let plan = self.upsert_in_tx(&mut tx, &req, &mut state).await?;
 
-        let (outcome, node_id) = match existing.len() {
-            0 => {
-                let node = Node::with_id(crate::types::fresh_id(), req.label.clone())
-                    .with_properties(req.props.clone());
-                let id = node.id;
-                tx.add_node(node).await?;
-                (UpsertOutcome::Created, id)
+        if !plan.wrote {
+            // Nothing to write — abort the empty transaction so an unchanged
+            // re-run costs zero WAL records.
+            tx.rollback_async().await?;
+            return Ok((UpsertOutcome::Unchanged, plan.node_id));
+        }
+        tx.commit().await?;
+        self.apply_embedding_after_commit(&req, &plan).await?;
+        Ok((plan.final_outcome(), plan.node_id))
+    }
+
+    /// Upsert many nodes: one transaction (one WAL fsync) per chunk of
+    /// [`UPSERT_TX_ROWS`] rows, results per row in input order. A chunk is
+    /// atomic: if a row fails, none of its chunk is written and the error is
+    /// returned (earlier chunks stay committed). Repeating a key inside a
+    /// batch updates the row created earlier in the batch, never duplicates it.
+    pub async fn upsert_batch(
+        &self,
+        reqs: Vec<UpsertRequest>,
+    ) -> Result<Vec<(UpsertOutcome, NodeId)>> {
+        let mut out = Vec::with_capacity(reqs.len());
+        for chunk in reqs.chunks(UPSERT_TX_ROWS) {
+            // Per-key locks of the chunk, distinct and in hash order, so two
+            // concurrent batches sharing keys cannot take them crosswise.
+            let mut ids: Vec<u64> = chunk
+                .iter()
+                .map(|r| Ok(key_lock_id(&r.label, &r.key, &r.key_value()?)))
+                .collect::<Result<_>>()?;
+            ids.sort_unstable();
+            ids.dedup();
+            let mut guards = Vec::with_capacity(ids.len());
+            for id in ids {
+                guards.push(key_lock_by_id(id).lock_owned().await);
             }
-            1 => {
-                let old = &existing[0];
-                let id = old.id;
-                let props_same = old.properties == req.props;
 
-                if props_same {
-                    (UpsertOutcome::Unchanged, id)
-                } else {
-                    let node = Node::with_id(id, req.label.clone())
+            let mut tx = self.begin_transaction().await?;
+            let mut state = TxState::default();
+            let mut plans = Vec::with_capacity(chunk.len());
+            for req in chunk {
+                plans.push(self.upsert_in_tx(&mut tx, req, &mut state).await?);
+            }
+
+            if plans.iter().any(|p| p.wrote) {
+                tx.commit().await?;
+                for (req, plan) in chunk.iter().zip(&plans) {
+                    self.apply_embedding_after_commit(req, plan).await?;
+                }
+            } else {
+                tx.rollback_async().await?;
+            }
+            out.extend(plans.iter().map(|p| (p.final_outcome(), p.node_id)));
+            drop(guards);
+        }
+        Ok(out)
+    }
+
+    /// One row of an upsert inside `tx`: resolve the identity (first against
+    /// what this tx already wrote, then against the committed state through
+    /// the property index), then add the node and its missing links.
+    async fn upsert_in_tx(
+        &self,
+        tx: &mut Transaction,
+        req: &UpsertRequest,
+        state: &mut TxState,
+    ) -> Result<RowPlan> {
+        let key_value = req.key_value()?;
+        let kid = key_id(&req.label, &req.key, &key_value);
+
+        let (outcome, node_id) = if let Some((id, props_in_tx)) = state.nodes.get(&kid) {
+            let id = *id;
+            if *props_in_tx == req.props {
+                (UpsertOutcome::Unchanged, id)
+            } else {
+                let node = Node::with_id(id, req.label.clone()).with_properties(req.props.clone());
+                tx.add_node(node).await?;
+                (UpsertOutcome::Updated, id)
+            }
+        } else {
+            let existing = tx
+                .get_nodes_by_label_and_property(&req.label, &req.key, &key_value)
+                .await?;
+            match existing.len() {
+                0 => {
+                    let node = Node::with_id(crate::types::fresh_id(), req.label.clone())
                         .with_properties(req.props.clone());
+                    let id = node.id;
                     tx.add_node(node).await?;
-                    (UpsertOutcome::Updated, id)
+                    (UpsertOutcome::Created, id)
+                }
+                1 => {
+                    let old = &existing[0];
+                    if old.properties == req.props {
+                        (UpsertOutcome::Unchanged, old.id)
+                    } else {
+                        let node = Node::with_id(old.id, req.label.clone())
+                            .with_properties(req.props.clone());
+                        tx.add_node(node).await?;
+                        (UpsertOutcome::Updated, old.id)
+                    }
+                }
+                n => {
+                    return Err(NopalError::AmbiguousUpsertKey(format!(
+                        "{n} nodes match {}.{}={:?}; deduplicate before upserting",
+                        req.label, req.key, key_value
+                    )));
                 }
             }
-            n => {
-                return Err(NopalError::AmbiguousUpsertKey(format!(
-                    "{n} nodes match {}.{}={:?}; deduplicate before upserting",
-                    req.label, req.key, key_value
-                )));
-            }
         };
+        state.nodes.insert(kid, (node_id, req.props.clone()));
 
         // Resolve and reconcile links inside the same transaction. Only missing
         // edges are added (v1 does not delete edges — follow-up M1-4c).
         let mut links_added = 0usize;
         // Existing outgoing edges of the target node (committed state). For a
-        // freshly created node this is empty.
+        // node created in this tx this is empty.
         let existing_edges = if outcome == UpsertOutcome::Created {
             Vec::new()
         } else {
             self.get_outgoing_edges(node_id).await?
         };
         for link in &req.links {
-            let target_id = self
-                .resolve_or_stub_target(&mut tx, link)
-                .await?;
+            let target_id = self.resolve_or_stub_target(tx, link, state).await?;
             let already = existing_edges
                 .iter()
-                .any(|e| e.edge_type == link.edge_type && e.target == target_id);
+                .any(|e| e.edge_type == link.edge_type && e.target == target_id)
+                || state
+                    .edges
+                    .contains(&(node_id, link.edge_type.clone(), target_id));
             if !already {
                 let mut edge = Edge::new(node_id, target_id, link.edge_type.clone());
                 edge.properties = link.props.clone();
                 tx.add_edge(edge)?;
+                state
+                    .edges
+                    .insert((node_id, link.edge_type.clone(), target_id));
                 links_added += 1;
             }
         }
 
-        // Decide whether an unchanged-props node is truly a no-op.
         let embedding_changed = self.embedding_differs(node_id, &req.embedding).await;
-        if outcome == UpsertOutcome::Unchanged && links_added == 0 && !embedding_changed {
-            // Nothing to write — abort the empty transaction so an unchanged
-            // re-run costs zero WAL records.
-            tx.rollback_async().await?;
-            return Ok((UpsertOutcome::Unchanged, node_id));
-        }
-
-        tx.commit().await?;
-
-        // Attach/refresh the embedding if provided and changed.
-        #[cfg(feature = "embeddings")]
-        if let Some((vector, model)) = &req.embedding
-            && embedding_changed
-        {
-            self.add_node_embedding(node_id, vector.clone(), model).await?;
-        }
-
-        let final_outcome = if outcome == UpsertOutcome::Unchanged {
-            UpsertOutcome::Updated // props unchanged but links/embedding changed
-        } else {
-            outcome
-        };
-        Ok((final_outcome, node_id))
+        let wrote = outcome != UpsertOutcome::Unchanged || links_added > 0 || embedding_changed;
+        Ok(RowPlan { outcome, node_id, wrote, embedding_changed })
     }
 
-    /// Upsert many nodes. v1 loops `upsert_node`; a batched fast path (one tx
-    /// per batch, HNSW batch build) is follow-up M1-4b.
-    pub async fn upsert_batch(
-        &self,
-        reqs: Vec<UpsertRequest>,
-    ) -> Result<Vec<(UpsertOutcome, NodeId)>> {
-        let mut out = Vec::with_capacity(reqs.len());
-        for req in reqs {
-            out.push(self.upsert_node(req).await?);
+    /// Attach/refresh the embedding if provided and changed. Runs after the
+    /// commit: `add_node_embedding` writes the vector and invalidates the
+    /// cached HNSW index on its own.
+    #[allow(unused_variables)]
+    async fn apply_embedding_after_commit(&self, req: &UpsertRequest, plan: &RowPlan) -> Result<()> {
+        if !plan.embedding_changed {
+            return Ok(());
         }
-        Ok(out)
+        #[cfg(feature = "embeddings")]
+        if let Some((vector, model)) = &req.embedding {
+            self.add_node_embedding(plan.node_id, vector.clone(), model).await?;
+        }
+        Ok(())
     }
 
     /// Delete the node identified by a business key `(label, key, value)` — the
@@ -245,13 +349,19 @@ impl Graph {
         Ok(Some(id))
     }
 
-    /// Resolve a link target by its business key, creating a stub node when
-    /// absent and requested.
+    /// Resolve a link target by its business key — first among the nodes this
+    /// tx already wrote (a row or stub earlier in the batch), then committed —
+    /// creating a stub node when absent and requested.
     async fn resolve_or_stub_target(
         &self,
-        tx: &mut crate::transaction::Transaction,
+        tx: &mut Transaction,
         link: &LinkSpec,
+        state: &mut TxState,
     ) -> Result<NodeId> {
+        let kid = key_id(&link.target_label, &link.target_key, &link.target_key_value);
+        if let Some((id, _)) = state.nodes.get(&kid) {
+            return Ok(*id);
+        }
         let found = tx
             .get_nodes_by_label_and_property(
                 &link.target_label,
@@ -265,7 +375,8 @@ impl Graph {
                     let stub = Node::with_id(crate::types::fresh_id(), link.target_label.clone())
                         .with_property(link.target_key.clone(), link.target_key_value.clone());
                     let id = stub.id;
-                    tx.add_node(stub).await?;
+                    tx.add_node(stub.clone()).await?;
+                    state.nodes.insert(kid, (id, stub.properties));
                     Ok(id)
                 } else {
                     Err(NopalError::NodeNotFound(format!(
@@ -296,5 +407,30 @@ impl Graph {
             }
         }
         false
+    }
+}
+
+impl UpsertRequest {
+    /// The key property's value, or the error every upsert path reports when
+    /// `props` does not carry the key.
+    fn key_value(&self) -> Result<PropertyValue> {
+        self.props.get(&self.key).cloned().ok_or_else(|| {
+            NopalError::Custom(format!(
+                "upsert: key '{}' missing from props for label '{}'",
+                self.key, self.label
+            ))
+        })
+    }
+}
+
+impl RowPlan {
+    /// `Unchanged` props with new links or a new embedding is reported as
+    /// `Updated`, like the single-row path always did.
+    fn final_outcome(&self) -> UpsertOutcome {
+        if self.outcome == UpsertOutcome::Unchanged && self.wrote {
+            UpsertOutcome::Updated
+        } else {
+            self.outcome
+        }
     }
 }

@@ -6,7 +6,7 @@ pub mod upsert;
 pub mod hybrid;
 pub(crate) mod applier;
 pub use view::{GraphView, Subgraph};
-pub use upsert::{LinkSpec, UpsertOutcome, UpsertRequest};
+pub use upsert::{LinkSpec, UpsertOutcome, UpsertRequest, UPSERT_TX_ROWS};
 #[cfg(feature = "hybrid")]
 pub use hybrid::{
     BranchReport, ExplainedHit, HybridExplain, HybridFilter, HybridHit, HybridQuery, VectorPath,
@@ -3673,7 +3673,16 @@ impl Graph {
         BulkLoader::new(self.clone(), batch_size)
     }
 
-    /// Inserta múltiples nodos en batch (sin indexación de propiedades).
+    /// Inserta múltiples nodos en batch, con indexación de propiedades.
+    ///
+    /// Hasta 0.6.2 el bulk NO alimentaba `prop_idx_v2` ni los índices de
+    /// usuario: un nodo cargado por `BulkLoader` era invisible para
+    /// `find_nodes_by_property`, para el planner y, desde #151, para la
+    /// búsqueda de identidad de `upsert_node` (que ya no recorre la base sino
+    /// que consulta el índice): una carga masiva seguida de upserts habría
+    /// duplicado cada nodo. Indexar aquí cuesta una escritura por propiedad,
+    /// lo mismo que el camino directo; el ahorro que daba saltárselo no
+    /// compensa una base cuyos índices no dicen la verdad.
     pub async fn add_nodes_batch(&self, nodes: Vec<Node>) -> Result<Vec<NodeId>> {
         // Single-writer apply: los lotes mutan adyacencia y no deben
         // interlevarse con otras aplicaciones físicas.
@@ -3682,8 +3691,21 @@ impl Graph {
             return Ok(Vec::new());
         }
 
+        // 0. Un lote puede pisar ids existentes (batch-upsert): retirar las
+        //    entradas de índice que la sobrescritura invalida mientras el
+        //    nodo viejo todavía está en storage (mismo orden que
+        //    `apply_add_node`).
+        for node in &nodes {
+            self.retract_overwritten_index_entries(node).await?;
+        }
+
         // 1. Batch insert en storage
         let ids = self.storage.insert_nodes_batch(&nodes).await?;
+
+        // 1b. Índice de propiedades + índices de usuario, como toda escritura.
+        for node in &nodes {
+            self.apply_index_node_properties(node).await?;
+        }
 
         // 2. Inicializar índices de adyacencia en memoria SOLO si el nodo es
         //    nuevo (H1, #65): un batch-upsert sobre un id existente no debe
