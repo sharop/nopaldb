@@ -6,6 +6,8 @@
 //   (c) lecturas concurrentes con un escritor activo (esperado: mide el
 //       máximo de leer y escribir) y con un escritor de fondo (solo lectura)
 //   (d) ingesta con BulkLoader, en base nueva y en base abierta
+//   (e) upsert_batch de 1 000 filas nuevas sobre una base de 1k y de 8k
+//       nodos: el coste por fila no debe depender del tamaño (#151)
 //
 // Correr: cargo bench -p nopaldb
 // Registrar los números ANTES de aterrizar el applier (I8), el commit atómico
@@ -381,6 +383,54 @@ fn bench_bulk_load(c: &mut Criterion) {
     group.finish();
 }
 
+// (e) upsert_batch: 1 000 filas nuevas por iteración sobre una base que
+//     arranca en `base` nodos del mismo label. Antes de #151 cada fila
+//     deserializaba toda la base (5.8 ms/fila a 1k, 11.8 a 8k); con el
+//     índice de propiedades y una tx por lote el lote entero paga un fsync.
+fn bench_upsert_batch(c: &mut Criterion) {
+    use nopaldb::graph::upsert::UpsertRequest;
+    use std::collections::HashMap;
+
+    fn row(i: usize) -> UpsertRequest {
+        let mut props = HashMap::new();
+        props.insert("key".to_string(), PropertyValue::String(format!("frag-{i}")));
+        props.insert("text".to_string(), PropertyValue::String(format!("fragmento {i}")));
+        UpsertRequest {
+            label: "Fragmento".into(),
+            key: "key".into(),
+            props,
+            embedding: None,
+            links: vec![],
+        }
+    }
+
+    let rt = rt();
+    let mut group = c.benchmark_group("upsert_batch");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(20));
+    for base in [1_000usize, 8_000] {
+        let dir = tempfile::tempdir().unwrap();
+        let graph = rt.block_on(async {
+            let graph = Arc::new(Graph::open_with_options(dir.path(), bench_options()).await.expect("open"));
+            graph.upsert_batch((0..base).map(row).collect()).await.expect("seed");
+            graph
+        });
+        let mut next = 1_000_000usize;
+        group.bench_with_input(BenchmarkId::new("1000_new_rows_over", base), &base, |b, _| {
+            b.to_async(&rt).iter(|| {
+                let g = Arc::clone(&graph);
+                let from = next;
+                next += 1_000;
+                async move {
+                    g.upsert_batch((from..from + 1_000).map(row).collect()).await.expect("upsert_batch");
+                }
+            });
+        });
+        rt.block_on(async { graph.close().await.expect("close") });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_commit_small_tx,
@@ -390,6 +440,7 @@ criterion_group!(
     bench_reads_with_background_writer,
     bench_bulk_load,
     bench_supernode_fanout,
-    bench_writes_direct_concurrent
+    bench_writes_direct_concurrent,
+    bench_upsert_batch
 );
 criterion_main!(benches);
