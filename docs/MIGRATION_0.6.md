@@ -43,10 +43,13 @@ its pages on every commit window.
 ## How to migrate
 
 The migration is a byte-for-byte copy of every keyspace (nodes, MVCC versions,
-edges, adjacency, indexes, clocks, embeddings) followed by a re-scan of the
-destination that checks counts and checksums. Time-travel and indexes survive
-because nothing is reinterpreted; a round trip sled → redb → sled of a
-million-pair database is verified in the test suite.
+edges, adjacency, property index, clocks, embeddings) followed by a re-scan of
+the destination that checks counts and checksums, plus a file-by-file copy of
+the two directories that live outside the KV: `indexes/` (user indexes and
+their analyzers) and `hnsw/` (the vector index dump), each file verified by
+size and checksum. Time-travel survives because nothing is reinterpreted; a
+round trip sled → redb → sled of a million-pair database is verified in the
+test suite. See [What travels and what is rebuilt](#what-travels-and-what-is-rebuilt).
 
 Preconditions:
 
@@ -106,6 +109,36 @@ cargo run --example migrate_engine --features storage-sled -- data/plantas.db au
 
 The copy works in both directions: `dst_engine="sled"` recreates a sled
 database from a redb one, verified the same way.
+
+## What travels and what is rebuilt
+
+| Part of the database | Where it lives | Migration | On open in the destination |
+|---|---|---|---|
+| Nodes, edges, MVCC history, adjacency, clocks, property index, embeddings | the 12 KV keyspaces | copied pair by pair, verified by count and checksum | used as is |
+| User indexes (hash, btree, full-text, taxonomy): catalog `indexes/metadata.bin`, full-text segments and `analyzer.json` under `indexes/fulltext_<name>/` | `<dir>/indexes/` | copied file by file, verified by size and checksum (since 0.6.3) | hash/btree/taxonomy are rebuilt in memory from the catalog and the nodes, as on every open; full-text opens its segments with the analyzer it was created with |
+| HNSW index | `<dir>/hnsw/` | copied if the source had a dump (since 0.6.3) | loaded from disk on the first search; if there was no dump, rebuilt from `embeddings` on the first search, exactly as the source would |
+| WAL | `<dir>/wal/` | not copied: precondition 2 means it is already applied | starts empty |
+
+The report has the three sections: `keyspaces` + `verified`, `indexes` (name,
+label, property, type, analyzer) and `sidecars` + `hnsw_copied`. Before 0.6.3
+only the first existed, and `verified=true` said nothing about the indexes,
+which silently did not travel. If you copy a database with your own tools, put
+`indexes/` in place and call `Graph::rebuild_indexes()` /
+`graph.rebuild_indexes()`, or reopen.
+
+## Compatibility matrix
+
+| Database written by | Opens directly in 0.6.x | Notes and way back |
+|---|---|---|
+| ≤ 0.4.35 | yes, sled (`Auto` detects it) | first open migrates the property index to `prop_idx_v2` (0.4.36) and the layout to v2 (0.5.3), in place and idempotently; **not readable by ≤ 0.5.2 afterwards**. Keep a copy of the volume if you may need to go back. |
+| 0.5.3 – 0.5.12, sled | yes, sled | full-text indexes have no `analyzer.json`: they keep the default analyzer. |
+| 0.5.13 – 0.5.24, sled or redb | yes, either engine | 0.5.20+ writes `hnsw/`; 0.5.22+ mints UUID v7 ids (older versions read them as plain UUIDs). |
+| 0.6.x, redb | yes | a 0.5.x build with `storage-redb` opens it too, but sled-only wheels of 0.5.x do not: migrate to sled first (`dst_engine="sled"`). |
+| 0.6.x, sled | yes (with a migration hint in the log) | readable by 0.5.3+. |
+
+Going back a version: restore the previous image and the untouched copy of the
+volume, or migrate to the engine that version supports. Never open a database
+modified by a newer version with an older one without a verified copy.
 
 ## Creating a sled database on purpose
 

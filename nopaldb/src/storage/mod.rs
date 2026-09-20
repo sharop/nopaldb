@@ -9,7 +9,7 @@ use crate::error::{NopalError, Result};
 use crate::types::{Node, Edge, NodeId, EdgeId, PropertyValue};
 use crate::mvcc::{VersionedNode, VersionedEdge};
 pub use backend::{DirectWriteDurability, StorageEngine, StorageOptions, StorageProfile, StorageTuning};
-pub use kv::migrate::MigrationReport;
+pub use kv::migrate::{IndexSummary, MigrationReport, SidecarReport};
 
 /// Nombre meta con la cota superior persistida del reloj lógico de
 /// timestamps. Vive en el keyspace `catalog` (clave `m|next_timestamp`,

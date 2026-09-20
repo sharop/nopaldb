@@ -740,6 +740,10 @@ impl PyGraph {
     ///     >>> report = nopaldb.Graph.migrate("old_sled.db", "new_redb.db")
     ///     >>> report["verified"]
     ///     True
+    ///     >>> [ix["name"] for ix in report["indexes"]]   # user indexes that travelled
+    ///     ['idx_Doc_texto']
+    ///     >>> report["hnsw_copied"]                       # False = rebuilt on first search
+    ///     True
     #[staticmethod]
     #[pyo3(signature = (src, dst, src_engine="auto", dst_engine="auto", profile="default"))]
     fn migrate(
@@ -769,7 +773,39 @@ impl PyGraph {
         }
         dict.set_item("keyspaces", keyspaces)?;
         dict.set_item("verified", report.verified)?;
+        let sidecars = PyList::empty(py);
+        for sc in &report.sidecars {
+            let d = PyDict::new(py);
+            d.set_item("dir", &sc.dir)?;
+            d.set_item("files", sc.files)?;
+            d.set_item("bytes", sc.bytes)?;
+            sidecars.append(d)?;
+        }
+        dict.set_item("sidecars", sidecars)?;
+        let indexes = PyList::empty(py);
+        for ix in &report.indexes {
+            let d = PyDict::new(py);
+            d.set_item("name", &ix.name)?;
+            d.set_item("label", &ix.label)?;
+            d.set_item("property", &ix.property)?;
+            d.set_item("type", &ix.kind)?;
+            d.set_item("analyzer", ix.analyzer.as_deref())?;
+            indexes.append(d)?;
+        }
+        dict.set_item("indexes", indexes)?;
+        dict.set_item("hnsw_copied", report.hnsw_copied)?;
         Ok(dict.into())
+    }
+
+    /// Rebuild the user indexes from `<dir>/indexes/metadata.bin` and the
+    /// current nodes, as `Graph.open` does. Returns how many indexes are
+    /// loaded. For databases copied by hand (not with `Graph.migrate`, which
+    /// already carries the catalog): put `indexes/` in place, then call this.
+    fn rebuild_indexes(&self, py: Python<'_>) -> PyResult<usize> {
+        let graph = self.graph()?;
+        to_py_result(crate::python::runtime::block_on(py, async move {
+            graph.rebuild_indexes().await
+        }))
     }
 
     /// Close the database
