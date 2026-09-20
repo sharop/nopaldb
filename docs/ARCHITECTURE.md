@@ -147,7 +147,18 @@ El `LockManager` mantiene un wait-for graph entre transacciones y aborta con `No
 
 ### WAL
 
-El Write-Ahead Log (`src/wal/`) registra cada escritura antes de que llegue al storage. `Graph::open()` hace replay automatico del WAL al arrancar. Es zona peligrosa — un cambio que corrompa la recuperacion puede destruir la base de datos.
+El Write-Ahead Log (`src/wal/`) registra cada escritura antes de que llegue al storage: los commits transaccionales con un fsync por lote del applier (group commit) y, desde 0.5.23, tambien las escrituras directas como transacciones automaticas (`DirectWriteDurability`, ver [DURABILITY.md](DURABILITY.md)). `Graph::open()` hace replay automatico al arrancar. Es zona peligrosa: un cambio que corrompa la recuperacion puede destruir la base de datos.
+
+**Decision (2026-09-19, #142): el WAL se conserva con redb como motor por defecto, y se define como log logico del grafo, no como redundancia del motor.** Los datos que la sostienen, medidos en la misma maquina con redb:
+
+| | con WAL (hoy) | sin WAL, sin durabilidad por commit | sin WAL, checkpoint durable del motor por commit |
+|---|---|---|---|
+| `commit/small_tx_1node_1edge` | 5.2 ms | 47 µs | 4.8 ms |
+| escritura directa (`writes_direct_concurrent/8`) | 1.57 ms / 64 ops | 1.51 ms | 1.51 ms |
+
+Un commit durable cuesta un fsync, lo pague el WAL o lo pague el motor: quitar el WAL no abarata la durabilidad, solo la quitaria. Lo que el WAL cuesta de verdad es el `write()` por operacion directa (microsegundos) y disco: 243 B por `add_node` directo, 322 B por `add_edge`, 248 B por commit de un nodo, en `serde_json` con prefijo de longitud. Lo que da y el motor no: un registro de operaciones sobre nodos y aristas con timestamps logicos, que es lo que haria falta para replicar, capturar cambios (CDC) o recuperar a un instante logico. Nada de eso existe todavia y no se construye hasta que haya un consumidor; la decision solo fija que el WAL es la pieza sobre la que se construiria, y que no se quita.
+
+Pendiente detectado en el estudio: el WAL solo se trunca en `Graph::checkpoint()`, que ninguna ruta de produccion llama y Python no expone. Una base con escrituras crece sin limite hasta que la aplicacion lo invoque. La correccion (truncar automaticamente lo anterior al ultimo checkpoint durable del motor, y exponer `checkpoint` en Python) va en su propio issue.
 
 ### GC
 

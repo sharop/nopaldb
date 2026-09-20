@@ -183,20 +183,17 @@ let history = graph.history_to_arrow().await?;
 
 NopalDB usa feature flags para mantener el binario pequeño:
 ```toml
-# Mobile/Embedded (SIN Arrow)
+# Mínimo (SIN Arrow): grafo + NQL + MVCC + WAL con redb
 [dependencies]
-nopaldb = { version = "0.1", default-features = false }
-# Binary size: 5-8 MB
+nopaldb = "0.6"
 
-# Server/Analytics (CON Arrow)
+# Con Arrow/Parquet (tier core: + algoritmos, embeddings, full-text)
 [dependencies]
-nopaldb = { version = "0.1", features = ["analytics"] }
-# Binary size: 15-20 MB
+nopaldb = { version = "0.6", features = ["core"] }
 
-# Full (TODO)
+# Todo (semantic + full-isolation)
 [dependencies]
-nopaldb = { version = "0.1", features = ["full"] }
-# Binary size: 20-30 MB
+nopaldb = { version = "0.6", features = ["full"] }
 ```
 
 ## 🚀 Próximos Pasos

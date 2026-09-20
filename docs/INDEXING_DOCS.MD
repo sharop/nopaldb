@@ -1,7 +1,6 @@
 # NopalDB Indexing System
 
-**Version**: 0.3.0  
-**Date**: February 2026
+**Vigente para**: 0.6.x (revisado 2026-09-19). Los tres tipos (`Hash`, `BTree`, `FullText`) son los de `IndexType`; el indice de propiedades del layout v2 se describe en [PROPERTY_INDEXING.md](PROPERTY_INDEXING.md) y el analizador del indice de texto en [INDEXING_DOCS](#3-full-text-index-tantivy-powered) y [docs/en/NQL_REFERENCE.md](en/NQL_REFERENCE.md) (`CREATE INDEX ... WITH`).
 
 ---
 

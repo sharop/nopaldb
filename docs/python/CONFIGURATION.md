@@ -17,7 +17,7 @@ When you initialize a graph with `Graph.open("path")`, the following configurati
 ### 🔄 Concurrency (MVCC)
 - **Isolation Level**: Snapshot Isolation. Readers never block writers, writers never block readers.
 - **Timestamping**: 64-bit monotonic timestamps.
-- **Garbage Collection**: currently manual via internal APIs (auto-vacuuming planned for future releases).
+- **Garbage Collection**: `graph.gc(...)` on demand or `start_auto_gc(AutoGcConfig)` in the background (Rust; see `docs/ARCHITECTURE.md` § GC). Not exposed in Python yet.
 
 ### 🪵 Durability (WAL)
 - **Write-Ahead Log**: Enabled. All transactions are appended to the WAL before commit.

@@ -1,7 +1,6 @@
 # NopalDB Query Planner
 
-**Version**: 0.3.0  
-**Date**: February 2026
+**Vigente para**: 0.6.x (revisado 2026-09-19). El plan que imprime `EXPLAIN` es el que se ejecuta ([test de honestidad](../nopaldb/tests/nql_explain_honesty_test.rs)); no hay hints de query: el planner decide solo por indices y estadisticas.
 
 ---
 
@@ -158,28 +157,6 @@ graph.bulk_loader(1000).load_nodes(nodes)
 
 # Manual update
 graph.rebuild_schema()  # Rebuilds statistics
-```
-
----
-
-## Query Hints / Hints de Query
-
-### Force Index / Forzar Índice
-
-```sql
--- Use specific index
-find n.name
-from (n:Person USE INDEX Person_name)
-where n.name = "Alice"
-```
-
-### Force Scan / Forzar Scan
-
-```sql
--- Disable index for this query
-find n.name
-from (n:Person IGNORE INDEX)
-where n.name = "Alice"
 ```
 
 ---
