@@ -265,21 +265,9 @@ fn summarize_indexes(src_dir: &Path) -> Result<Vec<IndexSummary>> {
 }
 
 /// `"default"` o `"spanish+stemming+stopwords+ascii_folding"` (lo activo).
+/// El mismo texto que la sección `indexes` de `Graph::stats` (#158).
 fn describe_analyzer(a: &crate::index::FullTextAnalyzer) -> String {
-    let mut parts = Vec::new();
-    if let Some(lang) = &a.language {
-        parts.push(lang.clone());
-    }
-    if a.stemming {
-        parts.push("stemming".into());
-    }
-    if a.stopwords {
-        parts.push("stopwords".into());
-    }
-    if a.ascii_folding {
-        parts.push("ascii_folding".into());
-    }
-    if parts.is_empty() { "default".into() } else { parts.join("+") }
+    a.describe()
 }
 
 /// FNV-1a 64 streaming — determinista, sin dependencia nueva. No es

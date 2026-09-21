@@ -9,6 +9,7 @@ Single index for every document in `docs/`, in English with the Spanish pages ma
 - [Migrating to 0.6](MIGRATION_0.6.md) · [ES](es/MIGRACION_0.6.md) — redb is the default engine; sled databases still open; how to migrate
 - [Durability Guarantees](DURABILITY.md) — what survives a crash, per write type and engine
 - [Backup & read-only](BACKUP_AND_READ_ONLY.md)
+- [Operating](OPERATIONS.md) — what `get_stats()` / `nopaldb stats` say for each symptom (slow open, slow ingestion, growing WAL, empty full-text results) and the progress event
 
 ## Query language (NQL)
 

@@ -65,6 +65,43 @@ fn engine_str(name: &str) -> &'static str {
     }
 }
 
+/// Envuelve un callable Python como callback de progreso del motor (#158).
+///
+/// El motor lo invoca desde el hilo del runtime Tokio mientras el hilo
+/// Python que llamó está en `block_on` con el GIL SOLTADO (`py.detach`), así
+/// que aquí se vuelve a tomar con `Python::attach`. Un error del callable no
+/// puede propagarse a la operación (sería abortar un replay por un `print`
+/// roto): se escribe en el log y se sigue.
+fn progress_callback(callable: Py<PyAny>) -> crate::ProgressCallback {
+    Arc::new(move |p: crate::Progress| {
+        Python::attach(|py| {
+            let event = PyDict::new(py);
+            let ok = event
+                .set_item("phase", p.phase)
+                .and_then(|_| event.set_item("done", p.done))
+                .and_then(|_| event.set_item("total", p.total))
+                .and_then(|_| callable.bind(py).call1((event,)).map(|_| ()));
+            if let Err(e) = ok {
+                log::warn!("progress callback raised and was ignored: {e}");
+            }
+        })
+    })
+}
+
+/// `EmbeddingIndexStats` como dict; lo comparten `embedding_index_stats` y la
+/// sección `hnsw` de `get_stats`.
+fn hnsw_stats_dict<'py>(py: Python<'py>, st: &crate::EmbeddingIndexStats) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("model", &st.model)?;
+    dict.set_item("size", st.size)?;
+    dict.set_item("tombstones", st.tombstones)?;
+    dict.set_item("dimension", st.dimension)?;
+    dict.set_item("needs_rebuild", st.needs_rebuild)?;
+    dict.set_item("persisted", st.persisted)?;
+    dict.set_item("loaded_from_disk_ms", st.loaded_from_disk_ms)?;
+    Ok(dict)
+}
+
 /// Python wrapper for NopalDB Graph
 #[pyclass(name = "Graph")]
 pub struct PyGraph {
@@ -123,14 +160,33 @@ impl PyGraph {
     ///     PyPI ship both engines; asking for one this build does not have
     ///     raises ValueError. Use `storage_engine()` to see which one opened.
     /// profile: "default" | "mobile" | "server"
+    /// on_progress: optional callable receiving a dict
+    ///     `{"phase": str, "done": int, "total": int | None}` while the open
+    ///     replays the WAL or rebuilds adjacency/indexes, and afterwards for
+    ///     every long operation on this graph (same as
+    ///     `set_progress_callback`). Called from a worker thread every ~1000
+    ///     items or ~250 ms; keep it cheap.
+    ///
+    /// Example:
+    ///     >>> g = nopaldb.Graph.open_with_options("big.db",
+    ///     ...         on_progress=lambda e: print(e["phase"], e["done"], e["total"]))
     #[staticmethod]
-    #[pyo3(signature = (path, engine="auto", profile="default"))]
-    fn open_with_options(py: Python<'_>, path: &str, engine: &str, profile: &str) -> PyResult<Self> {
+    #[pyo3(signature = (path, engine="auto", profile="default", on_progress=None))]
+    fn open_with_options(
+        py: Python<'_>,
+        path: &str,
+        engine: &str,
+        profile: &str,
+        on_progress: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
         let engine = parse_engine(engine)?;
         let profile = parse_profile(profile)?;
         let options = StorageOptions { engine, profile, ..Default::default() };
+        let progress = on_progress.map(progress_callback);
 
-        let graph = crate::python::runtime::block_on(py, async { RustGraph::open_with_options(path, options).await });
+        let graph = crate::python::runtime::block_on(py, async {
+            RustGraph::open_with_progress(path, options, progress).await
+        });
         to_py_result(graph).map(|g| PyGraph {
             inner: Mutex::new(Some(Arc::new(g))),
         })
@@ -676,33 +732,171 @@ impl PyGraph {
         }).collect())
     }
 
-    /// Get query planner statistics
+    /// Operational state of the database in one call (#158): what to look at
+    /// when something is slow or seems stuck. See docs/OPERATIONS.md.
     ///
-    /// Returns:
-    ///     dict: Statistics about the graph
+    /// Returns a nested dict with native types:
+    ///     graph:    total_nodes, total_edges, avg_degree, nodes_per_label,
+    ///               edges_per_type
+    ///     storage:  engine, profile, data_dir (None in memory), read_only
+    ///     wal:      bytes, checkpoint_threshold_bytes, checkpoints_this_session,
+    ///               last_checkpoint_unix_ms (None if none yet),
+    ///               direct_write_durability
+    ///     recovery: what the open that created this handle did —
+    ///               wal_records_read, operations_replayed,
+    ///               uncommitted_txs_discarded, crash_recovery,
+    ///               adjacency_rebuilt, open_ms {storage, wal_replay,
+    ///               adjacency, indexes, total}
+    ///     indexes:  [{name, label, property, type, size, analyzer}] — the
+    ///               analyzer is a string ("default", "spanish+stemming+…")
+    ///               for full-text indexes, None otherwise
+    ///     hnsw:     [{model, size, tombstones, dimension, needs_rebuild,
+    ///               persisted, loaded_from_disk_ms}] per model whose index
+    ///               is in cache (built or loaded on the first search)
+    ///     gc:       auto_running, auto (None or {interval_secs,
+    ///               cutoff_timestamp, min_versions_to_keep,
+    ///               max_nodes_per_cycle, dry_run, use_active_horizon}),
+    ///               last_run (None or {unix_ms, nodes_scanned,
+    ///               versions_removed, bytes_freed, duration_ms, dry_run})
+    ///
+    /// Deprecated flat keys, kept at the top level for one more minor so
+    /// 0.6.x readers keep working — all of them strings, as before:
+    /// "total_nodes", "total_edges", "avg_degree", "storage_engine",
+    /// "wal_bytes". Read the sections instead.
+    ///
+    /// Cheap: nothing is scanned; it reads what open/checkpoint/gc already
+    /// recorded plus the in-memory index catalog.
     ///
     /// Example:
-    ///     >>> stats = graph.get_stats()
-    ///     >>> print(f"Total nodes: {stats['total_nodes']}")
-    ///     >>> print(f"Avg degree: {stats['avg_degree']}")
-    fn get_stats(&self, py: Python<'_>) -> PyResult<std::collections::HashMap<String, String>> {
+    ///     >>> s = graph.get_stats()
+    ///     >>> s["recovery"]["operations_replayed"], s["recovery"]["open_ms"]["total"]
+    ///     (0, 12)
+    ///     >>> [(ix["name"], ix["size"], ix["analyzer"]) for ix in s["indexes"]]
+    ///     [('Doc_texto', 1200, 'spanish+stemming+stopwords+ascii_folding')]
+    fn get_stats(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let graph = self.graph()?;
-        let graph_for_wal = graph.clone();
+        let report = to_py_result(crate::python::runtime::block_on(py, async move { graph.stats().await }))?;
 
-        let stats = crate::python::runtime::block_on(py, async move {
-            graph.get_stats().await
-        });
+        let out = PyDict::new(py);
 
-        let stats = to_py_result(stats)?;
+        let g = PyDict::new(py);
+        g.set_item("total_nodes", report.graph.total_nodes)?;
+        g.set_item("total_edges", report.graph.total_edges)?;
+        g.set_item("avg_degree", report.graph.avg_degree)?;
+        g.set_item("nodes_per_label", &report.graph.nodes_per_label)?;
+        g.set_item("edges_per_type", &report.graph.edges_per_type)?;
+        out.set_item("graph", g)?;
 
-        let mut result = std::collections::HashMap::new();
-        result.insert("total_nodes".to_string(), stats.total_nodes.to_string());
-        result.insert("total_edges".to_string(), stats.total_edges.to_string());
-        result.insert("avg_degree".to_string(), format!("{:.2}", stats.avg_degree));
-        let wal_bytes = crate::python::runtime::block_on(py, async move { graph_for_wal.wal_bytes().await });
-        result.insert("wal_bytes".to_string(), wal_bytes.to_string());
+        let s = PyDict::new(py);
+        s.set_item("engine", report.storage.engine)?;
+        s.set_item("profile", report.storage.profile)?;
+        s.set_item("data_dir", report.storage.data_dir.as_ref().map(|p| p.display().to_string()))?;
+        s.set_item("read_only", report.storage.read_only)?;
+        out.set_item("storage", s)?;
 
-        Ok(result)
+        let w = PyDict::new(py);
+        w.set_item("bytes", report.wal.bytes)?;
+        w.set_item("checkpoint_threshold_bytes", report.wal.checkpoint_threshold_bytes)?;
+        w.set_item("checkpoints_this_session", report.wal.checkpoints_this_session)?;
+        w.set_item("last_checkpoint_unix_ms", report.wal.last_checkpoint_unix_ms)?;
+        w.set_item("direct_write_durability", report.wal.direct_write_durability)?;
+        out.set_item("wal", w)?;
+
+        let r = PyDict::new(py);
+        r.set_item("wal_records_read", report.recovery.wal_records_read)?;
+        r.set_item("operations_replayed", report.recovery.operations_replayed)?;
+        r.set_item("uncommitted_txs_discarded", report.recovery.uncommitted_txs_discarded)?;
+        r.set_item("crash_recovery", report.recovery.crash_recovery)?;
+        r.set_item("adjacency_rebuilt", report.recovery.adjacency_rebuilt)?;
+        let ms = PyDict::new(py);
+        ms.set_item("storage", report.recovery.open_ms.storage)?;
+        ms.set_item("wal_replay", report.recovery.open_ms.wal_replay)?;
+        ms.set_item("adjacency", report.recovery.open_ms.adjacency)?;
+        ms.set_item("indexes", report.recovery.open_ms.indexes)?;
+        ms.set_item("total", report.recovery.open_ms.total)?;
+        r.set_item("open_ms", ms)?;
+        out.set_item("recovery", r)?;
+
+        let indexes = PyList::empty(py);
+        for ix in &report.indexes {
+            let d = PyDict::new(py);
+            d.set_item("name", &ix.name)?;
+            d.set_item("label", &ix.label)?;
+            d.set_item("property", &ix.property)?;
+            d.set_item("type", &ix.kind)?;
+            d.set_item("size", ix.size)?;
+            d.set_item("analyzer", ix.analyzer.as_deref())?;
+            indexes.append(d)?;
+        }
+        out.set_item("indexes", indexes)?;
+
+        let hnsw = PyList::empty(py);
+        for st in &report.hnsw {
+            hnsw.append(hnsw_stats_dict(py, st)?)?;
+        }
+        out.set_item("hnsw", hnsw)?;
+
+        let gc = PyDict::new(py);
+        gc.set_item("auto_running", report.gc.auto_running)?;
+        match &report.gc.auto {
+            Some(a) => {
+                let d = PyDict::new(py);
+                d.set_item("interval_secs", a.interval_secs)?;
+                d.set_item("cutoff_timestamp", a.cutoff_timestamp)?;
+                d.set_item("min_versions_to_keep", a.min_versions_to_keep)?;
+                d.set_item("max_nodes_per_cycle", a.max_nodes_per_cycle)?;
+                d.set_item("dry_run", a.dry_run)?;
+                d.set_item("use_active_horizon", a.use_active_horizon)?;
+                gc.set_item("auto", d)?;
+            }
+            None => gc.set_item("auto", py.None())?,
+        }
+        match &report.gc.last_run {
+            Some(run) => {
+                let d = PyDict::new(py);
+                d.set_item("unix_ms", run.unix_ms)?;
+                d.set_item("nodes_scanned", run.nodes_scanned)?;
+                d.set_item("versions_removed", run.versions_removed)?;
+                d.set_item("bytes_freed", run.bytes_freed)?;
+                d.set_item("duration_ms", run.duration_ms)?;
+                d.set_item("dry_run", run.dry_run)?;
+                gc.set_item("last_run", d)?;
+            }
+            None => gc.set_item("last_run", py.None())?,
+        }
+        out.set_item("gc", gc)?;
+
+        // Claves planas de 0.6.x (strings, como siempre fueron). Un minor más.
+        out.set_item("total_nodes", report.graph.total_nodes.to_string())?;
+        out.set_item("total_edges", report.graph.total_edges.to_string())?;
+        out.set_item("avg_degree", format!("{:.2}", report.graph.avg_degree))?;
+        out.set_item("storage_engine", report.storage.engine)?;
+        out.set_item("wal_bytes", report.wal.bytes.to_string())?;
+
+        Ok(out.into())
+    }
+
+    /// Register (or replace) the progress callback for long operations:
+    /// `create_index`, `upsert_many`, `BulkLoader`, and the WAL replay and
+    /// rebuilds of an open made with `open_with_options(on_progress=...)`.
+    /// The callable receives `{"phase": str, "done": int, "total": int | None}`
+    /// every ~1000 items or ~250 ms, from a worker thread: keep it cheap and
+    /// do not call back into the graph from it. Pass `None` to remove it.
+    /// Without a callback the cost is one comparison per batch. The existing
+    /// log lines stay; this complements them for whoever does not read logs.
+    ///
+    /// Example:
+    ///     >>> graph.set_progress_callback(lambda e: print(e))
+    ///     >>> graph.upsert_many(rows)          # prints upsert_batch 0/5000, 1000/5000, …
+    ///     >>> graph.set_progress_callback(None)
+    #[pyo3(signature = (callback))]
+    fn set_progress_callback(&self, callback: Option<Py<PyAny>>) -> PyResult<()> {
+        let graph = self.graph()?;
+        match callback {
+            Some(cb) => graph.set_progress_callback(progress_callback(cb)),
+            None => graph.clear_progress_callback(),
+        }
+        Ok(())
     }
 
     /// Name of the storage engine this handle opened: "redb" or "sled".
@@ -1033,15 +1227,7 @@ impl PyGraph {
         let model = model.to_string();
         let stats = crate::python::runtime::block_on(py, async move { graph.embedding_index_stats(&model).await });
         let Some(st) = stats else { return Ok(None) };
-        let dict = pyo3::types::PyDict::new(py);
-        dict.set_item("model", st.model)?;
-        dict.set_item("size", st.size)?;
-        dict.set_item("tombstones", st.tombstones)?;
-        dict.set_item("dimension", st.dimension)?;
-        dict.set_item("needs_rebuild", st.needs_rebuild)?;
-        dict.set_item("persisted", st.persisted)?;
-        dict.set_item("loaded_from_disk_ms", st.loaded_from_disk_ms)?;
-        Ok(Some(dict.into()))
+        Ok(Some(hnsw_stats_dict(py, &st)?.into()))
     }
 
     /// Importa una fuente Turtle (OWL/RDF) en el grafo.

@@ -2,11 +2,16 @@
 
 pub mod view;
 pub mod upsert;
+pub mod stats;
 #[cfg(feature = "hybrid")]
 pub mod hybrid;
 pub(crate) mod applier;
 pub use view::{GraphView, Subgraph};
 pub use upsert::{LinkSpec, UpsertOutcome, UpsertRequest, UPSERT_TX_ROWS};
+pub use stats::{
+    GcAutoSummary, GcRun, GcSection, GraphSection, IndexSection, OpenPhasesMs, Progress,
+    ProgressCallback, RecoverySection, StatsReport, StorageSection, WalSection,
+};
 #[cfg(feature = "hybrid")]
 pub use hybrid::{
     BranchReport, ExplainedHit, HybridExplain, HybridFilter, HybridHit, HybridQuery, VectorPath,
@@ -97,6 +102,9 @@ pub struct Graph {
     data_dir: Option<std::path::PathBuf>,
     auto_gc_stop_tx: Arc<Mutex<Option<watch::Sender<bool>>>>,
     auto_gc_config: Arc<RwLock<Option<AutoGcConfig>>>,
+    /// Lo que `open`, `checkpoint` y `gc` anotan para `stats()`, y el
+    /// callback de progreso (#158). Compartido por todos los clones.
+    ops: Arc<stats::OpsState>,
 
     /// Mutex de serialización para la fase de commit de transacciones.
     /// Previene condiciones de carrera en índices de adyacencia y lost updates MVCC.
@@ -139,8 +147,9 @@ pub struct Graph {
 pub type SharedHnswIndex = Arc<std::sync::RwLock<crate::embeddings::HnswIndex>>;
 
 /// Estado del índice HNSW de un modelo, para introspección
-/// ([`Graph::embedding_index_stats`]).
-#[cfg(feature = "embeddings-index")]
+/// (`Graph::embedding_index_stats` con `embeddings-index`, y la sección
+/// `hnsw` de [`Graph::stats`] en cualquier build: por eso el tipo no lleva
+/// `cfg`, solo quien lo rellena).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddingIndexStats {
     pub model: String,
@@ -295,9 +304,20 @@ impl Graph {
         path: impl AsRef<std::path::Path>,
         options: crate::storage::StorageOptions,
     ) -> Result<Self> {
+        Self::open_read_only_with_progress(path, options, None).await
+    }
+
+    /// [`Graph::open_read_only_with_options`] informando del progreso del
+    /// replay y las reconstrucciones del arranque (ver [`Graph::open_with_progress`]).
+    pub async fn open_read_only_with_progress(
+        path: impl AsRef<std::path::Path>,
+        options: crate::storage::StorageOptions,
+        progress: Option<ProgressCallback>,
+    ) -> Result<Self> {
+        let started = Instant::now();
         let (storage, seal) =
             Storage::new_sealable(path.as_ref(), options).await?;
-        let mut graph = Self::init_from_storage(path.as_ref(), storage, options).await?;
+        let mut graph = Self::init_from_storage(path.as_ref(), storage, options, started, progress).await?;
         // Sellar DESPUÉS del init: migraciones y replay del WAL ya corrieron.
         seal.close();
         graph.read_only_seal = Some(seal);
@@ -334,21 +354,46 @@ impl Graph {
         path: impl AsRef<std::path::Path>,
         options: crate::storage::StorageOptions,
     ) -> Result<Self> {
+        Self::open_with_progress(path, options, None).await
+    }
+
+    /// [`Graph::open_with_options`] con un callback de progreso que recibe
+    /// las fases largas del arranque (`wal_replay`, `adjacency_rebuild`,
+    /// `index_load`) mientras corren, y queda registrado en el grafo para
+    /// las operaciones posteriores, igual que [`Graph::set_progress_callback`].
+    ///
+    /// El callback se llama desde el hilo que hace el trabajo, cada ~1000
+    /// ítems o ~250 ms; debe ser barato y no bloquear. Sin callback (`None`)
+    /// no cuesta nada: es [`Graph::open_with_options`].
+    pub async fn open_with_progress(
+        path: impl AsRef<std::path::Path>,
+        options: crate::storage::StorageOptions,
+        progress: Option<ProgressCallback>,
+    ) -> Result<Self> {
+        let started = Instant::now();
         let path_ref = path.as_ref();
         let storage = Storage::new_with_options(path_ref, options).await?;
-        Self::init_from_storage(path_ref, storage, options).await
+        Self::init_from_storage(path_ref, storage, options, started, progress).await
     }
 
     /// Inicialización común del open: migraciones, WAL, índices, adyacencia
     /// y relojes. Compartida por la apertura normal y la de solo-lectura —
     /// ambas necesitan exactamente el mismo trabajo, y duplicarlo dejaría que
     /// una de las dos se quedara atrás.
+    ///
+    /// `started` es el instante en que empezó el `open` (antes de abrir el
+    /// motor), para que la sección `recovery` de [`Graph::stats`] cuente el
+    /// arranque completo y no solo esta función.
     async fn init_from_storage(
         path_ref: &std::path::Path,
         storage: Storage,
         options: crate::storage::StorageOptions,
+        started: Instant,
+        progress: Option<ProgressCallback>,
     ) -> Result<Self> {
         let _ = &options;
+        let ms = |d: std::time::Duration| d.as_millis() as u64;
+        let mut open_ms = OpenPhasesMs::default();
 
         // F5.5: migración automática del layout v1→v2. Corre ANTES que
         // cualquier otro lector del open — índices secundarios, adyacencia,
@@ -369,6 +414,7 @@ impl Graph {
         // igualmente servida: su sentinel legacy `meta:prop_idx_format` ya
         // está reconciliado en `catalog` cuando ella lo lee.
         storage.migrate_layout_if_needed().await?;
+        open_ms.storage = ms(started.elapsed());
 
         //Crear WAL
         let wal_path = path_ref.join("nopal.wal");
@@ -377,13 +423,19 @@ impl Graph {
         //Crear IndexManager
         let index_path = path_ref.join("indexes");
         let index_manager = IndexManager::new(Some(index_path.to_string_lossy().to_string()));
-        
+
         // Cargar y reconstruir índices desde disco
         log::info!("Loading and rebuilding indices...");
+        let phase = Instant::now();
+        let reporter = stats::ProgressReporter::new(progress.clone(), "index_load", None);
         index_manager.load_indices(&storage).await?;
+        reporter.finish(index_manager.list_indexes().await.len() as u64);
+        open_ms.indexes = ms(phase.elapsed());
 
         //RECOVERY: Anlizar WAL y recuperar estado
+        let phase = Instant::now();
         let recovery_info = wal.recover().await?;
+        let mut wal_replay_ms = ms(phase.elapsed());
 
         if !recovery_info.uncommitted_txs.is_empty() {
             log::warn!(
@@ -398,16 +450,23 @@ impl Graph {
         // claves). Vacío puede ser base recién creada O adyacencia perdida:
         // rebuild desde edges (fuente de verdad) — en una base sin aristas
         // es un no-op.
+        let phase = Instant::now();
         let (adjacency_out, adjacency_in) = storage.load_all_adjacency_v2().await?;
 
+        let mut adjacency_rebuilt = false;
         let (adjacency_out, adjacency_in) = if adjacency_out.is_empty() && adjacency_in.is_empty() {
             log::info!("No adjacency entries found, rebuilding from edges...");
-            storage.rebuild_indices().await?
+            let reporter = stats::ProgressReporter::new(progress.clone(), "adjacency_rebuild", None);
+            let (out, inn) = storage.rebuild_indices().await?;
+            reporter.finish(out.values().map(|v| v.len() as u64).sum());
+            adjacency_rebuilt = !out.is_empty();
+            (out, inn)
         } else {
             log::info!("Loaded adjacency for {} outgoing and {} incoming nodes",
                       adjacency_out.len(), adjacency_in.len());
             (adjacency_out, adjacency_in)
         };
+        let mut adjacency_ms = ms(phase.elapsed());
 
         // Restaurar relojes lógicos persistidos. Sin esto, los timestamps se
         // reinician en 1 en cada open y los `valid_from/valid_to` nuevos
@@ -464,6 +523,11 @@ impl Graph {
             data_dir: Some(path_ref.to_path_buf()),
             auto_gc_stop_tx: Arc::new(Mutex::new(None)),
             auto_gc_config: Arc::new(RwLock::new(None)),
+            ops: Arc::new(stats::OpsState {
+                data_dir: Some(path_ref.to_path_buf()),
+                progress: std::sync::RwLock::new(progress),
+                ..Default::default()
+            }),
             write_gate: Arc::new(tokio::sync::Mutex::new(())),
             applier_tx: applier::spawn_applier(),
 
@@ -488,17 +552,24 @@ impl Graph {
             );
         }
 
+        let mut operations_replayed = 0;
+        let crash_recovery = recovery_info.total_records > 0 && !recovery_info.committed_txs.is_empty();
         if recovery_info.total_records>0 {
             log::info!("Replaying committed operations from WAL...");
-            graph.replay_wal().await?;
+            let phase = Instant::now();
+            operations_replayed = graph.replay_wal().await?;
+            wal_replay_ms += ms(phase.elapsed());
 
             // Tras un replay con transacciones commiteadas, la adyacencia
             // persistida puede haber quedado stale por un crash a mitad de
             // commit. Reconstruirla desde las aristas (fuente de verdad) en
             // lugar de confiar en los snapshots guardados.
-            if !recovery_info.committed_txs.is_empty() {
+            if crash_recovery {
                 log::info!("Crash recovery detected: rebuilding adjacency from edges...");
+                let phase = Instant::now();
                 graph.rebuild_adjacency_from_edges().await?;
+                adjacency_ms += ms(phase.elapsed());
+                adjacency_rebuilt = true;
             }
         }
 
@@ -539,6 +610,18 @@ impl Graph {
 
             "#);
         }
+
+        open_ms.wal_replay = wal_replay_ms;
+        open_ms.adjacency = adjacency_ms;
+        open_ms.total = ms(started.elapsed());
+        let _ = graph.ops.recovery.set(RecoverySection {
+            wal_records_read: recovery_info.total_records,
+            operations_replayed,
+            uncommitted_txs_discarded: recovery_info.uncommitted_txs.len(),
+            crash_recovery,
+            adjacency_rebuilt,
+            open_ms,
+        });
 
         Ok(graph)
     }
@@ -739,6 +822,7 @@ impl Graph {
 
         let mut processed = 0usize;
         let mut cursor: Option<String> = None;
+        let mut reporter = self.ops.reporter("property_index_rebuild", None);
         loop {
             let (nodes, next) = self
                 .storage
@@ -748,6 +832,7 @@ impl Graph {
                 self.apply_index_node_properties(node).await?;
             }
             processed += nodes.len();
+            reporter.tick(processed as u64);
             match next {
                 Some(c) => {
                     log::info!("rebuild_property_index: {} nodos procesados…", processed);
@@ -756,6 +841,7 @@ impl Graph {
                 None => break,
             }
         }
+        reporter.finish(processed as u64);
         log::info!("rebuild_property_index: completado ({} nodos)", processed);
         Ok(processed)
     }
@@ -877,6 +963,7 @@ impl Graph {
             data_dir: None,
             auto_gc_stop_tx: Arc::new(Mutex::new(None)),
             auto_gc_config: Arc::new(RwLock::new(None)),
+            ops: Arc::new(stats::OpsState::default()),
             write_gate: Arc::new(tokio::sync::Mutex::new(())),
             applier_tx: applier::spawn_applier(),
 
@@ -2576,14 +2663,16 @@ impl Graph {
         }
     }
 
-    async fn replay_wal(&self) -> Result<()> {
+    /// Reproduce lo commiteado del WAL. Devuelve cuántas operaciones hubo
+    /// que volver a aplicar (las ya aplicadas se saltan y no cuentan).
+    async fn replay_wal(&self) -> Result<usize> {
         self.replaying.store(true, AtomicOrdering::Release);
         let out = self.replay_wal_inner().await;
         self.replaying.store(false, AtomicOrdering::Release);
         out
     }
 
-    async fn replay_wal_inner(&self) -> Result<()> {
+    async fn replay_wal_inner(&self) -> Result<usize> {
         let operations = self.wal.get_replay_operations_with_ts().await?;
 
         // Marca de progreso (H4, #65): todo commit con ts ≤ marca ya quedó
@@ -2604,8 +2693,11 @@ impl Graph {
 
         let mut replayed = 0;
         let mut max_commit_ts = 0u64;
+        let total_operations = operations.len() as u64;
+        let mut reporter = self.ops.reporter("wal_replay", Some(total_operations));
 
-        for (operation, commit_ts) in operations {
+        for (i, (operation, commit_ts)) in operations.into_iter().enumerate() {
+            reporter.tick(i as u64);
             max_commit_ts = max_commit_ts.max(commit_ts);
             if commit_ts <= applied_upto {
                 continue;
@@ -2675,9 +2767,10 @@ impl Graph {
                 .await?;
         }
 
+        reporter.finish(total_operations);
         log::info!("Replayed {} operations from WAL", replayed);
 
-        Ok(())
+        Ok(replayed)
     }
 
     /// Busca nodos por propiedad (público para tests)
@@ -2726,6 +2819,7 @@ impl Graph {
             map.keys().cloned().collect()
         };
         self.wal.restart_with_checkpoint(active_txs).await?;
+        self.ops.note_checkpoint();
         log::info!("Checkpoint completed");
         Ok(())
     }
@@ -2784,7 +2878,16 @@ impl Graph {
         // directas. Costo asumido: los escritores esperan mientras dura el
         // ciclo de GC (usar max_nodes_per_cycle para acotarlo).
         let _gate = self.write_gate.lock().await;
-        self.storage.gc_old_versions(&config).await
+        let stats = self.storage.gc_old_versions(&config).await?;
+        self.ops.note_gc(GcRun {
+            unix_ms: stats::unix_ms_now(),
+            nodes_scanned: stats.nodes_scanned,
+            versions_removed: stats.versions_deleted,
+            bytes_freed: stats.bytes_freed,
+            duration_ms: stats.duration_ms,
+            dry_run: config.dry_run,
+        });
+        Ok(stats)
     }
 
     /// Ejecuta garbage collection con configuración por defecto.
@@ -3242,7 +3345,9 @@ impl Graph {
         let _gate = self.write_gate.lock().await;
         // rebuild_indices (v2) interna los tipos y REESCRIBE las claves de
         // adyacencia en disco él mismo; aquí solo se instala la RAM.
+        let reporter = self.ops.reporter("adjacency_rebuild", None);
         let (out, inn) = self.storage.rebuild_indices().await?;
+        reporter.finish(out.values().map(|v| v.len() as u64).sum());
         {
             let mut adj_out = self.adjacency_out.write().await;
             let mut adj_in = self.adjacency_in.write().await;
@@ -3852,8 +3957,11 @@ impl Graph {
         let nodes = self.get_nodes_by_label(label).await?;
         log::debug!("Found {} nodes with label {}", nodes.len(), label);
 
+        let total_nodes = nodes.len() as u64;
+        let mut reporter = self.ops.reporter("index_build", Some(total_nodes));
         let mut indexed_count = 0;
-        for node in nodes {
+        for (i, node) in nodes.into_iter().enumerate() {
+            reporter.tick(i as u64);
             if let Some(value) = node.properties.get(property) {
                 self.index_manager
                     .insert(&index_name, value.clone(), node.id)
@@ -3861,6 +3969,7 @@ impl Graph {
                 indexed_count += 1;
             }
         }
+        reporter.finish(total_nodes);
 
         log::info!("✅ Indexed {} nodes in {}", indexed_count, index_name);
 
@@ -4036,6 +4145,115 @@ impl Graph {
         Ok(stats)
     }
 
+    /// Estado operativo completo de la base en una sola llamada (#158): el
+    /// grafo, con qué se abrió, el WAL y sus checkpoints, lo que pasó en el
+    /// último `open` (registros leídos, operaciones reproducidas, duración
+    /// por fase), los índices de usuario con tamaño y analizador, los índices
+    /// HNSW en caché y el estado del GC. Es lo que hay que mirar cuando algo
+    /// va lento o parece parado; ver `docs/OPERATIONS.md`.
+    ///
+    /// Barato: no recorre datos. Lee contadores que `open`, `checkpoint` y
+    /// `gc` ya dejan anotados y el catálogo de índices en memoria. Para el
+    /// planificador de consultas sigue existiendo [`Graph::get_stats`].
+    pub async fn stats(&self) -> Result<StatsReport> {
+        let planner = self.get_stats().await?;
+        let graph = GraphSection {
+            total_nodes: planner.total_nodes,
+            total_edges: planner.total_edges,
+            avg_degree: planner.avg_degree,
+            nodes_per_label: planner.nodes_per_label.into_iter().collect(),
+            edges_per_type: planner.edges_per_type.into_iter().collect(),
+        };
+
+        let storage = StorageSection {
+            engine: self.storage.backend_name(),
+            profile: match self.storage.profile() {
+                crate::storage::StorageProfile::Default => "default",
+                crate::storage::StorageProfile::Mobile => "mobile",
+                crate::storage::StorageProfile::Server => "server",
+            },
+            data_dir: self.ops.data_dir.clone(),
+            read_only: self.is_read_only(),
+        };
+
+        let last_checkpoint = self.ops.last_checkpoint_unix_ms.load(AtomicOrdering::Relaxed);
+        let wal = WalSection {
+            bytes: self.wal.size_bytes().await,
+            checkpoint_threshold_bytes: self.wal_checkpoint_bytes,
+            checkpoints_this_session: self.ops.checkpoints.load(AtomicOrdering::Relaxed),
+            last_checkpoint_unix_ms: (last_checkpoint > 0).then_some(last_checkpoint),
+            direct_write_durability: match self.direct_write_durability {
+                crate::storage::DirectWriteDurability::ProcessCrash => "process_crash",
+                crate::storage::DirectWriteDurability::Immediate => "immediate",
+            },
+        };
+
+        // En memoria no hay `open`: la sección queda en ceros.
+        let recovery = self.ops.recovery.get().cloned().unwrap_or_default();
+
+        let mut indexes = Vec::new();
+        for meta in self.index_manager.list_indexes().await {
+            let analyzer = if meta.index_type == IndexType::FullText {
+                self.index_manager
+                    .describe_index(&meta.name)
+                    .await
+                    .and_then(|info| info.analyzer)
+                    .map(|a| a.describe())
+            } else {
+                None
+            };
+            indexes.push(IndexSection {
+                name: meta.name,
+                label: meta.label,
+                property: meta.property,
+                kind: format!("{:?}", meta.index_type),
+                size: meta.size,
+                analyzer,
+            });
+        }
+        indexes.sort_by(|a, b| a.name.cmp(&b.name));
+
+        #[allow(unused_mut)]
+        let mut hnsw = Vec::new();
+        #[cfg(feature = "embeddings-index")]
+        {
+            let models: Vec<String> = self.embedding_indices.read().await.keys().cloned().collect();
+            for model in models {
+                if let Some(st) = self.embedding_index_stats(&model).await {
+                    hnsw.push(st);
+                }
+            }
+            hnsw.sort_by(|a, b| a.model.cmp(&b.model));
+        }
+
+        let auto = self.auto_gc_status().await;
+        let gc = GcSection {
+            auto_running: auto.running,
+            auto: auto.config.as_ref().map(GcAutoSummary::from),
+            last_run: self.ops.last_gc.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        };
+
+        Ok(StatsReport { graph, storage, wal, recovery, indexes, hnsw, gc })
+    }
+
+    /// Registra (o sustituye) el callback de progreso de las operaciones
+    /// largas: replay del WAL y reconstrucciones al abrir (solo si el grafo
+    /// se abrió con [`Graph::open_with_progress`]), `create_index`,
+    /// `rebuild_property_index`, `upsert_batch` y `BulkLoader`. Recibe un
+    /// [`Progress`] cada ~1000 ítems o ~250 ms, desde el hilo que hace el
+    /// trabajo: debe ser barato y no bloquear. Los `log::info!` de siempre
+    /// se mantienen; esto los complementa para quien no lee logs.
+    ///
+    /// Sin callback registrado el coste es una comparación por lote.
+    pub fn set_progress_callback(&self, callback: ProgressCallback) {
+        *self.ops.progress.write().unwrap_or_else(|e| e.into_inner()) = Some(callback);
+    }
+
+    /// Retira el callback de progreso, si lo había.
+    pub fn clear_progress_callback(&self) {
+        *self.ops.progress.write().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
     /// Create a query planner instance
     ///
     /// The planner can be used to analyze and optimize queries.
@@ -4069,6 +4287,9 @@ pub struct BulkLoader {
     nodes_inserted: usize,
     edges_inserted: usize,
     start_time: std::time::Instant,
+    /// Fase `bulk_load`: `done` = nodos + aristas escritos; `total` se
+    /// desconoce hasta `finish`.
+    progress: stats::ProgressReporter,
 }
 
 /// Estadísticas de una operación de bulk load
@@ -4082,6 +4303,7 @@ pub struct BulkLoadStats {
 
 impl BulkLoader {
     fn new(graph: Graph, batch_size: usize) -> Self {
+        let progress = graph.ops.reporter("bulk_load", None);
         Self {
             graph,
             pending_nodes: Vec::with_capacity(batch_size),
@@ -4090,6 +4312,7 @@ impl BulkLoader {
             nodes_inserted: 0,
             edges_inserted: 0,
             start_time: std::time::Instant::now(),
+            progress,
         }
     }
 
@@ -4119,6 +4342,7 @@ impl BulkLoader {
         let count = nodes.len();
         self.graph.add_nodes_batch(nodes).await?;
         self.nodes_inserted += count;
+        self.progress.tick((self.nodes_inserted + self.edges_inserted) as u64);
         log::debug!("Flushed {} nodes (total: {})", count, self.nodes_inserted);
         Ok(())
     }
@@ -4131,6 +4355,7 @@ impl BulkLoader {
         let count = edges.len();
         self.graph.add_edges_batch(edges).await?;
         self.edges_inserted += count;
+        self.progress.tick((self.nodes_inserted + self.edges_inserted) as u64);
         log::debug!("Flushed {} edges (total: {})", count, self.edges_inserted);
         Ok(())
     }
@@ -4145,6 +4370,7 @@ impl BulkLoader {
         // que alguien tiene que acordarse de llamar (#143). Los lotes del
         // bulk no pasan por el WAL, así que este es su único fsync.
         self.graph.storage.flush().await?;
+        self.progress.finish((self.nodes_inserted + self.edges_inserted) as u64);
 
         let duration = self.start_time.elapsed();
         let nodes_per_second = if duration.as_secs_f64() > 0.0 {

@@ -87,3 +87,34 @@ fn bad_arguments_exit_with_1_and_print_usage() {
     let out = bin().arg("--version").output().unwrap();
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("nopaldb "));
 }
+
+#[tokio::test]
+async fn stats_prints_every_section_of_a_closed_database() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("plantas");
+    make_sled_db(&dir).await;
+
+    let out = bin().args(["stats", dir.to_str().unwrap()]).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    for needle in [
+        "motor: sled",
+        "solo lectura: sí",
+        "Grafo: 3 nodos, 0 aristas",
+        "Planta",
+        "WAL:",
+        "Último open:",
+        "operaciones reproducidas: 0",
+        "Índices de usuario: ninguno",
+        "Índices HNSW en caché: ninguno",
+        "GC: automático parado",
+    ] {
+        assert!(stdout.contains(needle), "falta `{needle}` en:\n{stdout}");
+    }
+
+    // Sin base: código 1 y ninguna creación accidental.
+    let missing = tmp.path().join("nada");
+    let out = bin().args(["stats", missing.to_str().unwrap()]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!missing.exists(), "stats must not create a database");
+}

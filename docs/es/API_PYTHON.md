@@ -105,10 +105,15 @@ graph.drop_index(index_name)
 ## Stats y ciclo de vida
 
 ```python
-stats = graph.get_stats()
+stats = graph.get_stats()   # dict anidado: graph, storage, wal, recovery, indexes, hnsw, gc
+stats["recovery"]["operations_replayed"], stats["wal"]["bytes"], stats["indexes"]
+graph.set_progress_callback(lambda e: print(e["phase"], e["done"], e["total"]))
 count = graph.node_count()
 graph.close()
 ```
+
+Qué mirar en `get_stats()` para cada síntoma (open lento, ingesta lenta, WAL
+que crece, full-text sin resultados): [OPERATIONS.md](../OPERATIONS.md).
 
 Tambien se puede usar como context manager:
 

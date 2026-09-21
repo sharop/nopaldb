@@ -63,7 +63,7 @@ Two consequences worth knowing:
 
 The SIGKILL harness runs the child with a 32 KiB threshold, so kills land right after truncations many times per round, and asserts on every reopen that everything acknowledged before the kill is present.
 
-`graph.get_stats()["wal_bytes"]` (Python) and `Graph::wal_bytes()` (Rust) report the current size: what the next open would replay if the process died now.
+`graph.get_stats()["wal"]` (Python) and `Graph::stats().wal` (Rust) report the current size (`bytes`: what the next open would replay if the process died now), the threshold in force, how many checkpoints this session made and when the last one was; `recovery` says what the last open actually replayed. See [OPERATIONS.md](OPERATIONS.md).
 
 ## From Python
 
