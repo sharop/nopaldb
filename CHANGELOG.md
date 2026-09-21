@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.4] - unreleased
+## [0.6.4] - 2026-09-21
 
 ### Fixed
 - **El WAL se trunca solo, y solo tras un checkpoint durable del motor**
