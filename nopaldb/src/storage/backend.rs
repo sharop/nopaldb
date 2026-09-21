@@ -68,7 +68,18 @@ pub struct StorageOptions {
     pub profile: StorageProfile,
     /// Ver [`DirectWriteDurability`].
     pub direct_write_durability: DirectWriteDurability,
+    /// Tamaño del WAL a partir del cual el applier hace un checkpoint
+    /// automático (motor durable + WAL truncado) al terminar el lote en
+    /// curso. `0` desactiva el automático: el WAL crece hasta que alguien
+    /// llame a `Graph::checkpoint()` o a `close()`. Ver [`DEFAULT_WAL_CHECKPOINT_BYTES`].
+    pub wal_checkpoint_bytes: u64,
 }
+
+/// 16 MiB: a ~250 B por operación son ~64k operaciones entre checkpoints,
+/// un replay de un segundo largo si el proceso muere justo antes del
+/// siguiente. El checkpoint cuesta un fsync del motor (milisegundos), así
+/// que bajar el umbral es barato; subirlo solo alarga el replay al abrir.
+pub const DEFAULT_WAL_CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024;
 
 impl Default for StorageOptions {
     fn default() -> Self {
@@ -80,6 +91,7 @@ impl Default for StorageOptions {
             engine: StorageEngine::Auto,
             profile: StorageProfile::Default,
             direct_write_durability: DirectWriteDurability::default(),
+            wal_checkpoint_bytes: DEFAULT_WAL_CHECKPOINT_BYTES,
         }
     }
 }

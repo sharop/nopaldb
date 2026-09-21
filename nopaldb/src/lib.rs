@@ -122,7 +122,7 @@ pub use ml::PyGData;
 pub use error::{NopalError, Result, StorageError, StorageErrorKind};
 pub use types::{Node, Edge, NodeId, EdgeId, PropertyValue, Properties};
 pub use storage::{IndexSummary, MigrationReport, SidecarReport, Storage};
-pub use storage::{DirectWriteDurability, StorageEngine, StorageOptions, StorageProfile, StorageTuning};
+pub use storage::{DirectWriteDurability, StorageEngine, StorageOptions, StorageProfile, StorageTuning, DEFAULT_WAL_CHECKPOINT_BYTES};
 pub use graph::{Graph, Direction, BulkLoader, BulkLoadStats, AutoGcConfig, AutoGcStatus, GraphView, Subgraph, LinkSpec, UpsertOutcome, UpsertRequest};
 #[cfg(feature = "embeddings-index")]
 pub use graph::{EmbeddingIndexStats, SharedHnswIndex};

@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.4] - unreleased
+
+### Fixed
+- **El WAL se trunca solo, y solo tras un checkpoint durable del motor**
+  (#150). Hasta 0.6.3 el único truncado era `Graph::checkpoint()`, que
+  ninguna ruta de producción llamaba y Python no exponía: una base con
+  escrituras crecía sin límite (~250 B por operación) y el replay al abrir
+  con ella. Y ese checkpoint truncaba SIN hacer durable el motor antes: un
+  apagón justo después podía perder escrituras confirmadas. Ahora el applier
+  hace el checkpoint cuando el log supera `StorageOptions::wal_checkpoint_bytes`
+  (16 MiB por defecto; `0` lo desactiva), `close()` lo hace siempre, y el
+  orden es fijo: relojes lógicos, flush durable del motor (redb
+  `Durability::Immediate`, sled `flush`), y solo entonces el WAL se vacía. El
+  harness de crash corre el hijo con umbral de 32 KiB y checkpoints
+  explícitos, y exige tras cada kill todo lo confirmado.
+
+- **sled: una apertura ya no falla para siempre por un snapshot a medio
+  escribir.** sled escribe cada snapshot en `snap.<lsn>.generating` y lo
+  renombra al terminar; si el proceso muere en medio (el harness de arranque
+  en frío lo provoca matando al hijo milisegundos después de abrir), el
+  archivo truncado queda y el listado de sled lo toma como el snapshot más
+  reciente: `Read corrupted data` en cada apertura siguiente. El motor sled
+  ahora borra los `.generating` al abrir (nunca fueron válidos; sled
+  reconstruye desde el log). Lo tapaba el replay del WAL; al truncarlo en
+  `close()` salió a la luz.
+- **El timestamp del registro `Checkpoint` (reloj de pared, ms) ya no se
+  mezcla con los timestamps lógicos** al recuperar: el reloj MVCC saltaba a
+  ~1.7e12 en el primer open tras un checkpoint.
+
+### Added
+- `Graph.checkpoint()` en Python (y stub), `Graph::wal_bytes()` en Rust y
+  `wal_bytes` en `graph.get_stats()`: lo que el próximo `open` tendría que
+  reproducir.
+- `docs/DURABILITY.md`: sección "WAL checkpoints and truncation" y tabla
+  "From Python" (qué garantiza cada llamada, qué sobrevive a un apagón y
+  cómo recuperar una carga interrumpida).
+- `StorageOptions::wal_checkpoint_bytes` (nuevo campo; construir con
+  `..Default::default()`).
+
+---
+
 ## [0.6.3] - 2026-09-20
 
 ### Fixed

@@ -297,7 +297,53 @@ impl WalManager {
         Ok(())
     }
 
-    /// Trunca el WAL después de un checkpoint exitoso
+    /// Bytes escritos en el archivo del WAL (registros válidos; la cola
+    /// rasgada, si la hubo, ya se descartó al abrir).
+    pub async fn size_bytes(&self) -> u64 {
+        *self.position.lock().await
+    }
+
+    /// Reinicia el WAL tras un checkpoint durable del motor: lo vacía y deja
+    /// como único registro un `Checkpoint`, fsynced. Todo bajo el lock del
+    /// archivo, así ningún append puede colarse entre el truncado y el
+    /// registro nuevo.
+    ///
+    /// La precondición es del llamador (`Graph::checkpoint`): todo lo que el
+    /// log contenía está APLICADO y el motor lo hizo DURABLE (`flush`).
+    /// Cumplida esa condición no hay nada que conservar: una transacción
+    /// commiteada viaja entera en un solo `append_batch` (Begin…Commit bajo
+    /// este mismo lock), así que no existe "Begin sin Commit" que un
+    /// checkpoint pudiera partir; y un Begin sin Commit de un crash anterior
+    /// se descartaría en el recovery de todos modos.
+    pub async fn restart_with_checkpoint(&self, active_txs: Vec<TransactionId>) -> Result<()> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| NopalError::Custom(format!("System clock error: {}", e)))?
+            .as_millis() as u64;
+        let record = WalRecord::Checkpoint { timestamp, active_transactions: active_txs };
+        let data = serde_json::to_vec(&record)
+            .map_err(|e| NopalError::SerializationError(e.to_string()))?;
+        let mut buffer = Vec::with_capacity(8 + data.len());
+        buffer.extend_from_slice(&(data.len() as u64).to_le_bytes());
+        buffer.extend_from_slice(&data);
+
+        let mut file = self.file.lock().await;
+        let mut position = self.position.lock().await;
+        let before = *position;
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(&buffer)?;
+        file.sync_all()?;
+        self.unsynced.store(false, Ordering::Release);
+        *position = buffer.len() as u64;
+        *self.last_checkpoint.lock().await = timestamp;
+        log::info!("WAL checkpoint: {} bytes truncated, log restarted at t={}", before, timestamp);
+        Ok(())
+    }
+
+    /// Trunca el WAL después de un checkpoint exitoso. Histórico: relee el
+    /// log entero y lo reescribe; `Graph::checkpoint` usa
+    /// [`Self::restart_with_checkpoint`] desde 0.6.4.
     pub async fn truncate_after_checkpoint(&self) -> Result<()> {
         // Solo truncar si no hay transacciones activas
         let records = self.read_all().await?;
@@ -437,9 +483,12 @@ impl WalManager {
                 }
 
                 WalRecord::Checkpoint { timestamp, .. } => {
-                    // Checkpoint marca punto seguro
-                    max_timestamp = max_timestamp.max(*timestamp);
-                    log::debug!("Found checkpoint in WAL");
+                    // Punto seguro. Su `timestamp` es reloj de pared en ms,
+                    // NO un timestamp lógico: hasta 0.6.3 se mezclaba en
+                    // `max_timestamp` y el reloj MVCC de la base saltaba a
+                    // ~1.7e12 en el primer open tras un checkpoint (nadie lo
+                    // notó porque nada llamaba a checkpoint en producción).
+                    log::debug!("Found checkpoint in WAL (t={} ms)", timestamp);
                 }
             }
         }

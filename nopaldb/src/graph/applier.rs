@@ -508,4 +508,18 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
     if let Err(e) = anchor.persist_clocks().await {
         log::warn!("applier: failed to persist logical clocks after batch: {}", e);
     }
+
+    // Checkpoint automático (#150): con el gate todavía tomado y el lote ya
+    // aplicado, si el WAL superó el umbral se hace durable el motor y se
+    // vacía el log. Aquí y no en un task aparte porque este es el único
+    // punto en que "todo lo del WAL está aplicado" es verdad sin más
+    // sincronización. Si falla, se avisa y se reintenta en el próximo lote:
+    // los acks ya salieron y la durabilidad de lo escrito no depende de esto.
+    let threshold = anchor.wal_checkpoint_bytes();
+    if threshold > 0
+        && anchor.wal().size_bytes().await >= threshold
+        && let Err(e) = anchor.checkpoint_locked().await
+    {
+        log::warn!("applier: automatic WAL checkpoint failed (will retry next batch): {}", e);
+    }
 }

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use crate::error::{NopalError, Result};
 use crate::types::{Node, Edge, NodeId, EdgeId, PropertyValue};
 use crate::mvcc::{VersionedNode, VersionedEdge};
-pub use backend::{DirectWriteDurability, StorageEngine, StorageOptions, StorageProfile, StorageTuning};
+pub use backend::{DirectWriteDurability, StorageEngine, StorageOptions, StorageProfile, StorageTuning, DEFAULT_WAL_CHECKPOINT_BYTES};
 pub use kv::migrate::{IndexSummary, MigrationReport, SidecarReport};
 
 /// Nombre meta con la cota superior persistida del reloj lógico de

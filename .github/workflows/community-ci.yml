@@ -122,7 +122,7 @@ jobs:
         run: cargo test -p nopaldb --no-default-features --features storage-sled --test cold_start_crash_test
 
       - name: Crash + persistence harness with sled backend
-        run: cargo test -p nopaldb --no-default-features --features storage-sled --test crash_commit_test --test clock_persistence_test --test edge_persistence_test --test adjacency_update_regression_test
+        run: cargo test -p nopaldb --no-default-features --features storage-sled --test crash_commit_test --test clock_persistence_test --test edge_persistence_test --test adjacency_update_regression_test --test wal_truncation_test
 
   python-stubs:
     runs-on: ubuntu-latest

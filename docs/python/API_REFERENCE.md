@@ -95,6 +95,15 @@ used. Returns a dict with three sections:
 
 See [MIGRATION_0.6.md](../MIGRATION_0.6.md) for what travels and what is rebuilt.
 
+##### `graph.checkpoint() -> None`
+
+Make everything applied so far durable in the storage engine and truncate the
+WAL, so the next `Graph.open` replays nothing. It runs on its own when the WAL
+passes 16 MiB and on `close()`; call it after a large load if you want the
+reopen to be instant. Every acknowledged write is recoverable with or without
+it (see [DURABILITY.md](../DURABILITY.md) § From Python). Raises on a
+read-only graph. `graph.get_stats()["wal_bytes"]` reports the current WAL size.
+
 ##### `Graph.rebuild_indexes() -> int`
 
 Rebuild the user indexes from `<dir>/indexes/metadata.bin` and the current
