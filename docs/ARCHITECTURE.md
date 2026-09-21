@@ -158,7 +158,7 @@ El Write-Ahead Log (`src/wal/`) registra cada escritura antes de que llegue al s
 
 Un commit durable cuesta un fsync, lo pague el WAL o lo pague el motor: quitar el WAL no abarata la durabilidad, solo la quitaria. Lo que el WAL cuesta de verdad es el `write()` por operacion directa (microsegundos) y disco: 243 B por `add_node` directo, 322 B por `add_edge`, 248 B por commit de un nodo, en `serde_json` con prefijo de longitud. Lo que da y el motor no: un registro de operaciones sobre nodos y aristas con timestamps logicos, que es lo que haria falta para replicar, capturar cambios (CDC) o recuperar a un instante logico. Nada de eso existe todavia y no se construye hasta que haya un consumidor; la decision solo fija que el WAL es la pieza sobre la que se construiria, y que no se quita.
 
-Pendiente detectado en el estudio: el WAL solo se trunca en `Graph::checkpoint()`, que ninguna ruta de produccion llama y Python no expone. Una base con escrituras crece sin limite hasta que la aplicacion lo invoque. La correccion (truncar automaticamente lo anterior al ultimo checkpoint durable del motor, y exponer `checkpoint` en Python) va en su propio issue.
+El estudio destapo que el WAL solo se truncaba en `Graph::checkpoint()`, que nada de produccion llamaba, y que ese checkpoint truncaba sin pedirle al motor un checkpoint durable. Resuelto en 0.6.4 (#150): el applier hace el checkpoint solo cuando el log supera `StorageOptions::wal_checkpoint_bytes` (16 MiB por defecto), `close()` lo hace siempre, Python expone `graph.checkpoint()`, y el orden es fijo: relojes, flush durable del motor, y solo entonces se vacia el WAL. Detalle en [DURABILITY.md](DURABILITY.md) § WAL checkpoints and truncation.
 
 ### GC
 

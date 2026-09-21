@@ -77,6 +77,9 @@ pub struct Graph {
     wal: Arc<WalManager>,
     /// Cómo llegan al disco los registros WAL de las escrituras directas.
     direct_write_durability: crate::storage::DirectWriteDurability,
+    /// Umbral del checkpoint automático del WAL (`0` = solo manual). Ver
+    /// `StorageOptions::wal_checkpoint_bytes`.
+    wal_checkpoint_bytes: u64,
     /// `true` mientras `replay_wal` reproduce el log al abrir: las
     /// escrituras que genera ya están en el WAL y el applier no las vuelve
     /// a registrar (si no, cada reapertura tras un crash duplicaría el
@@ -450,6 +453,7 @@ impl Graph {
 
             wal: Arc::new(wal),
             direct_write_durability: options.direct_write_durability,
+            wal_checkpoint_bytes: options.wal_checkpoint_bytes,
             replaying: Arc::new(AtomicBool::new(false)),
 
             index_manager: Arc::new(index_manager),
@@ -824,6 +828,7 @@ impl Graph {
         let mut graph = Self::from_storage(storage, wal);
 
         graph.direct_write_durability = options.direct_write_durability;
+        graph.wal_checkpoint_bytes = options.wal_checkpoint_bytes;
 
         Ok(graph)
     }
@@ -863,6 +868,7 @@ impl Graph {
 
             wal: Arc::new(wal),
             direct_write_durability: Default::default(),
+            wal_checkpoint_bytes: crate::storage::DEFAULT_WAL_CHECKPOINT_BYTES,
             replaying: Arc::new(AtomicBool::new(false)),
 
             auto_gc_task: Arc::new(Mutex::new(None)),
@@ -2683,33 +2689,57 @@ impl Graph {
         self.storage.get_nodes_by_property(property, value).await
     }
 
+    /// Checkpoint: hace durable en el motor todo lo aplicado y vacía el WAL.
+    ///
+    /// Es la única ruta que trunca el WAL. El applier la invoca sola cuando
+    /// el log supera `StorageOptions::wal_checkpoint_bytes` (#150), y
+    /// `close()` al cerrar; llamarla a mano solo acorta el replay del próximo
+    /// `open`. Toma el write gate: mientras corre no hay ningún lote entre
+    /// "escrito en el WAL" y "aplicado en el motor", que es lo que hace
+    /// seguro truncar (ver [`Self::checkpoint_locked`]).
     pub async fn checkpoint(&self) -> Result<()> {
+        self.deny_if_read_only("checkpoint")?;
+        let _gate = self.write_gate.lock().await;
+        self.checkpoint_locked().await
+    }
+
+    /// Cuerpo del checkpoint. El llamador SOSTIENE el write gate.
+    ///
+    /// Orden, y por qué no se puede alterar:
+    /// 1. relojes lógicos a storage (para que el flush de abajo los lleve);
+    /// 2. `storage.flush()`: el motor hace durable todo lo aplicado (redb:
+    ///    commit de la ventana + `Durability::Immediate`; sled: `flush`);
+    /// 3. el WAL se vacía. Hasta 0.6.3 se truncaba SIN el paso 2: el motor
+    ///    podía tener lo aplicado solo en memoria, y un apagón después del
+    ///    truncado perdía escrituras confirmadas que ya no estaban en ningún
+    ///    sitio. Bajo el gate no hay lote a medio aplicar, así que "todo lo
+    ///    del WAL está en el motor" es cierto en el instante del flush.
+    pub(crate) async fn checkpoint_locked(&self) -> Result<()> {
         log::info!("Creating checkpoint...");
-
-        // 1. Índices: no-op desde v2 (la adyacencia se persiste por operación)
         self.flush_indices().await?;
-
-        // 2. Obtener transacciones activas para el WAL checkpoint
+        self.persist_clocks().await?;
+        self.storage.flush().await?;
         let active_txs: Vec<TransactionId> = {
             let map = self.active_tx_timestamps
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             map.keys().cloned().collect()
         };
-
-        // 3. Escribir checkpoint al WAL
-        self.wal.checkpoint(active_txs).await?;
-
-        // 4. Truncar WAL antiguo
-        self.wal.truncate_after_checkpoint().await?;
-
-        // 5. Persistir relojes lógicos: tras truncar el WAL ya no se puede
-        //    derivar el máximo timestamp desde el log en el próximo open.
-        self.persist_clocks().await?;
-
+        self.wal.restart_with_checkpoint(active_txs).await?;
         log::info!("Checkpoint completed");
-
         Ok(())
+    }
+
+    /// Bytes del WAL en disco ahora mismo: lo que el próximo `open` tendría
+    /// que reproducir si el proceso muriera ya. Vuelve a ~100 B tras cada
+    /// checkpoint.
+    pub async fn wal_bytes(&self) -> u64 {
+        self.wal.size_bytes().await
+    }
+
+    /// Umbral del checkpoint automático (`StorageOptions::wal_checkpoint_bytes`).
+    pub(crate) fn wal_checkpoint_bytes(&self) -> u64 {
+        self.wal_checkpoint_bytes
     }
 
     /// Ejecuta garbage collection de versiones MVCC antiguas.
@@ -3947,14 +3977,18 @@ impl Graph {
         self.flush_indices().await?;
         log::debug!("  ✓ Indices flushed (adjacency is persisted per-operation)");
 
-        // 2. fsync del WAL: los registros de escrituras directas escritos
-        // sin fsync (`DirectWriteDurability::ProcessCrash`) quedan durables.
-        self.wal.sync().await?;
-        log::debug!("  ✓ WAL synced");
-
-        // 3. Flush storage (sled database)
-        self.storage.flush().await?;
-        log::debug!("  ✓ Storage flushed");
+        // 2-3. Checkpoint: motor durable y WAL vacío, así el próximo open no
+        // reproduce nada. En solo-lectura no hay nada que truncar ni que
+        // hacer durable: solo el sync del WAL (no-op) y el flush de cortesía.
+        if self.read_only_seal.is_none() {
+            let _gate = self.write_gate.lock().await;
+            self.checkpoint_locked().await?;
+            log::debug!("  ✓ Checkpoint (engine durable, WAL truncated)");
+        } else {
+            self.wal.sync().await?;
+            self.storage.flush().await?;
+            log::debug!("  ✓ WAL synced, storage flushed (read-only)");
+        }
 
         // 4. Índices HNSW con cambios → disco (caché derivada: si falla, el
         // próximo open reconstruye; no es motivo para que close() falle).

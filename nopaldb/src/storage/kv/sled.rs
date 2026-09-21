@@ -116,6 +116,39 @@ fn discard_incomplete_creation(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// Borra los snapshots de sled que se quedaron a medio escribir.
+///
+/// sled escribe cada snapshot en `snap.<lsn>.generating`, hace fsync y lo
+/// renombra a `snap.<lsn>` (atómico). Si el proceso muere entre la creación y
+/// el rename —le pasa al hijo del harness de arranque en frío cuando lo matan
+/// milisegundos después de abrir, porque sled escribe un snapshot nuevo al
+/// recuperar el log— queda un `.generating` truncado. El filtro de sled al
+/// listar snapshots (`get_snapshot_files`) solo excluye `.in___motion`, así que
+/// ordena, toma el nombre "mayor" —que es el `.generating`, por ser más largo
+/// con el mismo prefijo— y falla con `Read corrupted data` para siempre.
+///
+/// Un `.generating` nunca fue un snapshot válido: sled reconstruye el estado
+/// desde el log (y desde el último `snap.<lsn>` completo, si existe), así que
+/// quitarlo no pierde nada. Se hace en cada apertura, antes de que sled mire
+/// el directorio. Salió a la luz en 0.6.4 al truncar el WAL en `close()`: con
+/// el log vacío, la reapertura ya no tapaba la pérdida con un replay.
+fn discard_torn_snapshots(path: &std::path::Path) -> Result<()> {
+    let Ok(entradas) = std::fs::read_dir(path) else { return Ok(()) };
+    for entrada in entradas.flatten() {
+        let nombre = entrada.file_name();
+        let nombre = nombre.to_string_lossy();
+        if nombre.starts_with("snap.") && nombre.ends_with(".generating") {
+            log::warn!(
+                "descartando el snapshot de sled a medio escribir {} (un proceso anterior murió \
+                 mientras lo generaba; sled lo reconstruye desde el log)",
+                entrada.path().display()
+            );
+            std::fs::remove_file(entrada.path())?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) struct SledEngine {
     db: ::sled::Db,
     /// Reserva de la ruta en el registro del proceso; se suelta con el engine.
@@ -158,6 +191,7 @@ impl SledEngine {
             .into());
         }
         discard_incomplete_creation(path)?;
+        discard_torn_snapshots(path)?;
 
         // El lock del directorio se reintenta durante un tiempo acotado.
         //
@@ -354,6 +388,25 @@ impl KvKeyspace for SledKeyspace {
     fn clear(&self) -> Result<()> {
         self.tree.clear()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod torn_snapshot_tests {
+    #[test]
+    fn only_generating_snapshots_are_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let ok = dir.path().join("snap.0000000000000005");
+        let torn = dir.path().join("snap.0000000000000010.generating");
+        std::fs::write(&ok, b"complete").unwrap();
+        std::fs::write(&torn, b"half").unwrap();
+        std::fs::write(dir.path().join("conf"), b"x").unwrap();
+        super::discard_torn_snapshots(dir.path()).unwrap();
+        assert!(ok.exists(), "a renamed snapshot is complete and stays");
+        assert!(!torn.exists(), "the .generating leftover is gone");
+        assert!(dir.path().join("conf").exists());
+        // Idempotente y sin snapshots: no hace nada.
+        super::discard_torn_snapshots(dir.path()).unwrap();
     }
 }
 

@@ -70,7 +70,16 @@ async fn crash_child_writer() {
     };
 
     let dir = std::path::PathBuf::from(dir);
-    let graph = open(&dir).await;
+    // Umbral de checkpoint diminuto: el WAL se trunca varias veces por
+    // ronda, así que el kill cae con frecuencia justo después de un
+    // truncado (#150). El padre reabre con el umbral por defecto: lo que
+    // debe sobrevivir no depende de él.
+    let graph = Graph::open_with_options(
+        &dir,
+        StorageOptions { engine: engine(), wal_checkpoint_bytes: 32 * 1024, ..Default::default() },
+    )
+    .await
+    .expect("open child");
     let mut acked = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -126,6 +135,12 @@ async fn crash_child_writer() {
             writeln!(acked, "d?:{d}").expect("log");
             graph.delete_node(d).await.expect("direct delete_node");
             writeln!(acked, "d:{d}").expect("log");
+        }
+        // Checkpoint explícito de vez en cuando, además del automático: es
+        // la llamada que Python expone y la que un usuario haría tras una
+        // carga. Nada de lo confirmado antes puede perderse con él.
+        if i % 17 == 0 {
+            graph.checkpoint().await.expect("checkpoint");
         }
     }
 }

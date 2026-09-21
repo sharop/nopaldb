@@ -687,6 +687,7 @@ impl PyGraph {
     ///     >>> print(f"Avg degree: {stats['avg_degree']}")
     fn get_stats(&self, py: Python<'_>) -> PyResult<std::collections::HashMap<String, String>> {
         let graph = self.graph()?;
+        let graph_for_wal = graph.clone();
 
         let stats = crate::python::runtime::block_on(py, async move {
             graph.get_stats().await
@@ -698,6 +699,8 @@ impl PyGraph {
         result.insert("total_nodes".to_string(), stats.total_nodes.to_string());
         result.insert("total_edges".to_string(), stats.total_edges.to_string());
         result.insert("avg_degree".to_string(), format!("{:.2}", stats.avg_degree));
+        let wal_bytes = crate::python::runtime::block_on(py, async move { graph_for_wal.wal_bytes().await });
+        result.insert("wal_bytes".to_string(), wal_bytes.to_string());
 
         Ok(result)
     }
@@ -806,6 +809,25 @@ impl PyGraph {
         to_py_result(crate::python::runtime::block_on(py, async move {
             graph.rebuild_indexes().await
         }))
+    }
+
+    /// Checkpoint: make everything applied so far durable in the storage
+    /// engine and truncate the WAL, so the next `open` replays nothing.
+    ///
+    /// Runs on its own when the WAL grows past 16 MiB and on `close()`; call
+    /// it after a big load if you want the reopen to be instant. Every
+    /// acknowledged `upsert`, `add_node`, commit or bulk load is recoverable
+    /// with or without it; what it changes is how long the next open takes
+    /// (and, for direct writes in the default mode, it is also an fsync).
+    /// Raises on a read-only graph.
+    ///
+    /// Example:
+    ///     >>> graph.upsert_many(rows)
+    ///     >>> graph.checkpoint()
+    ///     >>> graph.get_stats()["wal_bytes"]   # back to ~'100'
+    fn checkpoint(&self, py: Python<'_>) -> PyResult<()> {
+        let graph = self.graph()?;
+        to_py_result(crate::python::runtime::block_on(py, async move { graph.checkpoint().await }))
     }
 
     /// Close the database
