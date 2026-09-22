@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.7] - unreleased
+## [0.6.7] - 2026-09-22
 
 ### Fixed
 - **El esquema derivado ya no se reconstruye tras cada escritura** (#164).
