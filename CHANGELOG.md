@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.5] - unreleased
+## [0.6.5] - 2026-09-22
 
 ### Added
 - **Observabilidad operativa** (#158). `Graph::stats()` en Rust y
