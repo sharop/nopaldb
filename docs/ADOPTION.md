@@ -115,6 +115,12 @@ https://github.com/Anxious-Mind-Group/ndbstudio.
 6. **Update-heavy datasets:** enable MVCC garbage collection
    (`graph.start_auto_gc(config)`), or old versions accumulate. GC never
    removes versions still readable by open transactions.
+7. **When something is slow or seems stuck,** read `graph.get_stats()`
+   (Python), `Graph::stats()` (Rust) or run `nopaldb stats <dir>`: what the
+   last open replayed and how long each phase took, the WAL and its
+   checkpoints, the user indexes with size and analyzer, the HNSW caches and
+   the GC. Long operations can report progress through a callback. Symptom
+   by symptom in [OPERATIONS.md](OPERATIONS.md).
 
 ## Interoperating with an RDF store: what the Turtle bridge keeps
 

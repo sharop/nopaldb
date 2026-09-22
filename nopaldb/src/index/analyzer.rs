@@ -42,6 +42,27 @@ pub struct FullTextAnalyzer {
 }
 
 impl FullTextAnalyzer {
+    /// One readable line: `"default"` when nothing is on, otherwise what is
+    /// on joined with `+` (`"spanish+stemming+stopwords+ascii_folding"`).
+    /// Shared by the migration report and `Graph::stats` so both say the
+    /// same thing about the same index.
+    pub fn describe(&self) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if let Some(lang) = &self.language {
+            parts.push(lang);
+        }
+        if self.stemming {
+            parts.push("stemming");
+        }
+        if self.stopwords {
+            parts.push("stopwords");
+        }
+        if self.ascii_folding {
+            parts.push("ascii_folding");
+        }
+        if parts.is_empty() { "default".into() } else { parts.join("+") }
+    }
+
     /// Languages tantivy can stem (its `Language` enum, lowercased).
     pub const LANGUAGES: &'static [&'static str] = &[
         "arabic", "danish", "dutch", "english", "finnish", "french", "german", "greek", "hungarian", "italian",

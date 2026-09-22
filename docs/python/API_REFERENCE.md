@@ -31,7 +31,7 @@ graph = nopaldb.Graph.open("data/my_graph.db")
 
 ---
 
-##### `Graph.open_with_options(path: str, engine: str = "auto", profile: str = "default") -> Graph`
+##### `Graph.open_with_options(path: str, engine: str = "auto", profile: str = "default", on_progress=None) -> Graph`
 
 Open a database with an explicit storage backend and tuning profile.
 
@@ -102,7 +102,38 @@ WAL, so the next `Graph.open` replays nothing. It runs on its own when the WAL
 passes 16 MiB and on `close()`; call it after a large load if you want the
 reopen to be instant. Every acknowledged write is recoverable with or without
 it (see [DURABILITY.md](../DURABILITY.md) § From Python). Raises on a
-read-only graph. `graph.get_stats()["wal_bytes"]` reports the current WAL size.
+read-only graph. `graph.get_stats()["wal"]["bytes"]` reports the current WAL size.
+
+##### `graph.get_stats() -> dict`
+
+Operational state of the database in one call: `graph` (counts, per label
+and type), `storage` (engine, profile, directory, read-only), `wal` (bytes,
+checkpoint threshold, checkpoints this session, last checkpoint), `recovery`
+(what the open that created this handle did: WAL records read, operations
+replayed, crash recovery, adjacency rebuilt, milliseconds per phase),
+`indexes` (name, label, property, type, size, analyzer), `hnsw` (one entry
+per vector index in cache) and `gc` (auto scheduler state, last run). Native
+types; typed as `nopaldb.Stats` in the stub. Cheap: nothing is scanned. The
+0.6.x flat string keys (`total_nodes`, `total_edges`, `avg_degree`,
+`storage_engine`, `wal_bytes`) stay at the top level for one more minor.
+
+```python
+s = graph.get_stats()
+s["recovery"]["operations_replayed"], s["recovery"]["open_ms"]["total"]
+[(ix["name"], ix["size"], ix["analyzer"]) for ix in s["indexes"]]
+```
+
+What to read for each symptom: [OPERATIONS.md](../OPERATIONS.md).
+
+##### `graph.set_progress_callback(callback) -> None`
+
+Register (or remove with `None`) a callable that receives
+`{"phase": str, "done": int, "total": int | None}` while `create_index`,
+`upsert_many` and `BulkLoader` run, every ~1000 items or ~250 ms. The same
+callable passed as `on_progress` to `Graph.open_with_options` also sees the
+open's `wal_replay`, `adjacency_rebuild` and `index_load`. It runs on a
+worker thread: keep it cheap, do not call the graph from it. An exception it
+raises is logged and ignored.
 
 ##### `Graph.rebuild_indexes() -> int`
 

@@ -146,4 +146,5 @@ jobs:
           python nopaldb/python/scripts/shacl_sample.py
           python nopaldb/python/scripts/hnsw_sample.py
           python nopaldb/python/scripts/migrate_sample.py
+          python nopaldb/python/scripts/stats_sample.py
           mypy --strict nopaldb/python/scripts/typecheck_sample.py

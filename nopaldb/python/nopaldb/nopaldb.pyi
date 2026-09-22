@@ -1,6 +1,6 @@
 # Type stubs for the native `nopaldb.nopaldb` extension module (PyO3).
 # Kept in sync with src/python/*.rs. See python/scripts/check_stubs.py.
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional, TypedDict
 
 __version__: str
 __author__: str
@@ -8,6 +8,106 @@ __author__: str
 # Property values accepted/returned across the API.
 Property = str | int | float | bool | bytes | None
 Props = dict[str, Property]
+
+# ── get_stats() (#158) ─────────────────────────────────────────────
+# One event of the progress callback: `phase` is a stable name
+# ("wal_replay", "adjacency_rebuild", "index_load", "index_build",
+# "property_index_rebuild", "bulk_load", "upsert_batch"); `total` is None
+# when unknown up front (a bulk load) and equals `done` on the last event.
+class ProgressEvent(TypedDict):
+    phase: str
+    done: int
+    total: int | None
+
+ProgressCallback = Callable[[ProgressEvent], object]
+
+class GraphStats(TypedDict):
+    total_nodes: int
+    total_edges: int
+    avg_degree: float
+    nodes_per_label: dict[str, int]
+    edges_per_type: dict[str, int]
+
+class StorageStats(TypedDict):
+    engine: str            # "redb" | "sled"
+    profile: str           # "default" | "mobile" | "server"
+    data_dir: str | None   # None in memory
+    read_only: bool
+
+class WalStats(TypedDict):
+    bytes: int                          # what the next open would replay
+    checkpoint_threshold_bytes: int     # 0 = manual and close() only
+    checkpoints_this_session: int
+    last_checkpoint_unix_ms: int | None
+    direct_write_durability: str        # "process_crash" | "immediate"
+
+class OpenPhasesMs(TypedDict):
+    storage: int
+    wal_replay: int
+    adjacency: int
+    indexes: int
+    total: int
+
+class RecoveryStats(TypedDict):
+    wal_records_read: int
+    operations_replayed: int
+    uncommitted_txs_discarded: int
+    crash_recovery: bool
+    adjacency_rebuilt: bool
+    open_ms: OpenPhasesMs
+
+class IndexStats(TypedDict):
+    name: str
+    label: str
+    property: str
+    type: str              # "Hash" | "BTree" | "FullText" | "Taxonomy"
+    size: int
+    analyzer: str | None   # full-text only: "default" or "spanish+stemming+…"
+
+class HnswStats(TypedDict):
+    model: str
+    size: int
+    tombstones: int
+    dimension: int
+    needs_rebuild: bool
+    persisted: bool
+    loaded_from_disk_ms: int | None
+
+class GcAutoStats(TypedDict):
+    interval_secs: int
+    cutoff_timestamp: int
+    min_versions_to_keep: int
+    max_nodes_per_cycle: int
+    dry_run: bool
+    use_active_horizon: bool
+
+class GcRunStats(TypedDict):
+    unix_ms: int
+    nodes_scanned: int
+    versions_removed: int
+    bytes_freed: int
+    duration_ms: int
+    dry_run: bool
+
+class GcStats(TypedDict):
+    auto_running: bool
+    auto: GcAutoStats | None
+    last_run: GcRunStats | None
+
+class Stats(TypedDict):
+    graph: GraphStats
+    storage: StorageStats
+    wal: WalStats
+    recovery: RecoveryStats
+    indexes: list[IndexStats]
+    hnsw: list[HnswStats]
+    gc: GcStats
+    # Deprecated flat keys of 0.6.x, kept one more minor. Strings, as before.
+    total_nodes: str
+    total_edges: str
+    avg_degree: str
+    storage_engine: str
+    wal_bytes: str
 
 class Graph:
     # ── Construction ────────────────────────────────────────────────
@@ -18,8 +118,15 @@ class Graph:
     # `engine` is "auto" (default: the engine of the database already at
     # `path`, redb for a new one), "redb" or "sled". Availability depends on how
     # the package was BUILT: the wheels on PyPI ship both engines since 0.6.0.
+    # `on_progress` receives the phases of this open (WAL replay, rebuilds)
+    # and stays registered for later long operations (see set_progress_callback).
     @staticmethod
-    def open_with_options(path: str, engine: str = "auto", profile: str = "default") -> "Graph": ...
+    def open_with_options(
+        path: str,
+        engine: str = "auto",
+        profile: str = "default",
+        on_progress: ProgressCallback | None = None,
+    ) -> "Graph": ...
     @staticmethod
     def in_memory() -> "Graph": ...
     @staticmethod
@@ -86,7 +193,13 @@ class Graph:
     def get_edge_type_count(self, edge_type: str) -> int: ...
     def rebuild_schema(self) -> None: ...
     def rebuild_indexes(self) -> int: ...
-    def get_stats(self) -> dict[str, str]: ...
+    # Operational state in one call: see docs/OPERATIONS.md. The nested
+    # sections carry native types; the flat keys are the 0.6.x strings.
+    def get_stats(self) -> Stats: ...
+    # Progress of create_index / upsert_many / BulkLoader (and of the open, when
+    # opened with on_progress). Called from a worker thread every ~1000 items or
+    # ~250 ms; keep it cheap and do not call the graph from it. None removes it.
+    def set_progress_callback(self, callback: ProgressCallback | None) -> None: ...
 
     # ── Indexes ─────────────────────────────────────────────────────
     def create_index(

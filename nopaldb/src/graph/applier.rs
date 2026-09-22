@@ -26,7 +26,9 @@
 //
 // Cancelación: si un caller abandona el await del ack cuando su mensaje ya
 // fue encolado, la operación se aplica de todas formas (es atómica y válida);
-// el ack se descarta. Es la misma clase de semántica "committed but
+// el ack se descarta. Los acks de un lote salen al final, cuando la task ya
+// soltó el gate y sus clones de `Graph` (0.6.5): así `drop(graph)` tras un
+// ack deja la ruta libre de inmediato. Es la misma clase de semántica "committed but
 // unacknowledged" documentada en docs/DURABILITY.md.
 //
 // ESCRITURAS DIRECTAS EN EL WAL (0.5.23): cada `WriteOp` de nodo o arista se
@@ -384,6 +386,11 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
     // prefijo: la marca no puede saltarlo o el redo perdería su reintento.
     let mut settled_upto: Option<u64> = None;
     let mut prefix_intact = true;
+    // Los acks se envían al FINAL, con los clones de `Graph` del lote ya
+    // soltados (ver abajo). Cada `msg` se consume en su iteración, así que su
+    // clone muere aquí mismo; solo `anchor` sobrevive al bucle.
+    let mut acks: Vec<(tokio::sync::oneshot::Sender<Result<()>>, Result<()>)> =
+        Vec::with_capacity(batch.len());
 
     for (msg, plan) in batch.into_iter().zip(plans) {
         let result = match msg.work {
@@ -489,7 +496,7 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
                 Plan::Op { .. } => unreachable!("Plan::Op para un Work::Commit"),
             },
         };
-        let _ = msg.ack.send(result);
+        acks.push((msg.ack, result));
     }
 
     // Marca de progreso del redo (best effort: si no se persiste, las
@@ -521,5 +528,22 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
         && let Err(e) = anchor.checkpoint_locked().await
     {
         log::warn!("applier: automatic WAL checkpoint failed (will retry next batch): {}", e);
+    }
+
+    // Soltar TODO lo del lote (gate y último clone de `Graph`) ANTES de
+    // despertar a los llamadores. Hasta 0.6.4 el ack salía dentro del bucle
+    // y `anchor` seguía vivo durante la marca del redo, los relojes y el
+    // checkpoint automático: quien hacía `drop(graph)` nada más recibir el
+    // ack y reabría la misma ruta se topaba con "ya está abierta en este
+    // proceso" (el lock vive en el engine, y el engine en ese clone), unos
+    // milisegundos, de forma que en Python (`del g` y reabrir) era
+    // sistemático. Con el ack al final, cuando el llamador suelta su handle
+    // no queda ningún otro vivo por este camino. Coste: el ack espera dos
+    // escrituras en ventana (microsegundos) y, una vez cada
+    // `wal_checkpoint_bytes`, el fsync del checkpoint.
+    drop(_gate);
+    drop(anchor);
+    for (ack, result) in acks {
+        let _ = ack.send(result);
     }
 }

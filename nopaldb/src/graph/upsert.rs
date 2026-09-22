@@ -176,7 +176,9 @@ impl Graph {
         reqs: Vec<UpsertRequest>,
     ) -> Result<Vec<(UpsertOutcome, NodeId)>> {
         let mut out = Vec::with_capacity(reqs.len());
+        let mut progress = self.ops.reporter("upsert_batch", Some(reqs.len() as u64));
         for chunk in reqs.chunks(UPSERT_TX_ROWS) {
+            progress.tick(out.len() as u64);
             // Per-key locks of the chunk, distinct and in hash order, so two
             // concurrent batches sharing keys cannot take them crosswise.
             let mut ids: Vec<u64> = chunk
@@ -208,6 +210,7 @@ impl Graph {
             out.extend(plans.iter().map(|p| (p.final_outcome(), p.node_id)));
             drop(guards);
         }
+        progress.finish(out.len() as u64);
         Ok(out)
     }
 

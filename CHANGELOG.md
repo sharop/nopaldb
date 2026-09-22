@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.5] - unreleased
+
+### Added
+- **Observabilidad operativa** (#158). `Graph::stats()` en Rust y
+  `graph.get_stats()` en Python devuelven el estado de la base en una sola
+  llamada, estructurado: `graph` (conteos por etiqueta y tipo), `storage`
+  (motor, perfil, directorio, solo lectura), `wal` (bytes, umbral del
+  checkpoint automático, checkpoints en la sesión, último checkpoint,
+  durabilidad de las escrituras directas), `recovery` (lo que hizo el `open`
+  que creó el handle: registros del WAL leídos, operaciones reproducidas,
+  transacciones sin commit descartadas, si fue crash recovery, si se
+  reconstruyó la adyacencia, y milisegundos por fase: storage, replay,
+  adyacencia, índices, total), `indexes` (con tamaño y analizador, el mismo
+  texto que el informe de migración), `hnsw` (un elemento por modelo en
+  caché) y `gc` (scheduler automático y último ciclo). Hasta ahora casi todo
+  esto se calculaba y se tiraba, o solo salía por `log::info!`. Las claves
+  planas de 0.6.x (`total_nodes`, `total_edges`, `avg_degree`,
+  `storage_engine`, `wal_bytes`, strings) se conservan un minor más en el
+  nivel superior del dict de Python. Stub `.pyi` con `TypedDict`.
+- **Evento de progreso** para lo que tarda: `Graph::set_progress_callback`
+  y `Graph::open_with_progress` en Rust; `graph.set_progress_callback(fn)` y
+  `Graph.open_with_options(..., on_progress=fn)` en Python. Recibe
+  `{phase, done, total}` cada ~1000 ítems o ~250 ms desde `replay_wal`,
+  `rebuild_adjacency_from_edges`, la carga de índices al abrir,
+  `create_index`, `rebuild_property_index`, `upsert_batch` y `BulkLoader`.
+  Sin callback registrado cuesta una comparación por lote. Los `log::info!`
+  se mantienen.
+- **`nopaldb stats <dir>`** en el CLI (feature `cli`): abre en solo lectura,
+  imprime las secciones y muestra el progreso del replay por stderr. Es la
+  herramienta de "¿qué le espera al próximo open?" sin escribir código.
+- `FullTextAnalyzer::describe()`: la línea `"default"` /
+  `"spanish+stemming+…"` que ya usaba el informe de migración, compartida.
+- `docs/OPERATIONS.md`: qué mirar para cada síntoma (open lento, ingesta
+  lenta, WAL que crece, full-text sin resultados, disco que crece) y cómo
+  leer los logs si no hay callback. Enlazado desde el índice y ADOPTION.
+
+### Fixed
+- **Soltar el `Graph` nada más recibir el ack de una escritura y reabrir la
+  misma ruta fallaba con "ya está abierta en este proceso".** El applier
+  enviaba cada ack con sus clones de `Graph` todavía vivos (avanzaba la marca
+  del redo, persistía los relojes y hacía el checkpoint automático después),
+  así que el lock del directorio, que vive en el engine, sobrevivía unos
+  milisegundos al `drop` del usuario. En Rust era una carrera rara; en Python
+  (`del g` seguido de `Graph.open`) era sistemático. Los acks salen ahora al
+  final del lote, con el gate y los clones ya soltados. Regresión en
+  `open_lock_same_process_test`.
+
+### Changed
+- `EmbeddingIndexStats` ya no lleva `cfg(feature = "embeddings-index")`: el
+  tipo existe en todo build (la sección `hnsw` del reporte está vacía sin la
+  feature); `SharedHnswIndex` sigue tras la feature.
+- `Graph::open_read_only_with_options` delega en
+  `open_read_only_with_progress(.., None)`; sin cambio de comportamiento.
+
 ## [0.6.4] - 2026-09-21
 
 ### Fixed

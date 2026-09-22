@@ -124,8 +124,12 @@ pub use types::{Node, Edge, NodeId, EdgeId, PropertyValue, Properties};
 pub use storage::{IndexSummary, MigrationReport, SidecarReport, Storage};
 pub use storage::{DirectWriteDurability, StorageEngine, StorageOptions, StorageProfile, StorageTuning, DEFAULT_WAL_CHECKPOINT_BYTES};
 pub use graph::{Graph, Direction, BulkLoader, BulkLoadStats, AutoGcConfig, AutoGcStatus, GraphView, Subgraph, LinkSpec, UpsertOutcome, UpsertRequest};
+pub use graph::{
+    EmbeddingIndexStats, GcAutoSummary, GcRun, GcSection, GraphSection, IndexSection, OpenPhasesMs,
+    Progress, ProgressCallback, RecoverySection, StatsReport, StorageSection, WalSection,
+};
 #[cfg(feature = "embeddings-index")]
-pub use graph::{EmbeddingIndexStats, SharedHnswIndex};
+pub use graph::SharedHnswIndex;
 #[cfg(feature = "hybrid")]
 pub use graph::{
     BranchReport, ExplainedHit, HybridExplain, HybridFilter, HybridHit, HybridQuery, VectorPath,

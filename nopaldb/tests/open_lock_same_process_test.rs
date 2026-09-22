@@ -85,3 +85,37 @@ async fn a_clone_keeps_the_lock_until_every_clone_is_gone() {
     drop(twin);
     Graph::open_with_options(&path, opts(StorageEngine::Sled)).await.unwrap();
 }
+
+/// 0.6.5: soltar el handle nada más recibir el ack de un commit y reabrir la
+/// misma ruta en el acto debe funcionar. Hasta 0.6.4 el applier enviaba el
+/// ack con sus clones de `Graph` todavía vivos (marca del redo, relojes,
+/// checkpoint automático) y la reapertura inmediata fallaba con "ya está
+/// abierta en este proceso"; en Python (`del g` + `Graph.open`) era
+/// sistemático. Con la forma de los bindings: runtime multi-hilo y
+/// `block_on` desde fuera, drop fuera del runtime, sin esperas.
+#[test]
+fn drop_right_after_a_commit_ack_and_reopen_immediately() {
+    use nopaldb::{Node, PropertyValue};
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    for engine in engines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        for round in 0..20 {
+            let graph = rt.block_on(Graph::open_with_options(&path, opts(engine))).unwrap();
+            rt.block_on(async {
+                let mut tx = graph.begin_transaction().await.unwrap();
+                tx.add_node(Node::new("P").with_property("r", PropertyValue::Int(round)))
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                // Y una escritura directa, que también pasa por el applier.
+                graph.add_node(Node::new("Q")).await.unwrap();
+            });
+            drop(graph);
+            // La siguiente vuelta reabre sin ninguna espera.
+        }
+        let graph = rt.block_on(Graph::open_with_options(&path, opts(engine))).unwrap();
+        assert_eq!(rt.block_on(graph.get_label_count("P")).unwrap(), 20, "{engine:?}");
+        assert_eq!(rt.block_on(graph.get_label_count("Q")).unwrap(), 20, "{engine:?}");
+    }
+}
