@@ -178,6 +178,12 @@ async fn batches_with_repeated_ids_do_not_overcount() {
     assert_eq!(ec, [("X".into(), 1), ("Y".into(), 1)].into_iter().collect());
     g.add_edges_batch(vec![e2]).await.unwrap();
     assert_eq!(counts(&g).await.1, 2);
+    // La adyacencia RAM tampoco duplica: n1 tiene UNA arista saliente (e1,
+    // sobrescrita como Y) y una entrante (e2), aunque e1 vino dos veces en el
+    // lote y e2 se repitió en otro lote.
+    assert_eq!(g.degree(n1.id, nopaldb::Direction::Outgoing).await.unwrap(), 1);
+    assert_eq!(g.degree(n1.id, nopaldb::Direction::Incoming).await.unwrap(), 1);
+    assert_eq!(g.neighbors(n1.id, nopaldb::Direction::Outgoing).await.unwrap(), vec![n2.id]);
     assert_eq!(g.schema_rebuild_count(), 0);
     assert_matches_rebuild(&g).await;
 }

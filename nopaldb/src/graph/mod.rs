@@ -4083,8 +4083,11 @@ impl Graph {
         }
 
         // 0. Esquema: una `edge_exists` por arista (espejo de la lectura por
-        //    nodo del bulk de nodos); un id repetido dentro del lote cuenta una vez.
+        //    nodo del bulk de nodos); un id repetido dentro del lote cuenta una
+        //    vez. `is_new[i]` = primera aparición en el lote Y no existía en
+        //    la base: las únicas que estrenan entrada en la adyacencia RAM.
         let mut seen: HashMap<EdgeId, usize> = HashMap::with_capacity(edges.len());
+        let mut is_new = vec![false; edges.len()];
         for (i, edge) in edges.iter().enumerate() {
             match seen.insert(edge.id, i) {
                 Some(j) => {
@@ -4094,7 +4097,7 @@ impl Graph {
                         .await;
                 }
                 None => {
-                    self.observe_edge_upsert(edge).await?;
+                    is_new[i] = self.observe_edge_upsert(edge).await?.is_none();
                 }
             }
         }
@@ -4104,14 +4107,23 @@ impl Graph {
         //    adyacencia y depende de un flush_indices posterior").
         let ids = self.storage.insert_edges_batch(&edges).await?;
 
-        // 2. Actualizar índices de adyacencia en memoria
+        // 2. Adyacencia en memoria: solo las aristas nuevas, como hace
+        //    `apply_add_edge_at` con `already_present`. Hasta 0.6.6 se hacía
+        //    `push` por cada arista del lote: un id repetido (en el lote o ya
+        //    en la base) dejaba la arista dos veces en la lista de vecinos
+        //    hasta reabrir (en disco son claves y no duplican).
         {
             let mut adj_out = self.adjacency_out.write().await;
             let mut adj_in = self.adjacency_in.write().await;
 
-            for edge in &edges {
-                adj_out.entry(edge.source).or_default().push(edge.id);
-                adj_in.entry(edge.target).or_default().push(edge.id);
+            for (edge, new) in edges.iter().zip(&is_new) {
+                if *new {
+                    adj_out.entry(edge.source).or_default().push(edge.id);
+                    adj_in.entry(edge.target).or_default().push(edge.id);
+                } else {
+                    adj_out.entry(edge.source).or_default();
+                    adj_in.entry(edge.target).or_default();
+                }
             }
         }
 

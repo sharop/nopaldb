@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rastro en el esquema; ahora hacen ambas cosas.
 - `get_stats()` clonaba el esquema entero una vez por etiqueta; una sola
   lectura bajo el lock.
+- `add_edges_batch` metía cada arista del lote en la adyacencia en memoria
+  sin mirar si ya estaba: un id repetido (en el lote o ya en la base)
+  dejaba la arista dos veces en `neighbors`/`degree` hasta reabrir. Solo
+  las aristas nuevas estrenan entrada, como en el camino unitario.
 
 ### Changed
 - **El esquema se persiste en cada checkpoint** (meta `schema_snapshot` del
