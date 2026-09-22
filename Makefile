@@ -11,7 +11,7 @@ CARGO_VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(CRATE_DIR)/Cargo.
 PY_VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(CRATE_DIR)/pyproject.toml | head -1)
 WORKSPACE_VERSION := $(shell awk '/^\[workspace.package\]/{flag=1;next}/^\[/{flag=0}flag && /^version = /{gsub(/"/,""); sub(/^version = /,""); print; exit}' Cargo.toml)
 
-.PHONY: help check-tools check-clean check-version-sync check-changelog-dates date-changelog \
+.PHONY: help check-tools check-clean check-version-sync check-changelog-dates date-changelog check-python \
 	test test-core test-semantic test-full \
 	clippy clippy-core clippy-semantic clippy-full \
 	build-rust build-wheel build-wheel-all \
@@ -23,6 +23,7 @@ help:
 	@echo "  make test-core          - tests tier core"
 	@echo "  make test-semantic      - tests tier semantic"
 	@echo "  make test-full          - tests full public feature set"
+	@echo "  make check-python       - stubs (mypy stubtest), samples y mypy --strict contra la extensión compilada"
 	@echo "  make clippy             - clippy default"
 	@echo "  make clippy-core        - clippy tier core"
 	@echo "  make clippy-semantic    - clippy tier semantic"
@@ -100,6 +101,17 @@ date-changelog:
 	sed -i '' -E "s/^## \[$(VERSION)\] - .*/## [$(VERSION)] - $$fecha/" CHANGELOG.md; \
 	echo "CHANGELOG: $(VERSION) fechada $$fecha"
 	@$(MAKE) --no-print-directory check-changelog-dates
+
+# Comprobaciones del wrapper Python contra la extensión YA compilada en el
+# intérprete actual (`maturin develop -m nopaldb/Cargo.toml`, features del
+# pyproject). Lo corre el job python-stubs del CI; en local, con el venv
+# activado. Stubs (mypy stubtest), samples ejecutables y mypy --strict.
+PY_SAMPLES := roundtrip turtle_roundtrip fulltext_analyzer shacl hnsw migrate stats bulk_loader typecheck
+check-python:
+	$(PYTHON) nopaldb/python/scripts/check_stubs.py
+	@for s in $(PY_SAMPLES); do \
+	  echo "== $$s"; $(PYTHON) nopaldb/python/scripts/$${s}_sample.py || exit 1; done
+	$(PYTHON) -m mypy --strict nopaldb/python/scripts/typecheck_sample.py
 
 check-doc-links:
 	@# Tres READMEs de docs enlazaron meses a dos roadmaps que no existían.

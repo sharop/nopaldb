@@ -3,10 +3,10 @@
 // Python bindings for BulkLoader - High-performance bulk import API
 
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyAny};
+use pyo3::types::{PyAny, PyDict};
 use crate::graph::BulkLoader as RustBulkLoader;
-use crate::types::{Node, Edge, PropertyValue};
-use super::to_py_result;
+use crate::types::{Edge, Node};
+use super::{pydict_to_props, to_py_result};
 use uuid::Uuid;
 
 /// Python wrapper for high-performance BulkLoader
@@ -14,9 +14,20 @@ use uuid::Uuid;
 /// BulkLoader buffers nodes and edges in memory and flushes them
 /// in batches to the database, providing 100-1000x speedup.
 ///
+/// Property values accept the same types as `Transaction.add_node`:
+/// str, int, float, bool, bytes, None (stored as null), and nested
+/// lists/tuples/dicts. They go through the one converter shared by every
+/// write path, so a dict loaded here reads back exactly like one written
+/// in a transaction or an upsert.
+///
 /// Example:
-///     >>> loader = graph.bulk_loader(10000)
-///     >>> node_id = loader.add_node("Person", {"name": "Alice"})
+///     >>> with graph.bulk_loader(10_000) as loader:
+///     ...     alice = loader.add_node("Person", {"name": "Alice"})
+///     ...     bob = loader.add_node("Person", {"name": "Bob"})
+///     ...     edge_id = loader.add_edge(alice, bob, "KNOWS", {"since": 2020})
+///     >>> # or, without the context manager:
+///     >>> loader = graph.bulk_loader(10_000)
+///     >>> loader.add_node("Person", {"name": "Carol"})
 ///     >>> stats = loader.finish()
 #[pyclass(name = "BulkLoader")]
 pub struct PyBulkLoader {
@@ -41,85 +52,70 @@ impl PyBulkLoader {
     ///     ... })
     fn add_node(
         &mut self,
+        py: Python<'_>,
         label: &str,
-        properties: &Bound<PyDict>,
-        py: Python,
+        properties: &Bound<'_, PyDict>,
     ) -> PyResult<String> {
-        // Check if already finished
-        let loader = self.inner.as_mut().ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "BulkLoader already finished. Create a new one."
-            )
-        })?;
+        let loader = self.active()?;
 
-        // Create node with label
         let mut node = Node::new(label);
-
-        // Add properties one by one
-        for (key, value) in properties {
-            let key_str = key.extract::<String>()?;
-            let prop_value = python_to_property_value(py, value.into())?;
-            node = node.with_property(key_str, prop_value);
-        }
-
+        node.properties.extend(pydict_to_props(properties)?);
         let node_id = node.id;
 
-        // Add to buffer (async)
-        let result = crate::python::runtime::block_on(py, async {
+        to_py_result(crate::python::runtime::block_on(py, async {
             loader.add_node(node).await
-        });
+        }))?;
 
-        to_py_result(result)?;
-
-        // Return UUID as string
         Ok(node_id.to_string())
     }
 
     /// Add an edge to the bulk load buffer
     ///
     /// Args:
-    ///     source_id (str): Source node UUID
-    ///     target_id (str): Target node UUID
-    ///     label (str): Edge label
+    ///     source (str): Source node UUID
+    ///     target (str): Target node UUID
+    ///     edge_type (str): Edge type (e.g., "KNOWS")
+    ///     properties (dict, optional): Edge properties, same value types as add_node
+    ///
+    /// Returns:
+    ///     str: Edge UUID
     ///
     /// Example:
-    ///     >>> loader.add_edge(alice_id, bob_id, "KNOWS")
+    ///     >>> edge_id = loader.add_edge(alice_id, bob_id, "KNOWS", {"since": 2020})
+    #[pyo3(signature = (source, target, edge_type, properties=None))]
     fn add_edge(
         &mut self,
         py: Python<'_>,
-        source_id: &str,
-        target_id: &str,
-        label: &str,
-    ) -> PyResult<()> {
-        let loader = self.inner.as_mut().ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "BulkLoader already finished"
-            )
-        })?;
+        source: &str,
+        target: &str,
+        edge_type: &str,
+        properties: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<String> {
+        let loader = self.active()?;
 
-        // Parse UUIDs
-        let source = Uuid::parse_str(source_id)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                format!("Invalid source UUID: {}", e)
-            ))?;
+        let source_id = Uuid::parse_str(source)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid source UUID: {}", e)))?;
+        let target_id = Uuid::parse_str(target)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid target UUID: {}", e)))?;
 
-        let target = Uuid::parse_str(target_id)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                format!("Invalid target UUID: {}", e)
-            ))?;
+        let mut edge = Edge::new(source_id, target_id, edge_type);
+        if let Some(props) = properties {
+            edge.properties.extend(pydict_to_props(props)?);
+        }
+        let edge_id = edge.id;
 
-        // Create edge
-        let edge = Edge::new(source, target, label);
-
-        // Add to buffer
-        let result = crate::python::runtime::block_on(py, async {
+        to_py_result(crate::python::runtime::block_on(py, async {
             loader.add_edge(edge).await
-        });
+        }))?;
 
-        to_py_result(result)
+        Ok(edge_id.to_string())
     }
 
     /// Finish bulk load and flush all pending data
+    ///
+    /// Called automatically when the loader is used as a context manager
+    /// (the stats are discarded in that case). After it the loader cannot
+    /// be used again: create a new one.
     ///
     /// Returns:
     ///     dict: Statistics with keys: nodes, edges, duration_secs, nodes_per_second
@@ -127,21 +123,17 @@ impl PyBulkLoader {
     /// Example:
     ///     >>> stats = loader.finish()
     ///     >>> print(f"Loaded {stats['nodes']:,} nodes")
-    fn finish(&mut self, py: Python) -> PyResult<Py<PyAny>> {
+    fn finish(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let loader = self.inner.take().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 "BulkLoader already finished"
             )
         })?;
 
-        // Finish bulk load
-        let stats = crate::python::runtime::block_on(py, async {
+        let stats = to_py_result(crate::python::runtime::block_on(py, async {
             loader.finish().await
-        });
+        }))?;
 
-        let stats = to_py_result(stats)?;
-
-        // Create Python dict (compatible with pyo3 0.27)
         let dict = PyDict::new(py);
         dict.set_item("nodes", stats.nodes_inserted)?;
         dict.set_item("edges", stats.edges_inserted)?;
@@ -168,10 +160,10 @@ impl PyBulkLoader {
     /// Exit context manager
     fn __exit__(
         &mut self,
-        py: Python,
-        _exc_type: &Bound<PyAny>,
-        _exc_value: &Bound<PyAny>,
-        _traceback: &Bound<PyAny>,
+        py: Python<'_>,
+        _exc_type: Option<&Bound<'_, PyAny>>,
+        _exc_value: Option<&Bound<'_, PyAny>>,
+        _traceback: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<bool> {
         if self.inner.is_some() {
             self.finish(py)?;
@@ -187,91 +179,12 @@ impl PyBulkLoader {
             inner: Some(loader),
         })
     }
-}
 
-/// Convert Python object to PropertyValue
-fn python_to_property_value(py: Python, obj: Py<PyAny>) -> PyResult<PropertyValue> {
-    // Try string first
-    if let Ok(s) = obj.extract::<String>(py) {
-        return Ok(PropertyValue::String(s));
-    }
-
-    // Try bool before int
-    if let Ok(b) = obj.extract::<bool>(py) {
-        return Ok(PropertyValue::Bool(b));
-    }
-
-    // Try integer
-    if let Ok(i) = obj.extract::<i64>(py) {
-        return Ok(PropertyValue::Int(i));
-    }
-
-    // Try float
-    if let Ok(f) = obj.extract::<f64>(py) {
-        return Ok(PropertyValue::Float(f));
-    }
-
-    // None → empty string
-    if obj.is_none(py) {
-        return Ok(PropertyValue::String(String::new()));
-    }
-
-    // Get type name for error
-    let type_name = obj.bind(py).get_type().name()
-        .map(|n| n.to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-
-    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-        format!(
-            "Unsupported property type: {}. Supported: str, int, float, bool",
-            type_name
-        )
-    ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_property_conversion() {
-        Python::attach(|py| {
-            // String
-            let s: Py<PyAny> = "hello"
-                .into_pyobject(py)
-                .expect("string conversion must work")
-                .into_any()
-                .unbind();
-            let prop = python_to_property_value(py, s).unwrap();
-            assert!(matches!(prop, PropertyValue::String(_)));
-
-            // Integer
-            let i: Py<PyAny> = 42_i64
-                .into_pyobject(py)
-                .expect("int conversion must work")
-                .into_any()
-                .unbind();
-            let prop = python_to_property_value(py, i).unwrap();
-            assert!(matches!(prop, PropertyValue::Int(42)));
-
-            // Float
-            let f: Py<PyAny> = 3.14_f64
-                .into_pyobject(py)
-                .expect("float conversion must work")
-                .into_any()
-                .unbind();
-            let prop = python_to_property_value(py, f).unwrap();
-            assert!(matches!(prop, PropertyValue::Float(_)));
-
-            // Bool
-            let b: Py<PyAny> = true
-                .into_pyobject(py)
-                .expect("bool conversion must work")
-                .to_owned()
-                .into_any()
-                .unbind();
-            let prop = python_to_property_value(py, b).unwrap();
-            assert!(matches!(prop, PropertyValue::Bool(true)));
-        });
+    fn active(&mut self) -> PyResult<&mut RustBulkLoader> {
+        self.inner.as_mut().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "BulkLoader already finished. Create a new one."
+            )
+        })
     }
 }

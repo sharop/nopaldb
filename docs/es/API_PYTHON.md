@@ -108,8 +108,18 @@ graph.drop_index(index_name)
 stats = graph.get_stats()   # dict anidado: graph, storage, wal, recovery, indexes, hnsw, gc
 stats["recovery"]["operations_replayed"], stats["wal"]["bytes"], stats["indexes"]
 graph.set_progress_callback(lambda e: print(e["phase"], e["done"], e["total"]))
-count = graph.node_count()
+count = graph.node_count()   # exacto; recorre claves sin deserializar (también edge_count())
 graph.close()
+```
+
+Carga masiva con propiedades en nodos y aristas (mismos tipos que en una
+transacción; `None` se guarda como null):
+
+```python
+with graph.bulk_loader(10_000) as loader:
+    a = loader.add_node("Planta", {"nombre": "nopal", "usos": ["comida", "cerca"]})
+    b = loader.add_node("Planta", {"nombre": "maguey"})
+    loader.add_edge(a, b, "VECINA", {"desde": 2020})   # devuelve el id de la arista
 ```
 
 Qué mirar en `get_stats()` para cada síntoma (open lento, ingesta lenta, WAL

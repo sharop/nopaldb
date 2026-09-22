@@ -118,15 +118,17 @@ from .nopaldb import (
     ProfileResult,
     QueryResult,
     Transaction,
+    __author__,
     __version__,
 )
 
 try:
     from .nopaldb import ELReasoner, Inference
 except ImportError:
-    # Compatibilidad con wheels legacy sin feature `reasoner`.
-    ELReasoner = None
-    Inference = None
+    # Compatibilidad con wheels legacy sin feature `reasoner`: quedan a
+    # None, y `from nopaldb import ELReasoner` no falla al importar.
+    ELReasoner = None  # type: ignore[assignment,misc]
+    Inference = None  # type: ignore[assignment,misc]
 
 __all__ = [
     "Graph",
@@ -137,5 +139,6 @@ __all__ = [
     "BulkLoader",
     "ELReasoner",
     "Inference",
+    "__author__",
     "__version__",
 ]

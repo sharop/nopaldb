@@ -710,6 +710,10 @@ impl Graph {
         drop(adj_in);
         if !existed {
             self.bump_topology_version();
+        } else {
+            // Sobrescritura: la topología no cambia, pero la etiqueta o las
+            // propiedades del nodo (y con ellas el esquema) pueden.
+            self.schema_manager.mark_dirty();
         }
     }
 
@@ -1220,6 +1224,9 @@ impl Graph {
     /// Bump topology version after structural mutations.
     pub(crate) fn bump_topology_version(&self) {
         self.topology_version.fetch_add(1, AtomicOrdering::SeqCst);
+        // Una alta o baja de nodo o arista cambia el esquema (etiquetas,
+        // tipos, conteos): la próxima lectura lo reconstruye.
+        self.schema_manager.mark_dirty();
     }
 
     #[cfg(feature = "algorithms")]
@@ -3485,6 +3492,18 @@ impl Graph {
     /// ```
     pub async fn get_schema(&self) -> Result<SchemaInfo> {
         self.schema_manager.get_info(self).await
+    }
+
+    /// Número de nodos, contando claves del storage sin deserializar
+    /// ninguna. Exacto y sin depender del caché de esquema. O(N) en claves;
+    /// para conteos por etiqueta ver [`Graph::get_schema`].
+    pub async fn node_count(&self) -> Result<usize> {
+        self.storage.count_nodes().await
+    }
+
+    /// Número de aristas; ver [`Graph::node_count`].
+    pub async fn edge_count(&self) -> Result<usize> {
+        self.storage.count_edges().await
     }
 
     /// Get all unique node labels

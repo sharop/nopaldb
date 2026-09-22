@@ -302,15 +302,21 @@ impl PyGraph {
         Ok(PyTransaction::new(tx))
     }
 
-    /// Get node count
+    /// Number of nodes.
+    ///
+    /// Counts storage keys without deserializing any node: exact, and it
+    /// does not depend on the schema cache. O(N) in keys but allocation-free
+    /// (until 0.6.5 it materialized every node). For per-label counts use
+    /// `get_stats()["graph"]["nodes_per_label"]` or `get_label_count`.
     fn node_count(&self, py: Python<'_>) -> PyResult<usize> {
         let graph = self.graph()?;
+        to_py_result(crate::python::runtime::block_on(py, async move { graph.node_count().await }))
+    }
 
-        let result = crate::python::runtime::block_on(py, async move {
-            graph.get_all_nodes().await
-        });
-
-        to_py_result(result).map(|nodes| nodes.len())
+    /// Number of edges; same cost and guarantees as `node_count`.
+    fn edge_count(&self, py: Python<'_>) -> PyResult<usize> {
+        let graph = self.graph()?;
+        to_py_result(crate::python::runtime::block_on(py, async move { graph.edge_count().await }))
     }
 
     /// Export graph to Apache Arrow format
@@ -363,6 +369,22 @@ impl PyGraph {
         export_graph_to_arrow(py, &graph, label)
     }
 
+    /// Create a BulkLoader for high-throughput ingestion.
+    ///
+    /// The loader buffers up to `batch_size` nodes (and, separately, edges)
+    /// and writes each buffer in one batch; `finish()` flushes the rest and
+    /// makes the load durable. Use it as a context manager so `finish()`
+    /// runs on exit. Bulk batches bypass the transactional path: nodes are
+    /// not indexed by user indexes until `rebuild_indexes()`.
+    ///
+    /// Args:
+    ///     batch_size (int): rows buffered before each flush (e.g. 10_000).
+    ///
+    /// Example:
+    ///     >>> with graph.bulk_loader(10_000) as loader:
+    ///     ...     a = loader.add_node("Person", {"name": "Alice"})
+    ///     ...     b = loader.add_node("Person", {"name": "Bob"})
+    ///     ...     loader.add_edge(a, b, "KNOWS", {"since": 2020})
     fn bulk_loader(
         &self,
         batch_size: usize
@@ -1176,22 +1198,24 @@ impl PyGraph {
         })).map(|emb| emb.vector)
     }
 
-    /// Busca los k nodos más cercanos en el espacio de embeddings.
+    /// Find the k nearest nodes in embedding space.
     ///
-    /// Construye el índice HNSW para el modelo dado (en memoria, sin caché),
-    /// luego retorna los k vecinos más próximos al vector query.
+    /// Uses the HNSW index the graph caches per model: built (or loaded
+    /// from disk) on the first search and updated in place by later
+    /// `add_node_embedding` calls; see `embedding_index_stats(model)`. The
+    /// search itself runs with the GIL released.
     ///
     /// Args:
-    ///     query_vector (list[float]): Vector de consulta.
-    ///     k (int): Número de vecinos a retornar.
-    ///     model (str): Nombre del modelo.
-    ///     ef_search (int, optional): Tamaño de la lista de candidatos HNSW
-    ///         (más alto = mejor recall, más lento). Default: 30. Solo tiene
-    ///         efecto con índices grandes (>1024 puntos); bajo ese umbral la
-    ///         búsqueda es exacta y el parámetro es irrelevante.
+    ///     query_vector (list[float]): Query vector.
+    ///     k (int): Number of neighbours to return.
+    ///     model (str): Model name.
+    ///     ef_search (int, optional): HNSW candidate list size (higher =
+    ///         better recall, slower). Default: 30. Only matters above the
+    ///         exact-search threshold (1024 points); below it the search is
+    ///         exact and the parameter is irrelevant.
     ///
     /// Returns:
-    ///     list[tuple[str, float]]: Lista de (node_id, distancia_coseno) ordenada por similitud.
+    ///     list[tuple[str, float]]: (node_id, cosine distance) pairs, nearest first.
     ///
     /// Example:
     ///     >>> results = graph.knn_nodes([0.1, 0.2, 0.3], k=5, model="minilm")
@@ -1210,17 +1234,24 @@ impl PyGraph {
         }))?;
 
         let ef = ef_search.unwrap_or(crate::embeddings::DEFAULT_EF_SEARCH);
-        let guard = idx.read().unwrap_or_else(|e| e.into_inner());
-        to_py_result(guard.search_knn_with_ef(&query_vector, k, ef))
+        // La búsqueda es la parte cara: fuera del GIL (hasta 0.6.5 corría
+        // con él tomado y paraba a los demás hilos Python). El guard del
+        // RwLock nace y muere dentro del closure.
+        let hits = py.detach(move || {
+            let guard = idx.read().unwrap_or_else(|e| e.into_inner());
+            guard.search_knn_with_ef(&query_vector, k, ef)
+        });
+        to_py_result(hits)
             .map(|hits| hits.into_iter().map(|(id, dist)| (id.to_string(), dist)).collect())
     }
 
-    /// Estado del índice HNSW en caché para `model`.
+    /// State of the cached HNSW index for `model`.
     ///
     /// Returns:
-    ///     dict | None: {model, size, tombstones, dimension, needs_rebuild}, o
-    ///     None si el índice no se ha construido todavía (se construye en la
-    ///     primera búsqueda).
+    ///     dict | None: {model, size, tombstones, dimension, needs_rebuild,
+    ///     persisted, loaded_from_disk_ms} (the same entry `get_stats()["hnsw"]`
+    ///     lists), or None if the index has not been built yet (it is built
+    ///     or loaded on the first search).
     #[cfg(feature = "embeddings-index")]
     fn embedding_index_stats(&self, py: Python<'_>, model: &str) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
         let graph = self.graph()?;

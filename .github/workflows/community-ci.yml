@@ -139,12 +139,4 @@ jobs:
           . .venv/bin/activate
           pip install --quiet maturin mypy
           maturin develop -m nopaldb/Cargo.toml
-          python nopaldb/python/scripts/check_stubs.py
-          python nopaldb/python/scripts/roundtrip_sample.py
-          python nopaldb/python/scripts/turtle_roundtrip_sample.py
-          python nopaldb/python/scripts/fulltext_analyzer_sample.py
-          python nopaldb/python/scripts/shacl_sample.py
-          python nopaldb/python/scripts/hnsw_sample.py
-          python nopaldb/python/scripts/migrate_sample.py
-          python nopaldb/python/scripts/stats_sample.py
-          mypy --strict nopaldb/python/scripts/typecheck_sample.py
+          make check-python PYTHON=python
