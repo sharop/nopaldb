@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.6] - unreleased
+## [0.6.6] - 2026-09-22
 
 ### Fixed
 - **El caché del esquema no se invalidaba tras escribir.** `SchemaManager`
@@ -15,9 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `get_label_count`, `get_edge_type_count` y, desde 0.6.5, la sección
   `graph` de `get_stats()` devolvían el primer valor leído por handle,
   para siempre (desde 0.4.27). Ahora cualquier alta, baja o sobrescritura
-  de nodo o arista lo marca, y la siguiente lectura reconstruye el esquema
-  (O(N+E); el mantenimiento incremental queda pendiente). Test
-  `schema_cache_test` sobre los cinco caminos de escritura.
+  de nodo o arista lo marca, y la siguiente lectura reconstruye el esquema.
+  Test `schema_cache_test` sobre los cinco caminos de escritura.
+
+  **Known performance limitation:** after a graph mutation, the first read
+  that needs the derived schema (`get_schema`, `get_labels`,
+  `get_label_count`, `get_edge_type_count`, `get_stats()["graph"]`)
+  triggers a full rebuild in O(N+E). Subsequent reads reuse it until the
+  next mutation. User indexes and the property index are not affected: they
+  are already maintained per operation. Incremental maintenance of the
+  schema is tracked in #164.
 - **`BulkLoader.add_edge` no aceptaba propiedades y devolvía `None`.** Ahora
   es `add_edge(source, target, edge_type, properties=None) -> str` (el UUID
   de la arista), igual que `Transaction.add_edge` y como el stub prometía

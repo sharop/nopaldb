@@ -27,8 +27,18 @@ logs; the `log::info!` lines still exist for whoever reads them.
 | `gc`       | `auto_running`, `auto` (config), `last_run` (`unix_ms`, `nodes_scanned`, `versions_removed`, `bytes_freed`, `duration_ms`, `dry_run`) | is MVCC garbage collection running, when did it last run |
 
 `recovery` is filled once, by the open that created the handle; in memory it
-is all zeros. Everything else is read live and costs nothing: no scan, only
-counters that `open`, `checkpoint` and `gc` already keep.
+is all zeros. Everything else is read live: counters that `open`,
+`checkpoint` and `gc` already keep, plus the derived schema behind `graph`.
+
+**Known performance limitation (0.6.6):** the derived schema (labels, edge
+types, counts per label and type, properties per label) is rebuilt lazily.
+After a graph mutation, the first read that needs it (`get_schema`,
+`get_labels`, `get_label_count`, `get_edge_type_count`, `get_stats()["graph"]`)
+triggers a full rebuild in O(N+E); subsequent reads reuse it until the next
+mutation. If `get_stats()` interleaved with writes looks slow, that is why.
+`node_count()` / `edge_count()` do not use the schema. User indexes and the
+property index are maintained per operation and are not affected.
+Incremental maintenance is tracked in #164.
 
 The flat keys of 0.6.x (`total_nodes`, `total_edges`, `avg_degree`,
 `storage_engine`, `wal_bytes`, all strings) stay at the top level of the

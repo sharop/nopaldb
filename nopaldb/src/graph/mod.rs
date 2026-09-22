@@ -3490,6 +3490,13 @@ impl Graph {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// Limitación conocida (0.6.6, #164): el esquema se reconstruye de forma
+    /// perezosa. Tras una mutación del grafo, la primera lectura que lo
+    /// necesita (esta, `get_labels`, `get_label_count`, `get_edge_type_count`,
+    /// `get_stats`) recorre nodos y aristas, O(N+E); las siguientes reutilizan
+    /// el resultado hasta la próxima escritura. Los índices de usuario y el
+    /// índice de propiedades no pasan por aquí: se mantienen por operación.
     pub async fn get_schema(&self) -> Result<SchemaInfo> {
         self.schema_manager.get_info(self).await
     }
