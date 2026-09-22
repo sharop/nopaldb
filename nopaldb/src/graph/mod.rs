@@ -78,6 +78,11 @@ pub struct Graph {
     lock_manager: Arc<LockManager>,
 
     schema_manager: Arc<SchemaManager>,
+    /// `true` mientras el snapshot del esquema en el keyspace de metadatos
+    /// describe el esquema actual (se pone en cada checkpoint). La primera
+    /// escritura posterior lo borra ANTES del dato y lo baja; así un `open`
+    /// que lo encuentra sabe que nada cambió desde el último checkpoint.
+    schema_snapshot_valid: Arc<AtomicBool>,
 
     wal: Arc<WalManager>,
     /// Cómo llegan al disco los registros WAL de las escrituras directas.
@@ -495,6 +500,31 @@ impl Graph {
             next_tx_id_init
         );
 
+        // Esquema derivado (#164): cargar el snapshot persistido en el último
+        // checkpoint. Si el WAL trae commits sin aplicar (crash recovery) el
+        // snapshot describe un estado anterior: se borra y se reconstruye
+        // perezosamente. Sin snapshot: base recién creada ⇒ esquema vacío y
+        // válido; base anterior a 0.6.7 ⇒ una reconstrucción perezosa (y
+        // `close` la persiste). Ilegible ⇒ como si no existiera.
+        let crash_recovery = recovery_info.total_records > 0 && !recovery_info.committed_txs.is_empty();
+        let (schema_manager, schema_from_snapshot) = if crash_recovery {
+            storage.delete_meta(crate::storage::META_SCHEMA_SNAPSHOT).await?;
+            (SchemaManager::new(), false)
+        } else {
+            match storage.get_meta_bytes(crate::storage::META_SCHEMA_SNAPSHOT).await? {
+                Some(bytes) => match crate::schema::SchemaSnapshot::decode(&bytes) {
+                    Ok(info) => (SchemaManager::from_persisted(info), true),
+                    Err(e) => {
+                        log::warn!("schema snapshot unreadable ({e}); the schema will be rebuilt on first read");
+                        storage.delete_meta(crate::storage::META_SCHEMA_SNAPSHOT).await?;
+                        (SchemaManager::new(), false)
+                    }
+                },
+                None if storage.is_empty().await? => (SchemaManager::from_persisted(SchemaInfo::default()), false),
+                None => (SchemaManager::new(), false),
+            }
+        };
+
         let graph = Self {
             storage: Arc::new(storage),
             adjacency_out: Arc::new(RwLock::new(adjacency_out)),
@@ -508,7 +538,8 @@ impl Graph {
             #[cfg(feature = "full-isolation")]
             lock_manager: Arc::new(LockManager::new()),
 
-            schema_manager: Arc::new(Default::default()),
+            schema_manager: Arc::new(schema_manager),
+            schema_snapshot_valid: Arc::new(AtomicBool::new(schema_from_snapshot)),
 
             wal: Arc::new(wal),
             direct_write_durability: options.direct_write_durability,
@@ -553,7 +584,6 @@ impl Graph {
         }
 
         let mut operations_replayed = 0;
-        let crash_recovery = recovery_info.total_records > 0 && !recovery_info.committed_txs.is_empty();
         if recovery_info.total_records>0 {
             log::info!("Replaying committed operations from WAL...");
             let phase = Instant::now();
@@ -571,6 +601,14 @@ impl Graph {
                 adjacency_ms += ms(phase.elapsed());
                 adjacency_rebuilt = true;
             }
+        }
+
+        // Invariante del snapshot: cargado ⇒ sin crash recovery ⇒ nada que
+        // reproducir. Si no se cumple, mejor una reconstrucción de más.
+        if schema_from_snapshot && operations_replayed > 0 {
+            debug_assert!(false, "schema snapshot loaded but {operations_replayed} operations were replayed");
+            log::warn!("schema snapshot loaded but the WAL replayed {operations_replayed} operations; rebuilding");
+            graph.schema_manager.mark_dirty();
         }
 
         // Migración del índice de propiedades a formato v2 (claves tipadas).
@@ -661,7 +699,9 @@ impl Graph {
     /// Aplicación física de AddNode. Solo el single-writer apply debe llamarla.
     async fn apply_add_node(&self, node: Node, skip_indexing: bool) -> Result<NodeId> {
         let node_id = node.id;
-        let existed = self.storage.node_exists(node_id).await?;
+        // El esquema y el retract comparten la única lectura del nodo viejo.
+        let old = self.observe_node_upsert(&node).await?;
+        let existed = old.is_some();
 
         // Retirar lo que la sobrescritura invalida, mientras el nodo viejo
         // todavía existe en storage. Solo en el camino directo: con
@@ -669,7 +709,7 @@ impl Graph {
         // retractó ANTES de escribir su versión MVCC (para cuando llegamos
         // aquí el nodo viejo ya fue pisado y sería tarde).
         if !skip_indexing {
-            self.retract_overwritten_index_entries(&node).await?;
+            self.retract_overwritten_index_entries(old.as_ref(), &node).await?;
         }
 
         // Guardar en storage
@@ -710,10 +750,6 @@ impl Graph {
         drop(adj_in);
         if !existed {
             self.bump_topology_version();
-        } else {
-            // Sobrescritura: la topología no cambia, pero la etiqueta o las
-            // propiedades del nodo (y con ellas el esquema) pueden.
-            self.schema_manager.mark_dirty();
         }
     }
 
@@ -739,6 +775,88 @@ impl Graph {
         Ok(())
     }
 
+    // ─── Esquema derivado: un punto de verdad por clase de mutación ────────
+    //
+    // Cada cuerpo `apply_*` (bajo el write gate) pasa por uno de estos
+    // `observe_*` ANTES de escribir. Aplican el delta al esquema en memoria
+    // (no-op si está sucio: la próxima lectura reconstruye entero) y, en la
+    // primera escritura tras un checkpoint, borran el snapshot persistido
+    // antes que el dato. El replay del WAL re-entra por los mismos cuerpos y
+    // corre siempre con el esquema sucio (crash recovery), así que no cuenta
+    // doble. Ver `src/schema/mod.rs`.
+
+    /// Primera escritura tras un checkpoint: el snapshot del esquema deja de
+    /// describir la base; se borra antes de que el dato llegue al motor.
+    async fn schema_snapshot_invalidate(&self) -> Result<()> {
+        if self.schema_snapshot_valid.swap(false, AtomicOrdering::SeqCst)
+            && let Err(e) = self.storage.delete_meta(crate::storage::META_SCHEMA_SNAPSHOT).await
+        {
+            self.schema_snapshot_valid.store(true, AtomicOrdering::SeqCst);
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Lee el nodo viejo UNA vez, aplica el delta del esquema y devuelve el
+    /// viejo para que el retract de índices no lo vuelva a leer. Bajo el
+    /// write gate y ANTES de pisar el nodo en storage.
+    async fn observe_node_upsert(&self, incoming: &Node) -> Result<Option<Node>> {
+        self.schema_snapshot_invalidate().await?;
+        let old = self.storage.get_node(incoming.id).await.ok();
+        self.schema_manager
+            .apply(|s| s.apply_node_upsert(old.as_ref(), incoming))
+            .await;
+        Ok(old)
+    }
+
+    async fn observe_node_delete(&self, node: &Node) -> Result<()> {
+        self.schema_snapshot_invalidate().await?;
+        self.schema_manager.apply(|s| s.apply_node_delete(node)).await;
+        Ok(())
+    }
+
+    /// Lee la arista vieja solo si existe (una `edge_exists` O(1) en el caso
+    /// común) y devuelve `Some` si la escritura es una sobrescritura.
+    async fn observe_edge_upsert(&self, incoming: &Edge) -> Result<Option<Edge>> {
+        self.schema_snapshot_invalidate().await?;
+        let old = if self.storage.edge_exists(incoming.id).await? {
+            self.storage.get_edge(incoming.id).await.ok()
+        } else {
+            None
+        };
+        self.schema_manager
+            .apply(|s| s.apply_edge_upsert(old.as_ref(), incoming))
+            .await;
+        Ok(old)
+    }
+
+    async fn observe_edge_delete(&self, edge: &Edge) -> Result<()> {
+        self.schema_snapshot_invalidate().await?;
+        self.schema_manager.apply(|s| s.apply_edge_delete(edge)).await;
+        Ok(())
+    }
+
+    /// Descuenta del esquema las aristas que la purga de un nodo retiró,
+    /// por tipo internado. Un id sin nombre es corrupción del catálogo: el
+    /// esquema pasa a sucio y la reconstrucción lo repara.
+    async fn observe_edges_purged(&self, purged_types: &HashMap<u32, usize>) {
+        if purged_types.is_empty() {
+            return;
+        }
+        let names: Vec<(Option<String>, usize)> = purged_types
+            .iter()
+            .map(|(id, n)| (self.storage.resolve_edge_type(*id), *n))
+            .collect();
+        self.schema_manager
+            .apply(|s| {
+                names.iter().all(|(name, n)| match name {
+                    Some(name) => (0..*n).all(|_| s.decrement_edge_count(name)),
+                    None => false,
+                })
+            })
+            .await;
+    }
+
     /// Retira las entradas de índice que una sobrescritura deja inválidas.
     ///
     /// **Debe llamarse ANTES de que `incoming` pise al nodo viejo en storage**:
@@ -750,8 +868,12 @@ impl Graph {
     /// Retira solo lo que cambió o desapareció: una propiedad cuyo valor no se
     /// movió no se toca, así nunca hay un instante en que deje de estar
     /// indexada.
-    async fn retract_overwritten_index_entries(&self, incoming: &Node) -> Result<()> {
-        let Ok(old) = self.storage.get_node(incoming.id).await else {
+    ///
+    /// `old` es el nodo que hay en storage antes de la escritura, tal como lo
+    /// devolvió [`Self::observe_node_upsert`] (una sola lectura para el
+    /// esquema y para esto); `None` = nodo nuevo, nada que retirar.
+    async fn retract_overwritten_index_entries(&self, old: Option<&Node>, incoming: &Node) -> Result<()> {
+        let Some(old) = old else {
             return Ok(()); // Nodo nuevo: nada que retirar.
         };
 
@@ -952,7 +1074,9 @@ impl Graph {
             #[cfg(feature = "full-isolation")]
             lock_manager: Arc::new(LockManager::new()),
 
-            schema_manager: Arc::new(Default::default()),
+            // Storage recién creado: esquema vacío y válido desde el principio.
+            schema_manager: Arc::new(SchemaManager::from_persisted(SchemaInfo::default())),
+            schema_snapshot_valid: Arc::new(AtomicBool::new(false)),
 
             index_manager: Arc::new(IndexManager::new(None)),
 
@@ -1224,9 +1348,6 @@ impl Graph {
     /// Bump topology version after structural mutations.
     pub(crate) fn bump_topology_version(&self) {
         self.topology_version.fetch_add(1, AtomicOrdering::SeqCst);
-        // Una alta o baja de nodo o arista cambia el esquema (etiquetas,
-        // tipos, conteos): la próxima lectura lo reconstruye.
-        self.schema_manager.mark_dirty();
     }
 
     #[cfg(feature = "algorithms")]
@@ -1352,13 +1473,22 @@ impl Graph {
         self.storage.scan_nodes_batch(label, start_after, limit).await
     }
 
-    /// Re-insert a node (upsert) — used by UPDATE executor
+    /// Re-insert a node (upsert) — used by UPDATE executor.
+    ///
+    /// Bajo el write gate y por el observador del esquema, como toda
+    /// escritura: hasta 0.6.6 saltaba ambos y un `SET n.nueva = 1` no dejaba
+    /// rastro en el esquema.
     pub async fn storage_insert_node(&self, node: &Node) -> Result<()> {
+        let _gate = self.write_gate.lock().await;
+        self.observe_node_upsert(node).await?;
         self.storage.insert_node(node).await
     }
 
-    /// Re-insert an edge (upsert) — used by UPDATE executor
+    /// Re-insert an edge (upsert) — used by UPDATE executor. Ver
+    /// [`Self::storage_insert_node`].
     pub async fn storage_insert_edge(&self, edge: &Edge) -> Result<()> {
+        let _gate = self.write_gate.lock().await;
+        self.observe_edge_upsert(edge).await?;
         self.storage.insert_edge(edge).await
     }
 
@@ -1663,10 +1793,13 @@ impl Graph {
     async fn apply_delete_node(&self, id: NodeId) -> Result<()> {
         // Obtener nodo antes de borrar (si no existe: NodeNotFound, como antes)
         let node = self.get_node(id).await?;
+        self.observe_node_delete(&node).await?;
 
         // 1. Purga de aristas por chunks, escaneando el DISCO (no la RAM):
         //    idempotente ante re-runs y completo aunque la RAM esté stale.
         //    La RAM del OTRO extremo se limpia por chunk (memoria acotada).
+        //    Los tipos de lo purgado se acumulan para descontarlos del esquema.
+        let mut purged_types: HashMap<u32, usize> = HashMap::new();
         loop {
             let purged = self
                 .storage
@@ -1678,7 +1811,8 @@ impl Graph {
 
             let mut adj_out = self.adjacency_out.write().await;
             let mut adj_in = self.adjacency_in.write().await;
-            for (is_out, other, edge_id) in &purged {
+            for (is_out, etype, other, edge_id) in &purged {
+                *purged_types.entry(*etype).or_insert(0) += 1;
                 let map_entry = if *is_out {
                     // Arista saliente nuestra ⇒ limpiar la lista IN del target
                     adj_in.get_mut(other)
@@ -1691,6 +1825,8 @@ impl Graph {
                 }
             }
         }
+
+        self.observe_edges_purged(&purged_types).await;
 
         // 2. Índices: después de las aristas — mientras el nodo exista debe
         //    seguir siendo consultable por sus propiedades. Cubre el índice de
@@ -1773,8 +1909,9 @@ impl Graph {
         // antes del crash) o si el llamador reutiliza un id. En disco los
         // puts son idempotentes; en RAM decide si se añade a la adyacencia.
         // Es UNA lectura puntual O(1), frente al `Vec::contains` O(grado)
-        // por arista que había antes (#143: cuadrático en un supernodo).
-        let already_present = self.storage.edge_exists(edge_id).await?;
+        // por arista que había antes (#143: cuadrático en un supernodo). La
+        // hace el observador del esquema, que necesita la arista vieja si la hay.
+        let already_present = self.observe_edge_upsert(&edge).await?.is_some();
 
         // Registro de la arista (keyspace "edges"), sus DOS claves de
         // adyacencia (O y espejo I), su versión MVCC y la cota del reloj en
@@ -1856,6 +1993,7 @@ impl Graph {
     async fn apply_delete_edge_at(&self, id: EdgeId, timestamp: u64) -> Result<()> {
         // 1. Obtener la arista para saber source/target
         let edge = self.get_edge(id).await?;
+        self.observe_edge_delete(&edge).await?;
         let source = edge.source;
         let target = edge.target;
 
@@ -2646,7 +2784,8 @@ impl Graph {
                 // única fuente de qué valores había que retirar. Va después
                 // de la guarda de idempotencia a propósito — retractar sobre
                 // un registro ya superado borraría los valores VIGENTES.
-                self.retract_overwritten_index_entries(&node).await?;
+                let old = self.observe_node_upsert(&node).await?;
+                self.retract_overwritten_index_entries(old.as_ref(), &node).await?;
                 let mut invalidated = cur.clone();
                 invalidated.invalidate(commit_ts);
                 let new_version = VersionedNode::new_version(&cur, node.clone(), commit_ts);
@@ -2660,7 +2799,8 @@ impl Graph {
                 // Sin cadena MVCC, pero el registro legacy `entities` puede
                 // existir igual (nodo creado con `add_node` directo), y con
                 // él entradas de índice viejas que este write invalida.
-                self.retract_overwritten_index_entries(&node).await?;
+                let old = self.observe_node_upsert(&node).await?;
+                self.retract_overwritten_index_entries(old.as_ref(), &node).await?;
                 // Primera versión con el timestamp del commit
                 let first = VersionedNode::new(node.clone(), commit_ts);
                 self.commit_node_atomic(&node, None, &first).await?;
@@ -2818,6 +2958,22 @@ impl Graph {
         log::info!("Creating checkpoint...");
         self.flush_indices().await?;
         self.persist_clocks().await?;
+        // Esquema derivado: se persiste junto a los relojes si es válido; si
+        // está sucio se retira el snapshot viejo (describía otro estado).
+        // Bajo el gate no hay apply en vuelo entre "clonar" y "flush".
+        if !self.is_read_only() {
+            match self.schema_manager.snapshot_if_clean().await {
+                Some(info) => {
+                    let bytes = crate::schema::SchemaSnapshot::encode(&info)?;
+                    self.storage.put_meta_bytes(crate::storage::META_SCHEMA_SNAPSHOT, &bytes).await?;
+                    self.schema_snapshot_valid.store(true, AtomicOrdering::SeqCst);
+                }
+                None => {
+                    self.storage.delete_meta(crate::storage::META_SCHEMA_SNAPSHOT).await?;
+                    self.schema_snapshot_valid.store(false, AtomicOrdering::SeqCst);
+                }
+            }
+        }
         self.storage.flush().await?;
         let active_txs: Vec<TransactionId> = {
             let map = self.active_tx_timestamps
@@ -3405,7 +3561,8 @@ impl Graph {
         //     qué valores había que retirar. La inserción de los nuevos va al
         //     final (paso 4), por eso `apply_add_node` recibe skip_indexing.
         for node in &set.pending_nodes {
-            self.retract_overwritten_index_entries(node).await?;
+            let old = self.observe_node_upsert(node).await?;
+            self.retract_overwritten_index_entries(old.as_ref(), node).await?;
         }
 
         for node in &set.pending_nodes {
@@ -3491,26 +3648,42 @@ impl Graph {
     /// # }
     /// ```
     ///
-    /// Limitación conocida (0.6.6, #164): el esquema se reconstruye de forma
-    /// perezosa. Tras una mutación del grafo, la primera lectura que lo
-    /// necesita (esta, `get_labels`, `get_label_count`, `get_edge_type_count`,
-    /// `get_stats`) recorre nodos y aristas, O(N+E); las siguientes reutilizan
-    /// el resultado hasta la próxima escritura. Los índices de usuario y el
-    /// índice de propiedades no pasan por aquí: se mantienen por operación.
+    /// Desde 0.6.7 (#164) el esquema se mantiene por operación (cada alta,
+    /// baja o sobrescritura de nodo o arista lo actualiza en O(propiedades))
+    /// y se persiste en cada checkpoint, de donde `open` lo carga: esta
+    /// lectura es O(1) salvo tras una recuperación de crash o en la primera
+    /// apertura de una base anterior a 0.6.7, donde se reconstruye una vez
+    /// recorriendo nodos y aristas. Las propiedades por etiqueta o tipo son
+    /// un superconjunto (no se retiran al borrar); `rebuild_schema` es la
+    /// reparación exacta. `schema_rebuild_count` dice cuántas
+    /// reconstrucciones hubo en esta sesión.
     pub async fn get_schema(&self) -> Result<SchemaInfo> {
         self.schema_manager.get_info(self).await
     }
 
-    /// Número de nodos, contando claves del storage sin deserializar
-    /// ninguna. Exacto y sin depender del caché de esquema. O(N) en claves;
-    /// para conteos por etiqueta ver [`Graph::get_schema`].
+    /// Número de nodos. O(1) desde el esquema mantenido por operación; si el
+    /// esquema está pendiente de reconstrucción cuenta las claves del storage
+    /// sin deserializar (O(N)). Exacto en ambos casos.
     pub async fn node_count(&self) -> Result<usize> {
+        if let Some((n, _)) = self.schema_manager.cached_totals().await {
+            return Ok(n);
+        }
         self.storage.count_nodes().await
     }
 
     /// Número de aristas; ver [`Graph::node_count`].
     pub async fn edge_count(&self) -> Result<usize> {
+        if let Some((_, e)) = self.schema_manager.cached_totals().await {
+            return Ok(e);
+        }
         self.storage.count_edges().await
+    }
+
+    /// Reconstrucciones completas del esquema en esta sesión: 0 en una base
+    /// con snapshot y escrituras normales; 1 tras una recuperación de crash o
+    /// en la primera apertura de una base anterior a 0.6.7.
+    pub fn schema_rebuild_count(&self) -> u64 {
+        self.schema_manager.rebuild_count()
     }
 
     /// Get all unique node labels
@@ -3528,8 +3701,7 @@ impl Graph {
     /// # }
     /// ```
     pub async fn get_labels(&self) -> Result<Vec<String>> {
-        let schema = self.get_schema().await?;
-        Ok(schema.node_labels)
+        self.schema_manager.with_info(self, |s| s.node_labels.clone()).await
     }
 
     /// Get all unique edge types
@@ -3545,8 +3717,7 @@ impl Graph {
     /// # }
     /// ```
     pub async fn get_edge_types(&self) -> Result<Vec<String>> {
-        let schema = self.get_schema().await?;
-        Ok(schema.edge_types)
+        self.schema_manager.with_info(self, |s| s.edge_types.clone()).await
     }
 
     /// Get all properties for a specific node label
@@ -3565,12 +3736,11 @@ impl Graph {
     /// # }
     /// ```
     pub async fn get_label_properties(&self, label: &str) -> Result<Vec<String>> {
-        let schema = self.get_schema().await?;
-        Ok(schema
-            .node_properties
-            .get(label)
-            .map(|set| set.iter().cloned().collect())
-            .unwrap_or_default())
+        self.schema_manager
+            .with_info(self, |s| {
+                s.node_properties.get(label).map(|set| set.iter().cloned().collect()).unwrap_or_default()
+            })
+            .await
     }
 
     /// Get node count for a specific label
@@ -3589,8 +3759,7 @@ impl Graph {
     /// # }
     /// ```
     pub async fn get_label_count(&self, label: &str) -> Result<usize> {
-        let schema = self.get_schema().await?;
-        Ok(*schema.node_counts.get(label).unwrap_or(&0))
+        self.schema_manager.with_info(self, |s| s.node_counts.get(label).copied().unwrap_or(0)).await
     }
 
     /// Get all properties for a specific edge type
@@ -3609,12 +3778,11 @@ impl Graph {
     /// # }
     /// ```
     pub async fn get_edge_type_properties(&self, edge_type: &str) -> Result<Vec<String>> {
-        let schema = self.get_schema().await?;
-        Ok(schema
-            .edge_properties
-            .get(edge_type)
-            .map(|set| set.iter().cloned().collect())
-            .unwrap_or_default())
+        self.schema_manager
+            .with_info(self, |s| {
+                s.edge_properties.get(edge_type).map(|set| set.iter().cloned().collect()).unwrap_or_default()
+            })
+            .await
     }
 
     /// Get edge count for a specific type
@@ -3633,8 +3801,7 @@ impl Graph {
     /// # }
     /// ```
     pub async fn get_edge_type_count(&self, edge_type: &str) -> Result<usize> {
-        let schema = self.get_schema().await?;
-        Ok(*schema.edge_counts.get(edge_type).unwrap_or(&0))
+        self.schema_manager.with_info(self, |s| s.edge_counts.get(edge_type).copied().unwrap_or(0)).await
     }
 
     /// Force rebuild of schema cache
@@ -3651,7 +3818,7 @@ impl Graph {
     /// # }
     /// ```
     pub async fn rebuild_schema(&self) -> Result<()> {
-        self.schema_manager.rebuild(self).await
+        self.schema_manager.rebuild(self, true).await
     }
 
     /// Mark schema as dirty (will be rebuilt on next access)
@@ -3786,6 +3953,9 @@ impl Graph {
         let labels = label_col.as_any().downcast_ref::<arrow::array::StringArray>()
             .ok_or_else(|| NopalError::Custom("'label' column is not String type".into()))?;
 
+        // Bajo el write gate y por el observador del esquema, como toda
+        // escritura (hasta 0.6.6 escribía al motor sin más).
+        let _gate = self.write_gate.lock().await;
         let mut imported = 0usize;
         for i in 0..batch.num_rows() {
             if let (Some(id_str), Some(label)) = (ids.value(i).into(), labels.value(i).into()) {
@@ -3797,6 +3967,7 @@ impl Graph {
                     properties: std::collections::HashMap::new(),
                     kind: crate::types::NodeKind::Individual,
                 };
+                self.observe_node_upsert(&node).await?;
                 self.storage.insert_node(&node).await?;
                 imported += 1;
             }
@@ -3855,9 +4026,22 @@ impl Graph {
         // 0. Un lote puede pisar ids existentes (batch-upsert): retirar las
         //    entradas de índice que la sobrescritura invalida mientras el
         //    nodo viejo todavía está en storage (mismo orden que
-        //    `apply_add_node`).
-        for node in &nodes {
-            self.retract_overwritten_index_entries(node).await?;
+        //    `apply_add_node`). Un id repetido DENTRO del lote: el "viejo" de
+        //    la segunda ocurrencia es la primera (último gana), así el
+        //    esquema no cuenta dos nodos.
+        let mut seen: HashMap<NodeId, usize> = HashMap::with_capacity(nodes.len());
+        for (i, node) in nodes.iter().enumerate() {
+            let old = match seen.insert(node.id, i) {
+                Some(j) => {
+                    self.schema_snapshot_invalidate().await?;
+                    self.schema_manager
+                        .apply(|s| s.apply_node_upsert(Some(&nodes[j]), node))
+                        .await;
+                    Some(nodes[j].clone())
+                }
+                None => self.observe_node_upsert(node).await?,
+            };
+            self.retract_overwritten_index_entries(old.as_ref(), node).await?;
         }
 
         // 1. Batch insert en storage
@@ -3896,6 +4080,23 @@ impl Graph {
         let _gate = self.write_gate.lock().await;
         if edges.is_empty() {
             return Ok(Vec::new());
+        }
+
+        // 0. Esquema: una `edge_exists` por arista (espejo de la lectura por
+        //    nodo del bulk de nodos); un id repetido dentro del lote cuenta una vez.
+        let mut seen: HashMap<EdgeId, usize> = HashMap::with_capacity(edges.len());
+        for (i, edge) in edges.iter().enumerate() {
+            match seen.insert(edge.id, i) {
+                Some(j) => {
+                    self.schema_snapshot_invalidate().await?;
+                    self.schema_manager
+                        .apply(|s| s.apply_edge_upsert(Some(&edges[j]), edge))
+                        .await;
+                }
+                None => {
+                    self.observe_edge_upsert(edge).await?;
+                }
+            }
         }
 
         // 1. Batch insert en storage: aristas + adyacencia v2 en el MISMO
@@ -4117,6 +4318,12 @@ impl Graph {
         // hacer durable: solo el sync del WAL (no-op) y el flush de cortesía.
         if self.read_only_seal.is_none() {
             let _gate = self.write_gate.lock().await;
+            // Base anterior a 0.6.7 (o tras un crash) que nunca leyó el
+            // esquema: construirlo una vez aquí para que el checkpoint lo
+            // persista y el próximo `open` arranque con él.
+            if self.schema_manager.is_dirty() {
+                self.schema_manager.rebuild_locked(self).await?;
+            }
             self.checkpoint_locked().await?;
             log::debug!("  ✓ Checkpoint (engine durable, WAL truncated)");
         } else {
@@ -4142,33 +4349,30 @@ impl Graph {
     ///
     /// Returns statistics used by the query planner to make optimization decisions.
     pub async fn get_stats(&self) -> Result<GraphStats> {
-        let schema = self.get_schema().await?;
-
-        let mut stats = GraphStats::new();
-        stats.total_nodes = schema.total_nodes;
-        stats.total_edges = schema.total_edges;
-        stats.nodes_per_label = schema.node_counts.clone();
-        stats.edges_per_type = schema.edge_counts.clone();
-
-        // Calculate average degree
-        if stats.total_nodes > 0 {
-            stats.avg_degree = stats.total_edges as f64 / stats.total_nodes as f64;
-        }
-
-        // Estimate property cardinality
-        // TODO: Store actual cardinality in schema
-        for (label, count) in &schema.node_counts {
-            if let Ok(props) = self.get_label_properties(label).await {
-                for prop in props {
-                    let key = format!("{}_{}", label, prop);
-                    // Simple heuristic: assume 50% unique values
-                    // In production, we'd track this properly
-                    stats.property_cardinality.insert(key, count / 2);
+        // Una sola lectura bajo el lock del esquema (hasta 0.6.6 clonaba el
+        // esquema entero una vez por etiqueta).
+        self.schema_manager
+            .with_info(self, |schema| {
+                let mut stats = GraphStats::new();
+                stats.total_nodes = schema.total_nodes;
+                stats.total_edges = schema.total_edges;
+                stats.nodes_per_label = schema.node_counts.clone();
+                stats.edges_per_type = schema.edge_counts.clone();
+                if stats.total_nodes > 0 {
+                    stats.avg_degree = stats.total_edges as f64 / stats.total_nodes as f64;
                 }
-            }
-        }
-
-        Ok(stats)
+                // Estimate property cardinality. Simple heuristic: assume 50%
+                // unique values (TODO: track it properly).
+                for (label, count) in &schema.node_counts {
+                    if let Some(props) = schema.node_properties.get(label) {
+                        for prop in props {
+                            stats.property_cardinality.insert(format!("{}_{}", label, prop), count / 2);
+                        }
+                    }
+                }
+                stats
+            })
+            .await
     }
 
     /// Estado operativo completo de la base en una sola llamada (#158): el
