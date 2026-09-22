@@ -125,10 +125,8 @@ impl EdgeTypeInterner {
         self.lock_read().by_name.get(name).copied()
     }
 
-    /// Nombre de un id internado, o `None` si no existe. (Su lector de
-    /// producción — neighbors-por-tipo leyendo claves v2 desde disco — llega
-    /// después del rewire F5.3; hoy lo ejercitan los tests.)
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Nombre de un id internado, o `None` si no existe. Lo usa el esquema
+    /// para descontar por tipo las aristas que la purga de un nodo retira.
     pub(crate) fn resolve(&self, id: u32) -> Option<String> {
         self.lock_read().by_id.get(&id).cloned()
     }

@@ -66,6 +66,14 @@ pub const META_NEXT_TX_ID: &str = "next_tx_id";
 /// heurísticas históricas de `replay_wal`.
 pub const META_WAL_APPLIED_UPTO: &str = "wal_applied_upto";
 
+/// Esquema derivado persistido (`schema::SchemaSnapshot`, MessagePack con
+/// versión de formato). Lo escribe `checkpoint_locked` cuando el esquema en
+/// memoria es válido y lo borra la PRIMERA escritura posterior (antes del
+/// dato), así que su presencia en `open` significa "nada cambió desde el
+/// último checkpoint". Ausente o ilegible ⇒ el esquema se reconstruye
+/// perezosamente, nunca es un error de apertura.
+pub const META_SCHEMA_SNAPSHOT: &str = "schema_snapshot";
+
 /// Capa KV: el contrato `KvEngine`/`KvKeyspace` y las implementaciones por
 /// motor de almacenamiento. Vive en su propio módulo para no sombrear los
 /// crates de los motores (`mod sled` aquí ocultaría al crate `sled`).
@@ -702,6 +710,11 @@ impl Storage {
         self.edge_type_interner().intern(&self.catalog_ks, name)
     }
 
+    /// Nombre de un tipo de arista internado, o `None` si el id no existe.
+    pub(crate) fn resolve_edge_type(&self, id: u32) -> Option<String> {
+        self.edge_type_interner().resolve(id)
+    }
+
     /// Inserta una arista Y sus dos claves de adyacencia (O + espejo I) como
     /// UNA transacción cross-keyspace (`apply_multi`): o se ve todo, o nada.
     /// Idempotente (puts): el redo del WAL puede re-aplicarla sin duplicar.
@@ -832,8 +845,10 @@ impl Storage {
 
     /// Purga hasta `max_edges` aristas incidentes a `node`: por cada una,
     /// su registro en `edges` + su clave O/I propia + el ESPEJO del otro
-    /// extremo, todo en UN `apply_multi` atómico. Retorna `(saliente?, otro
-    /// extremo, edge)` por arista purgada; vacío = no queda adyacencia del
+    /// extremo, todo en UN `apply_multi` atómico. Retorna `(saliente?, id del
+    /// tipo internado, otro extremo, edge)` por arista purgada (el tipo lo
+    /// necesita el esquema para descontar cada arista; se resuelve con
+    /// [`Self::resolve_edge_type`]); vacío = no queda adyacencia del
     /// nodo en disco. Idempotente: cada chunk re-escanea desde el prefijo y
     /// las claves ya purgadas no reaparecen — un crash intermedio deja
     /// aristas completas de menos, jamás pares rotos.
@@ -841,7 +856,7 @@ impl Storage {
         &self,
         node: NodeId,
         max_edges: usize,
-    ) -> Result<Vec<(bool, NodeId, EdgeId)>> {
+    ) -> Result<Vec<(bool, u32, NodeId, EdgeId)>> {
         debug_assert!(max_edges > 0);
         // (saliente?, etype, otro, edge)
         let mut entries: Vec<(bool, u32, NodeId, EdgeId)> = Vec::new();
@@ -880,10 +895,7 @@ impl Storage {
             (ADJACENCY_TREE.to_string(), adj_batch),
         ])?;
 
-        Ok(entries
-            .into_iter()
-            .map(|(is_out, _etype, other, edge)| (is_out, other, edge))
-            .collect())
+        Ok(entries)
     }
 
     /// Reconstruye la adyacencia COMPLETA desde el keyspace `edges` (la
@@ -1760,6 +1772,20 @@ impl Storage {
             n += 1;
         }
         Ok(n)
+    }
+
+    /// `true` si no hay ni un nodo ni una arista: una base recién creada.
+    /// O(1): mira el primer item de cada keyspace.
+    pub async fn is_empty(&self) -> Result<bool> {
+        if let Some(item) = self.entities_ks.iter().next() {
+            item?;
+            return Ok(false);
+        }
+        if let Some(item) = self.edges_ks.iter().next() {
+            item?;
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     /// Número de aristas: una clave del keyspace `edges` por arista viva.

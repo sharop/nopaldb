@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.7] - unreleased
+
+### Fixed
+- **El esquema derivado ya no se reconstruye tras cada escritura** (#164).
+  Desde 0.6.6 cualquier mutación lo marcaba y la siguiente lectura
+  (`get_schema`, `get_labels`, `get_label_count`, `get_edge_type_count`,
+  `get_stats()["graph"]`) recorría nodos y aristas: 229 ms con 100k nodos,
+  2.3 s y +430 MB con 1M. Ahora cada alta, baja o sobrescritura de nodo o
+  arista, por cualquier camino (directa, transaccional, bulk loader, NQL
+  `UPDATE`, replay del WAL, `import_parquet`), actualiza el esquema en
+  O(propiedades) bajo el write gate, y `node_count()` / `edge_count()` leen
+  sus contadores en O(1). El delta se calcula del par (nodo viejo, nodo
+  nuevo), no de un "existía" que el redo del WAL haría mentir. Las
+  propiedades por etiqueta o tipo son un superconjunto (no se retiran al
+  borrar); una etiqueta o tipo desaparece al llegar su conteo a 0;
+  `rebuild_schema()` sigue siendo la reparación exacta. Nuevo
+  `Graph::schema_rebuild_count()`; test `schema_incremental_test` sobre
+  todos los caminos. Medido con 1M nodos y 500k aristas (wheel release):
+  `get_stats()` tras una escritura pasa de 2.45 s a 0.1 ms sin pico de RAM
+  (antes +430 MB), `node_count()` de 72 ms a 0 ms, y la primera lectura
+  tras `open` de 2.45 s a 0.1 ms; la carga masiva (8.2 s) y el `open`
+  (2.3 s) no cambian.
+- NQL `UPDATE` (`storage_insert_node` / `storage_insert_edge`) e
+  `import_parquet` escribían al motor sin pasar por el write gate ni dejar
+  rastro en el esquema; ahora hacen ambas cosas.
+- `get_stats()` clonaba el esquema entero una vez por etiqueta; una sola
+  lectura bajo el lock.
+- `add_edges_batch` metía cada arista del lote en la adyacencia en memoria
+  sin mirar si ya estaba: un id repetido (en el lote o ya en la base)
+  dejaba la arista dos veces en `neighbors`/`degree` hasta reabrir. Solo
+  las aristas nuevas estrenan entrada, como en el camino unitario.
+
+### Changed
+- **El esquema se persiste en cada checkpoint** (meta `schema_snapshot` del
+  catálogo, MessagePack con versión de formato) y `open` lo carga: la
+  primera lectura tras abrir es O(1). La primera escritura tras un
+  checkpoint borra el snapshot antes del dato, y un `open` con
+  recuperación de crash lo descarta, así que solo se reconstruye (una vez,
+  recorriendo nodos y aristas) tras un crash o en la primera apertura de
+  una base escrita por 0.6.6 o anterior; `close()` la reconstruye y
+  persiste para que la siguiente apertura ya no lo haga. Viaja con
+  `copy_database` / `migrate` (el catálogo se copia byte a byte). Un
+  snapshot ilegible se descarta, nunca impide abrir.
+- Retirada la nota "Known performance limitation" de `docs/OPERATIONS.md`
+  y del doc de `Graph::get_schema`.
+
 ## [0.6.6] - 2026-09-22
 
 ### Fixed
