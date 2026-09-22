@@ -135,6 +135,18 @@ open's `wal_replay`, `adjacency_rebuild` and `index_load`. It runs on a
 worker thread: keep it cheap, do not call the graph from it. An exception it
 raises is logged and ignored.
 
+##### `graph.node_count() -> int` / `graph.edge_count() -> int`
+
+Exact counts. Both walk the storage keys without deserializing a single
+node or edge: O(N) in keys, allocation-free, and independent of the schema
+cache (until 0.6.5 `node_count` materialized every node). For counts per
+label or type read `get_stats()["graph"]` or `get_label_count(label)`.
+
+##### `graph.bulk_loader(batch_size: int) -> BulkLoader`
+
+High-throughput ingestion: rows are buffered and written `batch_size` at a
+time, bypassing the transactional path. See [BulkLoader Class](#bulkloader-class).
+
 ##### `Graph.rebuild_indexes() -> int`
 
 Rebuild the user indexes from `<dir>/indexes/metadata.bin` and the current
@@ -241,7 +253,10 @@ Export edges to Apache Arrow format.
 edges_bytes = graph.edges_to_arrow()
 ```
 
-**Returns:** Arrow IPC stream (bytes)
+**Returns:** Arrow IPC stream (bytes). A graph without edges yields an empty
+batch with the columns `id`, `source`, `target`, `edge_type` (the same
+schema `to_arrow_complete` returns for that case); check `num_rows == 0`.
+Until 0.6.5 this raised `ValueError`.
 
 ---
 
@@ -254,6 +269,42 @@ nodes_bytes, edges_bytes = graph.to_arrow_complete()
 ```
 
 **Returns:** Tuple of (nodes_bytes, edges_bytes)
+
+---
+
+### BulkLoader Class
+
+Created with `graph.bulk_loader(batch_size)`. Buffers nodes and edges and
+writes each buffer in one batch; use it as a context manager so `finish()`
+runs on exit. Property values are the same as everywhere else in the API
+(`str`, `int`, `float`, `bool`, `bytes`, `None` stored as null, nested
+lists/tuples/dicts) and go through the one shared converter, so a row loaded
+here reads back exactly like one written in a transaction.
+
+```python
+with graph.bulk_loader(10_000) as loader:
+    alice = loader.add_node("Person", {"name": "Alice", "tags": ["a", "b"]})
+    bob = loader.add_node("Person", {"name": "Bob"})
+    edge_id = loader.add_edge(alice, bob, "KNOWS", {"since": 2020})
+
+loader = graph.bulk_loader(10_000)      # without the context manager
+loader.add_node("Person", {"name": "Carol"})
+stats = loader.finish()                 # {"nodes", "edges", "duration_secs", "nodes_per_second"}
+```
+
+##### `add_node(label: str, properties: dict) -> str`
+
+Returns the node UUID.
+
+##### `add_edge(source: str, target: str, edge_type: str, properties: dict = None) -> str`
+
+Returns the edge UUID. Until 0.6.5 it took no properties and returned `None`.
+
+##### `finish() -> dict`
+
+Flushes what is buffered and makes the load durable. A finished loader
+refuses more rows (`RuntimeError`). Bulk batches do not populate user
+indexes; call `rebuild_indexes()` after a load if you have any.
 
 ---
 

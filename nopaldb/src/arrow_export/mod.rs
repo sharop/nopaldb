@@ -341,19 +341,26 @@ pub async fn graph_to_arrow(
     let nodes_batch = nodes_to_arrow_with_properties(&nodes, label_filter)?;
 
     let edges_batch = if edges.is_empty() {
-        // Empty batch with correct schema
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("source", DataType::Utf8, false),
-            Field::new("target", DataType::Utf8, false),
-            Field::new("edge_type", DataType::Utf8, false),
-        ]));
-        RecordBatch::new_empty(schema)
+        empty_edges_batch()
     } else {
         edges_to_arrow_with_properties(&edges)?
     };
 
     Ok((nodes_batch, edges_batch))
+}
+
+/// The edge batch of a graph without edges: no rows, base columns only
+/// (`id`, `source`, `target`, `edge_type`). Property columns are inferred
+/// from the edges, so with none there is nothing to infer. Shared by
+/// `graph_to_arrow` and the Python `edges_to_arrow`, so both say the same
+/// thing about the same graph.
+pub fn empty_edges_batch() -> RecordBatch {
+    RecordBatch::new_empty(Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("source", DataType::Utf8, false),
+        Field::new("target", DataType::Utf8, false),
+        Field::new("edge_type", DataType::Utf8, false),
+    ])))
 }
 
 /// Infer property schema from nodes

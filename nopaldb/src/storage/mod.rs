@@ -1750,6 +1750,28 @@ impl Storage {
         Ok(nodes)
     }
 
+    /// Número de nodos: una clave del keyspace `entities` por nodo vivo, sin
+    /// deserializar ninguna. O(N) en claves pero sin `Vec<Node>`; es lo que
+    /// `node_count` necesita (hasta 0.6.5 materializaba todos los nodos).
+    pub async fn count_nodes(&self) -> Result<usize> {
+        let mut n = 0usize;
+        for item in self.entities_ks.iter() {
+            item?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    /// Número de aristas: una clave del keyspace `edges` por arista viva.
+    pub async fn count_edges(&self) -> Result<usize> {
+        let mut n = 0usize;
+        for item in self.edges_ks.iter() {
+            item?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
     /// Scan nodes in key order using a cursor and bounded batch size.
     ///
     /// This enables pull-based execution without materializing all nodes in memory.

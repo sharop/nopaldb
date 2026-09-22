@@ -1,0 +1,14 @@
+# Allowlist for `mypy.stubtest nopaldb.nopaldb` (see check_stubs.py).
+# One regex per line. Every entry needs a reason; a real signature mismatch
+# never belongs here.
+
+# Type-only names: TypedDicts and aliases the stub defines for callers'
+# annotations. pyo3 returns plain dicts/callables at runtime.
+nopaldb\.nopaldb\.(Property|Props|ProgressEvent|ProgressCallback)
+nopaldb\.nopaldb\.(GraphStats|StorageStats|WalStats|OpenPhasesMs|RecoveryStats|IndexStats|HnswStats|GcAutoStats|GcRunStats|GcStats|Stats)
+nopaldb\.nopaldb\.(WriteResult|BulkLoadStats)
+
+# pyo3 generates the module's __all__ from the registered classes; the stub
+# has no __all__ (the TypedDicts above would have to be listed and they are
+# not runtime names).
+nopaldb\.nopaldb\.__all__

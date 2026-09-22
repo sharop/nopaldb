@@ -16,10 +16,14 @@ import nopaldb
 with tempfile.TemporaryDirectory() as tmp:
     d = os.path.join(tmp, "obs")
     g = nopaldb.Graph.open(d)
+    # The schema cache must follow writes (until 0.6.5 the first read froze it).
+    assert g.get_stats()["graph"]["total_nodes"] == 0
     for i in range(30):
         tx = g.begin_transaction()
         tx.add_node("Planta", {"nombre": f"planta-{i}", "n": i})
         tx.commit()
+        if i == 9:
+            assert g.get_stats()["graph"]["nodes_per_label"] == {"Planta": 10}
 
     s = g.get_stats()
     assert set(s) >= {"graph", "storage", "wal", "recovery", "indexes", "hnsw", "gc"}, sorted(s)

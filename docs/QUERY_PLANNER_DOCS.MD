@@ -152,8 +152,10 @@ struct GraphStats {
 
 ```python
 # Automatic after bulk operations
-graph.bulk_loader(1000).load_nodes(nodes)
-# → Statistics updated automatically
+with graph.bulk_loader(1000) as loader:
+    for label, props in nodes:
+        loader.add_node(label, props)
+# → the schema cache is invalidated by every write; the next read rebuilds it
 
 # Manual update
 graph.rebuild_schema()  # Rebuilds statistics

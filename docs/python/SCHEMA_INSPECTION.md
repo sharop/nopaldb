@@ -194,11 +194,12 @@ Force rebuild of the schema cache.
 **Example:**
 ```python
 # After bulk import
-loader = graph.bulk_loader(batch_size=1000)
-# ... load lots of data ...
-loader.commit()
+with graph.bulk_loader(1000) as loader:
+    ...  # load lots of data; finish() runs on exit
 
-# Rebuild schema cache
+# The schema cache is invalidated by every write since 0.6.6; the next
+# get_schema()/get_labels()/get_stats() rebuilds it. rebuild_schema()
+# only forces that rebuild now instead of on the next read.
 graph.rebuild_schema()
 
 # Now schema is up to date
@@ -234,11 +235,10 @@ labels = graph.get_labels()
 types = graph.get_edge_types()
 counts = [graph.get_label_count(l) for l in labels]
 
-# ✅ GOOD: Rebuild after bulk operations
-loader = graph.bulk_loader(1000)
-# ... bulk load ...
-loader.commit()
-graph.rebuild_schema()  # Explicit rebuild
+# ✅ GOOD: one read after the bulk load pays the rebuild once
+with graph.bulk_loader(1000) as loader:
+    ...  # bulk load
+labels = graph.get_labels()  # rebuilt here (or call rebuild_schema() first)
 ```
 
 ---

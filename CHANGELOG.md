@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.6] - unreleased
+
+### Fixed
+- **El caché del esquema no se invalidaba tras escribir.** `SchemaManager`
+  nacía sucio y nada lo volvía a marcar: `get_schema`, `get_labels`,
+  `get_label_count`, `get_edge_type_count` y, desde 0.6.5, la sección
+  `graph` de `get_stats()` devolvían el primer valor leído por handle,
+  para siempre (desde 0.4.27). Ahora cualquier alta, baja o sobrescritura
+  de nodo o arista lo marca, y la siguiente lectura reconstruye el esquema
+  (O(N+E); el mantenimiento incremental queda pendiente). Test
+  `schema_cache_test` sobre los cinco caminos de escritura.
+- **`BulkLoader.add_edge` no aceptaba propiedades y devolvía `None`.** Ahora
+  es `add_edge(source, target, edge_type, properties=None) -> str` (el UUID
+  de la arista), igual que `Transaction.add_edge` y como el stub prometía
+  desde hacía versiones. Los nombres por keyword pasan de
+  `source_id/target_id/label` a `source/target/edge_type`.
+- **`BulkLoader` tenía su propio conversor de propiedades:** guardaba `None`
+  como `""` y rechazaba `bytes`, listas, tuplas y dicts con `TypeError`.
+  Pasa por el conversor único de la frontera Python→Rust: `None` es null y
+  bytes/listas/dicts anidados roundtripean con tipo exacto, como en
+  `Transaction` y `upsert`. Datos ya persistidos no cambian.
+- **`graph.edges_to_arrow()` lanzaba `ValueError("No edges to export")` en
+  un grafo sin aristas** mientras `to_arrow_complete()` devolvía un batch
+  vacío. Devuelve ahora un stream IPC vacío con columnas
+  `id/source/target/edge_type` (mismo schema en ambas; quien capturaba el
+  error comprueba `num_rows == 0`).
+- **El stub `nopaldb.pyi` mentía en cuatro firmas** y nada lo detectaba:
+  `to_arrow`/`to_arrow_complete` sin `label`, retornos `Any` donde son
+  `bytes`, `bulk_loader` sin el `batch_size` obligatorio, `Property` sin
+  listas/tuplas/dicts (que la API acepta), `NqlResult.write` como `Any`
+  (ahora `WriteResult`), `BulkLoader.finish` como `Any` (ahora
+  `BulkLoadStats`), `embedding_index_stats` como dict genérico (ahora
+  `HnswStats | None`), y los nombres de parámetro de
+  `ELReasoner.assert_conjunction`/`assert_existential_domain` distintos de
+  los del runtime. Las clases pyo3 van marcadas `@final`.
+- **GIL retenido donde más dolía:** la búsqueda HNSW de `knn_nodes` y la
+  serialización IPC de `to_arrow`, `edges_to_arrow` y `to_arrow_complete`
+  corrían con el GIL tomado; ahora corren fuera de él y los demás hilos
+  Python avanzan mientras tanto.
+- Docstrings: `embedding_index_stats` lista las siete claves que emite;
+  `knn_nodes` ya no dice "sin caché"; `bulk_loader` tiene docstring.
+  `nopaldb.__author__` se reexporta. Docs: `loader.commit()` y
+  `load_nodes()` no existían (SCHEMA_INSPECTION, QUERY_PLANNER_DOCS);
+  `API_REFERENCE` gana `BulkLoader`, `bulk_loader`, `node_count` y
+  `edge_count`.
+
+### Changed
+- `graph.node_count()` ya no materializa todos los nodos: cuenta claves del
+  storage sin deserializar (mismo resultado, sin `Vec<Node>`; sigue siendo
+  O(N)). Nuevo `graph.edge_count()`; en Rust, `Graph::node_count` y
+  `Graph::edge_count`.
+- La comprobación de stubs pasa de comparar nombres a `mypy.stubtest` con
+  allowlist (`nopaldb/python/scripts/stubtest_allowlist.txt`): firmas,
+  defaults, propiedades y ambas direcciones contra la extensión compilada.
+  Nuevo `make check-python` (stubtest + samples + `mypy --strict`), que es
+  lo que corre el job `python-stubs`; `typecheck_sample.py` cubre Arrow,
+  `BulkLoader`, conteos, `get_stats` y NQL.
+
 ## [0.6.5] - 2026-09-22
 
 ### Added
