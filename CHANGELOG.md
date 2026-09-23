@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.9] - unreleased
+## [0.6.9] - 2026-09-23
 
 ### Added
 - **Vector literal en NQL (R7):** `similar_to(c, vector = [0.1, -0.2, …],
