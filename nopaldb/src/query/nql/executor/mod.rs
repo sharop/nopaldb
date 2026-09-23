@@ -517,6 +517,15 @@ impl<'a> Executor<'a> {
         }
         self.reset_path_profile();
         self.validate_path_metadata_usage(&query)?;
+        // Sin índice vectorial compilado no hay nada que precompute
+        // `similar_to`/`hybrid`; el evaluador los pasaría como `true` y la
+        // consulta devolvería todo. Mejor un error con nombre.
+        #[cfg(not(feature = "embeddings-index"))]
+        if let Some(kind) = where_vector_search(&query) {
+            return Err(NopalError::QueryExecutionError(format!(
+                "{kind}: this build has no vector index (enable the `embeddings-index` / `hybrid` feature)"
+            )));
+        }
         log::info!("Executing NQL query with {} patterns", query.from.patterns.len());
         let has_relationships = query.from.patterns.iter().any(|p| {
             p.elements.iter().any(|e| matches!(e, PatternElement::Relationship(_)))
@@ -594,7 +603,39 @@ impl<'a> Executor<'a> {
             return self.execute_pattern_query(query).await;
         }
 
-        // Step 1: Execute FROM clause (get nodes stream)
+        // Step 1: Execute FROM clause (get nodes stream).
+        //
+        // Con `similar_to`/`hybrid` en el WHERE la fuente NO es el scan de la
+        // etiqueta sino los candidatos del índice (ya hidratados, en orden de
+        // score): O(k) lecturas puntuales en vez de O(N), y las filas salen
+        // mejor-primero cuando no hay ORDER BY (0.6.9). Antes se recorría la
+        // etiqueta entera y se filtraba por pertenencia a un HashSet, que
+        // además perdía el ranking.
+        #[cfg(feature = "embeddings-index")]
+        let nodes_stream: Box<dyn operators::NodeStream + 'a> = match self.vector_search_candidates(&query).await? {
+            Some(nodes) => {
+                log::info!("🚀 Vector search seeded the query: {} candidates", nodes.len());
+                // El property map inline del patrón (`(c:Chunk {kind: "book"})`)
+                // lo aplica `execute_from_stream`; aquí hay que aplicarlo a mano.
+                let inline_props = query
+                    .from
+                    .patterns
+                    .first()
+                    .and_then(|p| p.elements.first())
+                    .and_then(|e| match e {
+                        PatternElement::Node(n) => Some(n.properties.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                let nodes: Vec<Node> = nodes
+                    .into_iter()
+                    .filter(|n| inline_props.iter().all(|(k, v)| n.properties.get(k) == Some(v)))
+                    .collect();
+                Box::new(operators::VecNodesStream::new(nodes))
+            }
+            None => self.execute_from_stream(&query).await?,
+        };
+        #[cfg(not(feature = "embeddings-index"))]
         let nodes_stream = self.execute_from_stream(&query).await?;
         
         // Resolve root variable for single-node queries.
@@ -606,49 +647,12 @@ impl<'a> Executor<'a> {
             })
             .unwrap_or("n");
 
-        // Step 1.5: Pre-compute similar_to HNSW search if present in WHERE.
-        // similar_to(n, "reference_name", "model") resolves via HNSW ANN search
-        // BEFORE the streaming pipeline, producing a set of allowed NodeIds.
-        #[cfg(feature = "embeddings-index")]
-        let similar_to_set: Option<HashSet<crate::types::NodeId>> = if let Some(filter) = &query.filter {
-            self.precompute_similar_to(&filter.condition, &query).await?
-        } else {
-            None
-        };
-
-        // Same for hybrid(n, "text", "ref", "model") → RRF fusion → allowed set.
-        #[cfg(feature = "hybrid")]
-        let hybrid_set: Option<HashSet<crate::types::NodeId>> = if let Some(filter) = &query.filter {
-            self.precompute_hybrid(&filter.condition, &query).await?
-        } else {
-            None
-        };
-
         // Step 2: Apply WHERE filter (streaming - full).
         // When the `embeddings` feature is active we use a graph-aware variant that can
         // resolve `has_embedding(n, model)` predicates via synchronous storage access.
+        // `similar_to`/`hybrid` evalúan a `true` aquí: los candidatos ya son
+        // exactamente los suyos (ver `vector_search_candidates`).
         let mut final_node_stream = nodes_stream;
-
-        // If similar_to pre-computed a candidate set, inject a set-membership filter first.
-        #[cfg(feature = "embeddings-index")]
-        if let Some(ref allowed_set) = similar_to_set {
-            let set = allowed_set.clone();
-            final_node_stream = Box::new(operators::FilterNodesStream::new(
-                final_node_stream,
-                move |node| Ok(set.contains(&node.id)),
-            ));
-        }
-
-        // Same injection for the hybrid candidate set (two membership filters
-        // compose as an intersection when both similar_to and hybrid are present).
-        #[cfg(feature = "hybrid")]
-        if let Some(ref allowed_set) = hybrid_set {
-            let set = allowed_set.clone();
-            final_node_stream = Box::new(operators::FilterNodesStream::new(
-                final_node_stream,
-                move |node| Ok(set.contains(&node.id)),
-            ));
-        }
 
         // Bug 1 fix: en single-node queries, separar WHERE algo-bearing
         // predicates (que necesitan algo cache) de los stream-time predicates.
@@ -973,6 +977,15 @@ impl<'a> Executor<'a> {
                 reason: "el patrón tiene relaciones (pipeline de patrones)",
             });
         }
+        // Una búsqueda vectorial fija los candidatos por sí misma: un índice
+        // de propiedad en el resto del WHERE no debe adelantarse a ella (si
+        // lo hiciera, `similar_to` se quedaría sin precomputar y pasaría
+        // como `true`).
+        if where_vector_search(query).is_some() {
+            return Ok(FastPathDecision::Scan {
+                reason: "similar_to/hybrid fija los candidatos desde el índice vectorial",
+            });
+        }
         let Some(filter) = &query.filter else {
             return Ok(FastPathDecision::Scan { reason: "sin cláusula WHERE" });
         };
@@ -1058,6 +1071,29 @@ impl<'a> Executor<'a> {
         query: &Query,
         source_pattern: &NodePattern,
     ) -> Result<Box<dyn operators::NodeStream + 'a>> {
+        // `similar_to`/`hybrid` (0.6.9): los candidatos del índice, en orden
+        // de score, son la fuente del patrón — buscar y expandir en una sola
+        // consulta. El validador garantiza que la variable buscada es la del
+        // nodo origen; se re-comprueba aquí por si la consulta no pasó por él.
+        #[cfg(feature = "embeddings-index")]
+        if let Some(kind) = where_vector_search(query) {
+            let searched = vector_search_variable(query);
+            if searched.as_deref() != source_pattern.variable.as_deref() {
+                return Err(NopalError::SemanticError(format!(
+                    "{kind}: `{}` must be the first node of the pattern (write the pattern starting from the searched variable)",
+                    searched.unwrap_or_default()
+                )));
+            }
+            let nodes: Vec<Node> = self
+                .vector_search_candidates(query)
+                .await?
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|n| source_pattern.label.as_deref().is_none_or(|l| l == n.label))
+                .collect();
+            log::info!("🚀 Pattern pipeline seeded by vector search: {} nodes", nodes.len());
+            return Ok(Box::new(operators::VecNodesStream::new(nodes)));
+        }
         if let Some(ids) = self.pattern_seed_ids(query, source_pattern) {
             let nodes: Vec<Node> = self
                 .graph
@@ -1170,6 +1206,19 @@ impl<'a> Executor<'a> {
     async fn execute_pattern_query(&self, query: Query) -> Result<QueryResult> {
         log::info!("Executing streaming pattern matching query");
 
+        // `similar_to`/`hybrid` solo se precomputan en el pipeline de un
+        // salto (`seeded_source_stream`); en cualquier otro camino el
+        // evaluador los pasaría como `true` y la consulta devolvería TODO en
+        // silencio (así era hasta 0.6.8). El validador ya lo rechaza; esto
+        // es la red de seguridad del ejecutor.
+        if let Some(kind) = where_vector_search(&query)
+            && query.from.patterns.len() > 1
+        {
+            return Err(NopalError::SemanticError(format!(
+                "{kind}: FROM with several patterns is not supported; search in a single pattern and join by id"
+            )));
+        }
+
         if query.from.patterns.len() > 1 {
             return self.execute_multi_pattern_query(query).await;
         }
@@ -1190,6 +1239,11 @@ impl<'a> Executor<'a> {
         );
 
         if execution_mode == ExecutionMode::LinearBindings {
+            if let Some(kind) = where_vector_search(&query) {
+                return Err(NopalError::SemanticError(format!(
+                    "{kind}: only a single hop `(a)-[:T]->(b)` without path functions can be expanded from the search"
+                )));
+            }
             let pattern = pattern.clone();
             return self.execute_linear_multihop_pattern_query(query, &pattern).await;
         }
@@ -5241,6 +5295,11 @@ impl<'a> Executor<'a> {
                         "\nCost note: community_fast() uses approximate local partitioning for lower latency.",
                     );
                 }
+                #[cfg(feature = "embeddings-index")]
+                if let Some(call) = query.filter.as_ref().and_then(|f| extract_similar_to_params(&f.condition)) {
+                    explanation.push_str("\nSimilarTo: ");
+                    explanation.push_str(&describe_similar_to(&call, &query));
+                }
                 #[cfg(feature = "hybrid")]
                 if let Some(call) = query.filter.as_ref().and_then(|f| extract_hybrid_params(&f.condition)) {
                     explanation.push_str("\nHybrid: ");
@@ -5383,7 +5442,12 @@ impl<'a> Executor<'a> {
                             _ => None,
                         })
                         .is_some();
-                    if seeded && query.from.patterns.len() == 1 { "PATTERN PIPELINE (seed: ID LOOKUP)" } else { "PATTERN PIPELINE" }
+                    match where_vector_search(query) {
+                        Some("similar_to") if query.from.patterns.len() == 1 => "PATTERN PIPELINE (seed: SIMILAR_TO)",
+                        Some(_) if query.from.patterns.len() == 1 => "PATTERN PIPELINE (seed: HYBRID)",
+                        _ if seeded && query.from.patterns.len() == 1 => "PATTERN PIPELINE (seed: ID LOOKUP)",
+                        _ => "PATTERN PIPELINE",
+                    }
                 } else {
                     let labeled = query
                         .from
@@ -5394,7 +5458,12 @@ impl<'a> Executor<'a> {
                             PatternElement::Node(n) => n.label.as_deref(),
                             _ => None,
                         });
-                    if labeled.is_some() { "LABEL SCAN" } else { "FULL SCAN" }
+                    match where_vector_search(query) {
+                        Some("similar_to") => "VECTOR SEARCH (similar_to)",
+                        Some(_) => "VECTOR SEARCH (hybrid)",
+                        None if labeled.is_some() => "LABEL SCAN",
+                        None => "FULL SCAN",
+                    }
                 };
                 out.push_str(&format!("Strategy: {strategy}\n  Reason: {reason}\n"));
             }
@@ -5469,56 +5538,85 @@ impl<'a> Executor<'a> {
         write_executor.sample_updates(elements, assignments, limit)
     }
 
-    /// Pre-compute similar_to() HNSW search if present in WHERE condition.
-    ///
-    /// Detects `similar_to(n, "reference_name", "model")` in the expression tree.
-    /// Resolves the reference node by name, gets its embedding, builds the HNSW index,
-    /// and returns a HashSet of the k nearest NodeIds.
-    ///
-    /// The k is derived from the query's LIMIT clause (default: 10).
-    ///
-    /// Returns None if no similar_to function is found in the condition.
+    /// Candidatos de la búsqueda vectorial del WHERE (`similar_to` y/o
+    /// `hybrid`), hidratados y en orden de score (mejor primero), o `None`
+    /// si el WHERE no tiene ninguna. Es la fuente del stream en los dos
+    /// caminos (nodo suelto y patrón de un salto): sustituye el scan de la
+    /// etiqueta y conserva el ranking. Con ambas funciones a la vez el
+    /// resultado es la intersección en el orden de `similar_to`.
     #[cfg(feature = "embeddings-index")]
-    async fn precompute_similar_to(
-        &self,
-        condition: &Expression,
-        query: &Query,
-    ) -> Result<Option<HashSet<crate::types::NodeId>>> {
-        // Extraer similar_to(variable, "ref_name", "model") del árbol de expresiones
-        let params = extract_similar_to_params(condition);
-        let (_variable, ref_name, model) = match params {
-            Some(p) => p,
-            None => return Ok(None),
-        };
-
-        // k para la búsqueda HNSW — del LIMIT de la query, o default 10
-        let k = query.limit.as_ref().map(|l| l.limit).unwrap_or(10);
-
-        // Resolver nodo de referencia por nombre
-        let ref_node = self.graph.get_node_by_property("name", &ref_name).await
-            .map_err(|_| NopalError::QueryExecutionError(format!(
-                "similar_to: reference node '{}' not found", ref_name
-            )))?;
-
-        // Obtener embedding del nodo de referencia
-        let ref_embedding = self.graph.get_node_embedding(ref_node.id, &model).await
-            .map_err(|_| NopalError::QueryExecutionError(format!(
-                "similar_to: reference node '{}' has no embedding for model '{}'",
-                ref_name, model
-            )))?;
-
-        // Obtener índice HNSW desde caché (o construirlo si no existe)
-        let index = self.graph.get_or_build_embedding_index(&model).await?;
-        let results = index.read().unwrap_or_else(|e| e.into_inner()).search_knn(&ref_embedding.vector, k)?;
-
-        let node_ids: HashSet<crate::types::NodeId> = results.into_iter().map(|(id, _)| id).collect();
-        Ok(Some(node_ids))
+    async fn vector_search_candidates(&self, query: &Query) -> Result<Option<Vec<Node>>> {
+        let Some(filter) = &query.filter else { return Ok(None) };
+        let similar = self.precompute_similar_to(&filter.condition, query).await?;
+        #[cfg(feature = "hybrid")]
+        let hybrid = self.precompute_hybrid(&filter.condition, query).await?;
+        #[cfg(not(feature = "hybrid"))]
+        let hybrid: Option<Vec<Node>> = None;
+        Ok(match (similar, hybrid) {
+            (None, None) => None,
+            (Some(nodes), None) | (None, Some(nodes)) => Some(nodes),
+            (Some(similar), Some(hybrid)) => {
+                let keep: HashSet<NodeId> = hybrid.iter().map(|n| n.id).collect();
+                Some(similar.into_iter().filter(|n| keep.contains(&n.id)).collect())
+            }
+        })
     }
 
-    /// Pre-compute `hybrid(n, "text", "ref_name", "model", …)` in WHERE into an
-    /// allowed NodeId set (RRF fusion of full-text + vector). The vector is the
-    /// embedding of the reference node resolved by `name`, mirroring
-    /// `precompute_similar_to`.
+    /// El vector de consulta: el literal escrito en la consulta (0.6.9) o el
+    /// embedding del nodo de referencia resuelto por `name` (forma clásica).
+    #[cfg(feature = "embeddings-index")]
+    async fn resolve_query_vector(&self, what: &str, source: &VectorSource, model: &str) -> Result<Vec<f32>> {
+        match source {
+            VectorSource::Literal(vector) => Ok(vector.clone()),
+            VectorSource::RefName(ref_name) => {
+                let ref_node = self.graph.get_node_by_property("name", ref_name).await.map_err(|_| {
+                    NopalError::QueryExecutionError(format!("{what}: reference node '{ref_name}' not found"))
+                })?;
+                let embedding = self.graph.get_node_embedding(ref_node.id, model).await.map_err(|_| {
+                    NopalError::QueryExecutionError(format!(
+                        "{what}: reference node '{ref_name}' has no embedding for model '{model}'"
+                    ))
+                })?;
+                Ok(embedding.vector)
+            }
+        }
+    }
+
+    /// Pre-compute `similar_to(...)` from the WHERE: the k nearest nodes of
+    /// the pattern's label, hydrated, closest first. `None` when the WHERE
+    /// has no `similar_to`.
+    ///
+    /// The label is honoured without a scan: the index is asked for `4·k`
+    /// neighbours, the candidates are read by id and the first `k` of the
+    /// label are kept (with fewer than `k` of the label among them the
+    /// query returns fewer rows). Before 0.6.9 the k-NN ignored the label
+    /// and the stream dropped the foreign hits afterwards, so `limit 3`
+    /// could return fewer rows for no visible reason.
+    #[cfg(feature = "embeddings-index")]
+    async fn precompute_similar_to(&self, condition: &Expression, query: &Query) -> Result<Option<Vec<Node>>> {
+        let Some(call) = extract_similar_to_params(condition) else { return Ok(None) };
+        let k = effective_k(call.k, query);
+        let label = pattern_label_for(query, &call.variable);
+        let vector = self.resolve_query_vector("similar_to", &call.source, &call.model).await?;
+        let index = self.graph.get_or_build_embedding_index(&call.model).await?;
+        let fetch = if label.is_some() { k.saturating_mul(SIMILAR_TO_LABEL_OVERFETCH) } else { k };
+        let hits = index.read().unwrap_or_else(|e| e.into_inner()).search_knn(&vector, fetch)?;
+        let ids: Vec<NodeId> = hits.into_iter().map(|(id, _)| id).collect();
+        let nodes = self
+            .graph
+            .get_nodes(&ids)
+            .await?
+            .into_iter()
+            .flatten()
+            .filter(|n| label.as_deref().is_none_or(|l| l == n.label))
+            .take(k)
+            .collect();
+        Ok(Some(nodes))
+    }
+
+    /// Pre-compute `hybrid(...)` from the WHERE into the top-k hybrid hits
+    /// (RRF fusion of full-text + vector), hydrated, best first. `None` when
+    /// the WHERE has no `hybrid`.
     ///
     /// The FROM pattern's label is passed as the hybrid filter (#115): the
     /// top-k is computed INSIDE the label. Before, the search ran over every
@@ -5526,87 +5624,177 @@ impl<'a> Executor<'a> {
     /// `limit 1` a better-matching node of another label could leave the query
     /// with zero rows.
     #[cfg(feature = "hybrid")]
-    async fn precompute_hybrid(
-        &self,
-        condition: &Expression,
-        query: &Query,
-    ) -> Result<Option<HashSet<crate::types::NodeId>>> {
-        let call = match extract_hybrid_params(condition) {
-            Some(p) => p,
-            None => return Ok(None),
-        };
-        let HybridCall { variable, text, ref_name, model, options } = call;
-
-        let k = query.limit.as_ref().map(|l| l.limit).unwrap_or(10);
-        let filter = pattern_label_for(query, &variable)
+    async fn precompute_hybrid(&self, condition: &Expression, query: &Query) -> Result<Option<Vec<Node>>> {
+        let Some(call) = extract_hybrid_params(condition) else { return Ok(None) };
+        let k = effective_k(call.k, query);
+        let filter = pattern_label_for(query, &call.variable)
             .map(|label| crate::graph::HybridFilter { label: Some(label), props: vec![] });
-
-        let ref_node = self
-            .graph
-            .get_node_by_property("name", &ref_name)
-            .await
-            .map_err(|_| {
-                NopalError::QueryExecutionError(format!(
-                    "hybrid: reference node '{}' not found",
-                    ref_name
-                ))
-            })?;
-        let ref_embedding = self
-            .graph
-            .get_node_embedding(ref_node.id, &model)
-            .await
-            .map_err(|_| {
-                NopalError::QueryExecutionError(format!(
-                    "hybrid: reference node '{}' has no embedding for model '{}'",
-                    ref_name, model
-                ))
-            })?;
-
+        let vector = match &call.vector {
+            Some((source, model)) => Some((self.resolve_query_vector("hybrid", source, model).await?, model.clone())),
+            None => None,
+        };
         let hq = crate::graph::HybridQuery {
-            text: Some(text),
-            text_index: options.text_index,
-            vector: Some((ref_embedding.vector, model.clone())),
+            text: call.text.clone(),
+            text_index: call.options.text_index.clone(),
+            vector,
             k,
-            ef_search: options.ef_search,
-            rrf_k: options.rrf_k.unwrap_or(60.0) as f32,
-            overfetch: options.overfetch.unwrap_or(4),
+            ef_search: call.options.ef_search,
+            rrf_k: call.options.rrf_k.unwrap_or(60.0) as f32,
+            overfetch: call.options.overfetch.unwrap_or(4),
             filter,
         };
         let hits = self.graph.search_hybrid(hq).await?;
-        Ok(Some(hits.into_iter().map(|h| h.node_id).collect()))
+        let ids: Vec<NodeId> = hits.into_iter().map(|h| h.node_id).collect();
+        let nodes = self.graph.get_nodes(&ids).await?.into_iter().flatten().collect();
+        Ok(Some(nodes))
     }
 }
 
-/// Extrae los parámetros de similar_to(variable, "ref_name", "model") de un árbol de expresiones.
-/// Busca recursivamente en AND/OR conditions.
-/// Retorna Some((variable, ref_name, model)) si encuentra la función.
+/// Cuántos vecinos pide `similar_to` al índice por cada uno que devolverá
+/// cuando el patrón tiene etiqueta (los de otras etiquetas se descartan
+/// tras leerlos). Mismo valor que el `overfetch` por defecto de `hybrid`.
 #[cfg(feature = "embeddings-index")]
-fn extract_similar_to_params(expr: &Expression) -> Option<(String, String, String)> {
+const SIMILAR_TO_LABEL_OVERFETCH: usize = 4;
+
+/// De dónde sale el vector de consulta de `similar_to`/`hybrid`.
+#[cfg(feature = "embeddings-index")]
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum VectorSource {
+    /// El embedding del nodo cuya propiedad `name` es esta (forma clásica).
+    RefName(String),
+    /// El vector escrito en la consulta: `vector = [0.1, -0.2, …]` (0.6.9).
+    /// Es lo que permite a un agente por MCP buscar con el embedding de la
+    /// pregunta sin haber creado un nodo para ella.
+    Literal(Vec<f32>),
+}
+
+/// Lo que `similar_to(...)` pidió, ya validado por el validador.
+#[cfg(feature = "embeddings-index")]
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SimilarToCall {
+    pub variable: String,
+    pub source: VectorSource,
+    pub model: String,
+    /// `k = N` explícito; si falta, `effective_k` decide.
+    pub k: Option<usize>,
+}
+
+/// `k` efectivo de una búsqueda vectorial: el `k = N` de la llamada; si no,
+/// el `LIMIT` cuando la consulta es de un solo nodo (cada candidato es una
+/// fila); en un patrón con relación el `LIMIT` acota filas EXPANDIDAS, así
+/// que no sirve como k y se usa el default 10 (dar `k` explícito).
+#[cfg(feature = "embeddings-index")]
+fn effective_k(explicit: Option<usize>, query: &Query) -> usize {
+    let has_relationships = query
+        .from
+        .patterns
+        .iter()
+        .any(|p| p.elements.iter().any(|e| matches!(e, PatternElement::Relationship(_))));
+    explicit
+        .or_else(|| if has_relationships { None } else { query.limit.as_ref().map(|l| l.limit) })
+        .unwrap_or(10)
+}
+
+/// Argumentos posicionales de una llamada (los que no son `nombre = valor`).
+#[cfg(feature = "embeddings-index")]
+fn positional_args(args: &[Expression]) -> Vec<&Expression> {
+    args.iter().filter(|a| !matches!(a, Expression::NamedArg { .. })).collect()
+}
+
+/// Argumentos con nombre de una llamada, como `(nombre, valor)`.
+#[cfg(feature = "embeddings-index")]
+fn named_args(args: &[Expression]) -> impl Iterator<Item = (&str, &Expression)> {
+    args.iter().filter_map(|a| match a {
+        Expression::NamedArg { name, value } => Some((name.as_str(), value.as_ref())),
+        _ => None,
+    })
+}
+
+#[cfg(feature = "embeddings-index")]
+fn string_literal(expr: &Expression) -> Option<String> {
     match expr {
-        Expression::FunctionCall { name, args } if name.to_lowercase() == "similar_to" => {
-            if args.len() < 2 || args.len() > 3 {
+        Expression::Literal(PropertyValue::String(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// `similar_to`/`hybrid` en el WHERE de la consulta, por nombre; `None` si
+/// no hay búsqueda vectorial. Con las dos, gana `similar_to` (es la que
+/// impone el orden en `vector_search_candidates`).
+pub(crate) fn where_vector_search(query: &Query) -> Option<&'static str> {
+    fn walk(expr: &Expression) -> Option<&'static str> {
+        match expr {
+            Expression::FunctionCall { name, .. } if name.eq_ignore_ascii_case("similar_to") => Some("similar_to"),
+            Expression::FunctionCall { name, .. } if name.eq_ignore_ascii_case("hybrid") => Some("hybrid"),
+            Expression::BinaryOp { left, right, .. } => match (walk(left), walk(right)) {
+                (Some("similar_to"), _) | (_, Some("similar_to")) => Some("similar_to"),
+                (l, r) => l.or(r),
+            },
+            Expression::UnaryOp { expr, .. } => walk(expr),
+            _ => None,
+        }
+    }
+    walk(&query.filter.as_ref()?.condition)
+}
+
+/// Variable del patrón que busca `similar_to`/`hybrid` (el primer argumento).
+#[cfg(feature = "embeddings-index")]
+fn vector_search_variable(query: &Query) -> Option<String> {
+    let cond = &query.filter.as_ref()?.condition;
+    if let Some(call) = extract_similar_to_params(cond) {
+        return Some(call.variable);
+    }
+    #[cfg(feature = "hybrid")]
+    if let Some(call) = extract_hybrid_params(cond) {
+        return Some(call.variable);
+    }
+    None
+}
+
+/// Extrae `similar_to(...)` de un árbol de expresiones (recursivo sobre
+/// AND/OR). Dos formas:
+///
+/// - clásica: `similar_to(var, "ref_name"[, "model"])`;
+/// - nombrada (0.6.9): `similar_to(var, vector = [...], model = "…"[, k = N])`.
+///
+/// `k = N` vale en ambas. El validador ya garantiza la forma; aquí `None`
+/// solo significa "no hay similar_to en esta expresión".
+#[cfg(feature = "embeddings-index")]
+fn extract_similar_to_params(expr: &Expression) -> Option<SimilarToCall> {
+    match expr {
+        Expression::FunctionCall { name, args } if name.eq_ignore_ascii_case("similar_to") => {
+            let positional = positional_args(args);
+            if positional.is_empty() || positional.len() > 3 {
                 return None;
             }
-            // arg 0: variable (property access o identifier)
-            let _variable = match &args[0] {
+            let variable = match positional[0] {
                 Expression::Property { variable, .. } => variable.clone(),
                 _ => "n".to_string(),
             };
-            // arg 1: reference name (string literal)
-            let ref_name = match &args[1] {
-                Expression::Literal(PropertyValue::String(s)) => s.clone(),
+            let ref_name = match positional.get(1) {
+                Some(a) => Some(string_literal(a)?),
+                None => None,
+            };
+            let mut model = match positional.get(2) {
+                Some(a) => Some(string_literal(a)?),
+                None => None,
+            };
+            let mut literal = None;
+            let mut k = None;
+            for (name, value) in named_args(args) {
+                match (name, value) {
+                    ("vector", Expression::Literal(v)) => literal = v.as_f32_vec(),
+                    ("model", Expression::Literal(PropertyValue::String(s))) => model = Some(s.clone()),
+                    ("k", Expression::Literal(PropertyValue::Int(v))) if *v >= 1 => k = Some(*v as usize),
+                    _ => {}
+                }
+            }
+            let source = match (ref_name, literal) {
+                (Some(name), None) => VectorSource::RefName(name),
+                (None, Some(vector)) => VectorSource::Literal(vector),
                 _ => return None,
             };
-            // arg 2: model (optional, default "default")
-            let model = if args.len() == 3 {
-                match &args[2] {
-                    Expression::Literal(PropertyValue::String(s)) => s.clone(),
-                    _ => return None,
-                }
-            } else {
-                "default".to_string()
-            };
-            Some((_variable, ref_name, model))
+            Some(SimilarToCall { variable, source, model: model.unwrap_or_else(|| "default".to_string()), k })
         }
         Expression::BinaryOp { left, op: BinaryOperator::And, right }
         | Expression::BinaryOp { left, op: BinaryOperator::Or, right } => {
@@ -5627,57 +5815,75 @@ pub(crate) struct HybridOptions {
     pub text_index: Option<String>,
 }
 
-/// Lo que `hybrid(...)` pidió, ya validado por el validador.
+/// Lo que `hybrid(...)` pidió, ya validado por el validador. Al menos uno
+/// de `text` / `vector` está presente (como en `HybridQuery`).
 #[cfg(feature = "hybrid")]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct HybridCall {
     pub variable: String,
-    pub text: String,
-    pub ref_name: String,
-    pub model: String,
+    pub text: Option<String>,
+    /// `(fuente, modelo)`: el modelo elige el índice HNSW.
+    pub vector: Option<(VectorSource, String)>,
+    pub k: Option<usize>,
     pub options: HybridOptions,
 }
 
-/// Extrae `hybrid(variable, "text", "ref_name", "model", opción = valor, …)`
-/// de un árbol de expresiones (recursivo sobre AND/OR). Los 4 posicionales
-/// son requeridos (el validador ya lo garantiza; aquí `None` solo significa
-/// "no hay hybrid en esta expresión").
+/// Extrae `hybrid(...)` de un árbol de expresiones (recursivo sobre AND/OR).
+/// Dos formas:
+///
+/// - clásica: `hybrid(var, "text", "ref_name", "model", opción = valor, …)`;
+/// - nombrada (0.6.9): `hybrid(var, text = "…", vector = [...], model = "…",
+///   k = N, opción = valor, …)`, con `text` y/o `vector`.
+///
+/// El validador ya garantiza la forma; aquí `None` solo significa "no hay
+/// hybrid en esta expresión".
 #[cfg(feature = "hybrid")]
 fn extract_hybrid_params(expr: &Expression) -> Option<HybridCall> {
     match expr {
-        Expression::FunctionCall { name, args } if name.to_lowercase() == "hybrid" => {
-            let positional: Vec<&Expression> = args.iter().filter(|a| !matches!(a, Expression::NamedArg { .. })).collect();
-            if positional.len() != 4 {
-                return None;
-            }
-            let variable = match positional[0] {
+        Expression::FunctionCall { name, args } if name.eq_ignore_ascii_case("hybrid") => {
+            let positional = positional_args(args);
+            let variable = match positional.first()? {
                 Expression::Property { variable, .. } => variable.clone(),
                 _ => "n".to_string(),
             };
-            let as_str = |a: &Expression| match a {
-                Expression::Literal(PropertyValue::String(s)) => Some(s.clone()),
-                _ => None,
-            };
+            let mut text = None;
+            let mut literal = None;
+            let mut model = None;
+            let mut k = None;
             let mut options = HybridOptions::default();
-            for arg in args {
-                if let Expression::NamedArg { name, value } = arg {
-                    match (name.as_str(), value.as_ref()) {
-                        ("rrf_k", Expression::Literal(PropertyValue::Int(v))) => options.rrf_k = Some(*v as f64),
-                        ("rrf_k", Expression::Literal(PropertyValue::Float(v))) => options.rrf_k = Some(*v),
-                        ("ef_search", Expression::Literal(PropertyValue::Int(v))) => options.ef_search = Some(*v as usize),
-                        ("overfetch", Expression::Literal(PropertyValue::Int(v))) => options.overfetch = Some(*v as usize),
-                        ("text_index", Expression::Literal(PropertyValue::String(s))) => options.text_index = Some(s.clone()),
-                        _ => {}
-                    }
+            for (name, value) in named_args(args) {
+                match (name, value) {
+                    ("text", Expression::Literal(PropertyValue::String(s))) => text = Some(s.clone()),
+                    ("vector", Expression::Literal(v)) => literal = v.as_f32_vec(),
+                    ("model", Expression::Literal(PropertyValue::String(s))) => model = Some(s.clone()),
+                    ("k", Expression::Literal(PropertyValue::Int(v))) if *v >= 1 => k = Some(*v as usize),
+                    ("rrf_k", Expression::Literal(PropertyValue::Int(v))) => options.rrf_k = Some(*v as f64),
+                    ("rrf_k", Expression::Literal(PropertyValue::Float(v))) => options.rrf_k = Some(*v),
+                    ("ef_search", Expression::Literal(PropertyValue::Int(v))) => options.ef_search = Some(*v as usize),
+                    ("overfetch", Expression::Literal(PropertyValue::Int(v))) => options.overfetch = Some(*v as usize),
+                    ("text_index", Expression::Literal(PropertyValue::String(s))) => options.text_index = Some(s.clone()),
+                    _ => {}
                 }
             }
-            Some(HybridCall {
-                variable,
-                text: as_str(positional[1])?,
-                ref_name: as_str(positional[2])?,
-                model: as_str(positional[3])?,
-                options,
-            })
+            let (text, vector) = match positional.len() {
+                4 => (
+                    Some(string_literal(positional[1])?),
+                    Some((VectorSource::RefName(string_literal(positional[2])?), string_literal(positional[3])?)),
+                ),
+                1 => {
+                    let vector = match (literal, model) {
+                        (Some(v), Some(m)) => Some((VectorSource::Literal(v), m)),
+                        (None, _) => None,
+                        (Some(_), None) => return None,
+                    };
+                    if text.is_none() && vector.is_none() {
+                        return None;
+                    }
+                    (text, vector)
+                }
+                _ => return None,
+            };
+            Some(HybridCall { variable, text, vector, k, options })
         }
         Expression::BinaryOp { left, op: BinaryOperator::And, right }
         | Expression::BinaryOp { left, op: BinaryOperator::Or, right } => {
@@ -5688,9 +5894,9 @@ fn extract_hybrid_params(expr: &Expression) -> Option<HybridCall> {
 }
 
 /// Label del patrón de nodo cuya variable es `variable` (o del primer patrón
-/// si ninguna coincide), para que `hybrid(...)` calcule su top-k DENTRO del
-/// label en vez de dejar que el stream tire lo que sobra después.
-#[cfg(feature = "hybrid")]
+/// si ninguna coincide), para que `similar_to`/`hybrid` calculen su top-k
+/// DENTRO del label en vez de dejar que el stream tire lo que sobra después.
+#[cfg(feature = "embeddings-index")]
 fn pattern_label_for(query: &Query, variable: &str) -> Option<String> {
     let mut first: Option<&NodePattern> = None;
     for pattern in &query.from.patterns {
@@ -5708,19 +5914,45 @@ fn pattern_label_for(query: &Query, variable: &str) -> Option<String> {
     first.and_then(|n| n.label.clone())
 }
 
+/// Cómo se ve la fuente del vector en EXPLAIN: el nombre de referencia, o
+/// `<literal dim=N>` — nunca el vector entero.
+#[cfg(feature = "embeddings-index")]
+fn describe_vector_source(source: &VectorSource) -> String {
+    match source {
+        VectorSource::RefName(name) => format!("ref={name:?}"),
+        VectorSource::Literal(v) => format!("vector=<literal dim={}>", v.len()),
+    }
+}
+
+/// Texto de EXPLAIN con los parámetros efectivos de `similar_to(...)`.
+#[cfg(feature = "embeddings-index")]
+fn describe_similar_to(call: &SimilarToCall, query: &Query) -> String {
+    format!(
+        "similar_to({}): {} model={:?} k={} filter.label={}",
+        call.variable,
+        describe_vector_source(&call.source),
+        call.model,
+        effective_k(call.k, query),
+        pattern_label_for(query, &call.variable).unwrap_or_else(|| "none".to_string()),
+    )
+}
+
 /// Texto de EXPLAIN con los parámetros efectivos de `hybrid(...)`: los dados
 /// y los default, para que lo que se ve sea lo que corre.
 #[cfg(feature = "hybrid")]
 fn describe_hybrid(call: &HybridCall, query: &Query) -> String {
-    let k = query.limit.as_ref().map(|l| l.limit).unwrap_or(10);
     let o = &call.options;
+    let (source, model) = match &call.vector {
+        Some((source, model)) => (describe_vector_source(source), format!("{model:?}")),
+        None => ("vector=none".to_string(), "none".to_string()),
+    };
     format!(
-        "hybrid({}): text={:?} ref={:?} model={:?} k={} rrf_k={} overfetch={} ef_search={} text_index={} filter.label={}",
+        "hybrid({}): text={} {} model={} k={} rrf_k={} overfetch={} ef_search={} text_index={} filter.label={}",
         call.variable,
-        call.text,
-        call.ref_name,
-        call.model,
-        k,
+        call.text.as_ref().map(|t| format!("{t:?}")).unwrap_or_else(|| "none".to_string()),
+        source,
+        model,
+        effective_k(call.k, query),
         o.rrf_k.unwrap_or(60.0),
         o.overfetch.unwrap_or(4),
         o.ef_search.map(|v| v.to_string()).unwrap_or_else(|| format!("default ({})", crate::embeddings::DEFAULT_EF_SEARCH)),

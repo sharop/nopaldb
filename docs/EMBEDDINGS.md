@@ -352,8 +352,13 @@ limit 10
 ```
 
 `similar_to(n, "reference_name", "model")` pre-computes the HNSW search before
-streaming. The `LIMIT` clause controls how many neighbors to retrieve (default: 10).
-Other WHERE predicates are applied as post-filters on the HNSW result set.
+streaming; since 0.6.9 the vector can be written in the query instead —
+`similar_to(n, vector = [0.1, -0.2, …], model = "minilm", k = 10)` — and the
+search can seed a one-hop pattern (`(c:Chunk)-[:MENTIONS]->(e)`). `k = N`, else
+`LIMIT`, controls how many neighbours to retrieve (default: 10); they are
+taken inside the pattern's label and returned closest first. Other WHERE
+predicates are applied as post-filters on that result set. Full rules in the
+[NQL reference](en/NQL_REFERENCE.md#vector-and-hybrid-search-in-where).
 
 ### Other NQL embedding functions
 

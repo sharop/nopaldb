@@ -287,35 +287,64 @@ Rust: `graph.create_index_with(label, property, IndexType::FullText, IndexOption
 ## Búsqueda vectorial e híbrida en WHERE
 
 Con las features `embeddings-index` / `hybrid`, dos predicados convierten un
-patrón en una búsqueda top-K en vez de un scan. Ambos toman el vector de
-consulta de un **nodo de referencia** buscado por su propiedad `name`, y K del
-`LIMIT` (default 10).
+patrón en una búsqueda top-K en vez de un scan. El vector de consulta sale de
+un **nodo de referencia** buscado por su propiedad `name` (forma posicional)
+o, desde 0.6.9, de un **vector literal escrito en la consulta** (forma con
+nombre): un agente de GraphRAG embebe la pregunta y busca con ella sin crear
+ningún nodo. K es `k = N` si se da; si no, el `LIMIT` (default 10). Las filas
+salen mejor-primero salvo que haya `ORDER BY`.
 
 ```nql
 -- Vecinos más cercanos del nodo llamado "q" en el espacio de embeddings "minilm"
 find n.titulo from (n:Articulo) where similar_to(n, "q", "minilm") limit 10
 
+-- Lo mismo con el vector de la pregunta dentro de la consulta
+find n.titulo from (n:Articulo)
+where similar_to(n, vector = [0.12, -0.03, 1e-05, …], model = "minilm", k = 10)
+
 -- Texto completo + vector, fusionados por Reciprocal Rank Fusion
 find n.titulo from (n:Articulo) where hybrid(n, "memoria de grafo", "q", "minilm") limit 10
+find n.titulo from (n:Articulo)
+where hybrid(n, text = "memoria de grafo", vector = [...], model = "minilm", k = 10)
 
--- Afinado: cada parámetro de HybridQuery es una opción con nombre tras los cuatro posicionales
+-- Buscar y expandir en una sola consulta: la búsqueda siembra un patrón de un salto
+find c.texto, e.nombre from (c:Chunk)-[:MENTIONS]->(e:Entity)
+where similar_to(c, vector = [...], model = "minilm", k = 10)
+
+-- Afinado: cada parámetro de HybridQuery es una opción con nombre
 find n.titulo from (n:Articulo)
 where hybrid(n, "memoria de grafo", "q", "minilm", rrf_k = 30, ef_search = 128, overfetch = 8, text_index = "Articulo_cuerpo")
 limit 10
 ```
 
-| Función | Argumentos | Notas |
+| Función | Formas | Notas |
 |---|---|---|
-| `similar_to(n, "ref_name", "modelo")` | variable del patrón, nombre del nodo de referencia, modelo | k-NN por HNSW; exacto por debajo de 1024 vectores |
-| `hybrid(n, "texto", "ref_name", "modelo", opciones…)` | + el texto de la consulta full-text | RRF de texto y vector; el top-K se calcula dentro del label del patrón |
+| `similar_to(n, "ref_name"[, "modelo"][, k = N])` | nodo de referencia por `name` | k-NN por HNSW; exacto por debajo de 1024 vectores; el top-K se calcula dentro del label del patrón |
+| `similar_to(n, vector = [...], model = "…"[, k = N])` | vector literal | igual, con el vector de la pregunta |
+| `hybrid(n, "texto", "ref_name", "modelo"[, opciones…])` | nodo de referencia | RRF de texto y vector; el top-K se calcula dentro del label del patrón |
+| `hybrid(n, text = "…", vector = [...], model = "…"[, k = N][, opciones…])` | con nombre; `text` y/o `vector` | se admite híbrida solo-texto o solo-vector |
 
+Reglas: `vector` es una lista no vacía de números (se aceptan enteros y
+`1e-05`) cuya longitud debe coincidir con el índice del modelo; `vector`
+exige `model`; una llamada da o el nodo de referencia o el literal, no ambos.
 Opciones con nombre de `hybrid`: `rrf_k` (número > 0, default 60), `ef_search`
 (entero ≥ 1, default 30), `overfetch` (entero ≥ 1, default 4), `text_index`
 (cadena; default: el primer índice full-text del label). Una opción
 desconocida, un valor del tipo equivocado o un número incorrecto de
 posicionales es un error de validación que nombra el problema; ninguna otra
-función acepta opciones con nombre. `explain` imprime los parámetros efectivos.
-Detalle y API Rust/Python: [HYBRID_SEARCH.md](../HYBRID_SEARCH.md), [EMBEDDINGS.md](../EMBEDDINGS.md).
+función acepta opciones con nombre.
+
+Dónde puede ir la búsqueda: un patrón de un solo nodo, o **un** patrón de un
+salto `(a)-[:T]->(b)` cuyo primer nodo es la variable buscada (los candidatos
+siembran el pipeline; el `LIMIT` acota entonces las filas expandidas, así que
+conviene dar `k`). Varios patrones, cadenas más largas, cuantificadores o
+buscar la variable destino son errores de validación. Antes de 0.6.9 esas
+consultas, y cualquier `similar_to` mal formado, se ignoraban en silencio y
+devolvían todas las filas. `explain` imprime los parámetros efectivos (líneas
+`SimilarTo:` / `Hybrid:`, el vector como `<literal dim=N>`) y la estrategia
+(`VECTOR SEARCH (similar_to)`, `PATTERN PIPELINE (seed: HYBRID)`, …).
+Detalle y API Rust/Python: [HYBRID_SEARCH.md](../HYBRID_SEARCH.md), [EMBEDDINGS.md](../EMBEDDINGS.md),
+[GRAPHRAG.md](../GRAPHRAG.md).
 
 ---
 

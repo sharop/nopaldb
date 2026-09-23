@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.9] - unreleased
+
+### Added
+- **Vector literal en NQL (R7):** `similar_to(c, vector = [0.1, -0.2, …],
+  model = "m", k = 10)` y `hybrid(c, text = "…", vector = [...], model = "m",
+  k = 10)` toman el embedding de la pregunta escrito en la consulta (enteros
+  y `1e-05` valen; la longitud debe coincidir con el índice del modelo). Las
+  formas posicionales por nodo de referencia siguen igual; `k = N` vale en
+  todas y gana al `LIMIT`. `hybrid` admite solo-texto o solo-vector en la
+  forma con nombre.
+- **Buscar y expandir en una consulta:** `similar_to`/`hybrid` siembran un
+  patrón de un salto — `find c.text, e.name from (c:Chunk)-[:MENTIONS]->(e)
+  where similar_to(c, vector = [...], model = "m", k = 10)` — sin scan de la
+  etiqueta; `EXPLAIN` dice `PATTERN PIPELINE (seed: SIMILAR_TO|HYBRID)`. Es
+  la consulta de un GraphRAG por MCP en un solo viaje.
+- `EXPLAIN` imprime `SimilarTo: …` (antes `similar_to` era invisible) y
+  `VECTOR SEARCH (similar_to|hybrid)` como estrategia; el vector literal
+  aparece como `<literal dim=N>`, nunca sus componentes.
+- NQL: los números admiten exponente (`2.5E3`, `1e-05`).
+
+### Changed
+- `similar_to`/`hybrid` ya no recorren la etiqueta y filtran por pertenencia:
+  los candidatos del índice, hidratados por id, SON la fuente del stream
+  (O(k) en vez de O(N)) y las filas salen mejor-primero cuando no hay `ORDER
+  BY` (antes el ranking se perdía en un `HashSet`).
+- `similar_to` calcula su top-K dentro de la etiqueta del patrón (pide 4·K
+  al índice y se queda con los K de la etiqueta), como `hybrid` desde #115;
+  antes `limit 3` podía devolver menos filas sin motivo visible.
+
+### Fixed
+- **`similar_to`/`hybrid` en un patrón con relación devolvían TODO el grafo
+  en silencio:** el pipeline de patrones nunca los precomputaba y el
+  predicado pasaba como `true`. Ahora un patrón de un salto se siembra desde
+  la búsqueda; varios patrones, cadenas más largas, cuantificadores o buscar
+  la variable destino son errores de validación con nombre.
+- `similar_to` mal formado (aridad, tipos) también devolvía todas las filas:
+  ahora se valida como `hybrid` desde 0.5.19. Un índice de propiedad en el
+  resto del WHERE ya no se adelanta a la búsqueda vectorial. Sin la feature
+  `embeddings-index` la consulta es un error, no todas las filas.
+
 ## [0.6.8] - 2026-09-23
 
 ### Added

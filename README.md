@@ -208,6 +208,10 @@ Also available in Rust (`Graph::search_hybrid`), as the `search_hybrid` tool of 
 find n.name from (n:Chunk)
 where hybrid(n, "graph memory", "current_query", "e5-large")
 limit 10
+
+-- or with the question's vector written in the query (0.6.9), seeding a one-hop expansion
+find c.text, e.name from (c:Chunk)-[:MENTIONS]->(e:Entity)
+where hybrid(c, text = "graph memory", vector = [...], model = "e5-large", k = 10)
 ```
 
 See [docs/HYBRID_SEARCH.md](docs/HYBRID_SEARCH.md) for RRF details, the filter, and limits.

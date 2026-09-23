@@ -287,35 +287,63 @@ Rust: `graph.create_index_with(label, property, IndexType::FullText, IndexOption
 ## Vector and hybrid search in WHERE
 
 With the `embeddings-index` / `hybrid` features, two predicates turn a pattern
-into a top-K search instead of a scan. Both resolve the query vector from a
-**reference node** looked up by its `name` property, and take K from `LIMIT`
-(default 10).
+into a top-K search instead of a scan. The query vector comes either from a
+**reference node** looked up by its `name` property (positional form) or,
+since 0.6.9, from a **vector literal written in the query** (named form): a
+GraphRAG agent embeds the question and searches with it, no node needed.
+K is `k = N` when given, else `LIMIT` (default 10). Rows come out best first
+unless you `ORDER BY`.
 
 ```nql
 -- Nearest neighbours of the node named "q" in the "minilm" embedding space
 find n.title from (n:Article) where similar_to(n, "q", "minilm") limit 10
 
+-- Same with the question's vector inside the query
+find n.title from (n:Article)
+where similar_to(n, vector = [0.12, -0.03, 1e-05, …], model = "minilm", k = 10)
+
 -- Full-text + vector, fused by Reciprocal Rank Fusion
 find n.title from (n:Article) where hybrid(n, "graph memory", "q", "minilm") limit 10
+find n.title from (n:Article)
+where hybrid(n, text = "graph memory", vector = [...], model = "minilm", k = 10)
 
--- Tuned: every HybridQuery parameter is a named option after the four positionals
+-- Search and expand in one query: the search seeds a one-hop pattern
+find c.text, e.name from (c:Chunk)-[:MENTIONS]->(e:Entity)
+where similar_to(c, vector = [...], model = "minilm", k = 10)
+
+-- Tuned: every HybridQuery parameter is a named option
 find n.title from (n:Article)
 where hybrid(n, "graph memory", "q", "minilm", rrf_k = 30, ef_search = 128, overfetch = 8, text_index = "Article_body")
 limit 10
 ```
 
-| Function | Arguments | Notes |
+| Function | Forms | Notes |
 |---|---|---|
-| `similar_to(n, "ref_name", "model")` | pattern variable, reference node name, model | HNSW k-NN; exact below 1024 vectors |
-| `hybrid(n, "text", "ref_name", "model", options…)` | + the full-text query text | RRF of full-text and vector; the top-K is computed inside the pattern's label |
+| `similar_to(n, "ref_name"[, "model"][, k = N])` | reference node by `name` | HNSW k-NN; exact below 1024 vectors; the top-K is computed inside the pattern's label |
+| `similar_to(n, vector = [...], model = "…"[, k = N])` | vector literal | same, with the question's vector |
+| `hybrid(n, "text", "ref_name", "model"[, options…])` | reference node | RRF of full-text and vector; the top-K is computed inside the pattern's label |
+| `hybrid(n, text = "…", vector = [...], model = "…"[, k = N][, options…])` | named; `text` and/or `vector` | text-only or vector-only hybrid is allowed |
 
-Named options of `hybrid`: `rrf_k` (number > 0, default 60), `ef_search`
-(integer ≥ 1, default 30), `overfetch` (integer ≥ 1, default 4), `text_index`
-(string, default: the first full-text index matching the label). Unknown
-options, wrong value kinds, or a wrong number of positional arguments are
-validation errors that name the problem; named options are not accepted by any
-other function. `explain` prints the effective parameters. Details and the
-Rust/Python API: [HYBRID_SEARCH.md](../HYBRID_SEARCH.md), [EMBEDDINGS.md](../EMBEDDINGS.md).
+Rules: `vector` is a non-empty list of numbers (integers are accepted, and
+`1e-05` parses) whose length must match the model's index; `vector` requires
+`model`; a call gives either a reference node or a literal, not both. Named
+options of `hybrid`: `rrf_k` (number > 0, default 60), `ef_search` (integer
+≥ 1, default 30), `overfetch` (integer ≥ 1, default 4), `text_index` (string,
+default: the first full-text index matching the label). Unknown options, wrong
+value kinds, or a wrong number of positional arguments are validation errors
+that name the problem; no other function accepts named options.
+
+Where the search may live: a single-node pattern, or **one** pattern of a
+single hop `(a)-[:T]->(b)` whose first node is the searched variable (the
+candidates seed the pipeline; `LIMIT` then caps the expanded rows, so give
+`k` explicitly). Several patterns, longer chains, quantifiers or searching
+the target variable are validation errors. Before 0.6.9 such queries, and any
+malformed `similar_to`, were silently ignored and returned every row.
+`explain` prints the effective parameters (`SimilarTo:` / `Hybrid:` lines,
+the vector shown as `<literal dim=N>`) and the strategy (`VECTOR SEARCH
+(similar_to)`, `PATTERN PIPELINE (seed: HYBRID)`, …). Details and the
+Rust/Python API: [HYBRID_SEARCH.md](../HYBRID_SEARCH.md), [EMBEDDINGS.md](../EMBEDDINGS.md),
+[GRAPHRAG.md](../GRAPHRAG.md).
 
 ---
 

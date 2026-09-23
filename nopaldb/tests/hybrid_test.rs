@@ -344,7 +344,7 @@ async fn nql_hybrid_rejects_bad_options_arity_and_named_args_elsewhere() {
         (r#"find n.name from (n:Doc) where hybrid(n, "apple", "q", "m", rrf_k = "x")"#, "option `rrf_k`"),
         (r#"find n.name from (n:Doc) where hybrid(n, "apple", "q", "m", ef_search = 0)"#, "option `ef_search`"),
         (r#"find n.name from (n:Doc) where hybrid(n, "apple")"#, "exactly 4 positional"),
-        (r#"find count(x = 1) from (n:Doc)"#, "only hybrid(...) takes named options"),
+        (r#"find count(x = 1) from (n:Doc)"#, "only similar_to(...) and hybrid(...) take named options"),
         (r#"find n.name from (n:Doc) where hybrid(n, "apple", "q", "m", text_index = "no_existe")"#, "no_existe"),
     ];
     for (nql, needle) in cases {

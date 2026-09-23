@@ -634,12 +634,14 @@ pub fn eval_condition_with_graph(
             };
             graph.try_node_embedding_exists_sync(node.id, model)
         }
-        // similar_to() is pre-computed via HNSW in the executor (precompute_similar_to).
-        // The node already passed the set-membership filter, so return true here.
+        // similar_to() / hybrid() are pre-computed in the executor
+        // (`vector_search_candidates`): the stream ALREADY consists of their
+        // candidates only, so the predicate is `true` here. This arm is safe
+        // only because every execution path that reaches it seeds the stream
+        // from the search (single-node and one-hop pattern; the validator
+        // and the executor reject the rest instead of letting them through).
         #[cfg(feature = "embeddings")]
         Expression::FunctionCall { name, .. } if name.to_lowercase() == "similar_to" => Ok(true),
-        // hybrid() is pre-computed via RRF in the executor (precompute_hybrid).
-        // The node already passed the set-membership filter, so return true here.
         #[cfg(feature = "hybrid")]
         Expression::FunctionCall { name, .. } if name.to_lowercase() == "hybrid" => Ok(true),
         // instanceOf(var, "ClassName") / subClassOf(var, "ClassName") — requieren taxonomía

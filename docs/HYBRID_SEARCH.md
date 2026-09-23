@@ -145,16 +145,18 @@ explanation cannot change the result.
 ## NQL `hybrid()`
 
 `hybrid(n, "text", "ref_name", "model")` in a WHERE clause filters the pattern to
-the top-K hybrid results. The vector is the embedding of the reference node
-resolved by its `name` property (the same convention as `similar_to`); K comes
-from the query `LIMIT` (default 10). The top-K is computed **inside the FROM
-pattern's label**: `(n:Chunk)` becomes the hybrid filter, so a better-matching
+the top-K hybrid results, best first. The vector is the embedding of the
+reference node resolved by its `name` property (the same convention as
+`similar_to`), or — since 0.6.9 — a literal written in the query:
+`hybrid(n, text = "…", vector = [0.1, -0.2, …], model = "m", k = 10)`, with
+`text` and/or `vector`. K is `k = N`, else the query `LIMIT` (default 10). The
+top-K is computed **inside the FROM pattern's label**: `(n:Chunk)` becomes the hybrid filter, so a better-matching
 node of another label cannot push a `Chunk` out of the K (before 0.5.19 the
 search ran over every label and the stream dropped the foreign hits afterwards,
 which with `limit 1` could leave the query with zero rows).
 
-Every parameter of `HybridQuery` is reachable through named options after the
-four positional arguments:
+Every parameter of `HybridQuery` is reachable through named options (after the
+four positional arguments, or in the all-named form):
 
 ```nql
 find n.name, n.body
@@ -174,11 +176,16 @@ limit 10
 An unknown option, a value of the wrong kind, or a wrong number of positional
 arguments is a validation error that names the problem. (Until 0.5.19 a
 malformed `hybrid(...)` was silently ignored and the predicate passed every
-node.) `explain find ...` prints the effective parameters, defaults included:
+node.) `explain find ...` prints the effective parameters, defaults included
+(a literal vector shows as `<literal dim=N>`, never its components):
 
 ```
 Hybrid: hybrid(n): text="graph memory" ref="current_query" model="e5-large" k=10 rrf_k=30 overfetch=8 ef_search=128 text_index=Chunk_body filter.label=Chunk
 ```
+
+The search can also seed a one-hop pattern — search and expand in one query
+(`EXPLAIN` says `PATTERN PIPELINE (seed: HYBRID)`); see
+[GRAPHRAG.md](GRAPHRAG.md) for the placement rules.
 
 ## Limits & notes (v1)
 
@@ -190,4 +197,6 @@ Hybrid: hybrid(n): text="graph memory" ref="current_query" model="e5-large" k=10
   inserted into the cached HNSW index by `add_node_embedding` (0.5.19) and is
   visible to the next search.
 - Follow-ups: per-path weights; range/OR filters; property filters from the
-  NQL `where` (today only the pattern label reaches the hybrid filter).
+  NQL `where` (today only the pattern label reaches the hybrid filter; the
+  other predicates are applied to the top-K afterwards, so they can leave
+  fewer than K rows).

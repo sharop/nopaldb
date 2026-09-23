@@ -43,10 +43,28 @@ context = render(chunks, ctx["nodes"], ctx["edges"])
 ## In NQL
 
 ```sql
+-- search and expand in ONE query: the question's vector is written in it (0.6.9)
+find c.text, e.name from (c:Chunk)-[:MENTIONS]->(e:Entity)
+where similar_to(c, vector = [0.12, -0.03, ...], model = "minilm", k = 10)
+
+find c.text from (c:Chunk)
+where hybrid(c, text = "drip irrigation", vector = [...], model = "minilm", k = 10)
+
 find c.text from (c:Chunk) where c.id in ["<uuid>", "<uuid>"]
 find e.name, e.kind from (c:Chunk)-[:MENTIONS]->(e:Entity) where c.id = "<uuid>"
 find e.name from (e:Entity) where e.name in ["ana", "beto"]     -- uses the hash index
 ```
+
+`similar_to(var, vector = [...], model = "…", k = N)` and
+`hybrid(var, text = "…", vector = [...], model = "…", k = N)` take the
+question's embedding as a list literal (integers and `1e-05` parse; the
+length must match the model's index). The candidates come out best first and,
+in a one-hop pattern, they **seed the pipeline**: only the top-K chunks are
+expanded (`EXPLAIN` says `PATTERN PIPELINE (seed: SIMILAR_TO)`). Give `k`
+explicitly in a pattern query: there `LIMIT` caps the expanded rows. The
+search must be on the first node of a single one-hop pattern; other shapes
+are validation errors (before 0.6.9 they silently returned the whole graph).
+This is what an agent behind the MCP server uses: one round trip.
 
 `where var.id = "…"` and `where var.id in [...]` resolve by point read: no
 scan, and a missing id is zero rows (`EXPLAIN` says `ID LOOKUP`). In a
@@ -77,18 +95,17 @@ Rust; `python/scripts/graphrag_sample.py` is the functional guard).
 
 Fill in the exact numbers for your data with `make bench BENCH=retrieval`.
 
-## Limits, and what 0.6.9 brings
+## Limits, and what comes next
 
 - Edges are still read one by one from storage during expansion (the
-  in-memory adjacency holds edge ids only). Typed adjacency (0.6.9) removes
+  in-memory adjacency holds edge ids only). Typed adjacency (next) removes
   those reads; `neighborhood` keeps the same contract.
-- `search_hybrid(label=...)` pre-filters by label with a scan of the label;
-  omit the filter when your embeddings live on one label, or wait for the
-  label index (0.6.9).
-- The question's vector cannot yet be written inside an NQL query (`similar_to`
-  and `hybrid()` take a node name); from NQL, search in Python or via
-  `knn_nodes` and pass the ids with `in`. A vector literal in NQL is first
-  in 0.6.9.
+- `search_hybrid(label=...)` and NQL `hybrid()` pre-filter by label with a
+  scan of the label; omit the filter when your embeddings live on one label,
+  or wait for the label index (next). NQL `similar_to` does not scan: it asks
+  the index for 4·K neighbours and keeps the first K of the label, so with
+  embeddings spread over many labels it can return fewer than K rows.
+- NQL rows carry no similarity score column; the row order is the ranking.
 
 See also [HYBRID_SEARCH.md](HYBRID_SEARCH.md), [EMBEDDINGS.md](EMBEDDINGS.md)
 and the Python [API reference](python/API_REFERENCE.md).

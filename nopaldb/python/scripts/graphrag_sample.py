@@ -113,6 +113,22 @@ with tempfile.TemporaryDirectory() as tmp:
     assert len(rest) == 3 and all(r["e.name"].startswith("entity-") for r in rest)
     hop = list(g.execute_nql(f'find e.name from (c:Chunk)-[:MENTIONS]->(e:Entity) where c.id = "{c0}"'))
     assert {r["e.name"] for r in hop} == {x["properties"]["name"] for x in g.neighbors(c0)}
+
+    # 5. Search and expand in ONE query: the question's vector inside NQL (0.6.9).
+    lit = "[" + ", ".join(repr(x) for x in q) + "]"   # repr may print 1e-05: NQL parses it
+    one = list(g.execute_nql(f'find c.text, e.name from (c:Chunk)-[:MENTIONS]->(e:Entity) where similar_to(c, vector = {lit}, model = "m", k = 3)'))
+    top3 = [h["node_id"] for h in g.knn_nodes(q, 3, "m", hydrate=True)]
+    expanded = {n["properties"]["name"] for n in g.neighborhood(top3, depth=1)["nodes"] if n["label"] == "Entity"}
+    assert {r["e.name"] for r in one} == expanded and len(one) == sum(g.degree(c, "out") for c in top3), one
+    plan = g.execute_nql(f'explain find e.name from (c:Chunk)-[:MENTIONS]->(e:Entity) where similar_to(c, vector = {lit}, model = "m", k = 3)').explain
+    assert "PATTERN PIPELINE (seed: SIMILAR_TO)" in plan and "<literal dim=8>" in plan, plan
+    ranked = list(g.execute_nql(f'find c.text from (c:Chunk) where hybrid(c, vector = {lit}, model = "m", k = 3)'))
+    assert [r["c.text"] for r in ranked] == [h["node"]["properties"]["text"] for h in g.knn_nodes(q, 3, "m", hydrate=True)], "best first"
+    try:
+        g.execute_nql('find e.name from (c:Chunk)-[:MENTIONS]->(e:Entity) where similar_to(e, vector = [1, 0], model = "m")')
+        raise SystemExit("searching the target variable must be a validation error")
+    except Exception as exc:
+        assert "must be the first node" in str(exc), exc
     g.close()
 
 print("graphrag_sample: OK")

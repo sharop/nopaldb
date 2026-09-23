@@ -132,6 +132,17 @@ impl PropertyValue {
         }
     }
 
+    /// Lista de números como vector `f32` (un vector literal de NQL, 0.6.9).
+    /// `Int` se coerciona: `[1, 0, 0]` es un vector válido. `None` si no es
+    /// lista, está vacía o algún elemento no es numérico.
+    pub fn as_f32_vec(&self) -> Option<Vec<f32>> {
+        let items = self.as_list()?;
+        if items.is_empty() {
+            return None;
+        }
+        items.iter().map(|v| v.as_number().map(|f| f as f32)).collect()
+    }
+
     pub fn as_object(&self) -> Option<&[(String, PropertyValue)]> {
         match self {
             PropertyValue::Object(fields) => Some(fields.as_slice()),

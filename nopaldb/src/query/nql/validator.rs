@@ -311,19 +311,19 @@ impl SemanticValidator {
             if let Projection::Expression { expr, .. } = projection {
                 self.validate_pattern_embedding_usage(expr, EmbeddingExprContext::Find, query)?;
                 self.validate_path_embedding_usage(expr, EmbeddingExprContext::Find, query)?;
-                self.validate_hybrid_usage(expr)?;
+                self.validate_vector_search_usage(expr, query)?;
             }
         }
         if let Some(filter) = &query.filter {
             self.validate_pattern_embedding_usage(&filter.condition, EmbeddingExprContext::Where, query)?;
             self.validate_path_embedding_usage(&filter.condition, EmbeddingExprContext::Where, query)?;
-            self.validate_hybrid_usage(&filter.condition)?;
+            self.validate_vector_search_usage(&filter.condition, query)?;
         }
         if let Some(order_by) = &query.order_by {
             for item in &order_by.items {
                 self.validate_pattern_embedding_usage(&item.expression, EmbeddingExprContext::OrderBy, query)?;
                 self.validate_path_embedding_usage(&item.expression, EmbeddingExprContext::OrderBy, query)?;
-                self.validate_hybrid_usage(&item.expression)?;
+                self.validate_vector_search_usage(&item.expression, query)?;
             }
         }
         if let Some(group_by) = &query.group_by {
@@ -399,7 +399,7 @@ impl SemanticValidator {
             }
             Expression::NamedArg { name, .. } => {
                 return Err(NopalError::SemanticError(format!(
-                    "named argument `{name}` is only valid inside hybrid(...)"
+                    "named argument `{name}` is only valid inside similar_to(...) or hybrid(...)"
                 )));
             }
             Expression::Literal(_) | Expression::Wildcard => {
@@ -446,78 +446,194 @@ impl SemanticValidator {
                 .any(|e| matches!(e, PatternElement::Relationship(_)))
     }
 
-    /// `hybrid(var, "text", "ref", "model", opción = valor, …)` (#115) y el
-    /// único sitio donde un argumento con nombre es legal.
+    /// `similar_to(...)` y `hybrid(...)`: los dos únicos sitios donde un
+    /// argumento con nombre es legal, y las dos únicas funciones que fijan los
+    /// candidatos de la consulta desde el índice vectorial.
     ///
-    /// Hasta 0.5.19 `hybrid` no se validaba: una aridad incorrecta hacía que
-    /// el executor no precomputara nada y el predicado pasara como `true`,
-    /// devolviendo TODOS los nodos en silencio. Ahora es un error con nombre.
-    fn validate_hybrid_usage(&self, expr: &Expression) -> Result<()> {
+    /// Hasta 0.5.19 `hybrid` no se validaba, y hasta 0.6.9 `similar_to`
+    /// tampoco: una aridad incorrecta hacía que el executor no precomputara
+    /// nada y el predicado pasara como `true`, devolviendo TODOS los nodos en
+    /// silencio. Ahora es un error con nombre. Lo mismo para la forma de la
+    /// consulta (`validate_vector_search_placement`): el executor solo sabe
+    /// sembrar un nodo suelto o un patrón de un salto desde la variable
+    /// buscada; cualquier otra forma se rechaza en vez de ignorarse.
+    ///
+    /// Formas aceptadas:
+    ///
+    /// - `similar_to(var, "ref_name"[, "model"][, k = N])`
+    /// - `similar_to(var, vector = [...], model = "…"[, k = N])`
+    /// - `hybrid(var, "text", "ref_name", "model"[, opciones…])`
+    /// - `hybrid(var, text = "…" y/o vector = [...] + model = "…"[, k = N][, opciones…])`
+    fn validate_vector_search_usage(&self, expr: &Expression, query: &Query) -> Result<()> {
         match expr {
-            Expression::FunctionCall { name, args } if name.eq_ignore_ascii_case("hybrid") => {
+            Expression::FunctionCall { name, args }
+                if name.eq_ignore_ascii_case("similar_to") || name.eq_ignore_ascii_case("hybrid") =>
+            {
+                let is_hybrid = name.eq_ignore_ascii_case("hybrid");
+                let fname = if is_hybrid { "hybrid" } else { "similar_to" };
                 let (positional, named): (Vec<&Expression>, Vec<&Expression>) =
                     args.iter().partition(|a| !matches!(a, Expression::NamedArg { .. }));
-                if positional.len() != 4 {
+                let Some(Expression::Property { variable, .. }) = positional.first() else {
                     return Err(NopalError::SemanticError(format!(
-                        "hybrid(var, \"text\", \"ref_name\", \"model\") requires exactly 4 positional arguments, got {}",
-                        positional.len()
+                        "{fname}: the first argument must be the pattern variable (e.g. `n`)"
                     )));
-                }
-                if !matches!(positional[0], Expression::Property { .. }) {
-                    return Err(NopalError::SemanticError(
-                        "hybrid: the first argument must be the pattern variable (e.g. `n`)".to_string(),
-                    ));
-                }
-                for (i, what) in [(1usize, "text"), (2, "ref_name"), (3, "model")] {
-                    if !matches!(positional[i], Expression::Literal(PropertyValue::String(_))) {
+                };
+                // Forma clásica (nodo de referencia por `name`) o nombrada (solo la variable).
+                let has_ref = match (is_hybrid, positional.len()) {
+                    (_, 1) => false,
+                    (true, 4) | (false, 2) | (false, 3) => {
+                        let what: &[&str] = if is_hybrid { &["text", "ref_name", "model"] } else { &["ref_name", "model"] };
+                        for (i, arg) in positional.iter().enumerate().skip(1) {
+                            if !matches!(arg, Expression::Literal(PropertyValue::String(_))) {
+                                return Err(NopalError::SemanticError(format!(
+                                    "{fname}: argument {} ({}) must be a string literal",
+                                    i + 1,
+                                    what[i - 1]
+                                )));
+                            }
+                        }
+                        true
+                    }
+                    (true, n) => {
                         return Err(NopalError::SemanticError(format!(
-                            "hybrid: argument {} ({what}) must be a string literal",
-                            i + 1
+                            "hybrid(var, \"text\", \"ref_name\", \"model\") requires exactly 4 positional arguments, got {n} \
+                             (or the named form: hybrid(var, text = \"…\", vector = [...], model = \"…\"))"
                         )));
                     }
-                }
+                    (false, n) => {
+                        return Err(NopalError::SemanticError(format!(
+                            "similar_to(var, \"ref_name\"[, \"model\"]) takes 2 or 3 positional arguments, got {n} \
+                             (or the named form: similar_to(var, vector = [...], model = \"…\"))"
+                        )));
+                    }
+                };
+                let valid_options = if is_hybrid {
+                    "text, vector, model, k, rrf_k, ef_search, overfetch, text_index"
+                } else {
+                    "vector, model, k"
+                };
+                let (mut has_text, mut has_vector, mut has_model) = (false, false, false);
                 for arg in named {
                     let Expression::NamedArg { name, value } = arg else { unreachable!() };
                     let ok = match (name.as_str(), value.as_ref()) {
-                        ("rrf_k", Expression::Literal(PropertyValue::Int(v))) => *v > 0,
-                        ("rrf_k", Expression::Literal(PropertyValue::Float(v))) => *v > 0.0,
-                        ("ef_search" | "overfetch", Expression::Literal(PropertyValue::Int(v))) => *v >= 1,
-                        ("text_index", Expression::Literal(PropertyValue::String(s))) => !s.is_empty(),
-                        ("rrf_k" | "ef_search" | "overfetch" | "text_index", _) => false,
+                        ("vector", Expression::Literal(v)) => {
+                            has_vector = true;
+                            v.as_f32_vec().is_some()
+                        }
+                        ("model", Expression::Literal(PropertyValue::String(s))) => {
+                            has_model = true;
+                            !s.is_empty()
+                        }
+                        ("k", Expression::Literal(PropertyValue::Int(v))) => *v >= 1,
+                        ("text", Expression::Literal(PropertyValue::String(s))) if is_hybrid => {
+                            has_text = true;
+                            !s.is_empty()
+                        }
+                        ("rrf_k", Expression::Literal(PropertyValue::Int(v))) if is_hybrid => *v > 0,
+                        ("rrf_k", Expression::Literal(PropertyValue::Float(v))) if is_hybrid => *v > 0.0,
+                        ("ef_search" | "overfetch", Expression::Literal(PropertyValue::Int(v))) if is_hybrid => *v >= 1,
+                        ("text_index", Expression::Literal(PropertyValue::String(s))) if is_hybrid => !s.is_empty(),
+                        ("vector" | "model" | "k", _) => false,
+                        ("text" | "rrf_k" | "ef_search" | "overfetch" | "text_index", _) if is_hybrid => false,
                         (other, _) => {
                             return Err(NopalError::SemanticError(format!(
-                                "hybrid: unknown option `{other}`; valid options are rrf_k, ef_search, overfetch, text_index"
+                                "{fname}: unknown option `{other}`; valid options are {valid_options}"
                             )));
                         }
                     };
                     if !ok {
                         return Err(NopalError::SemanticError(format!(
-                            "hybrid: option `{name}` has an invalid value (rrf_k: number > 0; ef_search, overfetch: integer >= 1; text_index: non-empty string)"
+                            "{fname}: option `{name}` has an invalid value (vector: non-empty list of numbers; \
+                             model, text, text_index: non-empty string; k, ef_search, overfetch: integer >= 1; rrf_k: number > 0)"
                         )));
                     }
                 }
-                Ok(())
+                if has_ref && (has_vector || has_model || has_text) {
+                    return Err(NopalError::SemanticError(format!(
+                        "{fname}: give either the reference node name (positional form) or `vector = [...]` / `model = …`{} (named form), not both",
+                        if is_hybrid { " / `text = …`" } else { "" }
+                    )));
+                }
+                if !has_ref {
+                    if has_vector && !has_model {
+                        return Err(NopalError::SemanticError(format!(
+                            "{fname}: `vector = [...]` needs `model = \"…\"` (the embedding model whose index is searched)"
+                        )));
+                    }
+                    if !has_vector && has_model {
+                        return Err(NopalError::SemanticError(format!(
+                            "{fname}: `model = …` needs `vector = [...]`"
+                        )));
+                    }
+                    if !has_vector && !has_text {
+                        return Err(NopalError::SemanticError(if is_hybrid {
+                            "hybrid: the named form needs `text = \"…\"` and/or `vector = [...]` with `model = \"…\"`".to_string()
+                        } else {
+                            "similar_to: give a reference node name or `vector = [...]` with `model = \"…\"`".to_string()
+                        }));
+                    }
+                }
+                self.validate_vector_search_placement(fname, variable, query)
             }
             Expression::FunctionCall { name, args } => {
                 if let Some(Expression::NamedArg { name: arg, .. }) =
                     args.iter().find(|a| matches!(a, Expression::NamedArg { .. }))
                 {
                     return Err(NopalError::SemanticError(format!(
-                        "named argument `{arg}` is not accepted by {name}(...): only hybrid(...) takes named options"
+                        "named argument `{arg}` is not accepted by {name}(...): only similar_to(...) and hybrid(...) take named options"
                     )));
                 }
                 for a in args {
-                    self.validate_hybrid_usage(a)?;
+                    self.validate_vector_search_usage(a, query)?;
                 }
                 Ok(())
             }
             Expression::BinaryOp { left, right, .. } => {
-                self.validate_hybrid_usage(left)?;
-                self.validate_hybrid_usage(right)
+                self.validate_vector_search_usage(left, query)?;
+                self.validate_vector_search_usage(right, query)
             }
-            Expression::UnaryOp { expr, .. } => self.validate_hybrid_usage(expr),
+            Expression::UnaryOp { expr, .. } => self.validate_vector_search_usage(expr, query),
             _ => Ok(()),
         }
+    }
+
+    /// Dónde puede vivir una búsqueda vectorial: un patrón de un solo nodo, o
+    /// UN patrón de un salto `(a)-[:T]->(b)` sin cuantificador cuya variable
+    /// origen es la buscada (el executor siembra el pipeline con los
+    /// candidatos; "buscar y expandir en una consulta", 0.6.9). Todo lo
+    /// demás — varios patrones, cadenas más largas, la variable destino — se
+    /// rechaza con nombre: antes de 0.6.9 esas consultas devolvían todo el
+    /// grafo en silencio porque el predicado pasaba como `true`.
+    fn validate_vector_search_placement(&self, fname: &str, variable: &str, query: &Query) -> Result<()> {
+        if query.from.patterns.len() > 1 {
+            return Err(NopalError::SemanticError(format!(
+                "{fname}: FROM with several patterns is not supported; search in a single pattern and join by id"
+            )));
+        }
+        let Some(pattern) = query.from.patterns.first() else { return Ok(()) };
+        if !pattern.elements.iter().any(|e| matches!(e, PatternElement::Relationship(_))) {
+            return Ok(());
+        }
+        if pattern.elements.len() != 3 {
+            return Err(NopalError::SemanticError(format!(
+                "{fname}: only a single hop `(a)-[:T]->(b)` can be expanded from the search; longer chains are not supported yet"
+            )));
+        }
+        if matches!(&pattern.elements[1], PatternElement::Relationship(r) if r.quantifier.is_some()) {
+            return Err(NopalError::SemanticError(format!(
+                "{fname}: relationship quantifiers are not supported together with the search"
+            )));
+        }
+        let source_var = match &pattern.elements[0] {
+            PatternElement::Node(n) => n.variable.as_deref(),
+            _ => None,
+        };
+        if source_var != Some(variable) {
+            return Err(NopalError::SemanticError(format!(
+                "{fname}: `{variable}` must be the first node of the pattern (write the pattern starting from the searched variable)"
+            )));
+        }
+        Ok(())
     }
 
     fn validate_pattern_embedding_usage(
