@@ -1196,7 +1196,7 @@ impl AstBuilder {
                 }
                 Rule::number => {
                     let num_str = inner.as_str();
-                    if num_str.contains('.') {
+                    if num_str.contains(['.', 'e', 'E']) {
                         let f: f64 = num_str.parse()
                             .map_err(|_| NopalError::QueryParseError("Invalid float".into()))?;
                         return Ok(Expression::Literal(PropertyValue::Float(f)));
@@ -1295,7 +1295,7 @@ impl AstBuilder {
                 }
                 Rule::number => {
                     let num_str = inner.as_str();
-                    if num_str.contains('.') {
+                    if num_str.contains(['.', 'e', 'E']) {
                         let f: f64 = num_str.parse()
                             .map_err(|_| NopalError::QueryParseError("Invalid float".into()))?;
                         return Ok(PropertyValue::Float(f));
@@ -1428,19 +1428,10 @@ impl AstBuilder {
         let value_pair = inner
             .next()
             .ok_or_else(|| NopalError::QueryParseError(format!("named argument `{name}` without a value")))?;
+        // Mismo parser que los literales del WHERE y de los property maps:
+        // una lista llega como `PropertyValue::List` (vector literal, 0.6.9).
         let value = match value_pair.as_rule() {
-            Rule::string => Expression::Literal(PropertyValue::String(Self::unquote_string(value_pair.as_str()))),
-            Rule::number => {
-                let text = value_pair.as_str();
-                if let Ok(i) = text.parse::<i64>() {
-                    Expression::Literal(PropertyValue::Int(i))
-                } else {
-                    Expression::Literal(PropertyValue::Float(text.parse::<f64>().map_err(|_| {
-                        NopalError::QueryParseError(format!("named argument `{name}`: `{text}` is not a number"))
-                    })?))
-                }
-            }
-            Rule::boolean => Expression::Literal(PropertyValue::Bool(value_pair.as_str().eq_ignore_ascii_case("true"))),
+            Rule::value => Expression::Literal(self.parse_property_value(value_pair)?),
             other => {
                 return Err(NopalError::QueryParseError(format!(
                     "named argument `{name}`: unsupported value {other:?}"

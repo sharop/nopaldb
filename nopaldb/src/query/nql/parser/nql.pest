@@ -395,14 +395,17 @@ function_call = {
 
 // `named_arg` va PRIMERO: `expression` reduce a `property_access` (un
 // identificador), así que `rrf_k = 30` se leería como propiedad antes de ver
-// el `=`. Hoy solo `hybrid(...)` acepta argumentos con nombre (el validador
-// rechaza el resto).
+// el `=`. Solo `similar_to(...)` y `hybrid(...)` aceptan argumentos con
+// nombre (el validador rechaza el resto).
 function_arg = {
     named_arg | "*" | expression
 }
 
+// El valor es cualquier `value`, incluida una lista literal: así el vector
+// de la pregunta de un GraphRAG viaja dentro de la consulta
+// (`similar_to(c, vector = [0.1, -0.2, …], model = "m")`, 0.6.9).
 named_arg = {
-    identifier ~ "=" ~ (string | number | boolean)
+    identifier ~ "=" ~ value
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -503,8 +506,10 @@ single_string_inner = @{
     )*
 }
 
+// Con exponente opcional (`1e-05`, `2.5E3`): es como Python serializa los
+// componentes pequeños de un embedding, y un vector literal en NQL los trae.
 number = @{
-    "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)?
+    "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
 }
 
 boolean = {
