@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Docs
+- `docs/GRAPHRAG.md`: cifras de 0.6.9 a 100k — buscar + expandir en UNA
+  consulta NQL con `similar_to` literal: 0.35 ms (el ciclo Python de 0.6.8
+  en un solo viaje); con `hybrid` por NQL 132 ms porque la etiqueta del
+  patrón llega al filtro híbrido como scan de la etiqueta (deuda de #115;
+  arreglo rápido e índice de etiqueta en camino).
+
 ## [0.6.9] - 2026-09-23
 
 ### Added
