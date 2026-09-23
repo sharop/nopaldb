@@ -36,8 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scan estándar. Ahora `n.id = …` y `n.id in [...]` resuelven por lectura
   puntual y un id inexistente es cero filas, sin fallback. `n.prop in [...]`
   con índice hace n búsquedas; un `AND` raíz siembra con el lado indexado y
-  aplica el resto como predicado. Medido con 100k nodos desde Python: 327 ms
-  → menos de 1 ms por consulta.
+  aplica el resto como predicado. En un patrón, la misma condición sobre el
+  nodo origen siembra el pipeline con esos nodos en vez de recorrer la
+  etiqueta (`EXPLAIN`: `PATTERN PIPELINE (seed: ID LOOKUP)`).
+- Medido con 100k chunks desde Python (wheel release, misma máquina): traer
+  un hit por id 327 ms → 0.002 ms (`get_node`) / 0.013 ms (NQL); los 10 hits
+  3.3 s → 0.016 ms; 1 hop desde un hit 590 ms → 0.007 ms (`neighborhood`) /
+  0.01 ms (patrón NQL sembrado); 2 hops desde 10 hits ~17 s → 0.41 ms; el
+  ciclo completo (híbrida k=10 hidratada + 1 hop de los 10 hits) ~9 s →
+  0.27 ms. Tabla en `docs/GRAPHRAG.md`.
 - `EXPLAIN` reporta los caminos nuevos (`ID LOOKUP`, `INDEX SEEK (IN)`)
   desde la misma decisión que ejecuta.
 

@@ -1022,6 +1022,55 @@ impl<'a> Executor<'a> {
         })
     }
 
+    /// Ids con los que el WHERE siembra la variable origen del patrón
+    /// (`where c.id = "…"` o `c.id in [...]`, también dentro de un AND raíz),
+    /// o `None` si no hay tal condición.
+    fn pattern_seed_ids(&self, query: &Query, source_pattern: &NodePattern) -> Option<Vec<NodeId>> {
+        let cond = self.extract_seed_condition(&query.filter.as_ref()?.condition)?;
+        if cond.property() != "id" || Some(cond.variable()) != source_pattern.variable.as_deref() {
+            return None;
+        }
+        let literals: Vec<&PropertyValue> = match &cond {
+            SeedCondition::Eq { value, .. } => vec![value],
+            SeedCondition::In { values, .. } => values.iter().collect(),
+        };
+        Some(
+            literals
+                .into_iter()
+                .filter_map(|v| match v {
+                    PropertyValue::String(s) => s.parse::<NodeId>().ok(),
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
+
+    /// Fuente del pipeline de patrones: si el WHERE fija el id del nodo
+    /// origen, arranca de esos nodos (lectura puntual + filtro de etiqueta)
+    /// en vez de recorrer la etiqueta entera. Es la consulta canónica de un
+    /// GraphRAG (`(c:Chunk)-[:MENTIONS]->(e) where c.id in [...]`): con 100k
+    /// chunks pasaba de segundos a milisegundos. El WHERE se sigue evaluando
+    /// sobre cada match, así que sembrar no cambia el resultado.
+    async fn seeded_source_stream(
+        &self,
+        query: &Query,
+        source_pattern: &NodePattern,
+    ) -> Result<Box<dyn operators::NodeStream + 'a>> {
+        if let Some(ids) = self.pattern_seed_ids(query, source_pattern) {
+            let nodes: Vec<Node> = self
+                .graph
+                .get_nodes(&ids)
+                .await?
+                .into_iter()
+                .flatten()
+                .filter(|n| source_pattern.label.as_deref().is_none_or(|l| l == n.label))
+                .collect();
+            log::info!("🚀 Pattern pipeline seeded by id: {} nodes", nodes.len());
+            return Ok(Box::new(operators::VecNodesStream::new(nodes)));
+        }
+        operators::scan_nodes_stream(self.graph, source_pattern.label.as_deref()).await
+    }
+
     /// Condición del WHERE que puede sembrar el conjunto de candidatos:
     /// `var.prop = literal`, `var.prop in [literales]`, o cualquiera de las
     /// dos dentro de un `AND` raíz (el resto del WHERE se re-aplica entero
@@ -1148,10 +1197,7 @@ impl<'a> Executor<'a> {
             PatternElement::Node(n) => n,
             _ => return Err(NopalError::QueryExecutionError("Pattern must start with node".into())),
         };
-        let mut source_stream = operators::scan_nodes_stream(
-            self.graph,
-            source_pattern.label.as_deref(),
-        ).await?;
+        let mut source_stream = self.seeded_source_stream(&query, source_pattern).await?;
 
         // Apply inline property map filter for source node pattern, e.g. `(a:Person {active: true})`.
         // The label is already handled by scan_nodes_stream; properties need an explicit post-filter.
@@ -5325,7 +5371,17 @@ impl<'a> Executor<'a> {
                 let strategy = if query.from.patterns.iter().any(|p| {
                     p.elements.iter().any(|e| matches!(e, PatternElement::Relationship(_)))
                 }) {
-                    "PATTERN PIPELINE"
+                    let seeded = query
+                        .from
+                        .patterns
+                        .first()
+                        .and_then(|p| p.elements.first())
+                        .and_then(|e| match e {
+                            PatternElement::Node(n) => self.pattern_seed_ids(query, n),
+                            _ => None,
+                        })
+                        .is_some();
+                    if seeded && query.from.patterns.len() == 1 { "PATTERN PIPELINE (seed: ID LOOKUP)" } else { "PATTERN PIPELINE" }
                 } else {
                     let labeled = query
                         .from

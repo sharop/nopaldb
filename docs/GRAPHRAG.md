@@ -49,7 +49,10 @@ find e.name from (e:Entity) where e.name in ["ana", "beto"]     -- uses the hash
 ```
 
 `where var.id = "…"` and `where var.id in [...]` resolve by point read: no
-scan, and a missing id is zero rows (`EXPLAIN` says `ID LOOKUP`). `in` /
+scan, and a missing id is zero rows (`EXPLAIN` says `ID LOOKUP`). In a
+pattern query the same condition on the source node seeds the pipeline with
+those nodes instead of scanning the label (`EXPLAIN` says `PATTERN PIPELINE
+(seed: ID LOOKUP)`). `in` /
 `not in` take a list literal; with a user index on the property, `EXPLAIN`
 says `INDEX SEEK (IN)`. Equality is strict, as with `=`: `1` is not `1.0`.
 A root `AND` seeds the candidates with its indexed side and applies the rest
@@ -63,11 +66,14 @@ Rust; `python/scripts/graphrag_sample.py` is the functional guard).
 
 | step | 0.6.7 | 0.6.8 |
 |---|---|---|
-| hybrid search k=10 | 0.2 ms | 0.2 ms |
-| fetch one hit by id | 327 ms (NQL, label scan) | µs (`get_node`) |
-| fetch the 10 hits | 3.3 s | one call |
-| 1-hop expansion from a hit | 590 ms (NQL) | ms (`neighborhood`) |
-| 2-hop expansion | 1.7 s | ms |
+| hybrid search k=10 (text + vector) | 0.20 ms | 0.20 ms; 0.21 ms with `hydrate=True` |
+| KNN k=10 | 0.11 ms | 0.11 ms |
+| fetch one hit by id | 327 ms (NQL `where c.id`, label scan) | 0.002 ms (`get_node`); 0.013 ms (NQL) |
+| fetch the 10 hits | 3.3 s (10 NQL queries) | 0.016 ms (`get_nodes`); 0.031 ms (NQL `in`) |
+| 1-hop expansion from one hit | 590 ms (NQL pattern) | 0.007 ms (`neighborhood`); 0.01 ms (NQL pattern seeded by id) |
+| 1-hop expansion from the 10 hits | 5.9 s | 0.056 ms |
+| 2-hop expansion from the 10 hits, both directions | ~17 s | 0.41 ms |
+| whole cycle: hybrid k=10 hydrated + 1 hop of the 10 hits | ~9 s | 0.27 ms |
 
 Fill in the exact numbers for your data with `make bench BENCH=retrieval`.
 

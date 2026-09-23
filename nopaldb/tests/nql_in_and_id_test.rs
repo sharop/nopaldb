@@ -109,6 +109,26 @@ async fn in_with_and_without_index_not_in_and_strict_equality() {
 }
 
 #[tokio::test]
+async fn a_pattern_query_seeded_by_id_starts_from_the_node_not_the_label() {
+    let (g, ids) = fixture().await;
+    let e = nopaldb::Edge::new(ids[0], ids[1], "KNOWS");
+    g.add_edge(e).await.unwrap();
+    g.add_edge(nopaldb::Edge::new(ids[2], ids[1], "KNOWS")).await.unwrap();
+    let q = format!("find q.name from (p:Person)-[:KNOWS]->(q:Person) where p.id = \"{}\"", ids[0]);
+    let r = g.execute_nql(&q).await.unwrap();
+    let got: Vec<String> = r.rows().iter().filter_map(|row| row.get("q.name").map(|v| v.to_display_string())).collect();
+    assert_eq!(got, vec!["Beto"]);
+    let plan = explain(&g, &q).await;
+    assert!(plan.contains("PATTERN PIPELINE (seed: ID LOOKUP)"), "{plan}");
+    // id de otra etiqueta en el patrón: cero filas (la etiqueta se respeta).
+    let q = format!("find q.name from (p:Other)-[:KNOWS]->(q:Person) where p.id = \"{}\"", ids[0]);
+    assert!(g.execute_nql(&q).await.unwrap().rows().is_empty());
+    // Con `in` y un id que no existe: solo los existentes siembran.
+    let q = format!("find q.name from (p:Person)-[:KNOWS]->(q:Person) where p.id in [\"{}\", \"{}\", \"{}\"]", ids[0], ids[2], uuid::Uuid::new_v4());
+    assert_eq!(g.execute_nql(&q).await.unwrap().rows().len(), 2);
+}
+
+#[tokio::test]
 async fn in_works_in_update_and_delete() {
     let (g, _ids) = fixture().await;
     g.execute_statement("update (p:Person) set p.vip = true where p.name in [\"Ana\", \"Cami\"]").await.unwrap();

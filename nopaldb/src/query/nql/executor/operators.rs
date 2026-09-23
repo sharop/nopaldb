@@ -32,6 +32,24 @@ pub trait PatternMatchStream: Send + Sync {
 // NODE OPERATORS
 // ================================================================================================
 
+/// Nodes already in hand (e.g. fetched by id), served as a stream so the
+/// pattern pipeline can start from them instead of scanning a label.
+pub struct VecNodesStream {
+    nodes: VecDeque<Node>,
+}
+
+impl VecNodesStream {
+    pub fn new(nodes: Vec<Node>) -> Self {
+        Self { nodes: nodes.into() }
+    }
+}
+
+impl NodeStream for VecNodesStream {
+    fn next<'a>(&'a mut self) -> BoxFuture<'a, Result<Option<Node>>> {
+        Box::pin(async move { Ok(self.nodes.pop_front()) })
+    }
+}
+
 /// Scanner that produces nodes lazily from storage in bounded batches.
 pub struct ScanNodesStream {
     graph: Arc<Graph>,
