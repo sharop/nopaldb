@@ -530,8 +530,10 @@ impl<'a> Executor<'a> {
         // real (antes eran dos caminos independientes).
 
         match self.index_fast_path_decision(&query).await? {
-            FastPathDecision::IdLookup { label, ids, non_uuid } => {
-                log::info!("🚀 Id lookup: {} ids ({} non-uuid literals dropped), label {}", ids.len(), non_uuid, label);
+            FastPathDecision::IdLookup { label, ids, non_uuid: _ } => {
+                // Sin valores de la consulta en el log (CodeQL cleartext-logging):
+                // qué se buscó lo dice EXPLAIN, no el log.
+                log::info!("🚀 Id lookup: point reads, no scan");
                 let nodes: Vec<Node> = self
                     .graph
                     .get_nodes(&ids)
