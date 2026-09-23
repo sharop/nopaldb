@@ -1,6 +1,6 @@
 [package]
 name = "nopaldb"
-version = "0.6.7"
+version = "0.6.8"
 authors = ["Sharop <sharop@gmail.com>"]
 description = "High-performance graph database with ACID transactions, MVCC time-travel, and Arrow analytics"
 keywords = ["graph", "database", "embedded", "mvcc", "arrow"]
@@ -146,6 +146,13 @@ harness = false
 name = "hnsw_ops"
 harness = false
 required-features = ["embeddings-index"]
+
+# La ruta de recuperación de un GraphRAG: búsqueda, hidratación por id,
+# vecindario k-hop y NQL por id / patrón (0.6.8).
+[[bench]]
+name = "retrieval"
+harness = false
+required-features = ["hybrid"]
 
 [[test]]
 name = "owl_import_integration_test"

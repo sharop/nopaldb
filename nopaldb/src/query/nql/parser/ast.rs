@@ -474,6 +474,10 @@ pub enum BinaryOperator {
     Gt,    // >
     LtEq,  // <=
     GtEq,  // >=
+    /// `x in [a, b]`: el RHS es `Literal(PropertyValue::List)`. Igualdad
+    /// estricta elemento a elemento, como `=` (`Int(1)` no es `Float(1.0)`).
+    In,
+    NotIn,
 
     // Logical
     And,

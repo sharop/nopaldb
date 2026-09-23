@@ -89,6 +89,55 @@ pub(crate) fn property_to_py<'py>(
     }
 }
 
+/// A node as Python sees it: `{"id", "label", "properties"}`. Shared by
+/// `get_node(s)`, `neighborhood`, `neighbors` and the `hydrate` option of the
+/// searches, so a node always looks the same wherever it comes from.
+pub(crate) fn node_to_pydict<'py>(py: Python<'py>, node: &crate::types::Node) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("id", node.id.to_string())?;
+    d.set_item("label", &node.label)?;
+    let props = pyo3::types::PyDict::new(py);
+    for (k, v) in &node.properties {
+        props.set_item(k, property_to_py(py, v)?)?;
+    }
+    d.set_item("properties", props)?;
+    Ok(d)
+}
+
+/// An edge as Python sees it: `{"id", "source", "target", "type", "properties"}`.
+pub(crate) fn edge_to_pydict<'py>(py: Python<'py>, edge: &crate::types::Edge) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("id", edge.id.to_string())?;
+    d.set_item("source", edge.source.to_string())?;
+    d.set_item("target", edge.target.to_string())?;
+    d.set_item("type", &edge.edge_type)?;
+    let props = pyo3::types::PyDict::new(py);
+    for (k, v) in &edge.properties {
+        props.set_item(k, property_to_py(py, v)?)?;
+    }
+    d.set_item("properties", props)?;
+    Ok(d)
+}
+
+/// UUID from Python text; `ValueError` says which argument was wrong.
+pub(crate) fn parse_uuid(text: &str, what: &str) -> PyResult<uuid::Uuid> {
+    text.parse().map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid {what} UUID '{text}': {e}"))
+    })
+}
+
+/// `"out" | "in" | "both"` → `Direction`.
+pub(crate) fn parse_direction(text: &str) -> PyResult<crate::graph::Direction> {
+    match text.to_ascii_lowercase().as_str() {
+        "out" | "outgoing" => Ok(crate::graph::Direction::Outgoing),
+        "in" | "incoming" => Ok(crate::graph::Direction::Incoming),
+        "both" => Ok(crate::graph::Direction::Both),
+        other => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "direction must be 'out', 'in' or 'both' (got '{other}')"
+        ))),
+    }
+}
+
 /// Helper: Convert Result<T> to PyResult<T>
 pub(crate) fn to_py_result<T>(result: NopalResult<T>) -> PyResult<T> {
     result.map_err(|e| {

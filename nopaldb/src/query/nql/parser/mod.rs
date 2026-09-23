@@ -1182,6 +1182,13 @@ impl AstBuilder {
     fn build_value_expression(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
         for inner in pair.into_inner() {
             match inner.as_rule() {
+                Rule::list_literal => {
+                    let items = inner
+                        .into_inner()
+                        .map(|v| self.parse_property_value(v))
+                        .collect::<Result<Vec<_>>>()?;
+                    return Ok(Expression::Literal(PropertyValue::List(items)));
+                }
                 Rule::string => {
                     let s = inner.as_str();
                     let s = Self::unquote_string(s);
@@ -1252,6 +1259,13 @@ impl AstBuilder {
     }
 
     fn parse_comparison_op(&self, op: &str) -> Result<BinaryOperator> {
+        // `not   in` llega con el espacio que hubiera en la consulta.
+        let normalized = op.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+        match normalized.as_str() {
+            "in" => return Ok(BinaryOperator::In),
+            "not in" => return Ok(BinaryOperator::NotIn),
+            _ => {}
+        }
         match op {
             "=" => Ok(BinaryOperator::Eq),
             "!=" => Ok(BinaryOperator::NotEq),
@@ -1267,6 +1281,13 @@ impl AstBuilder {
     fn parse_property_value(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<PropertyValue> {
         for inner in pair.into_inner() {
             match inner.as_rule() {
+                Rule::list_literal => {
+                    let items = inner
+                        .into_inner()
+                        .map(|v| self.parse_property_value(v))
+                        .collect::<Result<Vec<_>>>()?;
+                    return Ok(PropertyValue::List(items));
+                }
                 Rule::string => {
                     let s = inner.as_str();
                     let s = Self::unquote_string(s);

@@ -17,7 +17,7 @@ use crate::query::nql::parser::ast::{
     Query, Expression, Pattern, PatternElement, BinaryOperator, Projection,
     AddStmt, DeleteStmt, UpdateStmt, Statement,
     CreateIndexStmt, DropIndexStmt, IndexType,
-    WhereClause, OrderByClause, SortOrder, GroupByClause, Direction,
+    OrderByClause, SortOrder, GroupByClause, Direction,
     RelationshipPattern, NodePattern, Quantifier, UnaryOperator,
 };
 use crate::types::Node;
@@ -455,8 +455,42 @@ pub(crate) enum FastPathDecision {
         /// metadata (skew conocida de `set_taxonomy`).
         index: Option<(String, Option<crate::index::IndexType>)>,
     },
+    /// `var.id = "uuid"` o `var.id in [...]`: lecturas puntuales por id +
+    /// filtro de etiqueta. SIN fallback a scan: un id que no existe es cero
+    /// filas, no un motivo para recorrer la etiqueta (hasta 0.6.7 este caso
+    /// costaba DOS scans: el fast-path filtraba una propiedad `id` que no
+    /// existe y caía al scan estándar). `non_uuid` = literales descartados.
+    IdLookup { label: String, ids: Vec<NodeId>, non_uuid: usize },
+    /// `var.prop in [v1, …, vn]`: n consultas de igualdad al índice (o scan
+    /// de la etiqueta si no lo hay), mismo fallback que `Attempt`.
+    IndexIn {
+        label: String,
+        property: String,
+        values: Vec<PropertyValue>,
+        index: Option<(String, Option<crate::index::IndexType>)>,
+    },
     /// El fast-path no aplica; `reason` explica por qué (para EXPLAIN).
     Scan { reason: &'static str },
+}
+
+/// Condición del WHERE que puede sembrar candidatos (ver
+/// [`Executor::extract_seed_condition`]).
+enum SeedCondition {
+    Eq { variable: String, property: String, value: PropertyValue },
+    In { variable: String, property: String, values: Vec<PropertyValue> },
+}
+
+impl SeedCondition {
+    fn variable(&self) -> &str {
+        match self {
+            SeedCondition::Eq { variable, .. } | SeedCondition::In { variable, .. } => variable,
+        }
+    }
+    fn property(&self) -> &str {
+        match self {
+            SeedCondition::Eq { property, .. } | SeedCondition::In { property, .. } => property,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -495,58 +529,58 @@ impl<'a> Executor<'a> {
         // usa EXPLAIN, para que el plan reportado nunca diverja del despacho
         // real (antes eran dos caminos independientes).
 
-        if let FastPathDecision::Attempt { label, property, value, index } =
-            self.index_fast_path_decision(&query).await?
-        {
-            log::info!(
-                "🚀 Attempting index lookup: {}.{} = {:?} (índice: {:?})",
-                label, property, value, index
-            );
-
-            // Try to use index (find_nodes_indexed cae a label-scan interno
-            // cuando no hay índice — mismo comportamiento de siempre)
-            match self.graph.find_nodes_indexed(&label, &property, value).await {
-                Ok(nodes) if !nodes.is_empty() => {
-                    log::info!("✅ Index returned {} nodes", nodes.len());
-
-                    // Apply any remaining filters
-                    let filtered = self.apply_remaining_filters(nodes, &query)?;
-
-                    // P2: Inject ORDER BY extras
-                    let order_by_extras = self.extract_order_by_extras(&query);
-                    let mut result = self.project_result_with_extras(filtered, &query, &order_by_extras).await?;
-
-                    self.apply_distinct_if_needed(&mut result, &query.find);
-
-                    // Apply ORDER BY
-                    if let Some(order_by) = &query.order_by {
-                        self.apply_order_by(&mut result, order_by);
+        match self.index_fast_path_decision(&query).await? {
+            FastPathDecision::IdLookup { label, ids, non_uuid: _ } => {
+                // Sin valores de la consulta en el log (CodeQL cleartext-logging):
+                // qué se buscó lo dice EXPLAIN, no el log.
+                log::info!("🚀 Id lookup: point reads, no scan");
+                let nodes: Vec<Node> = self
+                    .graph
+                    .get_nodes(&ids)
+                    .await?
+                    .into_iter()
+                    .flatten()
+                    .filter(|n| n.label == label)
+                    .collect();
+                let filtered = self.apply_remaining_filters(nodes, &query)?;
+                // Sin fallback: cero filas es la respuesta, no un motivo para
+                // recorrer la etiqueta.
+                return self.finish_fast_path(filtered, &query).await;
+            }
+            FastPathDecision::IndexIn { label, property, values, index } => {
+                log::info!("🚀 Attempting index IN lookup: {}.{} in {} values (índice: {:?})", label, property, values.len(), index);
+                match self.graph.find_nodes_indexed_in(&label, &property, &values).await {
+                    Ok(nodes) if !nodes.is_empty() => {
+                        let filtered = self.apply_remaining_filters(nodes, &query)?;
+                        return self.finish_fast_path(filtered, &query).await;
                     }
-
-                    // Apply LIMIT/OFFSET (after ORDER BY)
-                    if let Some(limit) = &query.limit {
-                        let offset = limit.offset.unwrap_or(0);
-                        result.rows = result.rows.into_iter()
-                            .skip(offset)
-                            .take(limit.limit)
-                            .collect();
-                    }
-
-                    // Strip ORDER BY extras
-                    if !order_by_extras.is_empty() {
-                        self.strip_extra_columns(&mut result, &order_by_extras);
-                    }
-
-                    log::info!("🎯 Returning {} results from index", result.len());
-                    return Ok(result);
-                }
-                Ok(_) => {
-                    log::info!("⚠️  Index returned 0 results, falling back to scan");
-                }
-                Err(e) => {
-                    log::warn!("❌ Index lookup failed: {}, falling back to scan", e);
+                    Ok(_) => log::info!("⚠️  Index IN returned 0 results, falling back to scan"),
+                    Err(e) => log::warn!("❌ Index IN lookup failed: {}, falling back to scan", e),
                 }
             }
+            FastPathDecision::Attempt { label, property, value, index } => {
+                log::info!(
+                    "🚀 Attempting index lookup: {}.{} = {:?} (índice: {:?})",
+                    label, property, value, index
+                );
+
+                // Try to use index (find_nodes_indexed cae a label-scan interno
+                // cuando no hay índice — mismo comportamiento de siempre)
+                match self.graph.find_nodes_indexed(&label, &property, value).await {
+                    Ok(nodes) if !nodes.is_empty() => {
+                        log::info!("✅ Index returned {} nodes", nodes.len());
+                        let filtered = self.apply_remaining_filters(nodes, &query)?;
+                        return self.finish_fast_path(filtered, &query).await;
+                    }
+                    Ok(_) => {
+                        log::info!("⚠️  Index returned 0 results, falling back to scan");
+                    }
+                    Err(e) => {
+                        log::warn!("❌ Index lookup failed: {}, falling back to scan", e);
+                    }
+                }
+            }
+            FastPathDecision::Scan { .. } => {}
         }
 
         // ========================================
@@ -942,11 +976,13 @@ impl<'a> Executor<'a> {
         let Some(filter) = &query.filter else {
             return Ok(FastPathDecision::Scan { reason: "sin cláusula WHERE" });
         };
-        let Some((variable, property, value)) = self.extract_indexed_condition(filter)? else {
+        let Some(cond) = self.extract_seed_condition(&filter.condition) else {
             return Ok(FastPathDecision::Scan {
-                reason: "la condición no es `var.prop = literal` (operador no-Eq, RHS no literal o expresión compuesta)",
+                reason: "la condición no es `var.prop = literal` ni `var.prop in [...]` (ni un AND que los contenga)",
             });
         };
+        let variable = cond.variable().to_string();
+        let property = cond.property().to_string();
         let Some(pattern) = query.from.patterns.first() else {
             return Ok(FastPathDecision::Scan { reason: "FROM sin patrones" });
         };
@@ -961,76 +997,149 @@ impl<'a> Executor<'a> {
                 reason: "la variable del WHERE no es la del patrón",
             });
         }
+        // `id` no es una propiedad (no está en ningún índice): se resuelve
+        // por lectura puntual, antes de mirar índices.
+        if property == "id" {
+            let literals: Vec<&PropertyValue> = match &cond {
+                SeedCondition::Eq { value, .. } => vec![value],
+                SeedCondition::In { values, .. } => values.iter().collect(),
+            };
+            let mut ids = Vec::with_capacity(literals.len());
+            let mut non_uuid = 0usize;
+            for v in literals {
+                match v {
+                    PropertyValue::String(s) => match s.parse::<NodeId>() {
+                        Ok(id) => ids.push(id),
+                        Err(_) => non_uuid += 1,
+                    },
+                    _ => non_uuid += 1,
+                }
+            }
+            return Ok(FastPathDecision::IdLookup { label: label.clone(), ids, non_uuid });
+        }
         let index = self.graph.equality_index_info(label, &property).await;
-        Ok(FastPathDecision::Attempt {
-            label: label.clone(),
-            property,
-            value,
-            index,
+        Ok(match cond {
+            SeedCondition::Eq { value, .. } => FastPathDecision::Attempt { label: label.clone(), property, value, index },
+            SeedCondition::In { values, .. } => FastPathDecision::IndexIn { label: label.clone(), property, values, index },
         })
     }
 
-    /// Extract indexed condition from WHERE clause
-    /// Returns: (variable, property, value) if found
-    fn extract_indexed_condition(
+    /// Ids con los que el WHERE siembra la variable origen del patrón
+    /// (`where c.id = "…"` o `c.id in [...]`, también dentro de un AND raíz),
+    /// o `None` si no hay tal condición.
+    fn pattern_seed_ids(&self, query: &Query, source_pattern: &NodePattern) -> Option<Vec<NodeId>> {
+        let cond = self.extract_seed_condition(&query.filter.as_ref()?.condition)?;
+        if cond.property() != "id" || Some(cond.variable()) != source_pattern.variable.as_deref() {
+            return None;
+        }
+        let literals: Vec<&PropertyValue> = match &cond {
+            SeedCondition::Eq { value, .. } => vec![value],
+            SeedCondition::In { values, .. } => values.iter().collect(),
+        };
+        Some(
+            literals
+                .into_iter()
+                .filter_map(|v| match v {
+                    PropertyValue::String(s) => s.parse::<NodeId>().ok(),
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
+
+    /// Fuente del pipeline de patrones: si el WHERE fija el id del nodo
+    /// origen, arranca de esos nodos (lectura puntual + filtro de etiqueta)
+    /// en vez de recorrer la etiqueta entera. Es la consulta canónica de un
+    /// GraphRAG (`(c:Chunk)-[:MENTIONS]->(e) where c.id in [...]`): con 100k
+    /// chunks pasaba de segundos a milisegundos. El WHERE se sigue evaluando
+    /// sobre cada match, así que sembrar no cambia el resultado.
+    async fn seeded_source_stream(
         &self,
-        filter: &WhereClause,
-    ) -> Result<Option<(String, String, PropertyValue)>> {
-        // Log para debug
-        log::debug!("Extracting indexed condition from WHERE clause");
+        query: &Query,
+        source_pattern: &NodePattern,
+    ) -> Result<Box<dyn operators::NodeStream + 'a>> {
+        if let Some(ids) = self.pattern_seed_ids(query, source_pattern) {
+            let nodes: Vec<Node> = self
+                .graph
+                .get_nodes(&ids)
+                .await?
+                .into_iter()
+                .flatten()
+                .filter(|n| source_pattern.label.as_deref().is_none_or(|l| l == n.label))
+                .collect();
+            log::info!("🚀 Pattern pipeline seeded by id: {} nodes", nodes.len());
+            return Ok(Box::new(operators::VecNodesStream::new(nodes)));
+        }
+        operators::scan_nodes_stream(self.graph, source_pattern.label.as_deref()).await
+    }
 
-        // Solo procesamos BinaryOp con operador =
-        match &filter.condition {
-            Expression::BinaryOp { left, op, right } => {
-                log::debug!("Found BinaryOp: {:?}", op);
-
-                // Verificar que sea comparación de igualdad
-                if !matches!(op, BinaryOperator::Eq) {
-                    log::debug!("Operator is not Eq, skipping index");
-                    return Ok(None);
+    /// Condición del WHERE que puede sembrar el conjunto de candidatos:
+    /// `var.prop = literal`, `var.prop in [literales]`, o cualquiera de las
+    /// dos dentro de un `AND` raíz (el resto del WHERE se re-aplica entero
+    /// sobre los candidatos en `apply_remaining_filters`, así que sembrar
+    /// con un lado es correcto). Nunca desciende en `OR` ni usa `NOT IN`.
+    /// Con dos candidatos prefiere `id` (lectura puntual sin índice).
+    fn extract_seed_condition(&self, expr: &Expression) -> Option<SeedCondition> {
+        match expr {
+            Expression::BinaryOp { left, op, right } => match op {
+                BinaryOperator::Eq => match (&**left, &**right) {
+                    (Expression::Property { variable, property }, Expression::Literal(value)) => Some(SeedCondition::Eq {
+                        variable: variable.clone(),
+                        property: property.clone(),
+                        value: value.clone(),
+                    }),
+                    _ => None,
+                },
+                BinaryOperator::In => match (&**left, &**right) {
+                    (Expression::Property { variable, property }, Expression::Literal(PropertyValue::List(values))) => {
+                        Some(SeedCondition::In {
+                            variable: variable.clone(),
+                            property: property.clone(),
+                            values: values.clone(),
+                        })
+                    }
+                    _ => None,
+                },
+                BinaryOperator::And => {
+                    let l = self.extract_seed_condition(left);
+                    let r = self.extract_seed_condition(right);
+                    match (l, r) {
+                        (Some(a), Some(b)) => Some(if b.property() == "id" && a.property() != "id" { b } else { a }),
+                        (Some(a), None) | (None, Some(a)) => Some(a),
+                        (None, None) => None,
+                    }
                 }
-
-                // Extraer propiedad del lado izquierdo (e.g., "c.house")
-                let (variable, property) = match &**left {
-                    Expression::Property { variable, property } => {
-                        log::debug!("Found property: {}.{}", variable, property);
-                        (variable.clone(), property.clone())
-                    }
-                    _ => {
-                        log::debug!("Left side is not a Property, skipping index");
-                        return Ok(None);
-                    }
-                };
-
-                // Extraer valor del lado derecho (e.g., "Stark")
-                let value = match &**right {
-                    Expression::Literal(val) => {
-                        log::debug!("Found literal value: {:?}", val);
-                        val.clone()
-                    }
-                    _ => {
-                        log::debug!("Right side is not a Literal, skipping index");
-                        return Ok(None);
-                    }
-                };
-
-                // Obtener label del pattern
-                // TODO: Mejorar para obtener del query pattern
-                // Por ahora, asumimos que el variable corresponde a un label
-                // Este es un workaround temporal
-
-                log::info!("✅ Extracted indexed condition: {}.{} = {:?}", variable, property, value);
-                Ok(Some((variable, property, value)))
-            }
-            _ => {
-                log::debug!("Condition is not BinaryOp, skipping index");
-                Ok(None)
-            }
+                _ => None,
+            },
+            _ => None,
         }
     }
 
+    /// Lo que pasa después de tener los candidatos filtrados de un
+    /// fast-path: proyección, DISTINCT, ORDER BY, LIMIT/OFFSET.
+    async fn finish_fast_path(&self, filtered: Vec<Node>, query: &Query) -> Result<QueryResult> {
+        // P2: Inject ORDER BY extras
+        let order_by_extras = self.extract_order_by_extras(query);
+        let mut result = self.project_result_with_extras(filtered, query, &order_by_extras).await?;
 
+        self.apply_distinct_if_needed(&mut result, &query.find);
 
+        if let Some(order_by) = &query.order_by {
+            self.apply_order_by(&mut result, order_by);
+        }
+
+        if let Some(limit) = &query.limit {
+            let offset = limit.offset.unwrap_or(0);
+            result.rows = result.rows.into_iter().skip(offset).take(limit.limit).collect();
+        }
+
+        if !order_by_extras.is_empty() {
+            self.strip_extra_columns(&mut result, &order_by_extras);
+        }
+
+        log::info!("🎯 Returning {} results from fast path", result.len());
+        Ok(result)
+    }
 
     /// Apply remaining filters after index lookup
     /// For now, just returns the nodes as-is
@@ -1090,10 +1199,7 @@ impl<'a> Executor<'a> {
             PatternElement::Node(n) => n,
             _ => return Err(NopalError::QueryExecutionError("Pattern must start with node".into())),
         };
-        let mut source_stream = operators::scan_nodes_stream(
-            self.graph,
-            source_pattern.label.as_deref(),
-        ).await?;
+        let mut source_stream = self.seeded_source_stream(&query, source_pattern).await?;
 
         // Apply inline property map filter for source node pattern, e.g. `(a:Person {active: true})`.
         // The label is already handled by scan_nodes_stream; properties need an explicit post-filter.
@@ -2810,6 +2916,9 @@ impl<'a> Executor<'a> {
         match op {
             BinaryOperator::Eq => Ok(PropertyValue::Bool(left == right)),
             BinaryOperator::NotEq => Ok(PropertyValue::Bool(left != right)),
+            BinaryOperator::In | BinaryOperator::NotIn => {
+                Ok(PropertyValue::Bool(operators::compare_values(&left, op, &right)))
+            }
             BinaryOperator::Gt | BinaryOperator::Lt | BinaryOperator::GtEq | BinaryOperator::LtEq => {
                 let result = match (&left, &right) {
                     (PropertyValue::Int(a), PropertyValue::Int(b)) => match op {
@@ -5224,11 +5333,57 @@ impl<'a> Executor<'a> {
                     }
                 }
             }
+            FastPathDecision::IdLookup { label, ids, non_uuid } => {
+                out.push_str(&format!(
+                    "Strategy: ID LOOKUP\n  Label: {label}\n  Ids: {}{}\n  \
+                     Runtime: lecturas puntuales por id + filtro de etiqueta; sin scan ni fallback \
+                     (un id inexistente es cero filas).\n",
+                    ids.len(),
+                    if *non_uuid > 0 { format!(" ({non_uuid} literal(es) no-UUID descartado(s))") } else { String::new() }
+                ));
+            }
+            FastPathDecision::IndexIn { label, property, values, index } => {
+                match index {
+                    Some((name, ty)) if !matches!(ty, Some(IndexType::FullText) | Some(IndexType::Taxonomy)) => {
+                        let ty_str = ty.as_ref().map(|t| format!("{t:?}")).unwrap_or_else(|| "desconocido (sin metadata)".to_string());
+                        out.push_str(&format!(
+                            "Strategy: INDEX SEEK (IN)\n  Index: {name} (tipo {ty_str})\n  Label: {label}\n  \
+                             Predicate: {property} IN [{} valores]\n  \
+                             Runtime fallback: label scan si el índice regresa vacío o falla.\n",
+                            values.len()
+                        ));
+                    }
+                    Some((name, ty)) => {
+                        out.push_str(&format!(
+                            "Strategy: LABEL SCAN\n  Label: {label}\n  Predicate: {property} IN [{} valores]\n  \
+                             Reason: el índice {name} es de tipo {ty:?} y no sirve para igualdad.\n",
+                            values.len()
+                        ));
+                    }
+                    None => {
+                        out.push_str(&format!(
+                            "Strategy: LABEL SCAN\n  Label: {label}\n  Predicate: {property} IN [{} valores]\n  \
+                             Reason: no existe índice para {label}.{property} (crear con CREATE INDEX).\n",
+                            values.len()
+                        ));
+                    }
+                }
+            }
             FastPathDecision::Scan { reason } => {
                 let strategy = if query.from.patterns.iter().any(|p| {
                     p.elements.iter().any(|e| matches!(e, PatternElement::Relationship(_)))
                 }) {
-                    "PATTERN PIPELINE"
+                    let seeded = query
+                        .from
+                        .patterns
+                        .first()
+                        .and_then(|p| p.elements.first())
+                        .and_then(|e| match e {
+                            PatternElement::Node(n) => self.pattern_seed_ids(query, n),
+                            _ => None,
+                        })
+                        .is_some();
+                    if seeded && query.from.patterns.len() == 1 { "PATTERN PIPELINE (seed: ID LOOKUP)" } else { "PATTERN PIPELINE" }
                 } else {
                     let labeled = query
                         .from
