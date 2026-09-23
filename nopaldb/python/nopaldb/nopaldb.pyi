@@ -2,7 +2,7 @@
 # Kept in sync with src/python/*.rs. Verified against the built extension by
 # python/scripts/check_stubs.py (mypy stubtest; type-only names live in
 # python/scripts/stubtest_allowlist.txt).
-from typing import Any, Callable, Iterator, Optional, TypedDict, final
+from typing import Any, Callable, Iterator, Literal, Optional, TypedDict, final, overload
 
 __version__: str
 __author__: str
@@ -22,6 +22,34 @@ class WriteResult(TypedDict):
     edges_updated: int
     properties_changed: int
     created_ids: list[str]
+
+# A node / an edge as every retrieval call returns them (get_node(s),
+# neighbors, neighborhood, and the `hydrate` option of the searches).
+class NodeDict(TypedDict):
+    id: str
+    label: str
+    properties: Props
+
+class EdgeDict(TypedDict):
+    id: str
+    source: str
+    target: str
+    type: str
+    properties: Props
+
+# What `neighborhood()` returns: seeds first in `nodes`; `edges` only between
+# returned nodes; `depth` = minimum hop count per node id.
+class NeighborhoodResult(TypedDict):
+    nodes: list[NodeDict]
+    edges: list[EdgeDict]
+    depth: dict[str, int]
+    truncated: bool
+
+# A KNN hit with `hydrate=True`.
+class KnnHit(TypedDict):
+    node_id: str
+    distance: float
+    node: NodeDict | None
 
 # What `BulkLoader.finish()` returns.
 class BulkLoadStats(TypedDict):
@@ -164,6 +192,29 @@ class Graph:
     def execute_nql(self, query: str) -> "NqlResult": ...
     def begin_transaction(self, isolation: Optional[str] = None) -> "Transaction": ...
 
+    # ── Retrieval: fetch by id, expand the neighbourhood (GraphRAG) ──
+    # Point reads, no scan; a non-UUID string raises ValueError.
+    def get_node(self, id: str) -> NodeDict | None: ...
+    def get_nodes(self, ids: list[str]) -> list[NodeDict | None]: ...
+    def get_edge(self, id: str) -> EdgeDict | None: ...
+    def get_edges(self, ids: list[str]) -> list[EdgeDict | None]: ...
+    # direction: "out" | "in" | "both"
+    def neighbors(self, id: str, direction: str = "out", edge_types: Optional[list[str]] = None) -> list[NodeDict]: ...
+    def degree(self, id: str, direction: str = "both") -> int: ...
+    # BFS by node with global visited set; edges filtered by type before the
+    # target is read; `max_nodes` caps the result (then truncated=True);
+    # `max_edges_per_node` is the brake on super-nodes.
+    def neighborhood(
+        self,
+        ids: list[str],
+        depth: int = 1,
+        direction: str = "out",
+        edge_types: Optional[list[str]] = None,
+        labels: Optional[list[str]] = None,
+        max_nodes: int = 1000,
+        max_edges_per_node: Optional[int] = None,
+    ) -> NeighborhoodResult: ...
+
     # ── Idempotent upsert (M1-4) ────────────────────────────────────
     def upsert(
         self,
@@ -187,6 +238,7 @@ class Graph:
         props: Optional[Props] = None,
         text_index: Optional[str] = None,
         rrf_k: float = 60.0,
+        hydrate: bool = False,
     ) -> list[dict[str, Any]]: ...
     # Misma búsqueda que search_hybrid, más la traza de por qué cada hit
     # quedó donde quedó: scores crudos por rama, configuración efectiva y
@@ -254,7 +306,10 @@ class Graph:
         self, name: str, node_model: str, edge_model: str, vector: list[float]
     ) -> None: ...
     def get_node_embedding(self, node_id: str, model: str) -> list[float]: ...
-    def knn_nodes(self, query_vector: list[float], k: int, model: str, ef_search: Optional[int] = None) -> list[tuple[str, float]]: ...
+    @overload
+    def knn_nodes(self, query_vector: list[float], k: int, model: str, ef_search: Optional[int] = None, hydrate: Literal[False] = False) -> list[tuple[str, float]]: ...
+    @overload
+    def knn_nodes(self, query_vector: list[float], k: int, model: str, ef_search: Optional[int] = None, *, hydrate: Literal[True]) -> list[KnnHit]: ...
     def embedding_index_stats(self, model: str) -> HnswStats | None: ...
 
     # ── Semantic layer ──────────────────────────────────────────────

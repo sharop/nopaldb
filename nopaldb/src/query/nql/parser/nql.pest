@@ -346,8 +346,19 @@ comparison_expression = {
     additive_expression ~ (comparison_op ~ additive_expression)?
 }
 
+// `in` / `not in` (0.6.8): el RHS es una lista literal `[v1, v2]`. Atómicos
+// con `!identifier_char` para no comerse `index` ni `inbound`; `not_in_kw`
+// lleva el espacio explícito porque dentro de `@{}` no hay whitespace implícito.
 comparison_op = {
-    "=" | "!=" | "<=" | ">=" | "<" | ">"
+    "=" | "!=" | "<=" | ">=" | "<" | ">" | not_in_kw | in_kw
+}
+
+in_kw = @{
+    ^"in" ~ !identifier_char
+}
+
+not_in_kw = @{
+    ^"not" ~ WHITESPACE+ ~ ^"in" ~ !identifier_char
 }
 
 additive_expression = {
@@ -452,10 +463,18 @@ vm_primary_expression = {
 // ═══════════════════════════════════════════════════════════
 
 value = {
+    list_literal |
     string |
     number |
     boolean |
     null
+}
+
+// Lista literal: `["a", "b"]`, `[1, 2.5]`, `[]`. Es un valor de primera
+// clase (`PropertyValue::List`), así que sirve tanto en `x in [...]` como
+// en un property map.
+list_literal = {
+    "[" ~ (value ~ ("," ~ value)*)? ~ "]"
 }
 
 string = @{

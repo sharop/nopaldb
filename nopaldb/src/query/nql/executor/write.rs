@@ -534,17 +534,9 @@ impl<'a> WriteExecutor<'a> {
                         let l = self.eval_pattern_expr(m, left, source_var, target_var);
                         let r = self.eval_pattern_expr(m, right, source_var, target_var);
                         match (l, r) {
-                            (Some(lv), Some(rv)) => {
-                                match op {
-                                    BinaryOperator::Eq => lv == rv,
-                                    BinaryOperator::NotEq => lv != rv,
-                                    BinaryOperator::Gt => lv > rv,
-                                    BinaryOperator::Lt => lv < rv,
-                                    BinaryOperator::GtEq => lv >= rv,
-                                    BinaryOperator::LtEq => lv <= rv,
-                                    _ => false,
-                                }
-                            }
+                            // Mismo evaluador que el WHERE de lectura (0.6.8):
+                            // antes eran dos copias sin `in`/`not in`.
+                            (Some(lv), Some(rv)) => operators::compare_values(&lv, op, &rv),
                             _ => false,
                         }
                     }
@@ -629,17 +621,9 @@ impl<'a> WriteExecutor<'a> {
                         let l = self.eval_expr(node, left);
                         let r = self.eval_expr(node, right);
                         match (l, r) {
-                            (Some(lv), Some(rv)) => {
-                                match op {
-                                    BinaryOperator::Eq => lv == rv,
-                                    BinaryOperator::NotEq => lv != rv,
-                                    BinaryOperator::Gt => lv > rv,
-                                    BinaryOperator::Lt => lv < rv,
-                                    BinaryOperator::GtEq => lv >= rv,
-                                    BinaryOperator::LtEq => lv <= rv,
-                                    _ => false,
-                                }
-                            }
+                            // Mismo evaluador que el WHERE de lectura (0.6.8):
+                            // antes eran dos copias sin `in`/`not in`.
+                            (Some(lv), Some(rv)) => operators::compare_values(&lv, op, &rv),
                             _ => false,
                         }
                     }

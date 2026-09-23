@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from nopaldb import Graph
 
 if TYPE_CHECKING:  # type-only names: they exist in the stub, not at runtime
-    from nopaldb.nopaldb import BulkLoadStats, IndexStats, Stats
+    from nopaldb.nopaldb import BulkLoadStats, IndexStats, NeighborhoodResult, NodeDict, Stats
 
 
 def main() -> None:
@@ -49,6 +49,14 @@ def main() -> None:
     stats: BulkLoadStats = loader2.finish()
     print(stats["nodes"], stats["duration_secs"])
 
+    # Retrieval by id and neighbourhood (GraphRAG).
+    node: NodeDict | None = graph.get_node(a)
+    many: list[NodeDict | None] = graph.get_nodes([a, b])
+    nb: NeighborhoodResult = graph.neighborhood([a], depth=1, edge_types=["LINKS"], max_nodes=10)
+    around: list[NodeDict] = graph.neighbors(a, direction="both")
+    deg: int = graph.degree(a)
+    print(node and node["label"], len(many), nb["truncated"], len(around), deg)
+
     # Counts and stats.
     n: int = graph.node_count()
     e: int = graph.edge_count()
@@ -76,7 +84,9 @@ def main() -> None:
 def typing_only_embeddings(graph: Graph) -> None:
     """Never called: types the embedding surface without needing vectors."""
     hits: list[tuple[str, float]] = graph.knn_nodes([0.1, 0.2], k=1, model="m", ef_search=64)
-    print(hits)
+    rich = graph.knn_nodes([0.1, 0.2], k=1, model="m", hydrate=True)
+    node = rich[0]["node"]
+    print(hits, node and node["properties"])
 
 
 if __name__ == "__main__":

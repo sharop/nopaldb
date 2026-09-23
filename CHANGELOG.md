@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.8] - unreleased
+
+### Added
+- **Hidratación por id desde Python:** `get_node`, `get_nodes`, `get_edge`,
+  `get_edges` (dicts `{id, label, properties}` / `{id, source, target, type,
+  properties}`, `None` donde el id no existe, orden de entrada). `search_hybrid(...,
+  hydrate=True)` y `knn_nodes(..., hydrate=True)` devuelven cada hit con su
+  nodo, leído en una sola pasada; sin `hydrate` las formas son las de 0.6.x.
+  Rust: `Graph::get_nodes`, `Graph::get_edges`.
+- **Vecindario en una llamada:** `Graph::neighborhood(seeds, depth,
+  &ExpandOptions)` (BFS por nodo con visitados global y profundidad mínima,
+  filtro por tipo de arista antes de leer el nodo destino, filtro por
+  etiqueta, `max_nodes` con bandera `truncated`, `max_edges_per_node` como
+  freno para supernodos) y en Python `neighborhood(...)`, `neighbors(id,
+  direction, edge_types)`, `degree(id, direction)`. Es el subgrafo de
+  contexto de un GraphRAG.
+- **NQL `in` / `not in`** con lista literal (`where e.name in ["a", "b"]`);
+  las listas literales valen también en property maps. Igualdad estricta,
+  como `=` (`1` no es `1.0`). Funciona en `find`, `update`, `delete` y en la
+  VM de caminos.
+- `benches/retrieval.rs` (búsqueda, hidratación, vecindario, NQL por id y
+  patrón de un salto) y `docs/GRAPHRAG.md` con el ciclo completo.
+
+### Performance
+- **`where n.id = "…"` ya no recorre la etiqueta.** Costaba DOS scans: el
+  fast-path filtraba una propiedad `id` que no existe (cero filas) y caía al
+  scan estándar. Ahora `n.id = …` y `n.id in [...]` resuelven por lectura
+  puntual y un id inexistente es cero filas, sin fallback. `n.prop in [...]`
+  con índice hace n búsquedas; un `AND` raíz siembra con el lado indexado y
+  aplica el resto como predicado. Medido con 100k nodos desde Python: 327 ms
+  → menos de 1 ms por consulta.
+- `EXPLAIN` reporta los caminos nuevos (`ID LOOKUP`, `INDEX SEEK (IN)`)
+  desde la misma decisión que ejecuta.
+
 ## [0.6.7] - 2026-09-22
 
 ### Fixed

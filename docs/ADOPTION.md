@@ -48,6 +48,9 @@ With `full-isolation`: `graph.begin_transaction().await?.with_isolation(Isolatio
 pip install nopaldb
 ```
 
+Building a GraphRAG? The retrieval cycle (search with hydration, `get_nodes`,
+`neighborhood`) is in [GRAPHRAG.md](GRAPHRAG.md).
+
 Prebuilt wheels for Linux/macOS/Windows, CPython 3.10+. The bindings release
 the GIL during database calls, so Python threads get real parallelism.
 

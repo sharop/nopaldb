@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use crate::Graph as RustGraph;
 use crate::{LinkSpec, StorageEngine, StorageOptions, StorageProfile, UpsertRequest};
 use super::{PyNqlResult, PyTransaction, to_py_result};
+use super::{edge_to_pydict, node_to_pydict, parse_direction, parse_uuid};
 use super::PyBulkLoader;
 
 fn parse_profile(profile: &str) -> PyResult<StorageProfile> {
@@ -233,6 +234,139 @@ impl PyGraph {
         to_py_result(graph).map(|g| PyGraph {
             inner: Mutex::new(Some(Arc::new(g))),
         })
+    }
+
+    // -------------------------------------------------------------------------
+    // Retrieval: fetch by id and expand the neighbourhood (GraphRAG, 0.6.8)
+    // -------------------------------------------------------------------------
+
+    /// Node by id: `{"id", "label", "properties"}`, or None if it does not exist.
+    ///
+    /// A point read, no scan. Until 0.6.7 the only way from Python was NQL
+    /// `where n.id = "…"`, which scanned the whole label (327 ms with 100k
+    /// nodes). Raises ValueError for a string that is not a UUID.
+    fn get_node(&self, py: Python<'_>, id: &str) -> PyResult<Option<Py<PyDict>>> {
+        let graph = self.graph()?;
+        let id = parse_uuid(id, "node")?;
+        let nodes = to_py_result(crate::python::runtime::block_on(py, async move { graph.get_nodes(&[id]).await }))?;
+        nodes.into_iter().next().flatten().map(|n| node_to_pydict(py, &n).map(|d| d.unbind())).transpose()
+    }
+
+    /// Nodes by id, in input order; None in the position of an id that does
+    /// not exist. Use it to hydrate the hits of `knn_nodes`/`search_hybrid`
+    /// in one call (or pass `hydrate=True` to them).
+    fn get_nodes(&self, py: Python<'_>, ids: Vec<String>) -> PyResult<Vec<Option<Py<PyDict>>>> {
+        let graph = self.graph()?;
+        let ids = ids.iter().map(|s| parse_uuid(s, "node")).collect::<PyResult<Vec<_>>>()?;
+        let nodes = to_py_result(crate::python::runtime::block_on(py, async move { graph.get_nodes(&ids).await }))?;
+        nodes
+            .iter()
+            .map(|n| n.as_ref().map(|n| node_to_pydict(py, n).map(|d| d.unbind())).transpose())
+            .collect()
+    }
+
+    /// Edge by id: `{"id", "source", "target", "type", "properties"}`, or None.
+    fn get_edge(&self, py: Python<'_>, id: &str) -> PyResult<Option<Py<PyDict>>> {
+        let graph = self.graph()?;
+        let id = parse_uuid(id, "edge")?;
+        let edges = to_py_result(crate::python::runtime::block_on(py, async move { graph.get_edges(&[id]).await }))?;
+        edges.into_iter().next().flatten().map(|e| edge_to_pydict(py, &e).map(|d| d.unbind())).transpose()
+    }
+
+    /// Edges by id, in input order; None where the id does not exist.
+    fn get_edges(&self, py: Python<'_>, ids: Vec<String>) -> PyResult<Vec<Option<Py<PyDict>>>> {
+        let graph = self.graph()?;
+        let ids = ids.iter().map(|s| parse_uuid(s, "edge")).collect::<PyResult<Vec<_>>>()?;
+        let edges = to_py_result(crate::python::runtime::block_on(py, async move { graph.get_edges(&ids).await }))?;
+        edges
+            .iter()
+            .map(|e| e.as_ref().map(|e| edge_to_pydict(py, e).map(|d| d.unbind())).transpose())
+            .collect()
+    }
+
+    /// Neighbouring nodes of `id` at one hop, as node dicts.
+    ///
+    /// direction: "out" (default), "in" or "both". edge_types: keep only
+    /// these relationship types. A neighbour reachable through several
+    /// edges appears once.
+    #[pyo3(signature = (id, direction="out", edge_types=None))]
+    fn neighbors(&self, py: Python<'_>, id: &str, direction: &str, edge_types: Option<Vec<String>>) -> PyResult<Vec<Py<PyDict>>> {
+        let graph = self.graph()?;
+        let id = parse_uuid(id, "node")?;
+        let opts = crate::ExpandOptions { direction: parse_direction(direction)?, edge_types, labels: None, max_nodes: usize::MAX, max_edges_per_node: None };
+        let nb = to_py_result(crate::python::runtime::block_on(py, async move { graph.neighborhood(&[id], 1, &opts).await }))?;
+        nb.nodes
+            .iter()
+            .filter(|n| nb.depth_of.get(&n.id) == Some(&1))
+            .map(|n| node_to_pydict(py, n).map(|d| d.unbind()))
+            .collect()
+    }
+
+    /// Number of edges incident to `id`: "out", "in" or "both" (default).
+    #[pyo3(signature = (id, direction="both"))]
+    fn degree(&self, py: Python<'_>, id: &str, direction: &str) -> PyResult<usize> {
+        let graph = self.graph()?;
+        let id = parse_uuid(id, "node")?;
+        let direction = parse_direction(direction)?;
+        to_py_result(crate::python::runtime::block_on(py, async move { graph.degree(id, direction).await }))
+    }
+
+    /// The neighbourhood of `ids` up to `depth` hops, in one call: the
+    /// context subgraph of a GraphRAG.
+    ///
+    /// BFS by node: a node reachable by several paths appears once, at its
+    /// minimum depth; seeds are depth 0. Edge ids come from the in-memory
+    /// adjacency, edges are filtered by type BEFORE their target node is
+    /// read, `labels` keeps only nodes with those labels (a filtered node is
+    /// neither returned nor expanded; seeds are not filtered), `max_nodes`
+    /// caps the result (then `truncated` is True) and `max_edges_per_node`
+    /// caps how many edges of one node are considered (the real brake on a
+    /// super-node). Runs with the GIL released.
+    ///
+    /// Returns:
+    ///     dict: {"nodes": [node dicts, seeds first], "edges": [edge dicts
+    ///     whose both endpoints are in "nodes"], "depth": {id: int},
+    ///     "truncated": bool}
+    ///
+    /// Example:
+    ///     >>> hits = graph.search_hybrid(text=q, vector=v, model="m", k=10)
+    ///     >>> ctx = graph.neighborhood([h["node_id"] for h in hits], depth=1,
+    ///     ...                          edge_types=["MENTIONS"], max_nodes=200)
+    #[pyo3(signature = (ids, depth=1, direction="out", edge_types=None, labels=None, max_nodes=1000, max_edges_per_node=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn neighborhood(
+        &self,
+        py: Python<'_>,
+        ids: Vec<String>,
+        depth: usize,
+        direction: &str,
+        edge_types: Option<Vec<String>>,
+        labels: Option<Vec<String>>,
+        max_nodes: usize,
+        max_edges_per_node: Option<usize>,
+    ) -> PyResult<Py<PyDict>> {
+        let graph = self.graph()?;
+        let ids = ids.iter().map(|s| parse_uuid(s, "node")).collect::<PyResult<Vec<_>>>()?;
+        let opts = crate::ExpandOptions { direction: parse_direction(direction)?, edge_types, labels, max_nodes, max_edges_per_node };
+        let nb = to_py_result(crate::python::runtime::block_on(py, async move { graph.neighborhood(&ids, depth, &opts).await }))?;
+        let out = PyDict::new(py);
+        let nodes = PyList::empty(py);
+        for n in &nb.nodes {
+            nodes.append(node_to_pydict(py, n)?)?;
+        }
+        let edges = PyList::empty(py);
+        for e in &nb.edges {
+            edges.append(edge_to_pydict(py, e)?)?;
+        }
+        let depth_map = PyDict::new(py);
+        for (id, d) in &nb.depth_of {
+            depth_map.set_item(id.to_string(), *d)?;
+        }
+        out.set_item("nodes", nodes)?;
+        out.set_item("edges", edges)?;
+        out.set_item("depth", depth_map)?;
+        out.set_item("truncated", nb.truncated)?;
+        Ok(out.into())
     }
 
     /// Execute any NQL statement and return a unified result.
@@ -1214,17 +1348,26 @@ impl PyGraph {
     ///         exact-search threshold (1024 points); below it the search is
     ///         exact and the parameter is irrelevant.
     ///
+    ///     hydrate (bool): if True, return `[{"node_id", "distance", "node"}]`
+    ///         with each node read in the same call (`"node"` is None if the
+    ///         node vanished); if False (default) return `(node_id, distance)`
+    ///         tuples, as before.
+    ///
     /// Returns:
-    ///     list[tuple[str, float]]: (node_id, cosine distance) pairs, nearest first.
+    ///     list[tuple[str, float]]: (node_id, cosine distance) pairs, nearest first
+    ///     (or list[dict] with hydrate=True).
     ///
     /// Example:
     ///     >>> results = graph.knn_nodes([0.1, 0.2, 0.3], k=5, model="minilm")
     ///     >>> for node_id, dist in results:
     ///     ...     print(node_id, dist)
+    ///     >>> for hit in graph.knn_nodes(q, k=5, model="minilm", hydrate=True):
+    ///     ...     print(hit["distance"], hit["node"]["properties"]["text"])
     #[cfg(feature = "embeddings-index")]
-    #[pyo3(signature = (query_vector, k, model, ef_search=None))]
-    fn knn_nodes(&self, py: Python<'_>, query_vector: Vec<f32>, k: usize, model: &str, ef_search: Option<usize>) -> PyResult<Vec<(String, f32)>> {
+    #[pyo3(signature = (query_vector, k, model, ef_search=None, hydrate=false))]
+    fn knn_nodes(&self, py: Python<'_>, query_vector: Vec<f32>, k: usize, model: &str, ef_search: Option<usize>, hydrate: bool) -> PyResult<Py<PyAny>> {
         let graph = self.graph()?;
+        let graph_for_hydrate = graph.clone();
         let model = model.to_string();
 
         // Índice cacheado del Graph (antes se reconstruía COMPLETO en cada
@@ -1237,12 +1380,25 @@ impl PyGraph {
         // La búsqueda es la parte cara: fuera del GIL (hasta 0.6.5 corría
         // con él tomado y paraba a los demás hilos Python). El guard del
         // RwLock nace y muere dentro del closure.
-        let hits = py.detach(move || {
+        let hits = to_py_result(py.detach(move || {
             let guard = idx.read().unwrap_or_else(|e| e.into_inner());
             guard.search_knn_with_ef(&query_vector, k, ef)
-        });
-        to_py_result(hits)
-            .map(|hits| hits.into_iter().map(|(id, dist)| (id.to_string(), dist)).collect())
+        }))?;
+        if !hydrate {
+            let tuples: Vec<(String, f32)> = hits.into_iter().map(|(id, dist)| (id.to_string(), dist)).collect();
+            return Ok(tuples.into_pyobject(py)?.into_any().unbind());
+        }
+        let ids: Vec<crate::NodeId> = hits.iter().map(|(id, _)| *id).collect();
+        let nodes = to_py_result(crate::python::runtime::block_on(py, async move { graph_for_hydrate.get_nodes(&ids).await }))?;
+        let out = PyList::empty(py);
+        for ((id, dist), node) in hits.into_iter().zip(nodes) {
+            let d = PyDict::new(py);
+            d.set_item("node_id", id.to_string())?;
+            d.set_item("distance", dist)?;
+            d.set_item("node", node.as_ref().map(|n| node_to_pydict(py, n)).transpose()?)?;
+            out.append(d)?;
+        }
+        Ok(out.into_any().unbind())
     }
 
     /// State of the cached HNSW index for `model`.
@@ -1480,11 +1636,13 @@ impl PyGraph {
     ///     props (dict, optional): restrict to these property equalities (AND).
     ///     text_index (str, optional): fulltext index name; auto-discovered if omitted.
     ///     rrf_k (float): RRF constant (default 60.0).
+    ///     hydrate (bool): if True each hit also carries `"node"` (the node
+    ///         dict, read in the same call; None if it vanished). Default False.
     ///
     /// Returns:
-    ///     list[dict]: {node_id, score, text_rank, vector_rank}, best first.
+    ///     list[dict]: {node_id, score, text_rank, vector_rank[, node]}, best first.
     #[cfg(feature = "hybrid")]
-    #[pyo3(signature = (text=None, vector=None, model=None, k=10, ef=None, label=None, props=None, text_index=None, rrf_k=60.0))]
+    #[pyo3(signature = (text=None, vector=None, model=None, k=10, ef=None, label=None, props=None, text_index=None, rrf_k=60.0, hydrate=false))]
     #[allow(clippy::too_many_arguments)]
     fn search_hybrid(
         &self,
@@ -1498,21 +1656,33 @@ impl PyGraph {
         props: Option<&Bound<'_, PyDict>>,
         text_index: Option<String>,
         rrf_k: f32,
+        hydrate: bool,
     ) -> PyResult<Vec<Py<PyDict>>> {
         let graph = self.graph()?;
         let hq = build_hybrid_query(text, vector, model, k, ef, label, props, text_index, rrf_k)?;
 
+        let graph_for_hydrate = graph.clone();
         let hits = to_py_result(crate::python::runtime::block_on(py, async move {
             graph.search_hybrid(hq).await
         }))?;
+        let nodes: Vec<Option<crate::Node>> = if hydrate {
+            let ids: Vec<crate::NodeId> = hits.iter().map(|h| h.node_id).collect();
+            to_py_result(crate::python::runtime::block_on(py, async move { graph_for_hydrate.get_nodes(&ids).await }))?
+        } else {
+            Vec::new()
+        };
 
         hits.into_iter()
-            .map(|h| {
+            .enumerate()
+            .map(|(i, h)| {
                 let d = PyDict::new(py);
                 d.set_item("node_id", h.node_id.to_string())?;
                 d.set_item("score", h.score)?;
                 d.set_item("text_rank", h.text_rank)?;
                 d.set_item("vector_rank", h.vector_rank)?;
+                if hydrate {
+                    d.set_item("node", nodes.get(i).and_then(|n| n.as_ref()).map(|n| node_to_pydict(py, n)).transpose()?)?;
+                }
                 Ok(d.unbind())
             })
             .collect()

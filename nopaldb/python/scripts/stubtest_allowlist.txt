@@ -6,7 +6,7 @@
 # annotations. pyo3 returns plain dicts/callables at runtime.
 nopaldb\.nopaldb\.(Property|Props|ProgressEvent|ProgressCallback)
 nopaldb\.nopaldb\.(GraphStats|StorageStats|WalStats|OpenPhasesMs|RecoveryStats|IndexStats|HnswStats|GcAutoStats|GcRunStats|GcStats|Stats)
-nopaldb\.nopaldb\.(WriteResult|BulkLoadStats)
+nopaldb\.nopaldb\.(WriteResult|BulkLoadStats|NodeDict|EdgeDict|NeighborhoodResult|KnnHit)
 
 # pyo3 generates the module's __all__ from the registered classes; the stub
 # has no __all__ (the TypedDicts above would have to be listed and they are

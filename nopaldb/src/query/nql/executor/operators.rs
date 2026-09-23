@@ -564,6 +564,10 @@ pub fn compare_values(left: &PropertyValue, op: &BinaryOperator, right: &Propert
         BinaryOperator::Lt => left < right,
         BinaryOperator::GtEq => left >= right,
         BinaryOperator::LtEq => left <= right,
+        // `x in [..]`: pertenencia con la misma igualdad estricta que `=`. Un
+        // RHS que no es lista es `false` (el parser no lo produce).
+        BinaryOperator::In => matches!(right, PropertyValue::List(xs) if xs.contains(left)),
+        BinaryOperator::NotIn => !matches!(right, PropertyValue::List(xs) if xs.contains(left)),
         _ => false,
     }
 }

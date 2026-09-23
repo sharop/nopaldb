@@ -3,11 +3,13 @@
 pub mod view;
 pub mod upsert;
 pub mod stats;
+pub mod neighborhood;
 #[cfg(feature = "hybrid")]
 pub mod hybrid;
 pub(crate) mod applier;
 pub use view::{GraphView, Subgraph};
 pub use upsert::{LinkSpec, UpsertOutcome, UpsertRequest, UPSERT_TX_ROWS};
+pub use neighborhood::{ExpandOptions, Neighborhood};
 pub use stats::{
     GcAutoSummary, GcRun, GcSection, GraphSection, IndexSection, OpenPhasesMs, Progress,
     ProgressCallback, RecoverySection, StatsReport, StorageSection, WalSection,
@@ -1431,6 +1433,23 @@ impl Graph {
         self.storage.get_node(id).await
     }
 
+    /// Lectura puntual en lote, en el orden de entrada; `None` donde el id no
+    /// existe. Lee el registro vivo (`entities`), igual que [`Self::get_node`].
+    /// Es la hidratación de los hits de una búsqueda: hasta 0.6.7 desde
+    /// Python solo se podía por NQL `where n.id = "…"`, que hacía un scan
+    /// completo por id (327 ms con 100k nodos).
+    pub async fn get_nodes(&self, ids: &[NodeId]) -> Result<Vec<Option<Node>>> {
+        let mut out = Vec::with_capacity(ids.len());
+        for &id in ids {
+            match self.storage.get_node(id).await {
+                Ok(node) => out.push(Some(node)),
+                Err(NopalError::NodeNotFound(_)) => out.push(None),
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
+    }
+
     pub async fn get_node_by_property(&self, property: &str, value: &str) -> Result<Node> {
         // Asumimos búsqueda estricta de string
         let val = PropertyValue::String(value.to_string());
@@ -1953,6 +1972,19 @@ impl Graph {
     /// Obtiene una arista por ID
     pub async fn get_edge(&self, id: EdgeId) -> Result<Edge> {
         self.storage.get_edge(id).await
+    }
+
+    /// Lectura puntual en lote de aristas; ver [`Self::get_nodes`].
+    pub async fn get_edges(&self, ids: &[EdgeId]) -> Result<Vec<Option<Edge>>> {
+        let mut out = Vec::with_capacity(ids.len());
+        for &id in ids {
+            match self.storage.get_edge(id).await {
+                Ok(edge) => out.push(Some(edge)),
+                Err(NopalError::EdgeNotFound(_)) => out.push(None),
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
     }
 
     /// Elimina una arista del grafo
@@ -4292,6 +4324,38 @@ impl Graph {
                 .filter(|n| n.properties.get(property) == Some(&value))
                 .collect();
             Ok(nodes)
+        }
+    }
+
+    /// `find_nodes_indexed` para `prop IN [v1, …, vn]`: n consultas de
+    /// igualdad al índice (ids deduplicados, en orden de primera aparición)
+    /// e hidratación por lectura puntual; sin índice, scan de la etiqueta
+    /// con el predicado. Igualdad estricta, como `=`: `Int(1)` no es `Float(1.0)`.
+    pub async fn find_nodes_indexed_in(
+        &self,
+        label: &str,
+        property: &str,
+        values: &[PropertyValue],
+    ) -> Result<Vec<Node>> {
+        if let Some(index_name) = self.index_manager.find_index(label, property).await {
+            let mut seen: HashSet<NodeId> = HashSet::new();
+            let mut ids: Vec<NodeId> = Vec::new();
+            for value in values {
+                for id in self.index_manager.query(&index_name, &IndexQuery::Equals(value.clone())).await? {
+                    if seen.insert(id) {
+                        ids.push(id);
+                    }
+                }
+            }
+            Ok(self.get_nodes(&ids).await?.into_iter().flatten().collect())
+        } else {
+            log::warn!("⚠️  No index for {}.{}, using full scan", label, property);
+            Ok(self
+                .get_nodes_by_label(label)
+                .await?
+                .into_iter()
+                .filter(|n| n.properties.get(property).is_some_and(|p| values.contains(p)))
+                .collect())
         }
     }
 
