@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.8] - unreleased
+## [0.6.8] - 2026-09-23
 
 ### Added
 - **Hidratación por id desde Python:** `get_node`, `get_nodes`, `get_edge`,
