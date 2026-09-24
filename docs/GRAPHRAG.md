@@ -92,6 +92,8 @@ Rust; `python/scripts/graphrag_sample.py` is the functional guard).
 | 1-hop expansion from the 10 hits | 5.9 s | 0.056 ms |
 | 2-hop expansion from the 10 hits, both directions | ~17 s | 0.41 ms |
 | whole cycle: hybrid k=10 hydrated + 1 hop of the 10 hits | ~9 s | 0.27 ms |
+| **search + expand in ONE NQL query** (`similar_to` with the vector literal, k=10, 1 hop) | not possible | 0.35 ms (0.6.9) |
+| same with `hybrid(text, vector)` in NQL | not possible | 132 ms (0.6.9): the pattern's label reaches the hybrid filter as a label scan; a quick fix and the label index are next |
 
 Fill in the exact numbers for your data with `make bench BENCH=retrieval`.
 
@@ -101,8 +103,11 @@ Fill in the exact numbers for your data with `make bench BENCH=retrieval`.
   in-memory adjacency holds edge ids only). Typed adjacency (next) removes
   those reads; `neighborhood` keeps the same contract.
 - `search_hybrid(label=...)` and NQL `hybrid()` pre-filter by label with a
-  scan of the label; omit the filter when your embeddings live on one label,
-  or wait for the label index (next). NQL `similar_to` does not scan: it asks
+  scan of the label (NQL always passes the pattern's label, hence the 132 ms
+  above at 100k). In Python omit the filter when your embeddings live on one
+  label; in NQL prefer `similar_to` until the next release, which makes NQL
+  `hybrid()` hydrate its over-fetched candidates like `similar_to` does, and
+  later the label index removes the scan everywhere. NQL `similar_to` does not scan: it asks
   the index for 4·K neighbours and keeps the first K of the label, so with
   embeddings spread over many labels it can return fewer than K rows.
 - NQL rows carry no similarity score column; the row order is the ranking.
