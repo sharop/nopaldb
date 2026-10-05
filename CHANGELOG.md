@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   en un solo viaje); con `hybrid` por NQL 132 ms porque la etiqueta del
   patrón llega al filtro híbrido como scan de la etiqueta (deuda de #115;
   arreglo rápido e índice de etiqueta en camino).
+- Docs alineados con el comportamiento de 0.6.9 (#173):
+  - ROADMAP temas 3 y 4 (inglés y español): marcados como entregados el
+    analyzer (#74), los parámetros de `hybrid()` en NQL (#115), la inserción
+    incremental en el HNSW (#113) y su persistencia (#114). Lo pendiente
+    enlaza a #174–#176.
+  - Comentario de cabecera de `graph/upsert.rs`: actualizar un embedding ya
+    no invalida el índice.
+  - README: el hipergrafo pasa de ✅ a experimental, porque `EdgeTarget`
+    está definido pero no conectado a las aristas.
+  - `docs/es/NQL_REFERENCIA.md` documenta `leiden(n)`, igual que la
+    referencia en inglés.
 
 ## [0.6.9] - 2026-09-23
 
