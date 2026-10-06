@@ -14,7 +14,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{NopalError, Result};
+use crate::error::Result;
+#[cfg(feature = "hybrid")]
+use crate::error::NopalError;
+#[cfg(feature = "hybrid")]
 use crate::index::{IndexQuery, IndexType};
 use crate::types::{NodeId, PropertyValue};
 
@@ -26,7 +29,7 @@ use super::Graph;
 use crate::embeddings::index::DEFAULT_EF_SEARCH;
 /// Exact-path pieces shared with the embeddings index: the same cosine
 /// distance and tie-break, so both branches of `vector_path` rank identically.
-#[cfg(feature = "hybrid")]
+#[cfg(feature = "embeddings-index")]
 use crate::embeddings::{rank_exact, EXACT_SEARCH_THRESHOLD};
 
 /// Equality-conjunction filter over a node's label and properties.
@@ -89,7 +92,7 @@ impl Default for HybridQuery {
 /// Matters to a caller because the three differ in *recall*, not just in
 /// speed: the first two are exact, the third is approximate. A short result
 /// means something different in each.
-#[cfg(feature = "hybrid")]
+#[cfg(feature = "embeddings-index")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VectorPath {
     /// No filter: plain KNN over the whole index.
@@ -298,7 +301,10 @@ impl Graph {
             let index = self.get_or_build_embedding_index(model).await?;
             let ef = q.ef_search.unwrap_or(DEFAULT_EF_SEARCH);
             let label_checked = match &label_only {
-                Some(label) => self.vector_path_label_checked(&index, vector, label, candidates, ef).await?,
+                Some(label) => {
+                    self.vector_path_label_checked(&index, vector, label, candidates, candidates, ef)
+                        .await?
+                }
                 None => None,
             };
             let (hits, path) = match label_checked {
@@ -398,7 +404,7 @@ impl Graph {
     ///
     /// The index lock is taken only around the synchronous index calls, never
     /// across an `await`: the exact branch reads storage with the lock released.
-    #[cfg(feature = "hybrid")]
+    #[cfg(feature = "embeddings-index")]
     pub(crate) async fn vector_path(
         &self,
         index: &super::SharedHnswIndex,
@@ -446,26 +452,28 @@ impl Graph {
 
     /// Vector path for a label-only filter, without building the allowed set.
     ///
-    /// Asks the index for `candidates` neighbours, reads them by id and keeps
-    /// the ones with the label, in distance order. If fewer than `candidates`
-    /// carry the label, the fetch grows ×4 and the search repeats; labels
+    /// Asks the index for `first_fetch` neighbours (at least `candidates`),
+    /// reads them by id and keeps the first `candidates` with the label, in
+    /// distance order. If fewer carry the label, the fetch grows ×4 and the
+    /// search repeats; labels
     /// already read are remembered. Stops when there are enough, when the
     /// fetch covers the whole index (then a short result is real), or at
     /// [`LABEL_CHECK_MAX_FETCH`], where it returns `None` and the caller falls
     /// back to the allowed set: a label that rare among the neighbours is
     /// cheaper to enumerate than to find by walking.
-    #[cfg(feature = "hybrid")]
-    async fn vector_path_label_checked(
+    #[cfg(feature = "embeddings-index")]
+    pub(crate) async fn vector_path_label_checked(
         &self,
         index: &super::SharedHnswIndex,
         vector: &[f32],
         label: &str,
         candidates: usize,
+        first_fetch: usize,
         ef: usize,
     ) -> Result<Option<Vec<(NodeId, f32)>>> {
         let index_len = index.read().unwrap_or_else(|e| e.into_inner()).len();
         let mut has_label: HashMap<NodeId, bool> = HashMap::new();
-        let mut fetch = candidates.max(1);
+        let mut fetch = first_fetch.max(candidates).max(1).min(LABEL_CHECK_MAX_FETCH.max(candidates));
         loop {
             let hits = index
                 .read()
@@ -521,9 +529,40 @@ impl Graph {
         Ok(kept)
     }
 
+    /// The `k` nearest nodes of `label` for `vector`, best first, and how the
+    /// vector path resolved them. What NQL `similar_to` runs when its pattern
+    /// has a label (#174b).
+    ///
+    /// Same two steps as the vector branch of a label-only hybrid search:
+    /// the label is checked on the neighbours, asking for `k × overfetch`
+    /// first and escalating ×4; if the label is too rare among the nearest
+    /// neighbours for that to fill `k`, the allowed set of the label is
+    /// built and searched (exact when it is small). So a label with `k`
+    /// embedded nodes returns `k` of them — before, `similar_to` asked for a
+    /// fixed `4·k` and returned fewer when other labels crowded the result.
+    #[cfg(feature = "embeddings-index")]
+    pub(crate) async fn knn_in_label(
+        &self,
+        model: &str,
+        vector: &[f32],
+        label: &str,
+        k: usize,
+        overfetch: usize,
+        ef: usize,
+    ) -> Result<(Vec<(NodeId, f32)>, VectorPath)> {
+        let index = self.get_or_build_embedding_index(model).await?;
+        let first_fetch = k.saturating_mul(overfetch.max(1));
+        if let Some(hits) = self.vector_path_label_checked(&index, vector, label, k, first_fetch, ef).await? {
+            return Ok((hits, VectorPath::LabelChecked));
+        }
+        let filter = HybridFilter { label: Some(label.to_string()), props: Vec::new() };
+        let allowed = self.hybrid_allowed_set(Some(&filter)).await?;
+        self.vector_path(&index, vector, model, allowed.as_ref(), k, ef).await
+    }
+
     /// Build the allowed NodeId set from a label/property filter. `None` means no
     /// restriction (empty filter or no filter). An empty set means nothing matches.
-    #[cfg(feature = "hybrid")]
+    #[cfg(feature = "embeddings-index")]
     async fn hybrid_allowed_set(
         &self,
         filter: Option<&HybridFilter>,
@@ -588,11 +627,11 @@ impl Graph {
 
 /// Largest fetch the label-checked vector path tries before falling back to
 /// the allowed set. Same bound as the filtered HNSW escalation.
-#[cfg(feature = "hybrid")]
+#[cfg(feature = "embeddings-index")]
 const LABEL_CHECK_MAX_FETCH: usize = crate::embeddings::MAX_FILTERED_EF_SEARCH;
 
 /// Intersect an optional running set with a new set.
-#[cfg(feature = "hybrid")]
+#[cfg(feature = "embeddings-index")]
 fn intersect(acc: Option<HashSet<NodeId>>, next: HashSet<NodeId>) -> HashSet<NodeId> {
     match acc {
         None => next,

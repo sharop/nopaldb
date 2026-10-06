@@ -221,6 +221,10 @@ name = "nql_vector_literal_test"
 required-features = ["hybrid"]
 
 [[test]]
+name = "nql_similar_to_escalation_test"
+required-features = ["embeddings-index"]
+
+[[test]]
 name = "hybrid_explain_test"
 required-features = ["hybrid"]
 

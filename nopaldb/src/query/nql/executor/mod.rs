@@ -5586,21 +5586,33 @@ impl<'a> Executor<'a> {
     /// the pattern's label, hydrated, closest first. `None` when the WHERE
     /// has no `similar_to`.
     ///
-    /// The label is honoured without a scan: the index is asked for `4·k`
-    /// neighbours, the candidates are read by id and the first `k` of the
-    /// label are kept (with fewer than `k` of the label among them the
-    /// query returns fewer rows). Before 0.6.9 the k-NN ignored the label
-    /// and the stream dropped the foreign hits afterwards, so `limit 3`
-    /// could return fewer rows for no visible reason.
+    /// The label is honoured without a scan: the index is asked for
+    /// `overfetch·k` neighbours (4·k by default), the candidates are read by
+    /// id and the first `k` of the label are kept. If fewer than `k` carry
+    /// the label, the fetch escalates ×4; if the label is that rare among the
+    /// nearest neighbours, the label's own nodes are searched (#174b,
+    /// `Graph::knn_in_label`). So the query returns `k` rows whenever the
+    /// label has `k` embedded nodes. Until 0.6.9 the fetch was a fixed `4·k`
+    /// and with embeddings spread over several labels the query returned
+    /// fewer rows without saying so; before 0.6.9 the label was ignored.
     #[cfg(feature = "embeddings-index")]
     async fn precompute_similar_to(&self, condition: &Expression, query: &Query) -> Result<Option<Vec<Node>>> {
         let Some(call) = extract_similar_to_params(condition) else { return Ok(None) };
         let k = effective_k(call.k, query);
         let label = pattern_label_for(query, &call.variable);
         let vector = self.resolve_query_vector("similar_to", &call.source, &call.model).await?;
-        let index = self.graph.get_or_build_embedding_index(&call.model).await?;
-        let fetch = if label.is_some() { k.saturating_mul(SIMILAR_TO_LABEL_OVERFETCH) } else { k };
-        let hits = index.read().unwrap_or_else(|e| e.into_inner()).search_knn(&vector, fetch)?;
+        let ef = call.ef_search.unwrap_or(crate::embeddings::DEFAULT_EF_SEARCH);
+        let hits = match &label {
+            Some(label) => {
+                let overfetch = call.overfetch.unwrap_or(SIMILAR_TO_LABEL_OVERFETCH);
+                self.graph.knn_in_label(&call.model, &vector, label, k, overfetch, ef).await?.0
+            }
+            None => {
+                let index = self.graph.get_or_build_embedding_index(&call.model).await?;
+                let guard = index.read().unwrap_or_else(|e| e.into_inner());
+                guard.search_knn_with_ef(&vector, k, ef)?
+            }
+        };
         let ids: Vec<NodeId> = hits.into_iter().map(|(id, _)| id).collect();
         let nodes = self
             .graph
@@ -5653,8 +5665,9 @@ impl<'a> Executor<'a> {
 }
 
 /// Cuántos vecinos pide `similar_to` al índice por cada uno que devolverá
-/// cuando el patrón tiene etiqueta (los de otras etiquetas se descartan
-/// tras leerlos). Mismo valor que el `overfetch` por defecto de `hybrid`.
+/// cuando el patrón tiene etiqueta, antes de escalar (los de otras etiquetas
+/// se descartan tras leerlos). Default de `overfetch = N`; mismo valor que
+/// el `overfetch` por defecto de `hybrid`.
 #[cfg(feature = "embeddings-index")]
 const SIMILAR_TO_LABEL_OVERFETCH: usize = 4;
 
@@ -5679,6 +5692,11 @@ pub(crate) struct SimilarToCall {
     pub model: String,
     /// `k = N` explícito; si falta, `effective_k` decide.
     pub k: Option<usize>,
+    /// `overfetch = N`: vecinos pedidos al índice por cada uno que se
+    /// devuelve, antes de escalar (#174b). `None` = 4.
+    pub overfetch: Option<usize>,
+    /// `ef_search = N` del HNSW. `None` = el default del índice.
+    pub ef_search: Option<usize>,
 }
 
 /// `k` efectivo de una búsqueda vectorial: el `k = N` de la llamada; si no,
@@ -5782,12 +5800,14 @@ fn extract_similar_to_params(expr: &Expression) -> Option<SimilarToCall> {
                 None => None,
             };
             let mut literal = None;
-            let mut k = None;
+            let (mut k, mut overfetch, mut ef_search) = (None, None, None);
             for (name, value) in named_args(args) {
                 match (name, value) {
                     ("vector", Expression::Literal(v)) => literal = v.as_f32_vec(),
                     ("model", Expression::Literal(PropertyValue::String(s))) => model = Some(s.clone()),
                     ("k", Expression::Literal(PropertyValue::Int(v))) if *v >= 1 => k = Some(*v as usize),
+                    ("overfetch", Expression::Literal(PropertyValue::Int(v))) if *v >= 1 => overfetch = Some(*v as usize),
+                    ("ef_search", Expression::Literal(PropertyValue::Int(v))) if *v >= 1 => ef_search = Some(*v as usize),
                     _ => {}
                 }
             }
@@ -5796,7 +5816,14 @@ fn extract_similar_to_params(expr: &Expression) -> Option<SimilarToCall> {
                 (None, Some(vector)) => VectorSource::Literal(vector),
                 _ => return None,
             };
-            Some(SimilarToCall { variable, source, model: model.unwrap_or_else(|| "default".to_string()), k })
+            Some(SimilarToCall {
+                variable,
+                source,
+                model: model.unwrap_or_else(|| "default".to_string()),
+                k,
+                overfetch,
+                ef_search,
+            })
         }
         Expression::BinaryOp { left, op: BinaryOperator::And, right }
         | Expression::BinaryOp { left, op: BinaryOperator::Or, right } => {
@@ -5929,13 +5956,24 @@ fn describe_vector_source(source: &VectorSource) -> String {
 /// Texto de EXPLAIN con los parámetros efectivos de `similar_to(...)`.
 #[cfg(feature = "embeddings-index")]
 fn describe_similar_to(call: &SimilarToCall, query: &Query) -> String {
+    let k = effective_k(call.k, query);
+    let ef = call
+        .ef_search
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| format!("default ({})", crate::embeddings::DEFAULT_EF_SEARCH));
+    let label = match pattern_label_for(query, &call.variable) {
+        Some(label) => format!(
+            "{label} (checked on the neighbours: fetch {}·k, ×4 up to {} while short, then the label's own nodes)",
+            call.overfetch.unwrap_or(SIMILAR_TO_LABEL_OVERFETCH),
+            crate::embeddings::MAX_FILTERED_EF_SEARCH,
+        ),
+        None => "none".to_string(),
+    };
     format!(
-        "similar_to({}): {} model={:?} k={} filter.label={}",
+        "similar_to({}): {} model={:?} k={k} filter.label={label} ef_search={ef}",
         call.variable,
         describe_vector_source(&call.source),
         call.model,
-        effective_k(call.k, query),
-        pattern_label_for(query, &call.variable).unwrap_or_else(|| "none".to_string()),
     )
 }
 

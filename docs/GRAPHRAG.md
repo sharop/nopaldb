@@ -109,8 +109,10 @@ Fill in the exact numbers for your data with `make bench BENCH=retrieval`.
   that case. A filter with properties (`props=`) still builds its allowed set
   with a label scan.
 - NQL `similar_to` does not scan either: it asks the index for 4·K neighbours
-  and keeps the first K of the label, so with embeddings spread over many
-  labels it can return fewer than K rows.
+  and keeps the first K of the label, escalating ×4 while short and falling
+  back to the label's own nodes when the label is rare among the neighbours.
+  Since 0.6.10 it returns K rows whenever the label has K embedded nodes
+  (before, embeddings spread over several labels could leave it short).
 - NQL rows carry no similarity score column; the row order is the ranking.
 
 See also [HYBRID_SEARCH.md](HYBRID_SEARCH.md), [EMBEDDINGS.md](EMBEDDINGS.md)
