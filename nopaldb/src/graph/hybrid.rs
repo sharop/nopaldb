@@ -265,18 +265,34 @@ impl Graph {
         let mut text_report: Option<BranchReport> = None;
         if let Some(text) = &q.text {
             let index_name = self.resolve_fulltext_index(q.text_index.as_deref(), q.filter.as_ref()).await?;
-            let mut scored = self
-                .index_manager
-                .query_scored(&index_name, &IndexQuery::FullText(text.clone()))
-                .await?;
-            if let Some(label) = &label_only {
-                scored = self.keep_label_in_rank_order(scored, label, candidates).await?;
-            }
-            for (id, score) in scored
-                .into_iter()
-                .filter(|(id, _)| allowed.as_ref().is_none_or(|s| s.contains(id)))
-                .take(candidates)
-            {
+            // Pedir a tantivy solo lo que la rama usa (#174): `candidates`, y
+            // ×4 mientras el filtro deje menos, hasta el tope de siempre
+            // (1000, o `candidates` si es mayor). Antes pedía 1000 fijos y
+            // leía el `node_id` de cada uno: 1.9 ms de los 2.2 ms de una
+            // híbrida a 100k chunks.
+            let cap = crate::index::fulltext::QUERY_DEFAULT_LIMIT.max(candidates);
+            let mut limit = candidates.clamp(1, cap);
+            let kept = loop {
+                let scored = self
+                    .index_manager
+                    .query_scored_top(&index_name, &IndexQuery::FullText(text.clone()), limit)
+                    .await?;
+                let exhausted = scored.len() < limit || limit >= cap;
+                let scored = match &label_only {
+                    Some(label) => self.keep_label_in_rank_order(scored, label, candidates).await?,
+                    None => scored,
+                };
+                let kept: Vec<(NodeId, Option<f32>)> = scored
+                    .into_iter()
+                    .filter(|(id, _)| allowed.as_ref().is_none_or(|s| s.contains(id)))
+                    .take(candidates)
+                    .collect();
+                if kept.len() >= candidates || exhausted {
+                    break kept;
+                }
+                limit = limit.saturating_mul(4).min(cap);
+            };
+            for (id, score) in kept {
                 let n = text_ranks.len();
                 if text_ranks.insert(id, n).is_none()
                     && let Some(s) = score

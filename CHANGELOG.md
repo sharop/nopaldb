@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **La rama de texto de `search_hybrid` pide a tantivy solo lo que usa**
+  (#174). `query_scored` pedía siempre los 1000 mejores documentos y leía el
+  `node_id` guardado de cada uno, aunque la rama necesita `k × overfetch`
+  (40 por defecto). Nuevo `Index::query_scored_top(query, limit)`: el
+  full-text recolecta solo `limit`. La rama pide `k × overfetch` y escala ×4
+  mientras su filtro (etiqueta o propiedades) deje menos, hasta el tope de
+  siempre (1000, o `k × overfetch` si es mayor), así que nunca obtiene menos
+  que antes. Medido a 100k chunks (release, `make bench BENCH=retrieval`):
+  - solo texto: 1.92 → 0.62 ms;
+  - `search_hybrid` con etiqueta: 2.26 → 0.95 ms;
+  - NQL `hybrid()` + 1 salto: 2.42 → 0.99 ms.
+
+  Lo que queda es tantivy puntuando todas las coincidencias: el bench
+  coincide en ~57k de 100k chunks a propósito (vocabulario de 20 palabras).
+  El bench gana el caso `search/text_only_k10`.
+
 ### Added
 - **`score(var)` en el FIND de NQL** (#174c): el score de la búsqueda
   vectorial del WHERE para el nodo de cada fila. Con `similar_to` es la

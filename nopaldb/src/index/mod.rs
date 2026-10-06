@@ -88,6 +88,19 @@ pub trait Index: Send + Sync {
         Ok(self.query(query)?.into_iter().map(|id| (id, None)).collect())
     }
 
+    /// Like [`Index::query_scored`], keeping only the best `limit` hits.
+    ///
+    /// The full-text index overrides it so the engine itself stops at
+    /// `limit`: its `query_scored` asks tantivy for the top 1000 and reads
+    /// the stored `node_id` of each, which is most of the cost of a hybrid
+    /// search when the caller wants 40 (#174). For the rest, truncating is
+    /// all there is to do.
+    fn query_scored_top(&self, query: &IndexQuery, limit: usize) -> Result<Vec<(NodeId, Option<f32>)>> {
+        let mut hits = self.query_scored(query)?;
+        hits.truncate(limit);
+        Ok(hits)
+    }
+
     /// Clear all entries
     fn clear(&mut self) -> Result<()>;
 
@@ -698,6 +711,27 @@ impl IndexManager {
 
         if let Some(index) = indexes.get(index_name) {
             index.query_scored(query)
+        } else {
+            Err(crate::error::NopalError::index_error(format!(
+                "Index not found: {}",
+                index_name
+            )))
+        }
+    }
+
+    /// Como [`IndexManager::query_scored`], quedándose con los `limit`
+    /// mejores (ver [`Index::query_scored_top`]).
+    pub async fn query_scored_top(
+        &self,
+        index_name: &str,
+        query: &IndexQuery,
+        limit: usize,
+    ) -> Result<Vec<(NodeId, Option<f32>)>> {
+        self.flush_before_read().await?;
+        let indexes = self.indexes.read().await;
+
+        if let Some(index) = indexes.get(index_name) {
+            index.query_scored_top(query, limit)
         } else {
             Err(crate::error::NopalError::index_error(format!(
                 "Index not found: {}",
