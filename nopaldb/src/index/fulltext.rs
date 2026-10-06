@@ -34,6 +34,10 @@ pub struct FullTextIndex {
     node_id_field: Field,
     content_field: Field,
     analyzer: FullTextAnalyzer,
+    /// Cambios en el writer que todavía no se commitearon. `insert` y
+    /// `remove` solo los acumulan; [`Index::flush`] los publica en UN commit
+    /// (#178). Ver la nota en `insert`.
+    pending: bool,
 }
 
 impl FullTextIndex {
@@ -147,6 +151,7 @@ impl FullTextIndex {
             node_id_field,
             content_field,
             analyzer,
+            pending: false,
         })
     }
 
@@ -159,6 +164,7 @@ impl FullTextIndex {
             self.reader.reload()
                 .map_err(|e| NopalError::index_error(format!("Failed to reload reader: {}", e)))?;
         }
+        self.pending = false;
         Ok(())
     }
 }
@@ -182,8 +188,8 @@ impl Index for FullTextIndex {
             // Sin este delete previo, reindexar un nodo (re-ingesta de la
             // misma fuente, corrección de un texto) AÑADE un segundo
             // documento: el texto viejo sigue matcheando y el índice crece
-            // sin techo. Ambos deletes y el add se publican en el mismo
-            // commit de abajo, así que una consulta nunca ve los dos.
+            // sin techo. El delete y el add se publican en el mismo commit
+            // (el siguiente `flush`), así que una consulta nunca ve los dos.
             let term = Term::from_field_text(self.node_id_field, &node_id.to_string());
             writer.delete_term(term);
 
@@ -196,8 +202,15 @@ impl Index for FullTextIndex {
             writer.add_document(doc)
                 .map_err(|e| NopalError::index_error(format!("Failed to add document: {}", e)))?;
 
-            // Commit after each insert (could batch for performance)
-            self.commit()?;
+            // Sin commit aquí (#178): cada commit de tantivy hace fsync y
+            // crea un segmento, y con uno por documento poblar 10k nodos
+            // tardaba 16 min y CADA `open` (que reconstruye el índice)
+            // 20 min. Quien escribe llama `flush` al terminar su lote: el
+            // applier al cerrar cada lote, `create_index` y el rebuild al
+            // abrir al terminar de poblar. El fsync por documento no
+            // compraba durabilidad: este directorio se reconstruye desde
+            // storage en cada `open`.
+            self.pending = true;
         }
 
         Ok(())
@@ -207,6 +220,22 @@ impl Index for FullTextIndex {
         if let Some(writer) = &mut self.writer {
             let term = Term::from_field_text(self.node_id_field, &node_id.to_string());
             writer.delete_term(term);
+            // Mismo contrato que `insert`: se publica en el próximo `flush`.
+            // Un remove + insert del mismo nodo (sobrescritura de su texto)
+            // van así en un solo commit, sin un instante en que una consulta
+            // no lo encuentre por ninguno de los dos textos.
+            self.pending = true;
+        }
+        Ok(())
+    }
+
+    /// One document per node: `insert` deletes by node id and adds.
+    fn replaces_on_insert(&self) -> bool {
+        true
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if self.pending {
             self.commit()?;
         }
         Ok(())
@@ -382,19 +411,24 @@ mod tests {
 
         // Search — Tantivy uses OR by default for multi-word queries
         // "fraud detection" matches docs containing "fraud" OR "detection"
+        index.flush().unwrap();
         let results = index.query(&IndexQuery::FullText("fraud detection".to_string())).unwrap();
         assert_eq!(results.len(), 2); // Both doc1 (fraud detection) and doc2 (anomaly detection)
         assert!(results.contains(&node1));
         assert!(results.contains(&node2));
 
         // Single word search
+        index.flush().unwrap();
         let results = index.query(&IndexQuery::FullText("detection".to_string())).unwrap();
         assert_eq!(results.len(), 2); // Both fraud detection and anomaly detection
 
         // Use AND for exact phrase matching: +fraud +detection
+        index.flush().unwrap();
         let results = index.query(&IndexQuery::FullText("+fraud +detection".to_string())).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results.contains(&node1));
+
+        index.flush().unwrap();
 
         let results = index.query(&IndexQuery::FullText("harbor".to_string())).unwrap();
         assert_eq!(results.len(), 1);
@@ -419,11 +453,13 @@ mod tests {
         ).unwrap();
 
         // Boolean AND
+        index.flush().unwrap();
         let results = index.query(&IndexQuery::FullText("fraud AND detection".to_string())).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results.contains(&node1));
 
         // Boolean OR
+        index.flush().unwrap();
         let results = index.query(&IndexQuery::FullText("detection OR prevention".to_string())).unwrap();
         assert_eq!(results.len(), 2);
     }
@@ -437,11 +473,15 @@ mod tests {
 
         index.insert(value.clone(), node1).unwrap();
 
+        index.flush().unwrap();
+
         let results = index.query(&IndexQuery::FullText("test".to_string())).unwrap();
         assert_eq!(results.len(), 1);
 
         // Remove
         index.remove(&value, node1).unwrap();
+
+        index.flush().unwrap();
 
         let results = index.query(&IndexQuery::FullText("test".to_string())).unwrap();
         assert_eq!(results.len(), 0);
@@ -462,6 +502,7 @@ mod tests {
             index
                 .insert(PropertyValue::String(format!("revision {i} del texto")), node)
                 .unwrap();
+            index.flush().unwrap();
             assert_eq!(index.size(), 1, "tras {} escrituras debe haber 1 documento", i + 1);
         }
 
@@ -487,6 +528,7 @@ mod tests {
         index.insert(PropertyValue::String("alfa comun".into()), a).unwrap();
         index.insert(PropertyValue::String("beta comun".into()), b).unwrap();
         index.insert(PropertyValue::String("gamma comun".into()), a).unwrap();
+        index.flush().unwrap();
 
         assert_eq!(index.size(), 2, "un documento por nodo");
         assert_eq!(
@@ -498,5 +540,60 @@ mod tests {
             vec![b],
             "el documento del otro nodo sigue intacto"
         );
+    }
+
+    /// Sin `flush` nada es visible; con UN `flush` se publica todo el lote,
+    /// en un solo commit (#178).
+    #[test]
+    fn writes_are_published_by_flush_in_one_commit() {
+        let mut index = FullTextIndex::new(None).unwrap();
+        let ids: Vec<NodeId> = (0..200).map(|_| uuid::Uuid::new_v4()).collect();
+        for id in &ids {
+            index.insert(PropertyValue::String("nopal maguey".into()), *id).unwrap();
+        }
+        assert_eq!(index.size(), 0, "antes del flush no hay nada publicado");
+        index.flush().unwrap();
+        assert_eq!(index.size(), 200);
+        // Un commit deja como mucho un segmento por hilo de indexación del
+        // writer (tantivy usa hasta 8); con un commit por documento serían
+        // del orden de 200 antes de los merges.
+        let segments = index.reader.searcher().segment_readers().len();
+        assert!(segments <= 8, "un lote = un commit, pero hay {segments} segmentos");
+        // Un flush sin cambios no hace nada (ni commit ni segmento nuevo).
+        index.flush().unwrap();
+        assert_eq!(index.reader.searcher().segment_readers().len(), segments);
+    }
+
+    /// Varias revisiones del mismo nodo DENTRO de un lote dejan un solo
+    /// documento: el delete de cada `insert` alcanza a los add anteriores del
+    /// mismo lote, no solo a lo ya commiteado.
+    #[test]
+    fn reindexing_within_one_batch_keeps_one_document() {
+        let mut index = FullTextIndex::new(None).unwrap();
+        let node = uuid::Uuid::new_v4();
+        for i in 0..5 {
+            index.insert(PropertyValue::String(format!("revision {i} del texto")), node).unwrap();
+        }
+        index.flush().unwrap();
+        assert_eq!(index.size(), 1);
+        assert_eq!(index.query(&IndexQuery::FullText("4".to_string())).unwrap(), vec![node]);
+        assert!(index.query(&IndexQuery::FullText("0".to_string())).unwrap().is_empty());
+    }
+
+    /// Remove + insert del mismo nodo en un lote: tras el flush el nodo está
+    /// con el texto nuevo, y el viejo ya no matchea.
+    #[test]
+    fn remove_then_insert_in_one_batch_replaces_the_text() {
+        let mut index = FullTextIndex::new(None).unwrap();
+        let node = uuid::Uuid::new_v4();
+        index.insert(PropertyValue::String("alfa".into()), node).unwrap();
+        index.flush().unwrap();
+        index.remove(&PropertyValue::String("alfa".into()), node).unwrap();
+        index.insert(PropertyValue::String("beta".into()), node).unwrap();
+        // Antes del flush la consulta sigue viendo el estado commiteado.
+        assert_eq!(index.query(&IndexQuery::FullText("alfa".to_string())).unwrap(), vec![node]);
+        index.flush().unwrap();
+        assert!(index.query(&IndexQuery::FullText("alfa".to_string())).unwrap().is_empty());
+        assert_eq!(index.query(&IndexQuery::FullText("beta".to_string())).unwrap(), vec![node]);
     }
 }

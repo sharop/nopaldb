@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Índice full-text: un commit de tantivy por lote, no por documento**
+  (#178). Cada `insert`/`remove` hacía `commit()` (fsync, segmento nuevo y
+  recarga del reader), así que cualquier camino que indexa nodo por nodo
+  pagaba un fsync por nodo:
+  - `create_index` sobre datos existentes;
+  - **cada `Graph::open`**, que reconstruye los índices desde storage;
+  - `rebuild_property_index`;
+  - las escrituras normales.
+
+  Ahora `insert`/`remove` solo acumulan, y `Index::flush` publica en un
+  commit:
+  - el applier al cerrar cada lote, antes de los acks, así que quien recibe
+    el ack encuentra lo que escribió;
+  - `create_index` y el rebuild al abrir, al terminar de poblar;
+  - `rebuild_property_index` y `close`.
+
+  Como red de seguridad, una consulta con escrituras sin publicar las publica
+  antes de leer. El fsync por documento no aportaba durabilidad: el
+  directorio tantivy se reconstruye desde storage en cada `open` y el WAL
+  repone lo que falte. Medido (release, macOS):
+  - `create_index` full-text: 2k nodos 185 s → 0.23 s, 10k nodos 978 s → 0.22 s;
+  - reabrir la base: 2k nodos 239 s → 0.27 s, 10k nodos 1218 s → 0.29 s;
+  - a 100k: `create_index` 0.39 s y reabrir 0.47 s (antes, unas 2.7 y
+    3.4 h estimadas; el bench `retrieval` pasó más de 4 h sin terminar su
+    fixture).
+- **Una sobrescritura del texto ya no deja el nodo un instante sin
+  documento** (#178). El retract hacía `remove` (con su commit) y después
+  `insert` (otro commit): entre los dos, una búsqueda no encontraba el nodo
+  por ningún texto. El full-text identifica el documento por nodo y su
+  `insert` ya reemplaza (`delete_term` + `add` en una llamada), así que en
+  una sobrescritura que conserva la propiedad como texto el `remove` previo
+  se omite (`Index::replaces_on_insert`). Se mantiene cuando la propiedad
+  desaparece, cambia la etiqueta o se borra el nodo.
+
 ### Changed
 - **`search_hybrid` con filtro de solo etiqueta y NQL `hybrid()` ya no
   recorren la etiqueta** (#174a). Antes el filtro se resolvía armando el

@@ -93,7 +93,7 @@ Rust; `python/scripts/graphrag_sample.py` is the functional guard).
 | 2-hop expansion from the 10 hits, both directions | ~17 s | 0.41 ms |
 | whole cycle: hybrid k=10 hydrated + 1 hop of the 10 hits | ~9 s | 0.27 ms |
 | **search + expand in ONE NQL query** (`similar_to` with the vector literal, k=10, 1 hop) | not possible | 0.35 ms (0.6.9) |
-| same with `hybrid(text, vector)` in NQL | not possible | 132 ms (0.6.9): the pattern's label reached the hybrid filter as a label scan. Since 0.6.10 the label is checked on each branch's candidates: 16.2 ms → 0.89 ms at 10k chunks |
+| same with `hybrid(text, vector)` in NQL | not possible | 132 ms (0.6.9): the pattern's label reached the hybrid filter as a label scan. Since 0.6.10 the label is checked on each branch's candidates: 2.33 ms at 100k chunks (16.2 ms → 0.89 ms at 10k). What remains is the full-text branch, which costs about the same without a label (2.09 ms) |
 
 Fill in the exact numbers for your data with `make bench BENCH=retrieval`.
 

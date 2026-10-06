@@ -499,6 +499,15 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
         acks.push((msg.ack, result));
     }
 
+    // Índices full-text: un commit por lote en vez de uno por documento
+    // (#178), ANTES de los acks para que quien recibe su ack ya encuentre lo
+    // que escribió. Si falla, el lote ya es durable en storage y el WAL; la
+    // marca de pendientes sigue puesta y la próxima consulta (o el próximo
+    // lote) reintenta el commit.
+    if let Err(e) = anchor.index_manager.flush().await {
+        log::warn!("applier: full-text index commit failed after batch (will retry): {}", e);
+    }
+
     // Marca de progreso del redo (best effort: si no se persiste, las
     // guardas heurísticas de `replay_wal` siguen cubriendo el sufijo).
     if let Some(upto) = settled_upto
