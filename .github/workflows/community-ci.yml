@@ -70,7 +70,7 @@ jobs:
         run: cargo test -p nopaldb --features core --test hybrid_test --test hybrid_explain_test --test hybrid_label_check_test --test fulltext_analyzer_test --test fulltext_batch_commit_test
 
       - name: Test filtered KNN recall (exact path + native HNSW filter)
-        run: cargo test -p nopaldb --features core --test knn_filtered_recall_test --test knn_exact_test --test hnsw_incremental_test --test hnsw_persistence_test --test nql_similar_to_escalation_test
+        run: cargo test -p nopaldb --features core --test knn_filtered_recall_test --test knn_exact_test --test hnsw_incremental_test --test hnsw_persistence_test --test nql_similar_to_escalation_test --test nql_score_test
 
       - name: Test indexed-node lifecycle (overwrite retracts, delete purges)
         run: cargo test -p nopaldb --features core --test index_lifecycle_test

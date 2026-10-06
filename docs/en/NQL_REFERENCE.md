@@ -341,6 +341,23 @@ rare among the nearest neighbours the label's own nodes are searched. So the
 query returns `k` rows whenever the label has `k` nodes with an embedding
 (0.6.10; before, a fixed `4·k` could return fewer rows, even none).
 
+**`score(var)` in FIND (0.6.10).** The score of the WHERE's vector search for
+the node of each row: cosine similarity (`1 - distance`) with `similar_to`,
+the RRF score with `hybrid` (with both, the `similar_to` one, which is the row
+order). Higher is better in both. Useful to cut the context at a threshold or
+split a token budget:
+
+```nql
+find c.text, score(c) as s from (c:Chunk)
+where similar_to(c, vector = [...], model = "minilm", k = 10)
+```
+
+`score(var)` needs a `similar_to`/`hybrid` on that same variable, works in
+one-hop patterns (each expanded row carries its searched node's score), and is
+only a FIND column: rows already come best first, so it is rejected in WHERE,
+ORDER BY, GROUP BY and HAVING, and next to aggregations. EXPLAIN names its
+source (`Score: score(c) = cosine similarity of similar_to(c) …`).
+
 Where the search may live: a single-node pattern, or **one** pattern of a
 single hop `(a)-[:T]->(b)` whose first node is the searched variable (the
 candidates seed the pipeline; `LIMIT` then caps the expanded rows, so give
