@@ -175,3 +175,39 @@ async fn a_label_too_rare_among_the_neighbours_falls_back_to_the_allowed_set() {
     assert_eq!(explain.allowed_set_size, Some(3));
     assert_eq!(explain.hits.len(), 3, "los tres Doc, aunque ningún vecino cercano lo sea");
 }
+
+/// Rama de texto con un filtro de propiedad cuyos nodos quedan al fondo del
+/// ranking BM25 (#174): pide `k × overfetch` a tantivy y escala mientras el
+/// filtro deje menos, así que devuelve los que existen aunque estén más
+/// allá de los primeros candidatos.
+#[tokio::test]
+async fn text_branch_escalates_past_the_first_candidates_when_the_filter_is_selective() {
+    let graph = Graph::in_memory().await.unwrap();
+    // 400 documentos con "nopal" y textos cortos (BM25 alto); los 5 "raro"
+    // tienen texto largo, así que quedan al final del ranking.
+    for i in 0..400u64 {
+        let node = Node::new("Doc").with_property("kind", s("comun")).with_property("body", s("nopal"));
+        let _ = i;
+        graph.add_node(node).await.unwrap();
+    }
+    let mut raros = Vec::new();
+    for i in 0..5u64 {
+        let body = format!("nopal {}", "relleno largo ".repeat(20 + i as usize));
+        let id = graph
+            .add_node(Node::new("Doc").with_property("kind", s("raro")).with_property("body", s(&body)))
+            .await
+            .unwrap();
+        raros.push(id);
+    }
+    graph.create_index("Doc", "body", IndexType::FullText).await.unwrap();
+
+    let mut q = HybridQuery::new();
+    q.text = Some("nopal".into());
+    q.k = 5;
+    q.filter = Some(HybridFilter { label: Some("Doc".into()), props: vec![("kind".into(), s("raro"))] });
+    let mut got: Vec<_> = graph.search_hybrid(q).await.unwrap().into_iter().map(|h| h.node_id).collect();
+    got.sort();
+    raros.sort();
+    assert_eq!(got, raros, "los 5 raros, aunque estén detrás de 400 mejores");
+}
+

@@ -5,7 +5,8 @@
 //! tiempo de respuesta de un GraphRAG (con 100k chunks, la búsqueda híbrida
 //! tardaba 0.2 ms y traer un hit por id vía NQL 327 ms). Grupos:
 //!
-//! - `search`: híbrida k=10 sin filtro y con filtro de etiqueta; KNN k=10
+//! - `search`: híbrida k=10 sin filtro y con filtro de etiqueta; solo texto
+//!   k=10 (aísla la rama full-text); KNN k=10
 //! - `hydrate`: `get_nodes` de 10 ids
 //! - `neighborhood`: 1 y 2 saltos desde 10 semillas
 //! - `nql`: `where c.id = "…"`, `where c.id in [10 ids]`, patrón de 1 salto;
@@ -177,6 +178,13 @@ fn bench_retrieval(c: &mut Criterion) {
     });
     g.bench_with_input(BenchmarkId::new("hybrid_k10_label", n), &n, |b, _| {
         b.to_async(&rt).iter(|| async { black_box(fx.graph.search_hybrid(hybrid(&fx, Some("Chunk"))).await.expect("hybrid")) })
+    });
+    g.bench_with_input(BenchmarkId::new("text_only_k10", n), &n, |b, _| {
+        b.to_async(&rt).iter(|| async {
+            let mut q = hybrid(&fx, None);
+            q.vector = None;
+            black_box(fx.graph.search_hybrid(q).await.expect("text"))
+        })
     });
     g.bench_with_input(BenchmarkId::new("knn_k10", n), &n, |b, _| {
         b.to_async(&rt).iter(|| async {

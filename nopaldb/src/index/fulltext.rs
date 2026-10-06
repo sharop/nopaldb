@@ -26,6 +26,10 @@ use std::path::{Path, PathBuf};
 /// index created before 0.5.13 is.
 pub const ANALYZER_FILE: &str = "analyzer.json";
 
+/// Hits a plain `query`/`query_scored` returns: the cap every full-text
+/// query had before `query_scored_top` existed.
+pub const QUERY_DEFAULT_LIMIT: usize = 1000;
+
 /// Full-text search index powered by Tantivy
 pub struct FullTextIndex {
     index: tantivy::Index,
@@ -256,6 +260,14 @@ impl Index for FullTextIndex {
     /// reconstruirlo por fuera. `query` delega aquí para que no existan dos
     /// recorridos del índice que puedan divergir.
     fn query_scored(&self, query: &IndexQuery) -> Result<Vec<(NodeId, Option<f32>)>> {
+        self.query_scored_top(query, QUERY_DEFAULT_LIMIT)
+    }
+
+    /// Top `limit` hits by BM25. Tantivy collects only `limit` documents and
+    /// only those get their stored `node_id` read, so asking for 40 instead of
+    /// 1000 is what takes a hybrid search at 100k chunks from ~2 ms to the
+    /// cost of the 40 (#174).
+    fn query_scored_top(&self, query: &IndexQuery, limit: usize) -> Result<Vec<(NodeId, Option<f32>)>> {
         let query_text = match query {
             IndexQuery::FullText(text) => text,
             _ => return Err(NopalError::index_error(
@@ -271,7 +283,7 @@ impl Index for FullTextIndex {
             .map_err(|e| NopalError::index_error(format!("Failed to parse query: {}", e)))?;
 
         // Search
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(1000).order_by_score())
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit.max(1)).order_by_score())
             .map_err(|e| NopalError::index_error(format!("Search failed: {}", e)))?;
 
         // Extract node IDs
@@ -595,5 +607,25 @@ mod tests {
         index.flush().unwrap();
         assert!(index.query(&IndexQuery::FullText("alfa".to_string())).unwrap().is_empty());
         assert_eq!(index.query(&IndexQuery::FullText("beta".to_string())).unwrap(), vec![node]);
+    }
+
+    /// `query_scored_top(limit)` es el prefijo de `query_scored`: mismos
+    /// documentos, mismo orden, mismos scores (#174). Con textos de longitud
+    /// distinta los scores BM25 difieren, así que el orden importa.
+    #[test]
+    fn query_scored_top_is_the_prefix_of_query_scored() {
+        let mut index = FullTextIndex::new(None).unwrap();
+        for i in 0..300 {
+            let text = format!("nopal {}", "relleno ".repeat(i % 37));
+            index.insert(PropertyValue::String(text), uuid::Uuid::new_v4()).unwrap();
+        }
+        index.flush().unwrap();
+        let q = IndexQuery::FullText("nopal".to_string());
+        let all = index.query_scored(&q).unwrap();
+        assert_eq!(all.len(), 300);
+        for limit in [1, 7, 40, 299, 300, 5000] {
+            let top = index.query_scored_top(&q, limit).unwrap();
+            assert_eq!(top, all[..limit.min(300)].to_vec(), "limit {limit}");
+        }
     }
 }
