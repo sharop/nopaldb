@@ -229,6 +229,10 @@ name = "hybrid_label_check_test"
 required-features = ["hybrid"]
 
 [[test]]
+name = "fulltext_batch_commit_test"
+required-features = ["hybrid"]
+
+[[test]]
 name = "index_lifecycle_test"
 required-features = ["hybrid"]
 

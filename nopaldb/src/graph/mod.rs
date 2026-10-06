@@ -677,7 +677,9 @@ impl Graph {
     /// conserva por compatibilidad de API y como punto de extensión de
     /// checkpoint.
     pub async fn flush_indices(&self) -> Result<()> {
-        Ok(())
+        // La adyacencia se persiste por operación (v2); lo único que puede
+        // quedar en búfer son las escrituras del full-text (#178).
+        self.index_manager.flush().await
     }
 
     // Metodo publico: agrega nodo con indexación automática
@@ -884,7 +886,7 @@ impl Graph {
         // colgadas aunque el valor no haya cambiado: se retiran todas.
         if old.label != incoming.label {
             return self
-                .apply_retract_index_entries(&old.label, old.id, old.properties.iter())
+                .apply_retract_index_entries(&old.label, old.id, old.properties.iter(), None)
                 .await;
         }
 
@@ -896,7 +898,7 @@ impl Graph {
         if stale.is_empty() {
             return Ok(());
         }
-        self.apply_retract_index_entries(&old.label, old.id, stale)
+        self.apply_retract_index_entries(&old.label, old.id, stale, Some(incoming))
             .await
     }
 
@@ -910,11 +912,18 @@ impl Graph {
     /// ellas sigue devolviendo el nodo por un valor que ya no tiene. Para los
     /// índices hash/btree el valor VIEJO es obligatorio (indexan por valor);
     /// el full-text lo ignora porque su documento se identifica por nodo.
+    ///
+    /// `incoming` es el nodo que se va a escribir cuando esto es una
+    /// sobrescritura con la misma etiqueta (`None` en un borrado o un cambio
+    /// de etiqueta). Con él, el full-text no retira un texto que el `insert`
+    /// de después va a reemplazar: remove + insert eran dos pasos y un commit
+    /// entre ellos dejaba el nodo sin documento (#178).
     async fn apply_retract_index_entries<'a, I>(
         &self,
         label: &str,
         node_id: NodeId,
         entries: I,
+        incoming: Option<&Node>,
     ) -> Result<()>
     where
         I: IntoIterator<Item = (&'a String, &'a PropertyValue)>,
@@ -925,9 +934,14 @@ impl Graph {
                 .await?;
 
             if let Some(index_name) = self.index_manager.find_index(label, key).await {
-                self.index_manager
-                    .remove(&index_name, value, node_id)
-                    .await?;
+                match incoming {
+                    Some(node) => {
+                        self.index_manager
+                            .remove_overwritten(&index_name, value, node.properties.get(key), node_id)
+                            .await?
+                    }
+                    None => self.index_manager.remove(&index_name, value, node_id).await?,
+                }
             }
         }
         Ok(())
@@ -969,6 +983,8 @@ impl Graph {
                 None => break,
             }
         }
+        // Lo que el recorrido dejó en el full-text, en un commit (#178).
+        self.index_manager.flush().await?;
         reporter.finish(processed as u64);
         log::info!("rebuild_property_index: completado ({} nodos)", processed);
         Ok(processed)
@@ -1852,7 +1868,7 @@ impl Graph {
         //    propiedades Y los índices de usuario (hash/btree/full-text);
         //    estos últimos no se limpiaban, así que un nodo borrado seguía
         //    apareciendo en búsquedas de texto hasta reabrir la base.
-        self.apply_retract_index_entries(&node.label, id, node.properties.iter())
+        self.apply_retract_index_entries(&node.label, id, node.properties.iter(), None)
             .await?;
 
         // 3. Embeddings del nodo. No es solo higiene de espacio: el índice
@@ -4240,6 +4256,9 @@ impl Graph {
                 indexed_count += 1;
             }
         }
+        // Un solo commit para toda la población (#178): antes era uno por
+        // nodo, 16 min para 10k nodos en un índice full-text.
+        self.index_manager.flush().await?;
         reporter.finish(total_nodes);
 
         log::info!("✅ Indexed {} nodes in {}", indexed_count, index_name);
@@ -4819,5 +4838,33 @@ mod tests {
         let result = graph.delete_edge(fake_id).await;
 
         assert!(result.is_err());
+    }
+
+    /// El applier publica el full-text al cerrar el lote, ANTES del ack
+    /// (#178): quien recibe el ack de su escritura no depende de la red de
+    /// seguridad de la consulta para encontrarla. Directo y transaccional.
+    #[cfg(feature = "fulltext")]
+    #[tokio::test]
+    async fn applier_flushes_fulltext_before_the_ack() {
+        let dir = tempfile::tempdir().unwrap();
+        let graph = Graph::open(dir.path()).await.unwrap();
+        graph
+            .create_index("Doc", "body", crate::index::IndexType::FullText)
+            .await
+            .unwrap();
+        assert!(!graph.index_manager.has_pending(), "create_index publica al terminar de poblar");
+
+        graph
+            .add_node(Node::new("Doc").with_property("body", PropertyValue::String("nopal".into())))
+            .await
+            .unwrap();
+        assert!(!graph.index_manager.has_pending(), "escritura directa: publicada antes del ack");
+
+        let mut tx = graph.begin_transaction().await.unwrap();
+        tx.add_node(Node::new("Doc").with_property("body", PropertyValue::String("maguey".into())))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(!graph.index_manager.has_pending(), "commit transaccional: publicado antes del ack");
     }
 }

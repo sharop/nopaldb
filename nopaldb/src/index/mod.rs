@@ -15,6 +15,7 @@ use crate::types::{NodeId, PropertyValue};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 
 pub use analyzer::FullTextAnalyzer;
@@ -90,6 +91,29 @@ pub trait Index: Send + Sync {
     /// Clear all entries
     fn clear(&mut self) -> Result<()>;
 
+    /// Whether `insert` of a node REPLACES that node's previous entry, so an
+    /// overwrite needs no `remove` first.
+    ///
+    /// True only for the full-text index, whose document is identified by
+    /// node (its `insert` deletes by node id and adds, in one call). For it,
+    /// skipping the separate `remove` on an overwrite is what keeps the node
+    /// visible throughout: with remove + insert as two calls a commit could
+    /// land between them (#178). Value-keyed indexes (hash, btree) must
+    /// remove the old value: their default is `false`.
+    fn replaces_on_insert(&self) -> bool {
+        false
+    }
+
+    /// Publish buffered writes so queries see them.
+    ///
+    /// Only the full-text index buffers (#178): its `insert`/`remove` do not
+    /// commit, because a tantivy commit is an fsync plus a new segment and
+    /// one per document made indexing O(N) fsyncs. In-memory indexes apply
+    /// each write immediately, so the default is a no-op.
+    fn flush(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     /// Get index size (number of entries)
     fn size(&self) -> usize;
 
@@ -156,6 +180,13 @@ pub struct IndexManager {
 
     /// Base path for persistent indexes
     base_path: Option<String>,
+
+    /// Some index has writes that [`IndexManager::flush`] has not published
+    /// yet (#178). Set by `insert`/`remove` while they hold the write lock,
+    /// cleared by `flush` before it takes the lock: a write that lands in
+    /// between leaves it set and costs one extra, empty flush, never a lost
+    /// one.
+    pending: Arc<AtomicBool>,
 }
 
 impl IndexManager {
@@ -172,6 +203,7 @@ impl IndexManager {
             indexes: Arc::new(RwLock::new(HashMap::new())),
             metadata: Arc::new(RwLock::new(HashMap::new())),
             base_path,
+            pending: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -312,6 +344,13 @@ impl IndexManager {
                                     );
                                 }
                             }
+                        }
+
+                        // Step 3c: publish what step 3 buffered — one commit per
+                        // index instead of one per node (#178). Before, reopening
+                        // a base with a 10k-node full-text index took 20 min.
+                        for index in rebuilt_indexes.values_mut() {
+                            index.flush()?;
                         }
 
                         // Step 4: repair metadata sizes and persist if needed.
@@ -509,6 +548,7 @@ impl IndexManager {
 
         if let Some(index) = indexes.get_mut(index_name) {
             index.insert(value, node_id)?;
+            self.pending.store(true, Ordering::Release);
 
             // Update metadata size
             drop(indexes);
@@ -534,6 +574,7 @@ impl IndexManager {
 
         if let Some(index) = indexes.get_mut(index_name) {
             index.remove(value, node_id)?;
+            self.pending.store(true, Ordering::Release);
 
             // Update metadata size
             drop(indexes);
@@ -544,6 +585,33 @@ impl IndexManager {
         }
 
         Ok(())
+    }
+
+    /// Retract an overwritten entry, unless the index will replace it anyway.
+    ///
+    /// `new_value` is what the node carries for the property after the
+    /// write (`None` = the property is gone). When the index replaces on
+    /// insert (full-text) and the new value is one it will index (a string),
+    /// the coming `insert` swaps the document atomically, so the `remove` is
+    /// skipped (see [`Index::replaces_on_insert`]).
+    pub async fn remove_overwritten(
+        &self,
+        index_name: &str,
+        old_value: &PropertyValue,
+        new_value: Option<&PropertyValue>,
+        node_id: NodeId,
+    ) -> Result<()> {
+        let replaced = {
+            let indexes = self.indexes.read().await;
+            indexes
+                .get(index_name)
+                .is_some_and(|i| i.replaces_on_insert())
+                && matches!(new_value, Some(PropertyValue::String(_)))
+        };
+        if replaced {
+            return Ok(());
+        }
+        self.remove(index_name, old_value, node_id).await
     }
 
     /// Add a directed relationship between two nodes in a named index.
@@ -561,12 +629,52 @@ impl IndexManager {
         Ok(())
     }
 
+    /// Publish every index's buffered writes in one commit each (#178).
+    ///
+    /// The writers call it when a batch ends — the applier after each group
+    /// commit, `create_index` and the rebuild on open after populating — so
+    /// the commit cost is paid per batch and outside the read path. A no-op
+    /// when nothing is pending. If a commit fails the mark is restored and
+    /// the next flush (or query) retries.
+    pub async fn flush(&self) -> Result<()> {
+        if !self.pending.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let mut indexes = self.indexes.write().await;
+        for index in indexes.values_mut() {
+            if let Err(e) = index.flush() {
+                self.pending.store(true, Ordering::Release);
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether some index has writes not yet published by [`Self::flush`].
+    /// Only the full-text index buffers, so only its tests ask.
+    #[cfg(all(test, feature = "fulltext"))]
+    pub(crate) fn has_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire)
+    }
+
+    /// Safety net for read-your-writes: a write path that did not flush
+    /// (an inline fallback, a bulk path, a future caller) is published here,
+    /// before the read, instead of staying invisible. In the normal case the
+    /// writer already flushed and this is one atomic load.
+    async fn flush_before_read(&self) -> Result<()> {
+        if self.pending.load(Ordering::Acquire) {
+            self.flush().await?;
+        }
+        Ok(())
+    }
+
     /// Query an index
     pub async fn query(
         &self,
         index_name: &str,
         query: &IndexQuery,
     ) -> Result<Vec<NodeId>> {
+        self.flush_before_read().await?;
         let indexes = self.indexes.read().await;
 
         if let Some(index) = indexes.get(index_name) {
@@ -585,6 +693,7 @@ impl IndexManager {
         index_name: &str,
         query: &IndexQuery,
     ) -> Result<Vec<(NodeId, Option<f32>)>> {
+        self.flush_before_read().await?;
         let indexes = self.indexes.read().await;
 
         if let Some(index) = indexes.get(index_name) {
