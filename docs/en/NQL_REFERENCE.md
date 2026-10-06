@@ -319,8 +319,8 @@ limit 10
 
 | Function | Forms | Notes |
 |---|---|---|
-| `similar_to(n, "ref_name"[, "model"][, k = N])` | reference node by `name` | HNSW k-NN; exact below 1024 vectors; the top-K is computed inside the pattern's label |
-| `similar_to(n, vector = [...], model = "…"[, k = N])` | vector literal | same, with the question's vector |
+| `similar_to(n, "ref_name"[, "model"][, k = N][, options…])` | reference node by `name` | HNSW k-NN; exact below 1024 vectors; the top-K is computed inside the pattern's label |
+| `similar_to(n, vector = [...], model = "…"[, k = N][, options…])` | vector literal | same, with the question's vector |
 | `hybrid(n, "text", "ref_name", "model"[, options…])` | reference node | RRF of full-text and vector; the top-K is computed inside the pattern's label |
 | `hybrid(n, text = "…", vector = [...], model = "…"[, k = N][, options…])` | named; `text` and/or `vector` | text-only or vector-only hybrid is allowed |
 
@@ -332,6 +332,14 @@ options of `hybrid`: `rrf_k` (number > 0, default 60), `ef_search` (integer
 default: the first full-text index matching the label). Unknown options, wrong
 value kinds, or a wrong number of positional arguments are validation errors
 that name the problem; no other function accepts named options.
+
+Named options of `similar_to`: `overfetch` (integer ≥ 1, default 4) and
+`ef_search` (integer ≥ 1, default 30). With a labelled pattern the index is
+asked for `overfetch·k` neighbours and the first `k` of the label are kept; if
+fewer carry the label the fetch grows ×4 (up to 4096), and if the label is that
+rare among the nearest neighbours the label's own nodes are searched. So the
+query returns `k` rows whenever the label has `k` nodes with an embedding
+(0.6.10; before, a fixed `4·k` could return fewer rows, even none).
 
 Where the search may live: a single-node pattern, or **one** pattern of a
 single hop `(a)-[:T]->(b)` whose first node is the searched variable (the

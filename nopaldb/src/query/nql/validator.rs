@@ -460,8 +460,8 @@ impl SemanticValidator {
     ///
     /// Formas aceptadas:
     ///
-    /// - `similar_to(var, "ref_name"[, "model"][, k = N])`
-    /// - `similar_to(var, vector = [...], model = "…"[, k = N])`
+    /// - `similar_to(var, "ref_name"[, "model"][, k = N][, overfetch = N][, ef_search = N])`
+    /// - `similar_to(var, vector = [...], model = "…"[, k = N][, overfetch = N][, ef_search = N])`
     /// - `hybrid(var, "text", "ref_name", "model"[, opciones…])`
     /// - `hybrid(var, text = "…" y/o vector = [...] + model = "…"[, k = N][, opciones…])`
     fn validate_vector_search_usage(&self, expr: &Expression, query: &Query) -> Result<()> {
@@ -510,7 +510,7 @@ impl SemanticValidator {
                 let valid_options = if is_hybrid {
                     "text, vector, model, k, rrf_k, ef_search, overfetch, text_index"
                 } else {
-                    "vector, model, k"
+                    "vector, model, k, overfetch, ef_search"
                 };
                 let (mut has_text, mut has_vector, mut has_model) = (false, false, false);
                 for arg in named {
@@ -531,10 +531,10 @@ impl SemanticValidator {
                         }
                         ("rrf_k", Expression::Literal(PropertyValue::Int(v))) if is_hybrid => *v > 0,
                         ("rrf_k", Expression::Literal(PropertyValue::Float(v))) if is_hybrid => *v > 0.0,
-                        ("ef_search" | "overfetch", Expression::Literal(PropertyValue::Int(v))) if is_hybrid => *v >= 1,
+                        ("ef_search" | "overfetch", Expression::Literal(PropertyValue::Int(v))) => *v >= 1,
                         ("text_index", Expression::Literal(PropertyValue::String(s))) if is_hybrid => !s.is_empty(),
-                        ("vector" | "model" | "k", _) => false,
-                        ("text" | "rrf_k" | "ef_search" | "overfetch" | "text_index", _) if is_hybrid => false,
+                        ("vector" | "model" | "k" | "ef_search" | "overfetch", _) => false,
+                        ("text" | "rrf_k" | "text_index", _) if is_hybrid => false,
                         (other, _) => {
                             return Err(NopalError::SemanticError(format!(
                                 "{fname}: unknown option `{other}`; valid options are {valid_options}"

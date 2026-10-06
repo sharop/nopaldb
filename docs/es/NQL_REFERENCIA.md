@@ -319,8 +319,8 @@ limit 10
 
 | Función | Formas | Notas |
 |---|---|---|
-| `similar_to(n, "ref_name"[, "modelo"][, k = N])` | nodo de referencia por `name` | k-NN por HNSW; exacto por debajo de 1024 vectores; el top-K se calcula dentro del label del patrón |
-| `similar_to(n, vector = [...], model = "…"[, k = N])` | vector literal | igual, con el vector de la pregunta |
+| `similar_to(n, "ref_name"[, "modelo"][, k = N][, opciones…])` | nodo de referencia por `name` | k-NN por HNSW; exacto por debajo de 1024 vectores; el top-K se calcula dentro del label del patrón |
+| `similar_to(n, vector = [...], model = "…"[, k = N][, opciones…])` | vector literal | igual, con el vector de la pregunta |
 | `hybrid(n, "texto", "ref_name", "modelo"[, opciones…])` | nodo de referencia | RRF de texto y vector; el top-K se calcula dentro del label del patrón |
 | `hybrid(n, text = "…", vector = [...], model = "…"[, k = N][, opciones…])` | con nombre; `text` y/o `vector` | se admite híbrida solo-texto o solo-vector |
 
@@ -333,6 +333,15 @@ Opciones con nombre de `hybrid`: `rrf_k` (número > 0, default 60), `ef_search`
 desconocida, un valor del tipo equivocado o un número incorrecto de
 posicionales es un error de validación que nombra el problema; ninguna otra
 función acepta opciones con nombre.
+
+Opciones con nombre de `similar_to`: `overfetch` (entero ≥ 1, default 4) y
+`ef_search` (entero ≥ 1, default 30). Con un patrón con label se piden
+`overfetch·k` vecinos al índice y se conservan los primeros `k` del label; si
+quedan menos, la petición crece ×4 (hasta 4096), y si el label es tan escaso
+entre los vecinos más cercanos se busca entre los propios nodos del label. Así
+la consulta devuelve `k` filas siempre que el label tenga `k` nodos con
+embedding (0.6.10; antes, un `4·k` fijo podía devolver menos filas, incluso
+ninguna).
 
 Dónde puede ir la búsqueda: un patrón de un solo nodo, o **un** patrón de un
 salto `(a)-[:T]->(b)` cuyo primer nodo es la variable buscada (los candidatos

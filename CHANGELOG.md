@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **NQL `similar_to` con etiqueta devuelve K filas cuando la etiqueta tiene
+  K nodos con embedding** (#174b). Pedía un `4·k` fijo al índice y se
+  quedaba con los de la etiqueta: si otras etiquetas acaparaban los vecinos
+  más cercanos devolvía menos de K filas sin avisar (en el test de
+  regresión, **cero**). Ahora escala ×4 hasta 4096 mientras falten, y si la
+  etiqueta es tan escasa entre los vecinos busca entre los nodos de la
+  propia etiqueta (exacto cuando son pocos), con la misma ruta que la rama
+  vectorial de `search_hybrid` con filtro de etiqueta
+  (`Graph::knn_in_label`). Opciones nuevas `overfetch = N` (default 4) y
+  `ef_search = N`, como en `hybrid`; EXPLAIN muestra la estrategia
+  efectiva. El módulo `graph::hybrid` se compila con `embeddings-index`
+  (antes `hybrid`); lo que usa full-text sigue bajo `hybrid`.
 - **Índice full-text: un commit de tantivy por lote, no por documento**
   (#178). Cada `insert`/`remove` hacía `commit()` (fsync, segmento nuevo y
   recarga del reader), así que cualquier camino que indexa nodo por nodo
