@@ -190,9 +190,11 @@ async fn effective_configuration_is_reported() {
     assert_eq!(explain.allowed_set_size, None, "sin filtro no hay conjunto permitido");
 }
 
-/// Con filtro se reporta su cardinalidad, y el camino vectorial dice si el
-/// resultado fue exacto o aproximado — que es lo que decide cómo leer un
-/// resultado corto.
+/// Con filtro de propiedades se reporta la cardinalidad del conjunto
+/// permitido, y el camino vectorial dice si el resultado fue exacto o
+/// aproximado — que es lo que decide cómo leer un resultado corto. Con solo
+/// etiqueta no hay conjunto: la etiqueta se comprueba sobre los candidatos
+/// (#174) y el camino lo dice.
 #[tokio::test]
 async fn filter_and_vector_path_are_visible() {
     let (graph, _dir, _ids) = fixture().await;
@@ -200,13 +202,22 @@ async fn filter_and_vector_path_are_visible() {
     let mut q = query_ambas();
     q.filter = Some(HybridFilter {
         label: Some("Doc".into()),
-        props: vec![],
+        props: vec![("name".into(), s("nopal"))],
     });
     let explain = graph.search_hybrid_explain(q).await.unwrap();
 
-    assert_eq!(explain.allowed_set_size, Some(4), "los 4 nodos Doc");
+    assert_eq!(explain.allowed_set_size, Some(1), "un solo Doc se llama nopal");
     // Índice chico ⇒ el camino filtrado del índice es exacto de por sí.
     assert_eq!(explain.vector_path, Some(VectorPath::HnswFiltered));
+
+    let mut solo_etiqueta = query_ambas();
+    solo_etiqueta.filter = Some(HybridFilter {
+        label: Some("Doc".into()),
+        props: vec![],
+    });
+    let explain = graph.search_hybrid_explain(solo_etiqueta).await.unwrap();
+    assert_eq!(explain.allowed_set_size, None, "solo etiqueta: sin conjunto, sin scan");
+    assert_eq!(explain.vector_path, Some(VectorPath::LabelChecked));
 
     let sin_filtro = graph.search_hybrid_explain(query_ambas()).await.unwrap();
     assert_eq!(sin_filtro.vector_path, Some(VectorPath::Unfiltered));

@@ -1710,8 +1710,10 @@ impl PyGraph {
     ///       - `text`, `vector`: {requested, returned, underfilled} per
     ///         branch, or None if that branch did not run.
     ///       - `vector_path`: "unfiltered" | "exact_over_allowed" |
-    ///         "hnsw_filtered". Only the last is approximate, which is what
-    ///         decides how to read a short result.
+    ///         "hnsw_filtered" | "label_checked". The last two are
+    ///         approximate, which is what decides how to read a short
+    ///         result. "label_checked" is the label-only filter resolved
+    ///         without a label scan (`allowed_set_size` is then None).
     ///
     /// Example:
     ///     >>> e = graph.search_hybrid_explain(text="cactus", k=5)
@@ -1779,6 +1781,7 @@ impl PyGraph {
                 crate::VectorPath::Unfiltered => "unfiltered",
                 crate::VectorPath::ExactOverAllowed => "exact_over_allowed",
                 crate::VectorPath::HnswFiltered => "hnsw_filtered",
+                crate::VectorPath::LabelChecked => "label_checked",
             }),
         )?;
         Ok(out.unbind())

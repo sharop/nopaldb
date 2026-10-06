@@ -47,9 +47,27 @@ for h in hits:
 
 ## Filter
 
-`filter = {label?, props: [equalities]}` (AND). It is applied as a precomputed
-allowed-set (label scan ∩ property-index lookups) that both paths intersect.
-v1 supports label + equality; ranges/OR are a follow-up.
+`filter = {label?, props: [equalities]}` (AND). With properties it is applied
+as a precomputed allowed-set (label scan ∩ property-index lookups) that both
+paths intersect. v1 supports label + equality; ranges/OR are a follow-up.
+
+**A label-only filter does not scan the label (0.6.10).** Each path checks the
+label on its own candidates as it reads them, in rank order, and keeps the
+first `k × overfetch` that carry it. The ranks are the ones the allowed-set
+would give, because each path is still restricted *before* the fusion, so the
+top-k is computed inside the label. Building the set instead meant reading every
+node of the label on every query: 132 ms at 100k chunks for 40 candidates.
+
+- **Text path:** a full-text index already belongs to one label, so with the
+  index of the filter's label the check only confirms.
+- **Vector path** (`vector_path = "label_checked"`): it asks the index for
+  `k × overfetch` neighbours. When fewer of them carry the label, it asks again
+  with 4× as many, up to 4096. If the label is still that rare among the
+  neighbours, it falls back to the allowed set with its scan and the exact
+  branch below, so the result is never short because of the shortcut.
+
+NQL `hybrid()` always passes the pattern's label as a filter, so it takes this
+path too.
 
 **Nothing outside the allowed-set is ever returned**, at any selectivity. That
 is a hard guarantee, independent of how the vector path resolved the query.
@@ -127,7 +145,8 @@ that branch — "no score" rather than a zero that would read as "scored badly".
 
 Globally it reports the configuration that was actually **used**, including
 what you did not choose: the resolved `text_index`, the effective `ef_search`,
-`candidates` (= `k × overfetch`) and `allowed_set_size` when a filter applied.
+`candidates` (= `k × overfetch`) and `allowed_set_size` when the filter built
+an allowed set (`None` with a label-only filter resolved as `label_checked`).
 
 Each branch reports `{requested, returned, underfilled}`. Underfill is the
 question a short result cannot answer on its own — and `vector_path` is what
@@ -137,6 +156,7 @@ decides how to read it:
 |---|---|
 | `unfiltered` / `exact_over_allowed` | exact: there genuinely are no more |
 | `hnsw_filtered` | approximate: no more were *found*, which is not the same |
+| `label_checked` | the escalation walked the whole index: there are no more |
 
 `search_hybrid` is the same computation with the trace dropped — it delegates
 to the explaining version rather than duplicating it, so asking for the

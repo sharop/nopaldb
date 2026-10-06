@@ -225,6 +225,10 @@ name = "hybrid_explain_test"
 required-features = ["hybrid"]
 
 [[test]]
+name = "hybrid_label_check_test"
+required-features = ["hybrid"]
+
+[[test]]
 name = "index_lifecycle_test"
 required-features = ["hybrid"]
 

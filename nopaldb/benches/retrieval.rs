@@ -8,7 +8,9 @@
 //! - `search`: híbrida k=10 sin filtro y con filtro de etiqueta; KNN k=10
 //! - `hydrate`: `get_nodes` de 10 ids
 //! - `neighborhood`: 1 y 2 saltos desde 10 semillas
-//! - `nql`: `where c.id = "…"`, `where c.id in [10 ids]`, patrón de 1 salto
+//! - `nql`: `where c.id = "…"`, `where c.id in [10 ids]`, patrón de 1 salto;
+//!   buscar + expandir en una consulta con `similar_to` y con `hybrid` sobre
+//!   el vector literal (0.6.10, #174: `hybrid` ya no recorre la etiqueta)
 //!
 //! Fixture: `NOPALDB_BENCH_SCALE` chunks (default 100_000) con vectores de
 //! 64 dims y texto, un 20 % de entidades, 3 `MENTIONS` por chunk y 2
@@ -207,7 +209,20 @@ fn bench_retrieval(c: &mut Criterion) {
     let q_id = format!("find c.text from (c:Chunk) where c.id = \"{seed}\"");
     let q_in = format!("find c.text from (c:Chunk) where c.id in [{id_list}]");
     let q_hop = format!("find e.name from (c:Chunk)-[:MENTIONS]->(e:Entity) where c.id = \"{seed}\"");
-    for (name, q) in [("id_lookup", &q_id), ("id_in_10", &q_in), ("one_hop_pattern", &q_hop)] {
+    let literal = fx.query.iter().map(|x| format!("{x:?}")).collect::<Vec<_>>().join(", ");
+    let q_similar_hop = format!(
+        "find c.text, e.name from (c:Chunk)-[:MENTIONS]->(e:Entity) where similar_to(c, vector = [{literal}], model = \"{MODEL}\", k = {K})"
+    );
+    let q_hybrid_hop = format!(
+        "find c.text, e.name from (c:Chunk)-[:MENTIONS]->(e:Entity) where hybrid(c, text = \"nopal riego\", vector = [{literal}], model = \"{MODEL}\", k = {K})"
+    );
+    for (name, q) in [
+        ("id_lookup", &q_id),
+        ("id_in_10", &q_in),
+        ("one_hop_pattern", &q_hop),
+        ("similar_to_literal_one_hop", &q_similar_hop),
+        ("hybrid_literal_one_hop", &q_hybrid_hop),
+    ] {
         g.bench_with_input(BenchmarkId::new(name, n), &n, |b, _| {
             b.to_async(&rt).iter(|| async { black_box(fx.graph.execute_nql(q).await.expect("nql")) })
         });

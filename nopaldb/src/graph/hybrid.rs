@@ -6,9 +6,11 @@
 // HNSW index (ordered by distance) uniformly:
 //     score(d) = Σ_path 1 / (rrf_k + rank_path(d))
 //
-// The property/label filter is applied as a precomputed allowed-set (the HNSW
+// A filter with properties is applied as a precomputed allowed-set (the HNSW
 // filtered search takes a sync closure, so the set is built up front from the
-// label scan + property index), then intersected into both paths.
+// label scan + property index), then intersected into both paths. A filter
+// with only a label skips the set: each path checks the label on the
+// candidates it reads, in rank order (see `search_hybrid_explain`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -99,6 +101,11 @@ pub enum VectorPath {
     /// Approximate: a short result may mean "found no more", not "there are
     /// no more".
     HnswFiltered,
+    /// Label-only filter: unfiltered KNN, label checked on the hydrated
+    /// candidates in distance order, fetch escalated until enough of them
+    /// carry the label. No label scan. Approximate like `HnswFiltered`; a
+    /// short result means the whole index was walked.
+    LabelChecked,
 }
 
 /// Qué pidió y qué obtuvo una de las dos ramas.
@@ -166,7 +173,9 @@ pub struct HybridExplain {
     pub ef_search: Option<usize>,
     /// Índice full-text resuelto; `None` si no hubo rama de texto.
     pub text_index: Option<String>,
-    /// Tamaño del conjunto permitido por el filtro; `None` = sin filtro.
+    /// Tamaño del conjunto permitido por el filtro; `None` = sin filtro, o
+    /// filtro de solo etiqueta resuelto sin conjunto (ver
+    /// [`VectorPath::LabelChecked`]).
     pub allowed_set_size: Option<usize>,
     /// Traza de la rama de texto; `None` si la query no traía texto.
     pub text: Option<BranchReport>,
@@ -227,8 +236,24 @@ impl Graph {
         }
         let candidates = q.k.saturating_mul(q.overfetch).max(q.k);
 
-        // 1. Precompute the allowed-set from the filter (None = no restriction).
-        let allowed = self.hybrid_allowed_set(q.filter.as_ref()).await?;
+        // 1. A label-only filter is checked on each path's candidates as they
+        //    are read, in rank order. The ranks come out as they would from
+        //    the allowed set (each path is restricted before the fusion, so
+        //    the top-k stays computed inside the label, #115) without the
+        //    label scan that building the set costs: 132 ms per query at
+        //    100k nodes, for 40 candidates. Filtering after the fusion
+        //    instead would rank the label's nodes against foreign ones and
+        //    could return fewer than k. Any other filter goes through the
+        //    allowed-set (None = no restriction).
+        let label_only = q
+            .filter
+            .as_ref()
+            .filter(|f| f.props.is_empty())
+            .and_then(|f| f.label.clone());
+        let mut allowed = match label_only {
+            Some(_) => None,
+            None => self.hybrid_allowed_set(q.filter.as_ref()).await?,
+        };
 
         // 2. Full-text path → node ids ranked by relevance.
         let mut text_ranks: HashMap<NodeId, usize> = HashMap::new();
@@ -237,10 +262,13 @@ impl Graph {
         let mut text_report: Option<BranchReport> = None;
         if let Some(text) = &q.text {
             let index_name = self.resolve_fulltext_index(q.text_index.as_deref(), q.filter.as_ref()).await?;
-            let scored = self
+            let mut scored = self
                 .index_manager
                 .query_scored(&index_name, &IndexQuery::FullText(text.clone()))
                 .await?;
+            if let Some(label) = &label_only {
+                scored = self.keep_label_in_rank_order(scored, label, candidates).await?;
+            }
             for (id, score) in scored
                 .into_iter()
                 .filter(|(id, _)| allowed.as_ref().is_none_or(|s| s.contains(id)))
@@ -269,9 +297,23 @@ impl Graph {
         if let Some((vector, model)) = &q.vector {
             let index = self.get_or_build_embedding_index(model).await?;
             let ef = q.ef_search.unwrap_or(DEFAULT_EF_SEARCH);
-            let (hits, path) = self
-                .vector_path(&index, vector, model, allowed.as_ref(), candidates, ef)
-                .await?;
+            let label_checked = match &label_only {
+                Some(label) => self.vector_path_label_checked(&index, vector, label, candidates, ef).await?,
+                None => None,
+            };
+            let (hits, path) = match label_checked {
+                Some(hits) => (hits, VectorPath::LabelChecked),
+                None => {
+                    // Sin filtro, filtro con propiedades, o una etiqueta tan
+                    // escasa entre los vecinos que la escalada llegó al tope:
+                    // el conjunto permitido (con su scan) es lo correcto.
+                    if label_only.is_some() && allowed.is_none() {
+                        allowed = self.hybrid_allowed_set(q.filter.as_ref()).await?;
+                    }
+                    self.vector_path(&index, vector, model, allowed.as_ref(), candidates, ef)
+                        .await?
+                }
+            };
             vector_report = Some(BranchReport {
                 requested: candidates,
                 returned: hits.len(),
@@ -402,6 +444,83 @@ impl Graph {
         Ok((hits, VectorPath::HnswFiltered))
     }
 
+    /// Vector path for a label-only filter, without building the allowed set.
+    ///
+    /// Asks the index for `candidates` neighbours, reads them by id and keeps
+    /// the ones with the label, in distance order. If fewer than `candidates`
+    /// carry the label, the fetch grows ×4 and the search repeats; labels
+    /// already read are remembered. Stops when there are enough, when the
+    /// fetch covers the whole index (then a short result is real), or at
+    /// [`LABEL_CHECK_MAX_FETCH`], where it returns `None` and the caller falls
+    /// back to the allowed set: a label that rare among the neighbours is
+    /// cheaper to enumerate than to find by walking.
+    #[cfg(feature = "hybrid")]
+    async fn vector_path_label_checked(
+        &self,
+        index: &super::SharedHnswIndex,
+        vector: &[f32],
+        label: &str,
+        candidates: usize,
+        ef: usize,
+    ) -> Result<Option<Vec<(NodeId, f32)>>> {
+        let index_len = index.read().unwrap_or_else(|e| e.into_inner()).len();
+        let mut has_label: HashMap<NodeId, bool> = HashMap::new();
+        let mut fetch = candidates.max(1);
+        loop {
+            let hits = index
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .search_knn_with_ef(vector, fetch, ef)?;
+            let unknown: Vec<NodeId> = hits
+                .iter()
+                .map(|(id, _)| *id)
+                .filter(|id| !has_label.contains_key(id))
+                .collect();
+            for (id, node) in unknown.iter().zip(self.get_nodes(&unknown).await?) {
+                has_label.insert(*id, node.is_some_and(|n| n.label == label));
+            }
+            let kept: Vec<(NodeId, f32)> = hits
+                .into_iter()
+                .filter(|(id, _)| has_label.get(id).copied().unwrap_or(false))
+                .take(candidates)
+                .collect();
+            if kept.len() >= candidates || fetch >= index_len {
+                return Ok(Some(kept));
+            }
+            if fetch >= LABEL_CHECK_MAX_FETCH {
+                return Ok(None);
+            }
+            fetch = fetch.saturating_mul(4).min(LABEL_CHECK_MAX_FETCH);
+        }
+    }
+
+    /// The first `want` entries of a ranked list whose node has `label`, in
+    /// the same order. Reads the nodes by id in blocks and stops as soon as
+    /// it has enough, so a long full-text match list costs only the prefix
+    /// it needs.
+    #[cfg(feature = "hybrid")]
+    async fn keep_label_in_rank_order<T>(
+        &self,
+        ranked: Vec<(NodeId, T)>,
+        label: &str,
+        want: usize,
+    ) -> Result<Vec<(NodeId, T)>> {
+        let block = want.max(16);
+        let mut kept = Vec::with_capacity(want);
+        let mut rest = ranked.into_iter().peekable();
+        while kept.len() < want && rest.peek().is_some() {
+            let chunk: Vec<(NodeId, T)> = rest.by_ref().take(block).collect();
+            let ids: Vec<NodeId> = chunk.iter().map(|(id, _)| *id).collect();
+            let nodes = self.get_nodes(&ids).await?;
+            for (entry, node) in chunk.into_iter().zip(nodes) {
+                if kept.len() < want && node.is_some_and(|n| n.label == label) {
+                    kept.push(entry);
+                }
+            }
+        }
+        Ok(kept)
+    }
+
     /// Build the allowed NodeId set from a label/property filter. `None` means no
     /// restriction (empty filter or no filter). An empty set means nothing matches.
     #[cfg(feature = "hybrid")]
@@ -466,6 +585,11 @@ impl Graph {
         Ok(chosen.name.clone())
     }
 }
+
+/// Largest fetch the label-checked vector path tries before falling back to
+/// the allowed set. Same bound as the filtered HNSW escalation.
+#[cfg(feature = "hybrid")]
+const LABEL_CHECK_MAX_FETCH: usize = crate::embeddings::MAX_FILTERED_EF_SEARCH;
 
 /// Intersect an optional running set with a new set.
 #[cfg(feature = "hybrid")]

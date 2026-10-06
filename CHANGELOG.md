@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`search_hybrid` con filtro de solo etiqueta y NQL `hybrid()` ya no
+  recorren la etiqueta** (#174a). Antes el filtro se resolvía armando el
+  conjunto permitido con `get_nodes_by_label`, que lee todos los nodos; NQL
+  siempre pasa la etiqueta del patrón, así que toda consulta `hybrid()`
+  pagaba ese scan. Ahora cada rama comprueba la etiqueta sobre sus propios
+  candidatos, en orden de rango: el texto filtra su lista leyendo los nodos
+  por bloques y el vector pide `k × overfetch` vecinos y escala ×4 (hasta
+  4096) mientras falten de la etiqueta. Como cada rama se restringe antes de
+  la fusión, el top-k sigue calculándose dentro de la etiqueta (#115) con los
+  mismos rangos que daba el conjunto permitido. Una etiqueta tan escasa entre
+  los vecinos que la escalada llega al tope vuelve al conjunto permitido, así
+  que el resultado no queda corto por el atajo. Un filtro con propiedades
+  sigue usando el conjunto permitido. `VectorPath::LabelChecked` (Python
+  `"label_checked"`) identifica el camino nuevo; ahí `allowed_set_size` es
+  `None`. Medido a 10k chunks (release, máquina ociosa): `search_hybrid` con
+  etiqueta 16.1 ms → 0.80 ms; NQL `hybrid()` + 1 salto 16.2 ms → 0.89 ms;
+  sin etiqueta y `similar_to` sin cambio. El bench `retrieval` gana los casos
+  NQL `similar_to_literal_one_hop` y `hybrid_literal_one_hop`.
+
 ### Docs
 - `docs/GRAPHRAG.md`: cifras de 0.6.9 a 100k — buscar + expandir en UNA
   consulta NQL con `similar_to` literal: 0.35 ms (el ciclo Python de 0.6.8
