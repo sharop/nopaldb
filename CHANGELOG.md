@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`score(var)` en el FIND de NQL** (#174c): el score de la búsqueda
+  vectorial del WHERE para el nodo de cada fila. Con `similar_to` es la
+  similitud coseno (`1 - distancia`); con `hybrid`, el score RRF de
+  `search_hybrid`; con ambas, el de `similar_to`, que es el orden. Mayor es
+  mejor en los dos. Funciona en el camino de nodo suelto y en el patrón de
+  un salto (cada fila expandida lleva el score de su nodo buscado), con o
+  sin alias. Solo es columna del FIND: en WHERE, ORDER BY, GROUP BY, HAVING,
+  junto a agregaciones o sin un `similar_to`/`hybrid` sobre la misma
+  variable es un error con nombre, en vez de una columna `null` en silencio.
+  EXPLAIN nombra la fuente (`Score: score(c) = …`). Hasta 0.6.9 los
+  precomputes tiraban el score y solo quedaba el orden de las filas.
+
 ### Fixed
 - **NQL `similar_to` con etiqueta devuelve K filas cuando la etiqueta tiene
   K nodos con embedding** (#174b). Pedía un `4·k` fijo al índice y se

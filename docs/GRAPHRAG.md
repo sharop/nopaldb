@@ -113,7 +113,9 @@ Fill in the exact numbers for your data with `make bench BENCH=retrieval`.
   back to the label's own nodes when the label is rare among the neighbours.
   Since 0.6.10 it returns K rows whenever the label has K embedded nodes
   (before, embeddings spread over several labels could leave it short).
-- NQL rows carry no similarity score column; the row order is the ranking.
+- Since 0.6.10 NQL rows can carry the score: `score(c)` in FIND (cosine
+  similarity with `similar_to`, RRF with `hybrid`), to cut the context at a
+  threshold or split a token budget. See the NQL reference.
 
 See also [HYBRID_SEARCH.md](HYBRID_SEARCH.md), [EMBEDDINGS.md](EMBEDDINGS.md)
 and the Python [API reference](python/API_REFERENCE.md).

@@ -343,6 +343,23 @@ la consulta devuelve `k` filas siempre que el label tenga `k` nodos con
 embedding (0.6.10; antes, un `4·k` fijo podía devolver menos filas, incluso
 ninguna).
 
+**`score(var)` en FIND (0.6.10).** El score de la búsqueda vectorial del WHERE
+para el nodo de cada fila: similitud coseno (`1 - distancia`) con
+`similar_to`, el score RRF con `hybrid` (con las dos, el de `similar_to`, que
+es el orden de las filas). En ambos, mayor es mejor. Sirve para recortar el
+contexto por umbral o repartir un presupuesto de tokens:
+
+```nql
+find c.text, score(c) as s from (c:Chunk)
+where similar_to(c, vector = [...], model = "minilm", k = 10)
+```
+
+`score(var)` exige un `similar_to`/`hybrid` sobre esa misma variable, funciona
+en patrones de un salto (cada fila expandida lleva el score de su nodo
+buscado) y solo es columna del FIND: las filas ya salen mejor-primero, así que
+se rechaza en WHERE, ORDER BY, GROUP BY y HAVING, y junto a agregaciones.
+EXPLAIN nombra su fuente (`Score: score(c) = cosine similarity of similar_to(c) …`).
+
 Dónde puede ir la búsqueda: un patrón de un solo nodo, o **un** patrón de un
 salto `(a)-[:T]->(b)` cuyo primer nodo es la variable buscada (los candidatos
 siembran el pipeline; el `LIMIT` acota entonces las filas expandidas, así que

@@ -307,6 +307,8 @@ impl SemanticValidator {
             ));
         }
 
+        self.validate_score_usage(query)?;
+
         for projection in &query.find.projections {
             if let Projection::Expression { expr, .. } = projection {
                 self.validate_pattern_embedding_usage(expr, EmbeddingExprContext::Find, query)?;
@@ -337,6 +339,64 @@ impl SemanticValidator {
             self.validate_path_embedding_usage(&having.condition, EmbeddingExprContext::Having, query)?;
         }
 
+        Ok(())
+    }
+
+    /// `score(var)` (#174c): el score de la búsqueda vectorial del WHERE para
+    /// el nodo de `var`. Solo tiene sentido como columna del FIND y con un
+    /// `similar_to`/`hybrid` sobre esa misma variable; en cualquier otro
+    /// sitio no habría score que leer, y en vez de una columna `null` en
+    /// silencio es un error con nombre. En ORDER BY no hace falta: las filas
+    /// ya salen mejor-primero.
+    fn validate_score_usage(&self, query: &Query) -> Result<()> {
+        let is_score = |e: &Expression| matches!(e, Expression::FunctionCall { name, .. } if name.eq_ignore_ascii_case("score"));
+        let elsewhere = query.filter.as_ref().is_some_and(|f| expr_contains_function_validator(&f.condition, &["score"]))
+            || query.order_by.as_ref().is_some_and(|o| o.items.iter().any(|i| expr_contains_function_validator(&i.expression, &["score"])))
+            || query.group_by.as_ref().is_some_and(|g| g.expressions.iter().any(|e| expr_contains_function_validator(e, &["score"])))
+            || query.having.as_ref().is_some_and(|h| expr_contains_function_validator(&h.condition, &["score"]));
+        if elsewhere {
+            return Err(NopalError::SemanticError(
+                "score(var) is only supported as a FIND column; rows already come best first, so ORDER BY is not needed".to_string(),
+            ));
+        }
+        let mut searched: Vec<String> = Vec::new();
+        if let Some(filter) = &query.filter {
+            collect_vector_search_vars(&filter.condition, &mut searched);
+        }
+        for projection in &query.find.projections {
+            let Projection::Expression { expr, .. } = projection else { continue };
+            if !expr_contains_function_validator(expr, &["score"]) {
+                continue;
+            }
+            let Expression::FunctionCall { args, .. } = expr else {
+                return Err(NopalError::SemanticError(
+                    "score(var) must be a column of its own, not part of another expression".to_string(),
+                ));
+            };
+            if !is_score(expr) {
+                return Err(NopalError::SemanticError(
+                    "score(var) must be a column of its own, not part of another expression".to_string(),
+                ));
+            }
+            let var = match args.as_slice() {
+                [Expression::Property { variable, property }] if property.is_empty() => variable,
+                _ => {
+                    return Err(NopalError::SemanticError(
+                        "score takes exactly one argument: the variable searched by similar_to/hybrid (e.g. score(c))".to_string(),
+                    ))
+                }
+            };
+            if !searched.iter().any(|v| v == var) {
+                return Err(NopalError::SemanticError(format!(
+                    "score({var}) needs similar_to({var}, …) or hybrid({var}, …) in the WHERE: that search is where the score comes from"
+                )));
+            }
+            if query.find.projections.iter().any(|p| matches!(p, Projection::Expression { expr, .. } if expr.is_aggregation())) {
+                return Err(NopalError::SemanticError(
+                    "score(var) cannot be combined with aggregations in the same FIND".to_string(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -1133,6 +1193,26 @@ fn expr_contains_path_reducer_validator(expr: &Expression) -> bool {
             expr_contains_path_reducer_validator(left) || expr_contains_path_reducer_validator(right),
         Expression::UnaryOp { expr, .. } => expr_contains_path_reducer_validator(expr),
         _ => false,
+    }
+}
+
+/// Variables buscadas por `similar_to(var, …)` / `hybrid(var, …)` en una
+/// expresión del WHERE.
+fn collect_vector_search_vars(expr: &Expression, out: &mut Vec<String>) {
+    match expr {
+        Expression::FunctionCall { name, args }
+            if name.eq_ignore_ascii_case("similar_to") || name.eq_ignore_ascii_case("hybrid") =>
+        {
+            if let Some(Expression::Property { variable, .. }) = args.first() {
+                out.push(variable.clone());
+            }
+        }
+        Expression::BinaryOp { left, right, .. } => {
+            collect_vector_search_vars(left, out);
+            collect_vector_search_vars(right, out);
+        }
+        Expression::UnaryOp { expr, .. } => collect_vector_search_vars(expr, out),
+        _ => {}
     }
 }
 
