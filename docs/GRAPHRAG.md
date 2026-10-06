@@ -93,7 +93,7 @@ Rust; `python/scripts/graphrag_sample.py` is the functional guard).
 | 2-hop expansion from the 10 hits, both directions | ~17 s | 0.41 ms |
 | whole cycle: hybrid k=10 hydrated + 1 hop of the 10 hits | ~9 s | 0.27 ms |
 | **search + expand in ONE NQL query** (`similar_to` with the vector literal, k=10, 1 hop) | not possible | 0.35 ms (0.6.9) |
-| same with `hybrid(text, vector)` in NQL | not possible | 132 ms (0.6.9): the pattern's label reaches the hybrid filter as a label scan; a quick fix and the label index are next |
+| same with `hybrid(text, vector)` in NQL | not possible | 132 ms (0.6.9): the pattern's label reached the hybrid filter as a label scan. Since 0.6.10 the label is checked on each branch's candidates: 16.2 ms → 0.89 ms at 10k chunks |
 
 Fill in the exact numbers for your data with `make bench BENCH=retrieval`.
 
@@ -102,14 +102,15 @@ Fill in the exact numbers for your data with `make bench BENCH=retrieval`.
 - Edges are still read one by one from storage during expansion (the
   in-memory adjacency holds edge ids only). Typed adjacency (next) removes
   those reads; `neighborhood` keeps the same contract.
-- `search_hybrid(label=...)` and NQL `hybrid()` pre-filter by label with a
-  scan of the label (NQL always passes the pattern's label, hence the 132 ms
-  above at 100k). In Python omit the filter when your embeddings live on one
-  label; in NQL prefer `similar_to` until the next release, which makes NQL
-  `hybrid()` hydrate its over-fetched candidates like `similar_to` does, and
-  later the label index removes the scan everywhere. NQL `similar_to` does not scan: it asks
-  the index for 4·K neighbours and keeps the first K of the label, so with
-  embeddings spread over many labels it can return fewer than K rows.
+- Since 0.6.10, `search_hybrid(label=...)` and NQL `hybrid()` no longer scan
+  the label: each branch checks the label on its candidates (see
+  [HYBRID_SEARCH.md](HYBRID_SEARCH.md#filter)). A label that is very rare among
+  the nearest neighbours still falls back to the scan; the label index removes
+  that case. A filter with properties (`props=`) still builds its allowed set
+  with a label scan.
+- NQL `similar_to` does not scan either: it asks the index for 4·K neighbours
+  and keeps the first K of the label, so with embeddings spread over many
+  labels it can return fewer than K rows.
 - NQL rows carry no similarity score column; the row order is the ranking.
 
 See also [HYBRID_SEARCH.md](HYBRID_SEARCH.md), [EMBEDDINGS.md](EMBEDDINGS.md)

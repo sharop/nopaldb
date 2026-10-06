@@ -5622,7 +5622,9 @@ impl<'a> Executor<'a> {
     /// top-k is computed INSIDE the label. Before, the search ran over every
     /// label and the stream dropped the foreign hits afterwards, so with
     /// `limit 1` a better-matching node of another label could leave the query
-    /// with zero rows.
+    /// with zero rows. Since #174 a label-only filter is checked on each
+    /// branch's candidates instead of scanning the label (see
+    /// `Graph::search_hybrid_explain`).
     #[cfg(feature = "hybrid")]
     async fn precompute_hybrid(&self, condition: &Expression, query: &Query) -> Result<Option<Vec<Node>>> {
         let Some(call) = extract_hybrid_params(condition) else { return Ok(None) };
@@ -5957,7 +5959,9 @@ fn describe_hybrid(call: &HybridCall, query: &Query) -> String {
         o.overfetch.unwrap_or(4),
         o.ef_search.map(|v| v.to_string()).unwrap_or_else(|| format!("default ({})", crate::embeddings::DEFAULT_EF_SEARCH)),
         o.text_index.as_deref().unwrap_or("auto"),
-        pattern_label_for(query, &call.variable).unwrap_or_else(|| "none".to_string()),
+        pattern_label_for(query, &call.variable)
+            .map(|l| format!("{l} (checked on each branch's candidates, no label scan)"))
+            .unwrap_or_else(|| "none".to_string()),
     )
 }
 
