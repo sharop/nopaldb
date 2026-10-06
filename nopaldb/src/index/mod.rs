@@ -651,7 +651,8 @@ impl IndexManager {
     }
 
     /// Whether some index has writes not yet published by [`Self::flush`].
-    #[cfg(test)]
+    /// Only the full-text index buffers, so only its tests ask.
+    #[cfg(all(test, feature = "fulltext"))]
     pub(crate) fn has_pending(&self) -> bool {
         self.pending.load(Ordering::Acquire)
     }
