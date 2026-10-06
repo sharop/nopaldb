@@ -27,8 +27,10 @@
 //     key so two racing creates cannot both insert. This is best-effort, not a
 //     transactional unique constraint (follow-up M1-8).
 //   * Embedding updates go through `add_node_embedding`, which overwrites the
-//     persisted vector and invalidates the cached HNSW index (rebuilt on
-//     demand), sidestepping the incremental index's no-reindex rule.
+//     persisted vector and updates the cached HNSW index in place: the old
+//     point becomes a tombstone and the new one is inserted (#113). The index
+//     is rebuilt from storage only when tombstones pass the threshold in
+//     `HnswIndex::needs_rebuild`.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};

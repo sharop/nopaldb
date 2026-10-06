@@ -60,20 +60,36 @@ module docs. The work is to make it faithful:
 
 ### 3. Retrieval honesty and control
 
-Hybrid search already explains why each hit ranked where it did. Still open:
-a configurable full-text analyzer per index — stemming, stopwords, accent
-normalization ([#74](https://github.com/sharop/nopaldb/issues/74)) — and wiring
-the `hybrid()` NQL function to the same parameters the Rust and Python APIs
-take (`ef_search`, `rrf_k`, filters), which are fixed constants today.
+Hybrid search explains why each hit ranked where it did, and full-text indexes
+take a configurable analyzer — stemming, stopwords, accent folding
+([#74](https://github.com/sharop/nopaldb/issues/74), shipped in 0.5.13). The
+NQL `hybrid()` function takes `rrf_k`, `ef_search`, `overfetch` and
+`text_index` ([#115](https://github.com/sharop/nopaldb/issues/115), shipped in
+0.5.19), and since 0.6.9 both `similar_to` and `hybrid()` accept a literal
+vector and seed a one-hop pattern, so search and expansion fit in one query.
+Still open, tracked in
+[#174](https://github.com/sharop/nopaldb/issues/174) and
+[#176](https://github.com/sharop/nopaldb/issues/176):
+
+- `hybrid()` in NQL resolves the pattern label with a label scan;
+- `similar_to` can return fewer than K rows without saying so;
+- NQL has no score column;
+- `hybrid()` in NQL does not yet take property filters;
+- when `neighborhood` truncates, what survives follows BFS order instead of
+  relevance.
 
 ### 4. Vector index durability
 
-The HNSW index is rebuilt from stored vectors when needed, and a new embedding
-invalidates the model's index, so the next search pays a full rebuild. The
-work is incremental insertion, persistence of the index across restarts, and
-a first benchmark set so the two can be measured instead of assumed. This
-theme is scheduled after the storage switch, because the persistence design
-depends on the engine that stays.
+Done: a new embedding is inserted into the cached index instead of
+invalidating it ([#113](https://github.com/sharop/nopaldb/issues/113), shipped
+in 0.5.19), the index is persisted and loaded on reopen
+([#114](https://github.com/sharop/nopaldb/issues/114), shipped in 0.5.20), and
+`benches/hnsw_ops.rs` measures build, insert, search and reopen
+([#112](https://github.com/sharop/nopaldb/issues/112)). Still open: loading
+embeddings in batches — one at a time, 100k vectors take hours
+([#175](https://github.com/sharop/nopaldb/issues/175)) — and measuring
+retrieval latency and recall at the dimensions real models use (384, 1024),
+not only the 64-dimension synthetic set.
 
 ## Out of scope
 
@@ -157,20 +173,37 @@ sus límites exactos están en `docs/ADOPTION.md` y en el doc del módulo
 
 ### 3. Honestidad y control del retrieval
 
-La búsqueda híbrida ya explica por qué cada hit quedó donde quedó. Sigue
-abierto: un analyzer full-text configurable por índice —stemming, stopwords,
-normalización de acentos ([#74](https://github.com/sharop/nopaldb/issues/74))—
-y cablear la función `hybrid()` de NQL a los mismos parámetros que aceptan las
-APIs de Rust y Python (`ef_search`, `rrf_k`, filtros), hoy constantes fijas.
+La búsqueda híbrida explica por qué cada hit quedó donde quedó, y los índices
+full-text aceptan un analyzer configurable —stemming, stopwords, plegado de
+acentos ([#74](https://github.com/sharop/nopaldb/issues/74), entregado en
+0.5.13)—. La función `hybrid()` de NQL acepta `rrf_k`, `ef_search`,
+`overfetch` y `text_index` ([#115](https://github.com/sharop/nopaldb/issues/115),
+entregado en 0.5.19), y desde 0.6.9 `similar_to` y `hybrid()` aceptan un vector
+literal y siembran un patrón de un salto, así que buscar y expandir cabe en una
+consulta. Sigue abierto, en
+[#174](https://github.com/sharop/nopaldb/issues/174) y
+[#176](https://github.com/sharop/nopaldb/issues/176):
+
+- `hybrid()` en NQL resuelve la etiqueta del patrón recorriendo la etiqueta
+  completa;
+- `similar_to` puede devolver menos de K filas sin avisar;
+- NQL no tiene columna de score;
+- `hybrid()` en NQL todavía no acepta filtros de propiedad;
+- cuando `neighborhood` trunca, lo que sobrevive sigue el orden del BFS y no
+  la relevancia.
 
 ### 4. Durabilidad del índice vectorial
 
-El índice HNSW se reconstruye desde los vectores almacenados cuando hace
-falta, y un embedding nuevo invalida el índice de su modelo, así que la
-siguiente búsqueda paga la reconstrucción completa. El trabajo es inserción
-incremental, persistencia del índice entre reinicios y un primer set de
-benchmarks para medir en vez de suponer. Este tema va después del cambio de
-motor, porque el diseño de persistencia depende del motor que se queda.
+Hecho: un embedding nuevo se inserta en el índice cacheado en vez de
+invalidarlo ([#113](https://github.com/sharop/nopaldb/issues/113), entregado en
+0.5.19), el índice se persiste y se carga al reabrir
+([#114](https://github.com/sharop/nopaldb/issues/114), entregado en 0.5.20), y
+`benches/hnsw_ops.rs` mide construcción, inserción, búsqueda y reapertura
+([#112](https://github.com/sharop/nopaldb/issues/112)). Sigue abierto: cargar
+embeddings por lotes —uno por uno, 100k vectores tardan horas
+([#175](https://github.com/sharop/nopaldb/issues/175))— y medir latencia y
+recall del retrieval con las dimensiones de los modelos reales (384, 1024), no
+solo con el set sintético de 64 dimensiones.
 
 ## Fuera del alcance
 

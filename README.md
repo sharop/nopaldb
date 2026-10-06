@@ -71,7 +71,7 @@ This repository contains the **engine** (Rust library + Python wrapper), license
 - ✅ **OWL-EL Reasoner** - CR1 (transitivity) + CR2 (conjunction) + CR3 (existential)
 - ✅ **Turtle Import/Export** - RDF/OWL ontology files
 - ✅ **NQL Ontology Predicates** - `instanceOf()`, `subClassOf()`
-- ✅ **Hypergraph** - Hyperedges via `EdgeTarget`
+- 🧪 **Hypergraph (experimental)** - The `EdgeTarget` type (hyperedges, n-ary roles) is defined behind the `hypergraph` feature but not yet wired into edges: `Edge.target` is still a single node
 
 ---
 
@@ -492,7 +492,7 @@ Este repositorio contiene el **motor** (librería Rust + wrapper Python), con li
 - ✅ **Reasoner OWL-EL** - CR1 (transitividad) + CR2 (conjunción) + CR3 (existencial)
 - ✅ **Import/Export Turtle** - Archivos de ontología RDF/OWL
 - ✅ **Predicados de Ontología en NQL** - `instanceOf()`, `subClassOf()`
-- ✅ **Hipergrafos** - Hiperaristas via `EdgeTarget`
+- 🧪 **Hipergrafos (experimental)** - El tipo `EdgeTarget` (hiperaristas, roles n-arios) está definido tras la feature `hypergraph`, pero aún no está conectado a las aristas: `Edge.target` sigue siendo un solo nodo
 
 #### Integración Python
 - ✅ API completa (Graph, Transaction, QueryResult)

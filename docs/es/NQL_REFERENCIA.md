@@ -359,10 +359,11 @@ NQL soporta funciones para resumir datos, ideales para análisis estadístico.
 - `degree(n)`, `pagerank(n)`, `betweenness(n)`, `clustering(n)`: Agregaciones de analítica de grafos.
 - `community(n)`: Detección exacta global de comunidades (basada en Louvain).
 - `community_fast(n)`: Detección aproximada local de comunidades para exploración de baja latencia.
+- `leiden(n)`: Detección exacta global de comunidades con **Leiden / CPM** (Traag et al. 2019). Garantiza comunidades bien conectadas internamente. Usa un caché distinto al de `community()`, así que ambas pueden convivir en la misma consulta. Gamma por defecto = 0.1; para otra resolución usa `LeidenCommunity::with_gamma(γ)` desde Rust.
 - `shortestPath("uuid-origen", "uuid-destino")`: Distancia más corta entre dos nodos (regresa `-1.0` si no hay camino).
 
-`community(n)` calcula una partición global, por lo que `LIMIT` se aplica después de la agregación y no reduce su costo en primera ejecución.
-Las ejecuciones repetidas de `community(n)` reutilizan caché versionado por topología hasta que cambian nodos/aristas.
+`community(n)` y `leiden(n)` calculan particiones globales, por lo que `LIMIT` se aplica después de la agregación y no reduce su costo en primera ejecución.
+Cada una reutiliza su propio caché versionado por topología; un cambio de nodos o aristas invalida ambos.
 
 **Ejemplo de Análisis:**
 ```nql
@@ -377,10 +378,21 @@ find community_fast(n) as cluster_fast
 from (n)
 limit 1
 
--- Resultado final/reporte (exacto)
+-- Resultado final/reporte (exacto, Louvain)
 find community(n) as cluster
 from (n)
 limit 1
+
+-- Leiden (Traag et al. 2019): comunidades bien conectadas, determinista
+find n.nombre, leiden(n) as cluster_leiden
+from (n)
+order by cluster_leiden
+limit 20
+
+-- Comparar Louvain y Leiden en una sola consulta (cachés independientes)
+find n.nombre, community(n) as louvain, leiden(n) as comunidad_leiden
+from (n)
+limit 10
 ```
 
 ---
