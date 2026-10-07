@@ -304,3 +304,7 @@ path = "examples/debug_index_manager.rs"
 name = "tutorial_acto_3_biomedical"
 path = "examples/tutorial_acto_3_biomedical.rs"
 required-features = ["storage-sled", "reasoner", "owl-import", "algorithms", "analytics", "hypergraph", "ml"]
+
+[[test]]
+name = "hnsw_reachability_test"
+required-features = ["embeddings-index"]

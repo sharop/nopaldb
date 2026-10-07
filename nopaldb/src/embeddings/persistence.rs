@@ -65,7 +65,12 @@ use crate::types::NodeId;
 
 /// Versión del formato de `<base>.meta`. Se incrementa si cambia
 /// [`DumpMeta`]; un `meta` de otra versión se trata como ausente.
-pub const DUMP_FORMAT_VERSION: u32 = 1;
+///
+/// 2 (#184): los grafos de la versión 1 se construyeron sin `keep_pruned` ni
+/// la verificación de alcanzabilidad y pueden traer ~0.5% de puntos que
+/// ninguna búsqueda encuentra. Subir la versión hace que se reconstruyan una
+/// vez, ya corregidos, en vez de cargarse tal cual.
+pub const DUMP_FORMAT_VERSION: u32 = 2;
 
 /// Subdirectorio de `data_dir` donde viven los dumps.
 pub const DUMP_SUBDIR: &str = "hnsw";
@@ -125,6 +130,9 @@ struct DumpMeta {
     id_map: HashMap<usize, NodeId>,
     next_data_id: usize,
     tombstones: usize,
+    /// `DataId` muertos que dejó la verificación de alcanzabilidad (#184,
+    /// formato 2); cuentan como puntos del grafo igual que los tombstones.
+    repaired: usize,
     /// Los embeddings que este dump describe.
     embeddings: EmbeddingsDigest,
     graph_file: FileDigest,
@@ -263,6 +271,7 @@ pub fn dump(
             id_map: index.id_map().clone(),
             next_data_id: index.next_data_id(),
             tombstones: index.tombstones(),
+            repaired: index.repaired(),
             embeddings,
             graph_file,
             data_file,
@@ -351,14 +360,15 @@ pub fn load(model: &str, data_dir: &Path, expected: &EmbeddingsDigest) -> LoadOu
         Ok(h) => h,
         Err(e) => return LoadOutcome::Corrupt(format!("hnsw_rs load_hnsw: {e}")),
     };
-    let expected_points = meta.id_map.len() + meta.tombstones;
+    let expected_points = meta.id_map.len() + meta.tombstones + meta.repaired;
     if inner.get_nb_point() != expected_points {
         return LoadOutcome::Corrupt(format!(
-            "el grafo trae {} puntos y el meta {} ({} vivos + {} tombstones)",
+            "el grafo trae {} puntos y el meta {} ({} vivos + {} tombstones + {} reparados)",
             inner.get_nb_point(),
             expected_points,
             meta.id_map.len(),
-            meta.tombstones
+            meta.tombstones,
+            meta.repaired
         ));
     }
     LoadOutcome::Loaded(Box::new(HnswIndex::from_parts(
@@ -368,6 +378,7 @@ pub fn load(model: &str, data_dir: &Path, expected: &EmbeddingsDigest) -> LoadOu
         meta.id_map,
         meta.next_data_id,
         meta.tombstones,
+        meta.repaired,
         start.elapsed(),
     )))
 }
