@@ -1253,6 +1253,42 @@ impl PyGraph {
         }))
     }
 
+    /// Agrega varios embeddings de un modelo de una vez (#175).
+    ///
+    /// Igual que llamar `add_node_embedding` por cada par, pero valida todo
+    /// antes de escribir (misma dimensión en todo el lote y en el índice del
+    /// modelo, sin nodos repetidos, todos existen: si algo falla no se
+    /// escribe nada), guarda en storage por bloques y, si el índice HNSW del
+    /// modelo ya está en memoria, inserta el lote en paralelo. Esto último es
+    /// lo que cambia la cuenta: de uno en uno cada embedding cuesta varios
+    /// ms en un índice cargado. Suelta el GIL mientras trabaja.
+    ///
+    /// Args:
+    ///     model (str): Nombre del modelo.
+    ///     items (list[tuple[str, list[float]]]): Pares `(node_id, vector)`.
+    ///
+    /// Returns:
+    ///     int: Embeddings escritos.
+    ///
+    /// Example:
+    ///     >>> graph.add_node_embeddings("minilm", [(id1, v1), (id2, v2)])
+    ///     2
+    #[cfg(feature = "embeddings")]
+    fn add_node_embeddings(&self, py: Python<'_>, model: &str, items: Vec<(String, Vec<f32>)>) -> PyResult<usize> {
+        let graph = self.graph()?;
+        let model = model.to_string();
+        let mut parsed = Vec::with_capacity(items.len());
+        for (i, (node_id, vector)) in items.into_iter().enumerate() {
+            let id: uuid::Uuid = node_id.parse().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("item {i}: invalid node_id UUID: {e}"))
+            })?;
+            parsed.push((id, vector));
+        }
+        to_py_result(crate::python::runtime::block_on(py, async move {
+            graph.add_node_embeddings(&model, parsed).await
+        }))
+    }
+
     /// Agrega un embedding vectorial a una arista existente.
     ///
     /// Args:

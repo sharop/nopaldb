@@ -39,8 +39,9 @@ with tempfile.TemporaryDirectory() as tmp:
             l.add_edge(c, ents[(i * 7) % N_ENT], "MENTIONS")
         for i in range(N_ENT):
             l.add_edge(ents[i], ents[(i * 13 + 1) % N_ENT], "RELATED", {"w": 0.5})
-    for i, c in enumerate(chunks):
-        g.add_node_embedding(c, vec(i), "m")
+    # Un lote en vez de uno por uno (0.6.10, #175): valida todo antes de
+    # escribir y, con el índice ya en memoria, inserta en paralelo.
+    assert g.add_node_embeddings("m", [(c, vec(i)) for i, c in enumerate(chunks)]) == len(chunks)
     g.create_index("Entity", "name", "hash")
     g.rebuild_indexes()
 

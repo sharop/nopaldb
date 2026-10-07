@@ -229,6 +229,10 @@ name = "nql_score_test"
 required-features = ["hybrid"]
 
 [[test]]
+name = "bulk_embeddings_test"
+required-features = ["embeddings-index"]
+
+[[test]]
 name = "hybrid_explain_test"
 required-features = ["hybrid"]
 

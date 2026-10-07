@@ -456,6 +456,67 @@ impl HnswIndex {
         self.dirty = true;
     }
 
+    /// Inserta un lote de puntos de una vez (#175).
+    ///
+    /// Valida TODO antes de tocar el índice (dimensión de cada vector, ids
+    /// repetidos dentro del lote): un lote inválido no deja el índice a
+    /// medias. Los nodos que ya estaban se retiran primero (quedan como
+    /// tombstone, igual que `remove` + `insert`). Desde
+    /// `PARALLEL_INSERT_THRESHOLD` puntos inserta con `parallel_insert`, como
+    /// `build_batch`: insertar 1000 vectores de 384 dims de uno en uno en un
+    /// índice de 100k costaba ~9 ms cada uno. Después verifica que cada punto
+    /// del lote sea alcanzable, igual que `insert` (#184).
+    pub fn insert_batch(&mut self, items: Vec<(NodeId, Vec<f32>)>) -> Result<(), NopalError> {
+        let mut seen = std::collections::HashSet::with_capacity(items.len());
+        for (node_id, vector) in &items {
+            if vector.len() != self.dimension {
+                return Err(NopalError::custom(format!(
+                    "HnswIndex({}): node {} has dimension {}, expected {}",
+                    self.model, node_id, vector.len(), self.dimension
+                )));
+            }
+            if !seen.insert(*node_id) {
+                return Err(NopalError::custom(format!(
+                    "HnswIndex({}): node {} appears twice in the batch",
+                    self.model, node_id
+                )));
+            }
+        }
+        for (node_id, _) in &items {
+            self.remove(*node_id);
+        }
+        let mut data_ids = Vec::with_capacity(items.len());
+        for (node_id, _) in &items {
+            let data_id = self.next_data_id;
+            self.next_data_id += 1;
+            self.id_map.insert(data_id, *node_id);
+            self.reverse_map.insert(*node_id, data_id);
+            data_ids.push(data_id);
+        }
+        let insert_data: Vec<(&Vec<f32>, usize)> =
+            items.iter().zip(&data_ids).map(|((_, v), &id)| (v, id)).collect();
+        if insert_data.len() >= PARALLEL_INSERT_THRESHOLD {
+            self.inner.parallel_insert(&insert_data);
+        } else {
+            for &(vector, data_id) in &insert_data {
+                self.inner.insert((vector, data_id));
+            }
+        }
+        drop(insert_data);
+        self.dirty = true;
+        // Como `insert`: cada punto del lote tiene que ser alcanzable (#184).
+        let points: Vec<(NodeId, &[f32])> = items.iter().map(|(id, v)| (*id, v.as_slice())).collect();
+        self.ensure_reachable(&points);
+        drop(points);
+        // Mismo criterio que `insert`: el store exacto vive solo bajo el umbral.
+        if self.id_map.len() <= EXACT_SEARCH_THRESHOLD {
+            self.exact_store.extend(items);
+        } else if !self.exact_store.is_empty() {
+            self.exact_store = Vec::new();
+        }
+        Ok(())
+    }
+
     /// Retira un punto del índice. Devuelve `false` si no estaba.
     ///
     /// Borrado lógico: `hnsw_rs` no elimina puntos del grafo, así que el

@@ -2215,6 +2215,87 @@ impl Graph {
         Ok(())
     }
 
+    /// Guarda un lote de embeddings de `model` de una vez (#175).
+    ///
+    /// Equivale a llamar [`Self::add_node_embedding`] por cada par, pero:
+    ///
+    /// - **valida todo antes de escribir nada:** el lote no puede estar
+    ///   vacío de vectores, todos tienen la misma dimensión (y la del
+    ///   índice del modelo si ya está en caché), ningún nodo se repite y
+    ///   todos existen; si algo falla no se escribe ningún embedding;
+    /// - **escribe en storage por bloques** de 10k en una transacción cada
+    ///   uno, en vez de una por embedding;
+    /// - **si el índice HNSW del modelo está en caché, inserta el lote en
+    ///   paralelo** (`HnswIndex::insert_batch`) fuera del runtime async. Era
+    ///   lo caro: de uno en uno, cada embedding costaba ~4 ms en un índice
+    ///   de 10k y ~9 ms en uno de 100k (384 dims). Sin índice en caché no
+    ///   hay nada que insertar: se construye en la primera búsqueda.
+    ///
+    /// Devuelve cuántos embeddings escribió.
+    #[cfg(feature = "embeddings")]
+    pub async fn add_node_embeddings(
+        &self,
+        model: &str,
+        items: Vec<(NodeId, Vec<f32>)>,
+    ) -> std::result::Result<usize, NopalError> {
+        if items.is_empty() {
+            return Ok(0);
+        }
+        let dimension = items[0].1.len();
+        let mut seen = HashSet::with_capacity(items.len());
+        for (i, (node_id, vector)) in items.iter().enumerate() {
+            if vector.is_empty() {
+                return Err(NopalError::custom(format!(
+                    "add_node_embeddings: item {i} (node {node_id}) has an empty vector"
+                )));
+            }
+            if vector.len() != dimension {
+                return Err(NopalError::custom(format!(
+                    "add_node_embeddings: item {i} (node {node_id}) has dimension {}, the batch has {dimension}",
+                    vector.len()
+                )));
+            }
+            if !seen.insert(*node_id) {
+                return Err(NopalError::custom(format!(
+                    "add_node_embeddings: node {node_id} appears twice in the batch (item {i})"
+                )));
+            }
+        }
+        #[cfg(feature = "embeddings-index")]
+        let cached = self.embedding_indices.read().await.get(model).cloned();
+        #[cfg(feature = "embeddings-index")]
+        if let Some(index) = &cached {
+            let index_dim = index.read().unwrap_or_else(|e| e.into_inner()).dimension();
+            if index_dim != dimension {
+                return Err(NopalError::custom(format!(
+                    "add_node_embeddings: the batch has dimension {dimension}, the index of model '{model}' has {index_dim}"
+                )));
+            }
+        }
+        for (node_id, _) in &items {
+            if !self.storage.node_exists(*node_id).await? {
+                return Err(NopalError::NodeNotFound(node_id.to_string()));
+            }
+        }
+
+        let embeddings: Vec<crate::embeddings::Embedding> = items
+            .iter()
+            .map(|(node_id, vector)| crate::embeddings::Embedding::new(*node_id, vector.clone(), model))
+            .collect();
+        self.storage.save_node_embeddings(&embeddings).await?;
+        let written = items.len();
+
+        #[cfg(feature = "embeddings-index")]
+        if let Some(index) = cached {
+            tokio::task::spawn_blocking(move || {
+                index.write().unwrap_or_else(|e| e.into_inner()).insert_batch(items)
+            })
+            .await
+            .map_err(|e| NopalError::custom(format!("add_node_embeddings: index insert task failed: {e}")))??;
+        }
+        Ok(written)
+    }
+
     /// Estado del índice HNSW en caché para `model`; `None` si todavía no se
     /// construyó (se construye en la primera búsqueda).
     #[cfg(feature = "embeddings-index")]
