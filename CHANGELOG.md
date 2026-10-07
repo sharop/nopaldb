@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.10] - unreleased
+## [0.6.10] - 2026-10-07
 
 Iteración GraphRAG A: la ruta de recuperación local queda rápida, con
 ranking y honesta. Búsqueda híbrida sin scan de etiqueta y con la rama de
