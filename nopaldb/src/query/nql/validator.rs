@@ -308,6 +308,8 @@ impl SemanticValidator {
         }
 
         self.validate_score_usage(query)?;
+        #[cfg(feature = "algorithms")]
+        crate::query::nql::executor::aggregations::leiden_config_of_query(query)?;
 
         for projection in &query.find.projections {
             if let Projection::Expression { expr, .. } = projection {
@@ -459,7 +461,7 @@ impl SemanticValidator {
             }
             Expression::NamedArg { name, .. } => {
                 return Err(NopalError::SemanticError(format!(
-                    "named argument `{name}` is only valid inside similar_to(...) or hybrid(...)"
+                    "named argument `{name}` is only valid inside similar_to(...), hybrid(...) or leiden(...)"
                 )));
             }
             Expression::Literal(_) | Expression::Wildcard => {
@@ -636,11 +638,19 @@ impl SemanticValidator {
                 self.validate_vector_search_placement(fname, variable, query)
             }
             Expression::FunctionCall { name, args } => {
+                // leiden(n, labels = [...], edge_types = [...], weight = "w",
+                // gamma = 0.1) (#190): sus opciones las valida el mismo código
+                // que las aplica.
+                if name.eq_ignore_ascii_case("leiden") {
+                    #[cfg(feature = "algorithms")]
+                    crate::query::nql::executor::aggregations::leiden_config_from_args(args)?;
+                    return Ok(());
+                }
                 if let Some(Expression::NamedArg { name: arg, .. }) =
                     args.iter().find(|a| matches!(a, Expression::NamedArg { .. }))
                 {
                     return Err(NopalError::SemanticError(format!(
-                        "named argument `{arg}` is not accepted by {name}(...): only similar_to(...) and hybrid(...) take named options"
+                        "named argument `{arg}` is not accepted by {name}(...): only similar_to(...), hybrid(...) and leiden(...) take named options"
                     )));
                 }
                 for a in args {

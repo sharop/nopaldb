@@ -5360,8 +5360,18 @@ impl<'a> Executor<'a> {
                         "\nCost note: leiden() runs Leiden CPM community detection (Traag et al. 2019). \
                          Guarantees well-connected communities unlike Louvain. \
                          Uses a separate cache from community() — both can coexist in the same query. \
-                         Default gamma=0.1; use LeidenCommunity::with_gamma() for custom resolution.",
+                         Options: labels, edge_types, weight, gamma (default 0.1).",
                     );
+                    #[cfg(feature = "algorithms")]
+                    if let Ok(Some(config)) = aggregations::leiden_config_of_query(&query) {
+                        explanation.push_str(&format!(
+                            "\nLeiden: gamma={} labels={} edge_types={} weight={}",
+                            config.gamma,
+                            config.labels.as_ref().map(|l| l.join(",")).unwrap_or_else(|| "all".into()),
+                            config.edge_types.as_ref().map(|t| t.join(",")).unwrap_or_else(|| "all".into()),
+                            config.weight_property.as_deref().unwrap_or("none (1 per connected pair)"),
+                        ));
+                    }
                 }
                 Ok(explanation)
             }

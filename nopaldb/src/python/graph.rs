@@ -302,6 +302,46 @@ impl PyGraph {
             .collect()
     }
 
+    /// Leiden communities (CPM, Traag et al. 2019) as {node_id: community}.
+    ///
+    /// labels / edge_types: only nodes with these labels and edges of these
+    /// types take part (e.g. labels=["Entity"] leaves text chunks out).
+    /// weight: numeric edge property used as weight; the weight of a pair is
+    /// the sum of its edges (an edge without the property weighs 1). Without
+    /// it every connected pair weighs 1, as before. gamma: CPM resolution
+    /// (default 0.1); with weights it compares against weight density. Same
+    /// options and same cached result as NQL `leiden(n, ...)`. Runs with the
+    /// GIL released.
+    ///
+    /// Example:
+    ///     >>> comms = graph.leiden(labels=["Entity"], edge_types=["RELATED"], weight="w")
+    #[cfg(feature = "algorithms")]
+    #[pyo3(signature = (labels=None, edge_types=None, weight=None, gamma=0.1))]
+    fn leiden(
+        &self,
+        py: Python<'_>,
+        labels: Option<Vec<String>>,
+        edge_types: Option<Vec<String>>,
+        weight: Option<String>,
+        gamma: f64,
+    ) -> PyResult<std::collections::HashMap<String, usize>> {
+        if !(gamma.is_finite() && gamma > 0.0) {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("gamma must be a number > 0"));
+        }
+        let graph = self.graph()?;
+        let config = crate::algorithms::community::LeidenConfig {
+            gamma,
+            labels,
+            edge_types,
+            weight_property: weight,
+            ..Default::default()
+        };
+        let parts = to_py_result(crate::python::runtime::block_on(py, async move {
+            crate::query::nql::executor::aggregations::get_or_compute_leiden(&graph, &config).await
+        }))?;
+        Ok(parts.into_iter().map(|(id, c)| (id.to_string(), c)).collect())
+    }
+
     /// Number of edges incident to `id`: "out", "in" or "both" (default).
     #[pyo3(signature = (id, direction="both"))]
     fn degree(&self, py: Python<'_>, id: &str, direction: &str) -> PyResult<usize> {

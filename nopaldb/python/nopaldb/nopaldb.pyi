@@ -207,6 +207,14 @@ class Graph:
     # `max_edges_per_node` is the brake on super-nodes. rank="ppr" keeps the
     # nodes with the best Personalized PageRank score (seeded at `ids`) when
     # the neighbourhood does not fit in `max_nodes`; "score" has them.
+    # Leiden communities (CPM) as {node_id: community}; options as NQL leiden(n, ...).
+    def leiden(
+        self,
+        labels: Optional[list[str]] = None,
+        edge_types: Optional[list[str]] = None,
+        weight: Optional[str] = None,
+        gamma: float = 0.1,
+    ) -> dict[str, int]: ...
     def neighborhood(
         self,
         ids: list[str],

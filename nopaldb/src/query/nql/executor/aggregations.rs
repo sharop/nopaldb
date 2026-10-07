@@ -504,7 +504,7 @@ async fn evaluate_aggregation(
                 #[cfg(feature = "algorithms")]
                 "community" | "community_fast" => {
                     let communities = ctx.algo.community.as_ref().ok_or_else(|| NopalError::QueryExecutionError("community algorithm not precomputed".into()))?;
-                    Ok((result_key, PropertyValue::Float(average_algo_scores_usize(nodes, communities))))
+                    Ok((result_key, community_value(nodes, communities)))
                 }
                 #[cfg(feature = "algorithms")]
                 // leiden(n) — Constant Potts Model community detection (Traag et al. 2019).
@@ -514,7 +514,7 @@ async fn evaluate_aggregation(
                     let communities = ctx.algo.leiden.as_ref().ok_or_else(|| NopalError::QueryExecutionError(
                         "leiden algorithm not precomputed — asegúrate de tener feature `algorithms`".into()
                     ))?;
-                    Ok((result_key, PropertyValue::Float(average_algo_scores_usize(nodes, communities))))
+                    Ok((result_key, community_value(nodes, communities)))
                 }
                 #[cfg(feature = "algorithms")]
                 "shortestPath" => {
@@ -725,7 +725,9 @@ async fn precompute_algorithms(
                 results.community = Some(compute_community_fast_map(graph, nodes).await?);
             }
             "leiden" if results.leiden.is_none() => {
-                results.leiden = Some(get_or_compute_leiden(graph).await?);
+                // El validador ya exigió una sola configuración por consulta.
+                let config = leiden_config_of_query(query)?.unwrap_or_default();
+                results.leiden = Some(get_or_compute_leiden(graph, &config).await?);
             }
             _ => {}
         }
@@ -773,6 +775,20 @@ fn average_algo_scores(nodes: &[Node], scores: &HashMap<NodeId, f64>) -> f64 {
     sum / nodes.len() as f64
 }
 
+/// Comunidad de un grupo de nodos: el promedio de sus ids de comunidad (un
+/// grupo de un nodo da su comunidad), o `null` si ninguno está en la
+/// partición. Con `leiden(n, labels = …)` un nodo fuera del alcance no tiene
+/// comunidad (#190); antes el promedio vacío daba 0.0 y el nodo parecía estar
+/// en la comunidad 0.
+#[cfg(feature = "algorithms")]
+fn community_value(nodes: &[Node], scores: &HashMap<NodeId, usize>) -> PropertyValue {
+    if nodes.iter().any(|n| scores.contains_key(&n.id)) {
+        PropertyValue::Float(average_algo_scores_usize(nodes, scores))
+    } else {
+        PropertyValue::Null
+    }
+}
+
 #[cfg(feature = "algorithms")]
 fn average_algo_scores_usize(nodes: &[Node], scores: &HashMap<NodeId, usize>) -> f64 {
     if nodes.is_empty() { return 0.0; }
@@ -800,27 +816,144 @@ async fn get_or_compute_community_exact(graph: &Graph) -> Result<HashMap<uuid::U
 }
 
 #[cfg(feature = "algorithms")]
-/// Obtiene la partición Leiden desde caché si la topología no cambió; si no, recomputa y guarda.
+/// Obtiene la partición Leiden desde caché si la topología Y la configuración
+/// no cambiaron; si no, recomputa y guarda.
 ///
-/// La caché es independiente de la caché de Louvain (`get_or_compute_community_exact`):
-/// leiden() y community() pueden coexistir en la misma query sin interferencia.
-///
-/// El parámetro gamma usado aquí es el default de `LeidenConfig` (0.1).
-/// Para gamma personalizado, usar la Rust API directamente: `LeidenCommunity::with_gamma(g)`.
-async fn get_or_compute_leiden(graph: &Graph) -> Result<HashMap<uuid::Uuid, usize>> {
+/// La caché es independiente de la de Louvain (`get_or_compute_community_exact`):
+/// leiden() y community() pueden coexistir en la misma query. La clave
+/// incluye la configuración (`LeidenConfig::cache_key`, #190): dos consultas
+/// seguidas con opciones distintas no se devuelven la partición de la otra.
+pub(crate) async fn get_or_compute_leiden(
+    graph: &Graph,
+    config: &crate::algorithms::community::LeidenConfig,
+) -> Result<HashMap<uuid::Uuid, usize>> {
     use crate::algorithms::community::LeidenCommunity;
 
     let current_topology = graph.topology_version();
-    if let Some((cached_topology, assignments)) = graph.get_cached_leiden_partition().await
+    let key = config.cache_key();
+    if let Some((cached_topology, cached_key, assignments)) = graph.get_cached_leiden_partition().await
         && cached_topology == current_topology
+        && cached_key == key
     {
         return Ok(assignments);
     }
 
-    let leiden = LeidenCommunity::with_defaults();
+    let leiden = LeidenCommunity::new(config.clone());
     let assignments = leiden.detect(graph).await?;
-    graph.set_cached_leiden_partition(current_topology, assignments.clone()).await;
+    graph.set_cached_leiden_partition(current_topology, key, assignments.clone()).await;
     Ok(assignments)
+}
+
+/// `LeidenConfig` a partir de los argumentos de `leiden(n, …)` (#190).
+///
+/// Opciones con nombre: `labels = ["…"]` y `edge_types = ["…"]` (listas de
+/// cadenas no vacías), `weight = "propiedad"` y `gamma = número > 0`. La
+/// misma función la usa el validador, así que lo que valida es exactamente
+/// lo que corre.
+#[cfg(feature = "algorithms")]
+pub(crate) fn leiden_config_from_args(args: &[Expression]) -> Result<crate::algorithms::community::LeidenConfig> {
+    use crate::algorithms::community::LeidenConfig;
+    use crate::error::NopalError;
+    let bad = |m: String| NopalError::SemanticError(format!("leiden: {m}"));
+    let strings = |name: &str, v: &PropertyValue| -> Result<Vec<String>> {
+        match v {
+            PropertyValue::List(items) if !items.is_empty() => items
+                .iter()
+                .map(|i| match i {
+                    PropertyValue::String(s) if !s.is_empty() => Ok(s.clone()),
+                    _ => Err(bad(format!("option `{name}` must be a non-empty list of non-empty strings"))),
+                })
+                .collect(),
+            _ => Err(bad(format!("option `{name}` must be a non-empty list of non-empty strings"))),
+        }
+    };
+    let mut config = LeidenConfig::default();
+    let positional = args.iter().filter(|a| !matches!(a, Expression::NamedArg { .. })).count();
+    if positional != 1 {
+        return Err(bad(format!(
+            "takes exactly one positional argument, the node variable (e.g. leiden(n)); got {positional}"
+        )));
+    }
+    for arg in args {
+        let Expression::NamedArg { name, value } = arg else { continue };
+        let Expression::Literal(v) = value.as_ref() else {
+            return Err(bad(format!("option `{name}` must be a literal")));
+        };
+        match name.as_str() {
+            "labels" => config.labels = Some(strings(name, v)?),
+            "edge_types" => config.edge_types = Some(strings(name, v)?),
+            "weight" => match v {
+                PropertyValue::String(s) if !s.is_empty() => config.weight_property = Some(s.clone()),
+                _ => return Err(bad("option `weight` must be a non-empty string (the edge property)".into())),
+            },
+            "gamma" => match v.as_number() {
+                Some(g) if g.is_finite() && g > 0.0 => config.gamma = g,
+                _ => return Err(bad("option `gamma` must be a number > 0".into())),
+            },
+            other => {
+                return Err(bad(format!(
+                    "unknown option `{other}`; valid options are labels, edge_types, weight, gamma"
+                )))
+            }
+        }
+    }
+    Ok(config)
+}
+
+/// La configuración de `leiden(...)` de la consulta, o `None` si no lo usa.
+/// Error si aparece con configuraciones distintas: el resultado por fila se
+/// resuelve con una sola partición por consulta.
+#[cfg(feature = "algorithms")]
+pub(crate) fn leiden_config_of_query(query: &Query) -> Result<Option<crate::algorithms::community::LeidenConfig>> {
+    fn walk<'e>(e: &'e Expression, out: &mut Vec<&'e [Expression]>) {
+        match e {
+            Expression::FunctionCall { name, args } => {
+                if name.eq_ignore_ascii_case("leiden") {
+                    out.push(args);
+                }
+                for a in args {
+                    walk(a, out);
+                }
+            }
+            Expression::BinaryOp { left, right, .. } => {
+                walk(left, out);
+                walk(right, out);
+            }
+            Expression::UnaryOp { expr, .. } => walk(expr, out),
+            _ => {}
+        }
+    }
+    let mut calls = Vec::new();
+    for p in &query.find.projections {
+        if let Projection::Expression { expr, .. } = p {
+            walk(expr, &mut calls);
+        }
+    }
+    if let Some(f) = &query.filter {
+        walk(&f.condition, &mut calls);
+    }
+    if let Some(h) = &query.having {
+        walk(&h.condition, &mut calls);
+    }
+    if let Some(o) = &query.order_by {
+        for item in &o.items {
+            walk(&item.expression, &mut calls);
+        }
+    }
+    let mut config: Option<crate::algorithms::community::LeidenConfig> = None;
+    for args in calls {
+        let c = leiden_config_from_args(args)?;
+        match &config {
+            None => config = Some(c),
+            Some(prev) if prev.cache_key() == c.cache_key() => {}
+            Some(_) => {
+                return Err(crate::error::NopalError::SemanticError(
+                    "leiden: every leiden(...) call in one query must use the same options".into(),
+                ))
+            }
+        }
+    }
+    Ok(config)
 }
 
 #[cfg(feature = "algorithms")]

@@ -383,7 +383,7 @@ NQL supports functions for data summarization, ideal for statistical analysis.
 - `degree(n)`, `pagerank(n)`, `betweenness(n)`, `clustering(n)`: Graph analytics aggregations.
 - `community(n)`: Exact global community detection (Louvain, modularity-based).
 - `community_fast(n)`: Approximate local community detection for low-latency exploration.
-- `leiden(n)`: Exact global community detection using **Leiden / CPM** (Traag et al. 2019). Guarantees internally well-connected communities. Uses a separate cache from `community()` — both can coexist in the same query. Default gamma = 0.1; use `LeidenCommunity::with_gamma(γ)` for custom resolution.
+- `leiden(n)`: Exact global community detection using **Leiden / CPM** (Traag et al. 2019). Guarantees internally well-connected communities. Uses a separate cache from `community()` — both can coexist in the same query. Options (0.6.11): `leiden(n, labels = ["Entity"], edge_types = ["RELATED"], weight = "w", gamma = 0.2)` — scope the partition to those labels and edge types (nodes outside get `null`), weight pairs by the sum of the numeric edge property `w`, and set the CPM resolution (default 0.1). One configuration per query; details in [ALGORITHMS.md](../ALGORITHMS.md).
 - `shortestPath("source-uuid", "target-uuid")`: Shortest distance between two nodes (returns `-1.0` when no path exists).
 
 `community(n)` and `leiden(n)` compute global partitions, so `LIMIT` is applied after aggregation and does not reduce first-run cost.

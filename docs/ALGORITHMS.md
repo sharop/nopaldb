@@ -298,11 +298,40 @@ let leiden = LeidenCommunity::new(LeidenConfig {
     gamma: 0.1,           // CPM resolution — higher = more communities
     max_iterations: 10,   // outer loop limit
     min_gain: 1e-9,       // minimum CPM gain to accept a move
+    // 0.6.11 (#190): scope and weight
+    labels: Some(vec!["Entity".into()]),        // only these node labels
+    edge_types: Some(vec!["RELATED".into()]),   // only these edge types
+    weight_property: Some("w".into()),          // numeric edge property
 });
 
 let communities = leiden.detect(&graph).await?;
 // HashMap<NodeId, usize> — 0-indexed community IDs
 ```
+
+### Scope and weight (0.6.11)
+
+- **`labels` / `edge_types`:** only nodes with those labels and edges of those
+  types take part; an edge with an endpoint outside the scope is dropped. In a
+  GraphRAG this keeps text chunks and their `MENTIONS` edges out of the
+  entity partition. A node outside the scope has no community (`null` in
+  NQL).
+- **`weight`:** a numeric edge property. The weight of a connected pair is
+  the **sum** of its edges (an edge without the property weighs 1), so
+  repeated co-occurrences add up. If your graph stores each relation in both
+  directions, keep the weight on one of them or filter with `edge_types`.
+  Weights must be finite and ≥ 0. Without `weight`, every connected pair
+  weighs 1, as before.
+- **`gamma` with weights** compares against weight density: if your weights
+  are not around 1, scale `gamma` accordingly.
+- The partition does not depend on edge insertion order: neighbours are
+  summed in node-id order.
+- NQL: one `leiden(...)` configuration per query (the same options may repeat
+  across FIND, WHERE, HAVING and ORDER BY). The cache is keyed by topology
+  and options, so consecutive queries with different options do not reuse
+  each other's partition. Python: `graph.leiden(labels=…, edge_types=…,
+  weight=…, gamma=…)` returns `{node_id: community}` and shares that cache.
+- Still flat: nodes move one at a time and whole communities are never
+  merged. The aggregation phase (hierarchy) is #190 (b).
 
 ### Example (NQL)
 
@@ -312,6 +341,12 @@ find n.name, leiden(n) as cluster
 from (n)
 order by cluster
 limit 25
+
+-- Scoped and weighted (0.6.11): only entities and their RELATED edges,
+-- weighted by the edge property `w`, with another resolution
+find n.name, leiden(n, labels = ["Entity"], edge_types = ["RELATED"], weight = "w", gamma = 0.2) as cluster
+from (n:Entity)
+order by cluster
 
 -- With gamma guidance via EXPLAIN
 explain find leiden(n) from (n)

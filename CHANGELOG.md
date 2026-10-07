@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Leiden ponderado y acotado** (#190 a). `LeidenConfig` gana `labels`,
+  `edge_types` y `weight_property`; NQL `leiden(n, labels = [...],
+  edge_types = [...], weight = "w", gamma = g)`; Python
+  `graph.leiden(labels=, edge_types=, weight=, gamma=)` → `{node_id:
+  comunidad}`. Hasta ahora `leiden(n)` corría sobre el grafo entero (en un
+  GraphRAG mezclaba los chunks con las entidades), con peso fijo 1 y sin
+  opciones en NQL (gamma solo desde Rust).
+  - Con `weight`, el peso de un par es la suma de sus aristas (las que no
+    tienen la propiedad pesan 1); pesos negativos o no finitos son error.
+    Sin `weight`, el comportamiento de siempre.
+  - La partición no depende del orden de inserción: los vecinos de Leiden
+    van en `BTreeMap` y se suman en orden de `NodeId`.
+  - La caché de Leiden lleva las opciones en la clave: consultas seguidas
+    con opciones distintas no se devuelven la partición de la otra. Una
+    configuración por consulta en NQL (error con nombre si hay dos).
+  - EXPLAIN muestra la configuración efectiva.
+  - **Cambio de API:** `LeidenConfig` gana tres campos; un literal sin
+    `..Default::default()` tiene que añadirlos.
+
+### Fixed
+- **Un nodo sin comunidad ya no aparece en la comunidad 0** (#190). Por la
+  ruta de agregación de NQL, `community(n)`/`leiden(n)` promediaban sobre
+  los nodos del grupo que tenían valor y devolvían 0.0 si ninguno lo tenía;
+  ahora devuelven `null`. Con `leiden(n, labels = …)` un nodo fuera del
+  alcance era indistinguible de uno de la comunidad 0.
+
+---
+
 ## [0.6.10] - 2026-10-07
 
 Iteración GraphRAG A: la ruta de recuperación local queda rápida, con

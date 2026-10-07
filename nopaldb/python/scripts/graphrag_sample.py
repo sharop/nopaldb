@@ -82,6 +82,11 @@ with tempfile.TemporaryDirectory() as tmp:
     assert d1 == {ents[0]}, "chunk 0 mentions entity-0 twice: one neighbour, once"
     assert all(x["label"] == "Entity" for x in nb["nodes"] if nb["depth"][x["id"]] >= 1)
     assert all(e["source"] in nb["depth"] and e["target"] in nb["depth"] for e in nb["edges"])
+    # Leiden acotado a las entidades y ponderado (0.6.11, #190): los chunks
+    # no participan.
+    comms = g.leiden(labels=["Entity"], edge_types=["RELATED"], weight="w")
+    assert set(comms) == set(ents), "only entities get a community"
+    assert all(isinstance(c, int) for c in comms.values())
     small = g.neighborhood([c0], depth=2, max_nodes=2)
     assert small["truncated"] is True and len(small["nodes"]) == 2
     assert small["score"] == {}, "BFS does not score"
