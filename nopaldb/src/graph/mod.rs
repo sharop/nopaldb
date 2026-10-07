@@ -226,6 +226,9 @@ pub struct AutoGcStatus {
 #[derive(Debug, Clone)]
 struct CommunityPartitionCache {
     topology_version: u64,
+    /// Configuración del cálculo (`LeidenConfig::cache_key`, #190). Vacía
+    /// para Louvain, que no tiene opciones.
+    options_key: String,
     assignments: HashMap<NodeId, usize>,
 }
 
@@ -1393,21 +1396,22 @@ impl Graph {
         let mut cache = self.community_partition_cache_exact.write().await;
         *cache = Some(CommunityPartitionCache {
             topology_version,
+            options_key: String::new(),
             assignments,
         });
     }
 
     #[cfg(feature = "algorithms")]
-    /// Return cached Leiden partition if the topology version matches.
-    /// Cache miss retorna None; caller debe recomputar y llamar set_cached_leiden_partition.
+    /// Partición Leiden en caché con su versión de topología y la clave de
+    /// su configuración (#190); el llamador compara las dos.
     pub(crate) async fn get_cached_leiden_partition(
         &self,
-    ) -> Option<(u64, HashMap<NodeId, usize>)> {
+    ) -> Option<(u64, String, HashMap<NodeId, usize>)> {
         self.leiden_partition_cache
             .read()
             .await
             .as_ref()
-            .map(|c| (c.topology_version, c.assignments.clone()))
+            .map(|c| (c.topology_version, c.options_key.clone(), c.assignments.clone()))
     }
 
     #[cfg(feature = "algorithms")]
@@ -1416,11 +1420,13 @@ impl Graph {
     pub(crate) async fn set_cached_leiden_partition(
         &self,
         topology_version: u64,
+        options_key: String,
         assignments: HashMap<NodeId, usize>,
     ) {
         let mut cache = self.leiden_partition_cache.write().await;
         *cache = Some(CommunityPartitionCache {
             topology_version,
+            options_key,
             assignments,
         });
     }

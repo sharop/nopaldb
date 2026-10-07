@@ -5,7 +5,7 @@
 use crate::error::Result;
 use crate::graph::GraphView;
 use crate::types::NodeId;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Community Detection configuration
 #[derive(Debug, Clone)]
@@ -370,17 +370,62 @@ impl LouvainCommunity {
 /// entre ellos supera γ.
 #[derive(Debug, Clone)]
 pub struct LeidenConfig {
-    /// Parámetro de resolución CPM. Default: 0.1.
+    /// Parámetro de resolución CPM. Default: 0.1. Con `weight_property`
+    /// se compara contra la densidad en unidades de peso: si los pesos no
+    /// son del orden de 1, escalar `gamma` en proporción.
     pub gamma: f64,
     /// Número máximo de iteraciones del bucle externo (Phase1 + Phase2). Default: 10.
     pub max_iterations: usize,
     /// Ganancia CPM mínima para aceptar un movimiento de nodo. Default: 1e-9.
     pub min_gain: f64,
+    /// Solo nodos con estas etiquetas (#190). `None` = todos. Las aristas
+    /// con un extremo fuera del conjunto se descartan.
+    pub labels: Option<Vec<String>>,
+    /// Solo aristas de estos tipos (#190). `None` = todos.
+    pub edge_types: Option<Vec<String>>,
+    /// Propiedad numérica de la arista que da su peso (#190). `None` = cada
+    /// par conectado pesa 1, como hasta 0.6.10. Con propiedad, el peso de un
+    /// par es la SUMA de sus aristas (las que no la tienen pesan 1): varias
+    /// co-ocurrencias suman. Si el grafo guarda cada relación en las dos
+    /// direcciones, ponga el peso en una sola o filtre con `edge_types`.
+    pub weight_property: Option<String>,
 }
 
 impl Default for LeidenConfig {
     fn default() -> Self {
-        LeidenConfig { gamma: 0.1, max_iterations: 10, min_gain: 1e-9 }
+        LeidenConfig {
+            gamma: 0.1,
+            max_iterations: 10,
+            min_gain: 1e-9,
+            labels: None,
+            edge_types: None,
+            weight_property: None,
+        }
+    }
+}
+
+impl LeidenConfig {
+    /// Clave canónica de la configuración, para la caché por topología:
+    /// misma clave ⇔ misma partición. Etiquetas y tipos se ordenan, así que
+    /// el orden en que se escribieron no importa.
+    pub fn cache_key(&self) -> String {
+        let sorted = |v: &Option<Vec<String>>| {
+            v.as_ref().map(|v| {
+                let mut v = v.clone();
+                v.sort();
+                v.dedup();
+                v.join(",")
+            })
+        };
+        format!(
+            "gamma={:?};iter={};min_gain={:?};labels={:?};edge_types={:?};weight={:?}",
+            self.gamma,
+            self.max_iterations,
+            self.min_gain,
+            sorted(&self.labels),
+            sorted(&self.edge_types),
+            self.weight_property
+        )
     }
 }
 
@@ -446,17 +491,65 @@ impl LeidenCommunity {
         edges: Vec<crate::types::Edge>,
         config: LeidenConfig,
     ) -> Result<HashMap<NodeId, usize>> {
+        // ── Alcance (#190): etiquetas y tipos de arista ─────────────────────
+        let nodes: Vec<crate::types::Node> = match &config.labels {
+            Some(labels) => nodes.into_iter().filter(|n| labels.contains(&n.label)).collect(),
+            None => nodes,
+        };
         if nodes.is_empty() {
             return Ok(HashMap::new());
         }
+        let in_scope: HashSet<NodeId> = nodes.iter().map(|n| n.id).collect();
+        let edges: Vec<crate::types::Edge> = edges
+            .into_iter()
+            .filter(|e| config.edge_types.as_ref().is_none_or(|t| t.contains(&e.edge_type)))
+            .filter(|e| in_scope.contains(&e.source) && in_scope.contains(&e.target))
+            .collect();
 
-        // ── Construir adyacencia no-dirigida con peso 1.0 ───────────────────
-        // Usar insert (no +=) para que datasets con aristas bidireccionales
-        // (a→b Y b→a en la DB) no dupliquen el peso a 2.0.
-        let mut adjacency: HashMap<NodeId, HashMap<NodeId, f64>> = HashMap::new();
-        for edge in &edges {
-            adjacency.entry(edge.source).or_default().insert(edge.target, 1.0);
-            adjacency.entry(edge.target).or_default().insert(edge.source, 1.0);
+        // ── Adyacencia no dirigida ───────────────────────────────────────────
+        // Vecinos en `BTreeMap`: las sumas de pesos (`edge_weight_to_community`)
+        // recorren los vecinos en orden de `NodeId`, así que con pesos reales
+        // el resultado no depende del orden de iteración de un `HashMap`
+        // (que cambia entre ejecuciones) y un empate se decide igual siempre.
+        // Sin `weight_property`: peso 1.0 por par con `insert` (no +=), para
+        // que una relación guardada en las dos direcciones (a→b y b→a) no
+        // pese 2.0 — el comportamiento de siempre. Con `weight_property`: el
+        // peso de cada arista se SUMA al del par (#190).
+        let mut adjacency: HashMap<NodeId, BTreeMap<NodeId, f64>> = HashMap::new();
+        match &config.weight_property {
+            None => {
+                for edge in &edges {
+                    adjacency.entry(edge.source).or_default().insert(edge.target, 1.0);
+                    adjacency.entry(edge.target).or_default().insert(edge.source, 1.0);
+                }
+            }
+            Some(prop) => {
+                // Orden fijo de suma: la partición no depende del orden en que
+                // el storage devuelve las aristas.
+                let mut sorted: Vec<&crate::types::Edge> = edges.iter().collect();
+                sorted.sort_by_key(|e| e.id);
+                for edge in sorted {
+                    let weight = match edge.properties.get(prop) {
+                        None => 1.0,
+                        Some(v) => v.as_number().ok_or_else(|| {
+                            crate::error::NopalError::custom(format!(
+                                "leiden: edge {} has a non-numeric `{prop}` ({v:?})",
+                                edge.id
+                            ))
+                        })?,
+                    };
+                    if !weight.is_finite() || weight < 0.0 {
+                        return Err(crate::error::NopalError::custom(format!(
+                            "leiden: edge {} has weight {weight} in `{prop}`; weights must be finite and >= 0",
+                            edge.id
+                        )));
+                    }
+                    *adjacency.entry(edge.source).or_default().entry(edge.target).or_insert(0.0) += weight;
+                    if edge.source != edge.target {
+                        *adjacency.entry(edge.target).or_default().entry(edge.source).or_insert(0.0) += weight;
+                    }
+                }
+            }
         }
 
         // Lista de NodeIds ordenada para iteración determinista
@@ -527,7 +620,7 @@ impl LeidenCommunity {
     // ─────────────────────────────────────────────────────────────────────────
     fn phase1_local_move(
         node_ids: &[NodeId],
-        adjacency: &HashMap<NodeId, HashMap<NodeId, f64>>,
+        adjacency: &HashMap<NodeId, BTreeMap<NodeId, f64>>,
         communities: &mut HashMap<NodeId, usize>,
         sizes: &mut HashMap<usize, usize>,
         e_in: &mut HashMap<usize, f64>,
@@ -636,7 +729,7 @@ impl LeidenCommunity {
     // ─────────────────────────────────────────────────────────────────────────
     fn phase2_refine(
         node_ids: &[NodeId],
-        adjacency: &HashMap<NodeId, HashMap<NodeId, f64>>,
+        adjacency: &HashMap<NodeId, BTreeMap<NodeId, f64>>,
         communities: &mut HashMap<NodeId, usize>,
         sizes: &mut HashMap<usize, usize>,
         e_in: &mut HashMap<usize, f64>,
@@ -889,7 +982,7 @@ impl LeidenCommunity {
     fn edge_weight_to_community(
         node: NodeId,
         community: usize,
-        adjacency: &HashMap<NodeId, HashMap<NodeId, f64>>,
+        adjacency: &HashMap<NodeId, BTreeMap<NodeId, f64>>,
         communities: &HashMap<NodeId, usize>,
     ) -> f64 {
         adjacency.get(&node)

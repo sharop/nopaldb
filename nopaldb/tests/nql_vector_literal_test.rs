@@ -136,7 +136,7 @@ async fn malformed_calls_are_errors_not_every_row() {
         (r#"find c.name from (c:Chunk) where hybrid(c, vector = [1, 0, 0], model = "minilm", k = 2, rrf = 1)"#, "unknown option `rrf`"),
         (r#"find c.name from (c:Chunk) where hybrid(c, k = 2)"#, "needs `text"),
         (r#"find c.name from (c:Chunk) where hybrid(c, "riego", "q")"#, "exactly 4 positional"),
-        (r#"find count(x = 1) from (c:Chunk)"#, "only similar_to(...) and hybrid(...) take named options"),
+        (r#"find count(x = 1) from (c:Chunk)"#, "only similar_to(...), hybrid(...) and leiden(...) take named options"),
         // Formas de consulta que el executor no sabe sembrar: error, no todo el grafo.
         (r#"find e.name from (c:Chunk)-[:MENTIONS]->(e:Entity) where similar_to(e, vector = [1, 0, 0], model = "minilm")"#, "must be the first node"),
         (r#"find e.name from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:MENTIONS]->(f:Entity) where similar_to(c, vector = [1, 0, 0], model = "minilm")"#, "single hop"),

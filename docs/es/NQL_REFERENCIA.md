@@ -385,7 +385,7 @@ NQL soporta funciones para resumir datos, ideales para análisis estadístico.
 - `degree(n)`, `pagerank(n)`, `betweenness(n)`, `clustering(n)`: Agregaciones de analítica de grafos.
 - `community(n)`: Detección exacta global de comunidades (basada en Louvain).
 - `community_fast(n)`: Detección aproximada local de comunidades para exploración de baja latencia.
-- `leiden(n)`: Detección exacta global de comunidades con **Leiden / CPM** (Traag et al. 2019). Garantiza comunidades bien conectadas internamente. Usa un caché distinto al de `community()`, así que ambas pueden convivir en la misma consulta. Gamma por defecto = 0.1; para otra resolución usa `LeidenCommunity::with_gamma(γ)` desde Rust.
+- `leiden(n)`: Detección exacta global de comunidades con **Leiden / CPM** (Traag et al. 2019). Garantiza comunidades bien conectadas internamente. Usa un caché distinto al de `community()`, así que ambas pueden convivir en la misma consulta. Opciones (0.6.11): `leiden(n, labels = ["Entity"], edge_types = ["RELATED"], weight = "w", gamma = 0.2)` acota la partición a esas etiquetas y tipos de arista (los nodos de fuera reciben `null`), pondera cada par con la suma de la propiedad numérica `w` de sus aristas y fija la resolución CPM (0.1 por defecto). Una configuración por consulta; detalle en [ALGORITHMS.md](../ALGORITHMS.md).
 - `shortestPath("uuid-origen", "uuid-destino")`: Distancia más corta entre dos nodos (regresa `-1.0` si no hay camino).
 
 `community(n)` y `leiden(n)` calculan particiones globales, por lo que `LIMIT` se aplica después de la agregación y no reduce su costo en primera ejecución.
