@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.6.10] - unreleased
+
+Iteración GraphRAG A: la ruta de recuperación local queda rápida, con
+ranking y honesta. Búsqueda híbrida sin scan de etiqueta y con la rama de
+texto acotada (NQL `hybrid()` + 1 salto a 100k: 132 → 0.99 ms),
+`similar_to` que devuelve K filas, `score(var)` en NQL, carga de
+embeddings por lote, `neighborhood` rankeado con Personalized PageRank, y
+dos defectos de fondo corregidos: el commit de tantivy por documento (un
+`open` con 100k nodos indexados pasaba de horas a 0.5 s) y los puntos del
+HNSW que ninguna búsqueda alcanzaba.
 
 ### Added
 - **`neighborhood` rankeado con Personalized PageRank** (#176):
@@ -45,6 +54,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   5.7 → 0.72 s). Lo caro era el índice, no el storage: el "más de 2 h" de la
   carga de 100k desde Python se medía con el índice en caché, y antes de #178
   con un commit de tantivy por documento. `graphrag_sample.py` usa el lote.
+- **`score(var)` en el FIND de NQL** (#174c): el score de la búsqueda
+  vectorial del WHERE para el nodo de cada fila. Con `similar_to` es la
+  similitud coseno (`1 - distancia`); con `hybrid`, el score RRF de
+  `search_hybrid`; con ambas, el de `similar_to`, que es el orden. Mayor es
+  mejor en los dos. Funciona en el camino de nodo suelto y en el patrón de
+  un salto (cada fila expandida lleva el score de su nodo buscado), con o
+  sin alias. Solo es columna del FIND: en WHERE, ORDER BY, GROUP BY, HAVING,
+  junto a agregaciones o sin un `similar_to`/`hybrid` sobre la misma
+  variable es un error con nombre, en vez de una columna `null` en silencio.
+  EXPLAIN nombra la fuente (`Score: score(c) = …`). Hasta 0.6.9 los
+  precomputes tiraban el score y solo quedaba el orden de las filas.
+
+### Changed
+- **La rama de texto de `search_hybrid` pide a tantivy solo lo que usa**
+  (#174). `query_scored` pedía siempre los 1000 mejores documentos y leía el
+  `node_id` guardado de cada uno, aunque la rama necesita `k × overfetch`
+  (40 por defecto). Nuevo `Index::query_scored_top(query, limit)`: el
+  full-text recolecta solo `limit`. La rama pide `k × overfetch` y escala ×4
+  mientras su filtro (etiqueta o propiedades) deje menos, hasta el tope de
+  siempre (1000, o `k × overfetch` si es mayor), así que nunca obtiene menos
+  que antes. Medido a 100k chunks (release, `make bench BENCH=retrieval`):
+  - solo texto: 1.92 → 0.62 ms;
+  - `search_hybrid` con etiqueta: 2.26 → 0.95 ms;
+  - NQL `hybrid()` + 1 salto: 2.42 → 0.99 ms.
+
+  Lo que queda es tantivy puntuando todas las coincidencias: el bench
+  coincide en ~57k de 100k chunks a propósito (vocabulario de 20 palabras).
+  El bench gana el caso `search/text_only_k10`.
+- **`search_hybrid` con filtro de solo etiqueta y NQL `hybrid()` ya no
+  recorren la etiqueta** (#174a). Antes el filtro se resolvía armando el
+  conjunto permitido con `get_nodes_by_label`, que lee todos los nodos; NQL
+  siempre pasa la etiqueta del patrón, así que toda consulta `hybrid()`
+  pagaba ese scan. Ahora cada rama comprueba la etiqueta sobre sus propios
+  candidatos, en orden de rango: el texto filtra su lista leyendo los nodos
+  por bloques y el vector pide `k × overfetch` vecinos y escala ×4 (hasta
+  4096) mientras falten de la etiqueta. Como cada rama se restringe antes de
+  la fusión, el top-k sigue calculándose dentro de la etiqueta (#115) con los
+  mismos rangos que daba el conjunto permitido. Una etiqueta tan escasa entre
+  los vecinos que la escalada llega al tope vuelve al conjunto permitido, así
+  que el resultado no queda corto por el atajo. Un filtro con propiedades
+  sigue usando el conjunto permitido. `VectorPath::LabelChecked` (Python
+  `"label_checked"`) identifica el camino nuevo; ahí `allowed_set_size` es
+  `None`. Medido a 10k chunks (release, máquina ociosa): `search_hybrid` con
+  etiqueta 16.1 ms → 0.80 ms; NQL `hybrid()` + 1 salto 16.2 ms → 0.89 ms;
+  sin etiqueta y `similar_to` sin cambio. El bench `retrieval` gana los casos
+  NQL `similar_to_literal_one_hop` y `hybrid_literal_one_hop`.
 
 ### Fixed
 - **HNSW: todo punto del índice es alcanzable por la búsqueda** (#184). La
@@ -75,38 +130,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   por defecto 0.08 → 0.98 a 100k. Tests: `hnsw_reachability_test` (falla
   contra la versión anterior); `hnsw_incremental_test` vuelve a afirmar que
   el punto recién insertado sale primero (#161 lo había relajado).
-
-### Changed
-- **La rama de texto de `search_hybrid` pide a tantivy solo lo que usa**
-  (#174). `query_scored` pedía siempre los 1000 mejores documentos y leía el
-  `node_id` guardado de cada uno, aunque la rama necesita `k × overfetch`
-  (40 por defecto). Nuevo `Index::query_scored_top(query, limit)`: el
-  full-text recolecta solo `limit`. La rama pide `k × overfetch` y escala ×4
-  mientras su filtro (etiqueta o propiedades) deje menos, hasta el tope de
-  siempre (1000, o `k × overfetch` si es mayor), así que nunca obtiene menos
-  que antes. Medido a 100k chunks (release, `make bench BENCH=retrieval`):
-  - solo texto: 1.92 → 0.62 ms;
-  - `search_hybrid` con etiqueta: 2.26 → 0.95 ms;
-  - NQL `hybrid()` + 1 salto: 2.42 → 0.99 ms.
-
-  Lo que queda es tantivy puntuando todas las coincidencias: el bench
-  coincide en ~57k de 100k chunks a propósito (vocabulario de 20 palabras).
-  El bench gana el caso `search/text_only_k10`.
-
-### Added
-- **`score(var)` en el FIND de NQL** (#174c): el score de la búsqueda
-  vectorial del WHERE para el nodo de cada fila. Con `similar_to` es la
-  similitud coseno (`1 - distancia`); con `hybrid`, el score RRF de
-  `search_hybrid`; con ambas, el de `similar_to`, que es el orden. Mayor es
-  mejor en los dos. Funciona en el camino de nodo suelto y en el patrón de
-  un salto (cada fila expandida lleva el score de su nodo buscado), con o
-  sin alias. Solo es columna del FIND: en WHERE, ORDER BY, GROUP BY, HAVING,
-  junto a agregaciones o sin un `similar_to`/`hybrid` sobre la misma
-  variable es un error con nombre, en vez de una columna `null` en silencio.
-  EXPLAIN nombra la fuente (`Score: score(c) = …`). Hasta 0.6.9 los
-  precomputes tiraban el score y solo quedaba el orden de las filas.
-
-### Fixed
 - **NQL `similar_to` con etiqueta devuelve K filas cuando la etiqueta tiene
   K nodos con embedding** (#174b). Pedía un `4·k` fijo al índice y se
   quedaba con los de la etiqueta: si otras etiquetas acaparaban los vecinos
@@ -152,26 +175,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   una sobrescritura que conserva la propiedad como texto el `remove` previo
   se omite (`Index::replaces_on_insert`). Se mantiene cuando la propiedad
   desaparece, cambia la etiqueta o se borra el nodo.
-
-### Changed
-- **`search_hybrid` con filtro de solo etiqueta y NQL `hybrid()` ya no
-  recorren la etiqueta** (#174a). Antes el filtro se resolvía armando el
-  conjunto permitido con `get_nodes_by_label`, que lee todos los nodos; NQL
-  siempre pasa la etiqueta del patrón, así que toda consulta `hybrid()`
-  pagaba ese scan. Ahora cada rama comprueba la etiqueta sobre sus propios
-  candidatos, en orden de rango: el texto filtra su lista leyendo los nodos
-  por bloques y el vector pide `k × overfetch` vecinos y escala ×4 (hasta
-  4096) mientras falten de la etiqueta. Como cada rama se restringe antes de
-  la fusión, el top-k sigue calculándose dentro de la etiqueta (#115) con los
-  mismos rangos que daba el conjunto permitido. Una etiqueta tan escasa entre
-  los vecinos que la escalada llega al tope vuelve al conjunto permitido, así
-  que el resultado no queda corto por el atajo. Un filtro con propiedades
-  sigue usando el conjunto permitido. `VectorPath::LabelChecked` (Python
-  `"label_checked"`) identifica el camino nuevo; ahí `allowed_set_size` es
-  `None`. Medido a 10k chunks (release, máquina ociosa): `search_hybrid` con
-  etiqueta 16.1 ms → 0.80 ms; NQL `hybrid()` + 1 salto 16.2 ms → 0.89 ms;
-  sin etiqueta y `similar_to` sin cambio. El bench `retrieval` gana los casos
-  NQL `similar_to_literal_one_hop` y `hybrid_literal_one_hop`.
 
 ### Docs
 - `docs/GRAPHRAG.md`: cifras de 0.6.9 a 100k — buscar + expandir en UNA
