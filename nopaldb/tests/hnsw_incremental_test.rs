@@ -179,17 +179,15 @@ async fn hnsw_path_above_the_exact_threshold_also_inserts_and_removes_in_place()
     assert_eq!(idx.len(), n);
     assert_eq!(idx.tombstones(), 1);
     assert!(idx.contains(new_id), "inserted in place, not deferred to a rebuild");
-    // Este test afirma el MECANISMO (insert en sitio, tombstone), no el
-    // recall. Por encima del umbral exacto la búsqueda es HNSW de verdad y el
-    // grafo lo construye `parallel_insert`, que depende del número de hilos:
-    // en el runner de 2 cores, a ef 512 y k 5, el punto recién insertado a
-    // veces no salía PRIMERO aunque la distancia fuera 0 (flake en #160 tras
-    // #144/#147, que ya habían subido ef). Afirmar "es el primero" es afirmar
-    // el recall de un índice aproximado; lo determinista es que el punto es
-    // alcanzable y que el tombstone no aparece ni deja k corto, así que se
-    // busca ancho (k 50, ef = tamaño del índice) y se pide pertenencia.
+    // El punto recién insertado sale PRIMERO: es el único a distancia 0.
+    // Hasta #184 esto fallaba a veces (flake en #160 tras #144/#147, que
+    // habían subido ef, y #161 lo relajó a "aparece entre 50"): la poda de
+    // vecinos dejaba el punto sin enlaces entrantes y ninguna búsqueda lo
+    // alcanzaba. Con `keep_pruned` y la verificación al insertar, el punto
+    // nuevo es alcanzable y la aserción vuelve a ser la estricta.
+    let top = idx.search_knn_with_ef(&q, 5, 512)?;
+    assert_eq!(top.first().map(|(id, _)| *id), Some(new_id), "the new vector comes first: {top:?}");
     let hits = idx.search_knn_with_ef(&q, 50, n)?;
-    assert!(hits.iter().any(|(id, _)| *id == new_id), "the new vector must be reachable: {hits:?}");
     assert!(hits.iter().all(|(id, _)| *id != ids[0]), "a tombstoned point never surfaces");
     assert_eq!(hits.len(), 50, "tombstones must not underfill k");
     Ok(())

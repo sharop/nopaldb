@@ -74,6 +74,23 @@ pub const REBUILD_TOMBSTONE_MIN: usize = 64;
 /// Factor de crecimiento de `ef_search` entre intentos de la escalada.
 const EF_ESCALATION_FACTOR: usize = 4;
 
+/// Alcanzabilidad (#184): tras construir o insertar, cada punto nuevo se busca
+/// a sí mismo con `REACHABILITY_K` vecinos y este `ef`; el que no aparece se
+/// reinserta. Medido (384 dims, 3000 + 1000 puntos, 10 semillas): sin esto
+/// ~0.5% de los puntos de un build y ~1.6% de los insertados después no los
+/// encontraba ninguna búsqueda, ni con `ef` igual al tamaño del índice. Con
+/// `keep_pruned` y esta pasada, cero. `ef = 64` bastó en esas pruebas; uno
+/// mayor solo encarece la verificación.
+const REACHABILITY_EF: usize = 64;
+/// Vecinos pedidos al verificar: tolera puntos duplicados (otro con el mismo
+/// vector puede salir primero).
+const REACHABILITY_K: usize = 10;
+/// Rondas de reinserción antes de rendirse y avisar en el log.
+const REACHABILITY_MAX_ROUNDS: usize = 5;
+/// Consultas por bloque en la verificación de un build grande: acota la
+/// copia de vectores que `parallel_search` necesita.
+const REACHABILITY_CHUNK: usize = 10_000;
+
 /// Qué camino de lectura resolvió una búsqueda filtrada.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilteredSearchPath {
@@ -162,8 +179,16 @@ pub struct HnswIndex {
     /// así que el borrado es lógico: el `DataId` sale de `id_map` y las
     /// búsquedas lo descartan. Cada tombstone sigue ocupando un vecino en el
     /// recorrido, por eso las búsquedas piden `k + tombstones` y por eso,
-    /// pasado [`Self::needs_rebuild`], conviene reconstruir.
+    /// pasado [`Self::needs_rebuild`], conviene reconstruir. Solo cuenta
+    /// retiros del llamador (`remove`, actualizaciones), no los de
+    /// [`Self::repaired`].
     tombstones: usize,
+    /// Reinserciones hechas por la verificación de alcanzabilidad (#184):
+    /// puntos que tras insertarse no se encontraban a sí mismos. Cada una
+    /// deja su `DataId` viejo muerto en el grafo, igual que un tombstone, y
+    /// por eso cuenta en [`Self::dead_points`] y va al dump; pero no es un
+    /// retiro del llamador: no se suma a `tombstones` ni a `needs_rebuild`.
+    repaired: usize,
     /// `true` cuando el estado en memoria difiere de lo que hay (o no hay)
     /// en disco: recién construido, o con `insert`/`remove` desde el último
     /// dump. Lo limpia [`crate::embeddings::persistence`] al escribir/cargar.
@@ -182,13 +207,17 @@ impl HnswIndex {
         dimension: usize,
         max_elements: usize,
     ) -> Self {
-        let inner = Hnsw::<f32, DistCosine>::new(
+        let mut inner = Hnsw::<f32, DistCosine>::new(
             DEFAULT_MAX_NB_CONNECTION,
             max_elements,
             DEFAULT_MAX_LAYER,
             DEFAULT_EF_CONSTRUCTION,
             DistCosine {},
         );
+        // Conservar los candidatos podados por la heurística de selección
+        // de vecinos (#184): sin esto la poda deja puntos sin enlaces
+        // entrantes y ninguna búsqueda llega a ellos.
+        inner.set_keeping_pruned(true);
         Self {
             inner,
             id_map: HashMap::new(),
@@ -198,6 +227,7 @@ impl HnswIndex {
             next_data_id: 0,
             exact_store: Vec::new(),
             tombstones: 0,
+            repaired: 0,
             dirty: true,
             loaded_in: None,
         }
@@ -212,13 +242,14 @@ impl HnswIndex {
         ef_construction: usize,
         max_layer: usize,
     ) -> Self {
-        let inner = Hnsw::<f32, DistCosine>::new(
+        let mut inner = Hnsw::<f32, DistCosine>::new(
             max_nb_connection,
             max_elements,
             max_layer,
             ef_construction,
             DistCosine {},
         );
+        inner.set_keeping_pruned(true); // ver `new` (#184)
         Self {
             inner,
             id_map: HashMap::new(),
@@ -228,6 +259,7 @@ impl HnswIndex {
             next_data_id: 0,
             exact_store: Vec::new(),
             tombstones: 0,
+            repaired: 0,
             dirty: true,
             loaded_in: None,
         }
@@ -295,15 +327,22 @@ impl HnswIndex {
         index.inner.set_searching_mode(true);
         drop(insert_data); // libera los préstamos sobre owned_vectors
 
+        // Por `NodeId`, no por `DataId`: la verificación puede reinsertar
+        // puntos y darles un `DataId` nuevo.
+        let node_ids: Vec<NodeId> = data_ids.iter().map(|data_id| index.id_map[data_id]).collect();
+        let points: Vec<(NodeId, &[f32])> = node_ids
+            .iter()
+            .zip(&owned_vectors)
+            .map(|(node_id, vector)| (*node_id, vector.as_slice()))
+            .collect();
+        index.ensure_reachable(&points);
+        drop(points);
+
         // Poblar el store del camino exacto solo si el índice queda bajo el
         // umbral (con N grande la copia sería memoria muerta: la lectura irá
         // por HNSW de todos modos).
         if nb_elements <= EXACT_SEARCH_THRESHOLD {
-            index.exact_store = data_ids
-                .iter()
-                .zip(owned_vectors)
-                .map(|(data_id, vec)| (index.id_map[data_id], vec))
-                .collect();
+            index.exact_store = node_ids.into_iter().zip(owned_vectors).collect();
         }
 
         Ok(index)
@@ -334,6 +373,7 @@ impl HnswIndex {
         self.id_map.insert(data_id, node_id);
         self.reverse_map.insert(node_id, data_id);
         self.dirty = true;
+        self.ensure_reachable(&[(node_id, vector.as_slice())]);
 
         // Mantener el store exacto mientras estemos bajo el umbral; al
         // cruzarlo, liberarlo — la lectura pasa a HNSW y no hay vuelta atrás
@@ -345,6 +385,75 @@ impl HnswIndex {
         }
 
         Ok(())
+    }
+
+    /// Verifica que cada uno de `points` (ya insertados) sea alcanzable y
+    /// reinserta los que no; devuelve cuántos siguen sin serlo tras
+    /// `REACHABILITY_MAX_ROUNDS` rondas (0 en el caso normal).
+    ///
+    /// HNSW poda la lista de vecinos de cada nodo con una heurística; un
+    /// punto puede quedar con enlaces salientes pero sin entrantes, y
+    /// entonces ninguna búsqueda lo alcanza aunque esté en el índice (#184).
+    /// Se detecta buscándolo con su propio vector; se corrige reinsertándolo
+    /// (el `DataId` viejo queda como tombstone y el nuevo vuelve a enlazarse).
+    /// Desde `PARALLEL_INSERT_THRESHOLD` consultas la verificación usa
+    /// `parallel_search`.
+    fn ensure_reachable(&mut self, points: &[(NodeId, &[f32])]) -> usize {
+        let mut todo: Vec<usize> = (0..points.len()).collect();
+        for round in 0..=REACHABILITY_MAX_ROUNDS {
+            let mut missing = Vec::new();
+            for block in todo.chunks(REACHABILITY_CHUNK) {
+                let queries: Vec<Vec<f32>> = block.iter().map(|&i| points[i].1.to_vec()).collect();
+                let results = if queries.len() >= PARALLEL_INSERT_THRESHOLD {
+                    self.inner.parallel_search(&queries, REACHABILITY_K, REACHABILITY_EF)
+                } else {
+                    queries
+                        .iter()
+                        .map(|q| self.inner.search(q, REACHABILITY_K, REACHABILITY_EF))
+                        .collect()
+                };
+                for (&i, found) in block.iter().zip(results) {
+                    let Some(&data_id) = self.reverse_map.get(&points[i].0) else { continue };
+                    if !found.iter().any(|n| n.d_id == data_id) {
+                        missing.push(i);
+                    }
+                }
+            }
+            if missing.is_empty() {
+                return 0;
+            }
+            if round == REACHABILITY_MAX_ROUNDS {
+                log::warn!(
+                    "HnswIndex({}): {} points still unreachable after {} reinsertion rounds",
+                    self.model,
+                    missing.len(),
+                    REACHABILITY_MAX_ROUNDS
+                );
+                return missing.len();
+            }
+            for &i in &missing {
+                let (node_id, vector) = points[i];
+                self.reinsert(node_id, vector);
+            }
+            todo = missing;
+        }
+        0
+    }
+
+    /// Reinserta un punto con un `DataId` nuevo: el viejo queda muerto en el
+    /// grafo (no se devuelve; cuenta en `repaired`, no en `tombstones`). No
+    /// toca el store exacto: el vector es el mismo.
+    fn reinsert(&mut self, node_id: NodeId, vector: &[f32]) {
+        if let Some(old) = self.reverse_map.remove(&node_id) {
+            self.id_map.remove(&old);
+        }
+        self.repaired += 1;
+        let data_id = self.next_data_id;
+        self.next_data_id += 1;
+        self.inner.insert((vector, data_id));
+        self.id_map.insert(data_id, node_id);
+        self.reverse_map.insert(node_id, data_id);
+        self.dirty = true;
     }
 
     /// Retira un punto del índice. Devuelve `false` si no estaba.
@@ -373,6 +482,19 @@ impl HnswIndex {
         self.tombstones
     }
 
+    /// Cuántos puntos reinsertó la verificación de alcanzabilidad (#184).
+    /// Cada uno dejó un `DataId` muerto en el grafo.
+    pub fn repaired(&self) -> usize {
+        self.repaired
+    }
+
+    /// `DataId` muertos que siguen en el grafo: tombstones del llamador más
+    /// los que dejaron las reinserciones de la verificación. Es lo que pesa
+    /// en cada búsqueda (se piden `k + dead_points` vecinos).
+    pub fn dead_points(&self) -> usize {
+        self.tombstones + self.repaired
+    }
+
     /// `true` si el estado en memoria no está reflejado en un dump en disco
     /// (índice recién construido, o con inserciones/retiros desde el último
     /// dump). Ver [`crate::embeddings::persistence`].
@@ -397,6 +519,9 @@ impl HnswIndex {
     /// El índice queda en modo búsqueda y sin `exact_store`: un dump solo se
     /// escribe por encima de [`EXACT_SEARCH_THRESHOLD`], donde el camino
     /// exacto no aplica.
+    // Un solo llamador (la carga del dump), que pasa campo a campo lo que
+    // leyó del `.meta`: un struct intermedio solo movería la lista.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
         mut inner: Hnsw<'static, f32, DistCosine>,
         model: String,
@@ -404,9 +529,13 @@ impl HnswIndex {
         id_map: HashMap<usize, NodeId>,
         next_data_id: usize,
         tombstones: usize,
+        repaired: usize,
         loaded_in: std::time::Duration,
     ) -> Self {
         inner.set_searching_mode(true);
+        // El flag no se guarda en el dump: sin él, las inserciones sobre un
+        // índice recargado volverían a dejar puntos inalcanzables (#184).
+        inner.set_keeping_pruned(true);
         let reverse_map = id_map.iter().map(|(d, n)| (*n, *d)).collect();
         Self {
             inner,
@@ -417,6 +546,7 @@ impl HnswIndex {
             next_data_id,
             exact_store: Vec::new(),
             tombstones,
+            repaired,
             dirty: false,
             loaded_in: Some(loaded_in),
         }
@@ -426,6 +556,11 @@ impl HnswIndex {
     /// puntos vivos (y al menos [`REBUILD_TOMBSTONE_MIN`]): cada búsqueda paga
     /// vecinos muertos y el recall se degrada; reconstruir desde storage
     /// devuelve un grafo limpio. Quien tiene el índice en caché decide cuándo.
+    ///
+    /// Solo cuentan los tombstones del llamador, no los `DataId` que dejó la
+    /// verificación de alcanzabilidad (`repaired`): un índice recién
+    /// reconstruido también repara, así que contarlos podría dejarlo sobre
+    /// el umbral justo después del rebuild y reconstruir en cada consulta.
     pub fn needs_rebuild(&self) -> bool {
         self.tombstones >= REBUILD_TOMBSTONE_MIN
             && self.tombstones as f64 > self.id_map.len() as f64 * REBUILD_TOMBSTONE_RATIO
@@ -434,7 +569,7 @@ impl HnswIndex {
     /// `k` a pedir al grafo para devolver `k` vivos: los tombstones pueden
     /// ocupar hasta `tombstones` de los vecinos devueltos.
     fn k_with_tombstones(&self, k: usize) -> usize {
-        k.saturating_add(self.tombstones).min(self.id_map.len().max(k))
+        k.saturating_add(self.dead_points()).min(self.id_map.len().max(k))
     }
 
     /// Busca los `k` nodos más cercanos al vector `query` en el espacio de embeddings.

@@ -291,6 +291,39 @@ index.remove(node_id);            // logical delete: one tombstone
 index.needs_rebuild();            // true past the tombstone ratio
 ```
 
+### Every point is reachable (0.6.10)
+
+HNSW prunes each node's neighbour list with a heuristic, and that pruning
+could leave a point with outgoing links but no incoming ones: it was in the
+index, and no search returned it, not even with `ef_search` equal to the
+index size. Measured before the fix (384 dims): ~0.5% of the points of a
+3000-point build, ~1.6% of points inserted afterwards, and 1.35% of a sample
+of a 100k build.
+
+Two changes close it:
+
+- the index keeps the candidates the heuristic prunes (`hnsw_rs`
+  `keep_pruned`), so far fewer points end up without incoming links;
+- after a build, and after each insert, every new point searches for itself
+  (10 neighbours, `ef = 64`, in parallel for large builds). A point that does
+  not find itself is reinserted with a new internal id, up to 5 rounds;
+  `HnswIndex::repaired()` counts these reinsertions.
+
+What is guaranteed: after a build every point is reachable, and a point is
+reachable right after it is inserted. A later insert can still prune the last
+link into an earlier point; measured: 0 of 10 000 inserts at 384 dims, 1 of
+10 000 at 16 dims. A rebuild verifies every point again.
+
+Cost (release, 384 dims): build 2.5 → 3.5 s at 10k and 75 → 114 s at 100k;
+200 inserts into a 100k index 1.8 → 2.2 s. On the same random vectors,
+recall@10 at the default `ef_search` went from 0.08 to 0.98 at 100k (0.40 →
+0.56 at 10k): random uniform vectors are a worst case for any ANN index, so
+read the jump as "the old graph was badly connected", not as a figure for
+real embeddings.
+
+Dumps written by earlier versions (format 1) were built without this and
+are rebuilt once on the first search after upgrading.
+
 ### Persistence across reopens
 
 Since 0.5.20 the HNSW graph survives a restart. The index is written with
@@ -325,6 +358,7 @@ dump:
 | dump files changed or truncated | `Corrupt` → rebuild, never handed to `hnsw_rs` (its loader panics on bad input) |
 | fewer than 1024 live points (`EXACT_SEARCH_THRESHOLD`) | not persisted at all: the rebuild costs milliseconds and the exact path keeps its own vectors |
 | in-memory graph, read-only handle | loads if a dump exists (read-only), never writes |
+| dump written before 0.6.10 (format 1) | `Stale` → rebuild once (see "Every point is reachable") |
 
 `embedding_index_stats(model)` reports `persisted` (the current in-memory
 state is on disk, i.e. reopening would load it) and `loaded_from_disk_ms`

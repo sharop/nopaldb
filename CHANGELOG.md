@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **HNSW: todo punto del índice es alcanzable por la búsqueda** (#184). La
+  poda heurística de vecinos podía dejar un punto sin enlaces entrantes: estaba
+  en el índice y ninguna búsqueda lo devolvía, ni con `ef_search` igual al
+  tamaño del índice. Medido antes (384 dims): ~0.5% de los puntos de un build
+  de 3000, ~1.6% de los insertados después, 1.35% de una muestra de un build
+  de 100k. Era la causa de los tests inestables que #125, #144, #147 y #161
+  resolvieron relajando aserciones.
+  - El índice conserva los candidatos podados (`keep_pruned` de `hnsw_rs`), en
+    `new`, `with_params` y al recargar un dump.
+  - Tras un build y tras cada `insert`, cada punto nuevo se busca a sí mismo
+    (10 vecinos, `ef = 64`, en paralelo en builds grandes) y el que no se
+    encuentra se reinserta, hasta 5 rondas. `HnswIndex::repaired()` las
+    cuenta; dejan su `DataId` viejo muerto en el grafo
+    (`HnswIndex::dead_points()`), que la búsqueda descuenta, pero no suman a
+    `tombstones` ni a `needs_rebuild` (un rebuild también repara: contarlas
+    podría reconstruir en cada consulta).
+  - Dump en formato 2 (guarda `repaired`): los de formato 1 se reconstruyen
+    una vez al primer uso tras actualizar.
+
+  Garantía: tras un build todo punto es alcanzable; tras un `insert`, el
+  punto recién insertado. Una inserción posterior aún puede podar el último
+  enlace hacia un punto anterior (medido: 0 de 10 000 inserciones a 384
+  dims, 1 de 10 000 a 16 dims). Costo medido (release, 384 dims): build
+  2.5 → 3.5 s a 10k y 75 → 114 s a 100k; 200 inserciones en un índice de
+  100k 1.8 → 2.2 s. Con los mismos vectores aleatorios, recall@10 con el `ef`
+  por defecto 0.08 → 0.98 a 100k. Tests: `hnsw_reachability_test` (falla
+  contra la versión anterior); `hnsw_incremental_test` vuelve a afirmar que
+  el punto recién insertado sale primero (#161 lo había relajado).
+
 ### Changed
 - **La rama de texto de `search_hybrid` pide a tantivy solo lo que usa**
   (#174). `query_scored` pedía siempre los 1000 mejores documentos y leía el
