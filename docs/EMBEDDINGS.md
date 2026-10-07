@@ -291,6 +291,44 @@ index.remove(node_id);            // logical delete: one tombstone
 index.needs_rebuild();            // true past the tombstone ratio
 ```
 
+### Loading many embeddings: `add_node_embeddings` (0.6.10)
+
+```python
+graph.add_node_embeddings("minilm", [(id1, v1), (id2, v2), ...])  # -> int
+```
+
+```rust
+graph.add_node_embeddings("minilm", vec![(id1, v1), (id2, v2)]).await?;
+```
+
+Same result as calling `add_node_embedding` for each pair, with three
+differences:
+
+- **Validated before anything is written:** every vector has the same
+  dimension (and the dimension of the model's cached index, if any), no node
+  appears twice, every node exists. If one item fails, no embedding is
+  written.
+- **Stored in blocks** of 10 000 per engine transaction instead of one
+  transaction per embedding.
+- **Inserted into the cached index in parallel** when the model's HNSW index
+  is already in memory (after a search, or loaded from its dump on open),
+  with the same reachability check as a build. With no cached index there is
+  nothing to insert: the first search builds it.
+
+Measured (release, 384 dims):
+
+| | one by one | batch |
+|---|---|---|
+| 10k, no cached index | 0.40 s | 0.06 s |
+| 100k, no cached index | 4.2 s | 1.9 s |
+| 1000 more into a cached 10k index | 5.7 s | 0.72 s |
+| 1000 more into a cached 100k index | 12.8 s | 1.9 s |
+
+What costs time at scale is the HNSW index, not storage: one by one, each
+embedding added to a cached 100k index is an insert plus a reachability check
+(~13 ms). The first search after loading builds the whole index (≈ 2 min at
+100k, see "Every point is reachable").
+
 ### Every point is reachable (0.6.10)
 
 HNSW prunes each node's neighbour list with a heuristic, and that pruning

@@ -115,6 +115,11 @@ mod layout_migrate;
 /// `clear_legacy_property_index` (solo borra claves v1) y lo tocará la
 /// migración de layout F5.5 (sección legacy de `keys.rs`), que moverá las
 /// bases v1 existentes a este layout.
+/// Embeddings por transacción en [`Storage::save_node_embeddings`]: acota la
+/// memoria del lote (10k vectores de 384 dims ≈ 15 MB serializados).
+#[cfg(feature = "embeddings")]
+pub const EMBEDDING_WRITE_CHUNK: usize = 10_000;
+
 pub struct Storage {
     engine: Arc<dyn kv::KvEngine>,
     /// Tree `default`: SIN escritores desde F5.4 (ver el doc del struct).
@@ -1099,6 +1104,25 @@ impl Storage {
 
         let tree = self.open_embeddings_tree_sync()?;
         tree.insert(key.as_bytes(), &value)?;
+        Ok(())
+    }
+
+    /// Guarda varios embeddings en lotes de [`EMBEDDING_WRITE_CHUNK`] por
+    /// transacción del motor (#175). Uno por uno era una transacción por
+    /// embedding. Cada bloque es atómico; los bloques, no entre sí (el
+    /// llamador valida antes de escribir, así que solo un error de IO puede
+    /// dejar el lote a medias).
+    #[cfg(feature = "embeddings")]
+    pub async fn save_node_embeddings(&self, embeddings: &[crate::embeddings::Embedding]) -> Result<()> {
+        let tree = self.open_embeddings_tree_sync()?;
+        for chunk in embeddings.chunks(EMBEDDING_WRITE_CHUNK) {
+            let mut batch = kv::WriteBatch::default();
+            for embedding in chunk {
+                let key = format!("{}:{}", embedding.node_id, embedding.model);
+                batch.insert(key.into_bytes(), serialize(embedding)?);
+            }
+            tree.apply_batch(batch)?;
+        }
         Ok(())
     }
 

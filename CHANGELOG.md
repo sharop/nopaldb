@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`add_node_embeddings(model, [(id, vector), …])`: carga de embeddings por
+  lote** (#175), en Rust (`Graph::add_node_embeddings`) y Python. Equivale a
+  `add_node_embedding` por cada par, pero:
+  - valida todo antes de escribir (misma dimensión en el lote y en el índice
+    del modelo, sin nodos repetidos, todos existen): un lote inválido no
+    escribe nada;
+  - guarda en storage por bloques de 10k (`Storage::save_node_embeddings`,
+    una transacción por bloque);
+  - con el índice HNSW del modelo en caché, lo inserta en paralelo
+    (`HnswIndex::insert_batch`) fuera del runtime async, con la misma
+    verificación de alcanzabilidad que un build (#184).
+
+  Medido (release, 384 dims): 10k sin índice 0.40 → 0.06 s; 100k sin índice
+  4.2 → 1.9 s; 1000 más en un índice en caché de 100k 12.8 → 1.9 s (de 10k,
+  5.7 → 0.72 s). Lo caro era el índice, no el storage: el "más de 2 h" de la
+  carga de 100k desde Python se medía con el índice en caché, y antes de #178
+  con un commit de tantivy por documento. `graphrag_sample.py` usa el lote.
+
 ### Fixed
 - **HNSW: todo punto del índice es alcanzable por la búsqueda** (#184). La
   poda heurística de vecinos podía dejar un punto sin enlaces entrantes: estaba
