@@ -293,7 +293,7 @@ impl PyGraph {
     fn neighbors(&self, py: Python<'_>, id: &str, direction: &str, edge_types: Option<Vec<String>>) -> PyResult<Vec<Py<PyDict>>> {
         let graph = self.graph()?;
         let id = parse_uuid(id, "node")?;
-        let opts = crate::ExpandOptions { direction: parse_direction(direction)?, edge_types, labels: None, max_nodes: usize::MAX, max_edges_per_node: None };
+        let opts = crate::ExpandOptions { direction: parse_direction(direction)?, edge_types, max_nodes: usize::MAX, ..Default::default() };
         let nb = to_py_result(crate::python::runtime::block_on(py, async move { graph.neighborhood(&[id], 1, &opts).await }))?;
         nb.nodes
             .iter()
@@ -323,16 +323,25 @@ impl PyGraph {
     /// caps how many edges of one node are considered (the real brake on a
     /// super-node). Runs with the GIL released.
     ///
+    /// rank="ppr" (0.6.10, #176): when the neighbourhood does not fit in
+    /// `max_nodes`, keep the most relevant nodes instead of BFS order. The BFS
+    /// gathers up to `candidate_factor * max_nodes` candidates, a Personalized
+    /// PageRank seeded at `ids` runs over them in memory (`alpha` = teleport
+    /// probability, `iterations` power steps, `seed_weights` = {id: weight},
+    /// e.g. the search score of each hit), and the best by score are kept.
+    /// Seeds always stay. Deterministic: ties break by node id.
+    ///
     /// Returns:
     ///     dict: {"nodes": [node dicts, seeds first], "edges": [edge dicts
     ///     whose both endpoints are in "nodes"], "depth": {id: int},
+    ///     "score": {id: float} (PPR score; empty with rank="bfs"),
     ///     "truncated": bool}
     ///
     /// Example:
     ///     >>> hits = graph.search_hybrid(text=q, vector=v, model="m", k=10)
     ///     >>> ctx = graph.neighborhood([h["node_id"] for h in hits], depth=1,
     ///     ...                          edge_types=["MENTIONS"], max_nodes=200)
-    #[pyo3(signature = (ids, depth=1, direction="out", edge_types=None, labels=None, max_nodes=1000, max_edges_per_node=None))]
+    #[pyo3(signature = (ids, depth=1, direction="out", edge_types=None, labels=None, max_nodes=1000, max_edges_per_node=None, rank="bfs", alpha=0.15, iterations=20, candidate_factor=5, seed_weights=None))]
     #[allow(clippy::too_many_arguments)]
     fn neighborhood(
         &self,
@@ -344,10 +353,37 @@ impl PyGraph {
         labels: Option<Vec<String>>,
         max_nodes: usize,
         max_edges_per_node: Option<usize>,
+        rank: &str,
+        alpha: f64,
+        iterations: usize,
+        candidate_factor: usize,
+        seed_weights: Option<std::collections::HashMap<String, f64>>,
     ) -> PyResult<Py<PyDict>> {
         let graph = self.graph()?;
         let ids = ids.iter().map(|s| parse_uuid(s, "node")).collect::<PyResult<Vec<_>>>()?;
-        let opts = crate::ExpandOptions { direction: parse_direction(direction)?, edge_types, labels, max_nodes, max_edges_per_node };
+        let rank = match rank {
+            "bfs" => crate::Rank::Bfs,
+            "ppr" => {
+                if !(0.0..=1.0).contains(&alpha) {
+                    return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("alpha must be in [0, 1]"));
+                }
+                let seed_weights = match seed_weights {
+                    Some(m) => Some(
+                        m.iter()
+                            .map(|(k, v)| parse_uuid(k, "seed").map(|id| (id, *v)))
+                            .collect::<PyResult<std::collections::HashMap<_, _>>>()?,
+                    ),
+                    None => None,
+                };
+                crate::Rank::Ppr { alpha, iterations, candidate_factor, seed_weights }
+            }
+            other => {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "rank must be \"bfs\" or \"ppr\", got {other:?}"
+                )))
+            }
+        };
+        let opts = crate::ExpandOptions { direction: parse_direction(direction)?, edge_types, labels, max_nodes, max_edges_per_node, rank };
         let nb = to_py_result(crate::python::runtime::block_on(py, async move { graph.neighborhood(&ids, depth, &opts).await }))?;
         let out = PyDict::new(py);
         let nodes = PyList::empty(py);
@@ -365,6 +401,11 @@ impl PyGraph {
         out.set_item("nodes", nodes)?;
         out.set_item("edges", edges)?;
         out.set_item("depth", depth_map)?;
+        let score_map = PyDict::new(py);
+        for (id, s) in &nb.score_of {
+            score_map.set_item(id.to_string(), *s)?;
+        }
+        out.set_item("score", score_map)?;
         out.set_item("truncated", nb.truncated)?;
         Ok(out.into())
     }

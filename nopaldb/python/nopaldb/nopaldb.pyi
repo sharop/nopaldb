@@ -43,6 +43,7 @@ class NeighborhoodResult(TypedDict):
     nodes: list[NodeDict]
     edges: list[EdgeDict]
     depth: dict[str, int]
+    score: dict[str, float]
     truncated: bool
 
 # A KNN hit with `hydrate=True`.
@@ -203,7 +204,9 @@ class Graph:
     def degree(self, id: str, direction: str = "both") -> int: ...
     # BFS by node with global visited set; edges filtered by type before the
     # target is read; `max_nodes` caps the result (then truncated=True);
-    # `max_edges_per_node` is the brake on super-nodes.
+    # `max_edges_per_node` is the brake on super-nodes. rank="ppr" keeps the
+    # nodes with the best Personalized PageRank score (seeded at `ids`) when
+    # the neighbourhood does not fit in `max_nodes`; "score" has them.
     def neighborhood(
         self,
         ids: list[str],
@@ -213,6 +216,11 @@ class Graph:
         labels: Optional[list[str]] = None,
         max_nodes: int = 1000,
         max_edges_per_node: Optional[int] = None,
+        rank: str = "bfs",
+        alpha: float = 0.15,
+        iterations: int = 20,
+        candidate_factor: int = 5,
+        seed_weights: Optional[dict[str, float]] = None,
     ) -> NeighborhoodResult: ...
 
     # ── Idempotent upsert (M1-4) ────────────────────────────────────

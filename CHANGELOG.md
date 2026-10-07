@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`neighborhood` rankeado con Personalized PageRank** (#176):
+  `ExpandOptions.rank = Rank::Ppr { alpha, iterations, candidate_factor,
+  seed_weights }` (`Rank::ppr()` con 0.15 / 20 / 5 / pesos iguales); Python
+  `neighborhood(..., rank="ppr", alpha=, iterations=, candidate_factor=,
+  seed_weights=)`. Con `max_nodes` cortando, el BFS se quedaba con lo primero
+  en orden de nivel; ahora el BFS junta hasta `candidate_factor × max_nodes`
+  candidatos, un PPR sembrado en las semillas corre sobre ese subgrafo en RAM
+  y se conservan los mejores por score (semillas siempre, desempate por
+  `NodeId`). Un nodo a dos saltos al que apuntan varias semillas puede
+  superar a uno a un salto al que apunta una sola. `Neighborhood.score_of`
+  (Python `"score"`) trae el score; vacío con el default `Rank::Bfs`, que no
+  cambia. El PPR es propio del módulo y determinista (índices por `NodeId`,
+  suma en orden fijo, masa colgante a las semillas): no reutiliza
+  `PageRank::personalized`, que vive tras `algorithms`, pierde esa masa y
+  suma en el orden de las aristas. Medido a 100k chunks, 10 semillas, 2
+  saltos, recortado a 50: BFS 0.149 ms, PPR 0.232 ms. **Cambio de API:**
+  `ExpandOptions` gana el campo `rank`; un literal sin `..Default::default()`
+  tiene que añadirlo.
 - **`add_node_embeddings(model, [(id, vector), …])`: carga de embeddings por
   lote** (#175), en Rust (`Graph::add_node_embeddings`) y Python. Equivale a
   `add_node_embedding` por cada par, pero:

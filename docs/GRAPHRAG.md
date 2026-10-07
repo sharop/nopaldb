@@ -39,6 +39,21 @@ context = render(chunks, ctx["nodes"], ctx["edges"])
   filtered out is neither returned nor expanded; `max_nodes` caps the result
   (`truncated` tells you) and `max_edges_per_node` is the brake on a
   super-node. `neighbors(id)` and `degree(id)` are the one-hop shortcuts.
+- **Ranking the expansion (0.6.10):** with `max_nodes` cutting, BFS keeps
+  whatever comes first in level order. `rank="ppr"` keeps the most relevant
+  nodes instead: the BFS gathers up to `candidate_factor × max_nodes`
+  candidates (5× by default), a Personalized PageRank seeded at the hits runs
+  over them in memory, and the best by score are kept (seeds always stay,
+  ties break by node id). A node two hops away that several hits point to can
+  then beat one hop away that only one hit points to. Pass the search score
+  as `seed_weights` to favour the best hits; `ctx["score"]` has each node's
+  score.
+
+  ```python
+  ctx = g.neighborhood([h["node_id"] for h in hits], depth=2, direction="both",
+                       max_nodes=50, rank="ppr",
+                       seed_weights={h["node_id"]: h["score"] for h in hits})
+  ```
 
 ## In NQL
 

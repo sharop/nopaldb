@@ -8,7 +8,8 @@
 //! - `search`: híbrida k=10 sin filtro y con filtro de etiqueta; solo texto
 //!   k=10 (aísla la rama full-text); KNN k=10
 //! - `hydrate`: `get_nodes` de 10 ids
-//! - `neighborhood`: 1 y 2 saltos desde 10 semillas
+//! - `neighborhood`: 1 y 2 saltos desde 10 semillas; 2 saltos recortado a
+//!   50 nodos por BFS y por Personalized PageRank (#176)
 //! - `nql`: `where c.id = "…"`, `where c.id in [10 ids]`, patrón de 1 salto;
 //!   buscar + expandir en una consulta con `similar_to` y con `hybrid` sobre
 //!   el vector literal (0.6.10, #174: `hybrid` ya no recorre la etiqueta)
@@ -208,6 +209,14 @@ fn bench_retrieval(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new(format!("depth{depth}_10seeds"), n), &n, |b, _| {
             let opts = ExpandOptions { direction: nopaldb::Direction::Both, max_nodes: 5_000, ..Default::default() };
             b.to_async(&rt).iter(|| async { black_box(fx.graph.neighborhood(&fx.seeds, depth, &opts).await.expect("neighborhood")) })
+        });
+    }
+    // #176: el mismo vecindario de 2 saltos recortado a 50 nodos, por orden
+    // de BFS y por Personalized PageRank (candidatos = 5 × 50).
+    for (name, rank) in [("depth2_10seeds_top50_bfs", nopaldb::Rank::Bfs), ("depth2_10seeds_top50_ppr", nopaldb::Rank::ppr())] {
+        g.bench_with_input(BenchmarkId::new(name, n), &n, |b, _| {
+            let opts = ExpandOptions { direction: nopaldb::Direction::Both, max_nodes: 50, rank: rank.clone(), ..Default::default() };
+            b.to_async(&rt).iter(|| async { black_box(fx.graph.neighborhood(&fx.seeds, 2, &opts).await.expect("neighborhood")) })
         });
     }
     g.finish();

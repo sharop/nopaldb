@@ -84,6 +84,12 @@ with tempfile.TemporaryDirectory() as tmp:
     assert all(e["source"] in nb["depth"] and e["target"] in nb["depth"] for e in nb["edges"])
     small = g.neighborhood([c0], depth=2, max_nodes=2)
     assert small["truncated"] is True and len(small["nodes"]) == 2
+    assert small["score"] == {}, "BFS does not score"
+    ranked = g.neighborhood([c0, chunks[1]], depth=2, direction="both", max_nodes=5,
+                            rank="ppr", seed_weights={c0: 2.0, chunks[1]: 1.0})
+    assert len(ranked["nodes"]) == 5 and [x["id"] for x in ranked["nodes"][:2]] == [c0, chunks[1]], "seeds first"
+    rest = [ranked["score"][x["id"]] for x in ranked["nodes"][2:]]
+    assert rest == sorted(rest, reverse=True), "then by PPR score"
     only_related = g.neighborhood([c0], depth=1, edge_types=["RELATED"])
     assert [x["id"] for x in only_related["nodes"]] == [c0], "a chunk has no RELATED edges"
     no_chunks = g.neighborhood([ents[0]], depth=2, direction="both", labels=["Entity"])
