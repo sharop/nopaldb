@@ -12,7 +12,7 @@ pub mod hybrid;
 pub(crate) mod applier;
 pub use view::{GraphView, Subgraph};
 pub use upsert::{LinkSpec, UpsertOutcome, UpsertRequest, UPSERT_TX_ROWS};
-pub use neighborhood::{ExpandOptions, Neighborhood};
+pub use neighborhood::{ExpandOptions, Neighborhood, Rank};
 pub use stats::{
     GcAutoSummary, GcRun, GcSection, GraphSection, IndexSection, OpenPhasesMs, Progress,
     ProgressCallback, RecoverySection, StatsReport, StorageSection, WalSection,
