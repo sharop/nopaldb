@@ -87,6 +87,18 @@ with tempfile.TemporaryDirectory() as tmp:
     comms = g.leiden(labels=["Entity"], edge_types=["RELATED"], weight="w")
     assert set(comms) == set(ents), "only entities get a community"
     assert all(isinstance(c, int) for c in comms.values())
+    # Jerarquía (0.6.11, #190 b): nivel 0 = leiden(); cada nivel más fino
+    # queda dentro del anterior.
+    levels = g.leiden_hierarchy(labels=["Entity"], edge_types=["RELATED"], weight="w", max_cluster_size=1)
+    assert levels[0] == comms and all(set(lv) == set(ents) for lv in levels)
+    for coarse, fine in zip(levels, levels[1:]):
+        parent: dict[int, int] = {}
+        assert all(parent.setdefault(fine[n], coarse[n]) == coarse[n] for n in ents), "nested"
+    try:
+        g.leiden_hierarchy(resolution_factor=1.0)
+        raise AssertionError("resolution_factor <= 1 must fail")
+    except (ValueError, RuntimeError) as e:
+        assert "resolution_factor" in str(e)
     small = g.neighborhood([c0], depth=2, max_nodes=2)
     assert small["truncated"] is True and len(small["nodes"]) == 2
     assert small["score"] == {}, "BFS does not score"

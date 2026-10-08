@@ -342,6 +342,60 @@ impl PyGraph {
         Ok(parts.into_iter().map(|(id, c)| (id.to_string(), c)).collect())
     }
 
+    /// Leiden community hierarchy, coarsest first: a list of
+    /// {node_id: community}, one per level.
+    ///
+    /// Level 0 is `leiden(...)` with the same options. For level L+1 every
+    /// community of level L with more than `max_cluster_size` nodes is split
+    /// again by Leiden on its own subgraph with gamma ·
+    /// resolution_factor^(L+1); smaller ones carry over. Stops when nothing
+    /// splits or at `max_levels`. Every community of level L+1 lies inside
+    /// one community of level L, so a node's parent community is simply its
+    /// community one level up. Not cached; runs with the GIL released.
+    ///
+    /// Example:
+    ///     >>> levels = graph.leiden_hierarchy(labels=["Entity"], max_cluster_size=10)
+    ///     >>> top, finer = levels[0], levels[-1]
+    #[cfg(feature = "algorithms")]
+    #[pyo3(signature = (
+        labels=None, edge_types=None, weight=None, gamma=0.1,
+        max_cluster_size=10, resolution_factor=2.0, max_levels=8
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn leiden_hierarchy(
+        &self,
+        py: Python<'_>,
+        labels: Option<Vec<String>>,
+        edge_types: Option<Vec<String>>,
+        weight: Option<String>,
+        gamma: f64,
+        max_cluster_size: usize,
+        resolution_factor: f64,
+        max_levels: usize,
+    ) -> PyResult<Vec<std::collections::HashMap<String, usize>>> {
+        if !(gamma.is_finite() && gamma > 0.0) {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("gamma must be a number > 0"));
+        }
+        let graph = self.graph()?;
+        let config = crate::algorithms::community::LeidenConfig {
+            gamma,
+            labels,
+            edge_types,
+            weight_property: weight,
+            ..Default::default()
+        };
+        let options =
+            crate::algorithms::community::LeidenHierarchyOptions { max_cluster_size, resolution_factor, max_levels };
+        let hierarchy = to_py_result(crate::python::runtime::block_on(py, async move {
+            crate::algorithms::community::LeidenCommunity::new(config).detect_hierarchy(graph.as_ref(), &options).await
+        }))?;
+        Ok(hierarchy
+            .levels
+            .into_iter()
+            .map(|level| level.into_iter().map(|(id, c)| (id.to_string(), c)).collect())
+            .collect())
+    }
+
     /// Number of edges incident to `id`: "out", "in" or "both" (default).
     #[pyo3(signature = (id, direction="both"))]
     fn degree(&self, py: Python<'_>, id: &str, direction: &str) -> PyResult<usize> {
