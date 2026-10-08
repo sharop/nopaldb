@@ -91,6 +91,91 @@ says `INDEX SEEK (IN)`. Equality is strict, as with `=`: `1` is not `1.0`.
 A root `AND` seeds the candidates with its indexed side and applies the rest
 as a predicate.
 
+## Global search (0.6.11)
+
+The local cycle answers questions about specific entities. A global question
+("what are the main topics?", "how do we organize irrigation?") needs a view
+of the whole corpus: GraphRAG answers it with **community reports**. You
+detect communities, have the LLM summarize each one, and at query time run a
+map-reduce over the relevant summaries. NopalDB does not call the LLM: it
+stores the communities and the reports, tells you which reports are stale,
+and searches them.
+
+```python
+import nopaldb
+
+g = nopaldb.Graph.open("data/kb.db")
+
+# 1. Communities: hierarchy (level 0 = coarsest) persisted with stable keys.
+levels = g.leiden_hierarchy(labels=["Entity"], edge_types=["RELATED"], max_cluster_size=10)
+g.materialize_communities(levels)          # (:Community {partition, level, key, size})
+
+# 2. Reports: only for communities without one, or whose content changed.
+for s in g.stale_reports():                # [{"status", "community_key", "level", ...}]
+    if s["status"] == "orphan":            # its community no longer exists
+        g.delete("Report", "community_key", s["community_key"])
+        continue
+    members = g.execute_nql(
+        f'find e.name, e.description from (e:Entity)-[:IN_COMMUNITY]->(c:Community) '
+        f'where c.key = "{s["community_key"]}"')
+    title, summary, rating = llm_summarize(members)                 # your LLM
+    g.upsert_community_report(s["community_key"], title, summary, rating=rating,
+                              vector=embed(summary), model="m")    # your embedder
+
+# 3. Global search over one level: retrieve, map, reduce.
+q = embed(question)
+hits = g.search_hybrid(vector=q, model="m", k=20, label="Report",
+                       props={"level": 1}, hydrate=True)
+partials = [llm_partial_answer(question, h["node"]["properties"]) for h in hits]   # map
+answer = llm_combine(question, sorted(partials, key=lambda p: -p.score))          # reduce
+```
+
+The same retrieval in NQL, with the question's vector as a literal (an agent
+behind the MCP server does this in one round trip):
+
+```sql
+find r.title, r.summary, r.rating, r.level from (r:Report)
+where similar_to(r, vector = [0.12, -0.03, ...], model = "m", k = 20)
+
+-- members of a community, to write its report
+find e.name from (e:Entity)-[:IN_COMMUNITY]->(c:Community) where c.key = "leiden/L1/..."
+```
+
+`similar_to` takes the K nearest reports of every level; keep the level you
+want on the client, or use `search_hybrid(..., props={"level": L})` to filter
+before ranking.
+
+**The schema** (a convention; `upsert_community_report` writes it for you):
+
+```
+(:Community {partition, level, key, size})
+(member)-[:IN_COMMUNITY]->(:Community)                  one edge per level
+(:Community level L)-[:PARENT_OF]->(:Community level L+1)
+(:Report {community_key, partition, level, title, summary, rating,
+          generated_at, source_version})-[:SUMMARIZES]->(:Community)
+```
+
+- **One report per community**, keyed by `community_key`. Rewriting replaces
+  it; the report keeps its node id and its embedding is refreshed.
+- **Stable keys:** recomputing the communities keeps the key (and node id) of
+  every community that overlaps a previous one by Jaccard ≥ 0.5, so its
+  report stays attached. See [ALGORITHMS.md](ALGORITHMS.md#persisted-communities-with-stable-keys-0611-190-c).
+- **`source_version`** is the community's **fingerprint**
+  (`community_fingerprint(key)`): a hash of its members (label and properties)
+  and of the edges between them (type and properties). Not only the member
+  set: a new edge inside a community may not move it to another partition,
+  yet it changes what its report should say.
+- **`stale_reports(partition, level)`** lists `missing` (no report), `stale`
+  (fingerprint changed) and `orphan` (the report's community no longer
+  exists), sorted by level and key. An edge inside community C is also inside
+  every ancestor of C, so C and its ancestors become stale and its siblings
+  do not.
+- Higher levels can be summarized from the reports of their children (follow
+  `PARENT_OF`), as the reference GraphRAG does for large communities.
+
+`python/scripts/global_search_sample.py` runs this end to end with a fake LLM
+and embedder in `make check-python`.
+
 ## Measured
 
 Python, 100k `Chunk` nodes with 64-dimension vectors, 20k `Entity`, 260k

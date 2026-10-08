@@ -26,6 +26,22 @@
 // Descartado: key = id de la comunidad en la partición (`0..k`). Cambia con
 // cualquier recálculo aunque la comunidad sea la misma, que es justo lo que
 // las keys estables deben evitar.
+//
+// Reportes de comunidad (#191). La base no llama al LLM; da la convención y
+// lo que sabe calcular:
+//
+//   (:Report {community_key, partition, level, title, summary, rating,
+//             generated_at, source_version})-[:SUMMARIZES]->(:Community)
+//
+// `source_version` es la HUELLA del contenido que el reporte resume
+// (`community_fingerprint`): miembros con su etiqueta y propiedades, y las
+// aristas internas (entre miembros) con su tipo y propiedades. No solo el
+// conjunto de miembros: una arista nueva dentro de una comunidad puede no
+// moverla de partición y aun así cambia lo que su reporte debería decir. Una
+// arista interna de C también es interna a todos sus ancestros (las
+// comunidades gruesas contienen a C), así que esos quedan viejos con ella, y
+// las hermanas no. `stale_reports` compara cada huella actual con la del
+// reporte.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -83,6 +99,55 @@ impl CommunityMaterializeReport {
             && self.memberships_added + self.memberships_removed == 0
             && self.parent_links_added + self.parent_links_removed == 0
     }
+}
+
+/// Etiqueta de los reportes de comunidad (#191).
+pub const REPORT_LABEL: &str = "Report";
+/// Arista reporte → comunidad que resume.
+pub const SUMMARIZES: &str = "SUMMARIZES";
+
+/// Contenido de un reporte de comunidad, el que produce el LLM del cliente.
+#[derive(Debug, Clone, Default)]
+pub struct CommunityReport {
+    pub title: String,
+    pub summary: String,
+    /// Importancia que el LLM le asigna (convención de GraphRAG: 0–10).
+    pub rating: Option<f64>,
+    /// `(vector, modelo)` del resumen, para buscar reportes por similitud.
+    pub embedding: Option<(Vec<f32>, String)>,
+}
+
+/// Por qué [`Graph::stale_reports`] lista una comunidad o un reporte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ReportStatus {
+    /// La comunidad no tiene reporte.
+    Missing,
+    /// El contenido de la comunidad cambió desde que se escribió su reporte.
+    Stale,
+    /// El reporte apunta a una comunidad que ya no existe.
+    Orphan,
+}
+
+impl ReportStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReportStatus::Missing => "missing",
+            ReportStatus::Stale => "stale",
+            ReportStatus::Orphan => "orphan",
+        }
+    }
+}
+
+/// Una entrada de [`Graph::stale_reports`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleReport {
+    pub status: ReportStatus,
+    pub community_key: String,
+    pub level: usize,
+    /// La comunidad (`None` si es huérfano).
+    pub community: Option<NodeId>,
+    /// El reporte (`None` si falta).
+    pub report: Option<NodeId>,
 }
 
 /// Una comunidad ya persistida.
@@ -226,6 +291,132 @@ impl Graph {
         Ok(report)
     }
 
+    /// La huella actual del contenido de la comunidad `community_key`: lo que
+    /// [`Self::upsert_community_report`] guarda como `source_version`. Ver
+    /// el comentario del módulo.
+    pub async fn community_fingerprint(&self, community_key: &str) -> Result<String> {
+        let community = self.community_by_key(community_key).await?;
+        let members: BTreeSet<NodeId> = self
+            .get_incoming_edges(community.id)
+            .await?
+            .into_iter()
+            .filter(|e| e.edge_type == IN_COMMUNITY)
+            .map(|e| e.source)
+            .collect();
+        let mut reader = ContentReader::default();
+        reader.fingerprint(self, &members).await
+    }
+
+    /// Escribe (o reescribe) el reporte de la comunidad `community_key`
+    /// (#191): un upsert de `(:Report {community_key, ...})` con la arista
+    /// `SUMMARIZES` y `source_version` = la huella actual de la comunidad.
+    /// Un reporte por comunidad: reescribir reemplaza el anterior.
+    pub async fn upsert_community_report(
+        &self,
+        community_key: &str,
+        report: CommunityReport,
+    ) -> Result<(super::upsert::UpsertOutcome, NodeId)> {
+        let community = self.community_by_key(community_key).await?;
+        let version = self.community_fingerprint(community_key).await?;
+        let prop = |name: &str| community.properties.get(name).cloned().unwrap_or(PropertyValue::Null);
+        let generated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let props = HashMap::from([
+            ("community_key".to_string(), PropertyValue::String(community_key.to_string())),
+            ("partition".to_string(), prop("partition")),
+            ("level".to_string(), prop("level")),
+            ("title".to_string(), PropertyValue::String(report.title)),
+            ("summary".to_string(), PropertyValue::String(report.summary)),
+            ("rating".to_string(), report.rating.map_or(PropertyValue::Null, PropertyValue::Float)),
+            ("generated_at".to_string(), PropertyValue::Int(generated_at)),
+            ("source_version".to_string(), PropertyValue::String(version)),
+        ]);
+        self.upsert_node(super::upsert::UpsertRequest {
+            label: REPORT_LABEL.to_string(),
+            key: "community_key".to_string(),
+            props,
+            embedding: report.embedding,
+            links: vec![super::upsert::LinkSpec {
+                edge_type: SUMMARIZES.to_string(),
+                target_label: COMMUNITY_LABEL.to_string(),
+                target_key: "key".to_string(),
+                target_key_value: PropertyValue::String(community_key.to_string()),
+                props: HashMap::new(),
+                create_target_stub: false,
+            }],
+        })
+        .await
+    }
+
+    /// Las comunidades de `partition` (de `level`, o de todos los niveles)
+    /// sin reporte o con un reporte viejo, y los reportes huérfanos (su
+    /// comunidad ya no existe), ordenados por nivel y key (#191). Una
+    /// comunidad con su reporte al día no aparece.
+    pub async fn stale_reports(&self, partition: &str, level: Option<usize>) -> Result<Vec<StaleReport>> {
+        let communities = self.stored_communities(partition).await?;
+        let mut reports: HashMap<String, (NodeId, usize, Option<String>)> = HashMap::new();
+        for node in self.get_nodes_by_label(REPORT_LABEL).await? {
+            if node.properties.get("partition").and_then(PropertyValue::as_str) != Some(partition) {
+                continue;
+            }
+            let Some(key) = node.properties.get("community_key").and_then(PropertyValue::as_str) else {
+                continue;
+            };
+            let report_level = node.properties.get("level").and_then(PropertyValue::as_i64).unwrap_or(-1);
+            let version = node.properties.get("source_version").and_then(PropertyValue::as_str).map(str::to_string);
+            reports.insert(key.to_string(), (node.id, usize::try_from(report_level).unwrap_or(usize::MAX), version));
+        }
+        let mut out = Vec::new();
+        let mut reader = ContentReader::default();
+        for c in communities.iter().filter(|c| level.is_none_or(|l| c.level == l)) {
+            let report = reports.get(&c.key);
+            let status = match report {
+                None => Some(ReportStatus::Missing),
+                Some((_, _, version)) => {
+                    let members: BTreeSet<NodeId> = c.members.keys().copied().collect();
+                    let current = reader.fingerprint(self, &members).await?;
+                    (version.as_deref() != Some(current.as_str())).then_some(ReportStatus::Stale)
+                }
+            };
+            if let Some(status) = status {
+                out.push(StaleReport {
+                    status,
+                    community_key: c.key.clone(),
+                    level: c.level,
+                    community: Some(c.id),
+                    report: report.map(|r| r.0),
+                });
+            }
+        }
+        let live: HashSet<&str> = communities.iter().map(|c| c.key.as_str()).collect();
+        for (key, (id, report_level, _)) in &reports {
+            if !live.contains(key.as_str()) && level.is_none_or(|l| *report_level == l) {
+                out.push(StaleReport {
+                    status: ReportStatus::Orphan,
+                    community_key: key.clone(),
+                    level: *report_level,
+                    community: None,
+                    report: Some(*id),
+                });
+            }
+        }
+        out.sort_by(|a, b| (a.level, &a.community_key, a.status).cmp(&(b.level, &b.community_key, b.status)));
+        Ok(out)
+    }
+
+    async fn community_by_key(&self, community_key: &str) -> Result<Node> {
+        let value = PropertyValue::String(community_key.to_string());
+        for id in self.find_nodes_by_property("key", &value).await? {
+            let node = self.get_node(id).await?;
+            if node.label == COMMUNITY_LABEL {
+                return Ok(node);
+            }
+        }
+        Err(NopalError::custom(format!("community '{community_key}' not found")))
+    }
+
     /// Las comunidades ya persistidas de `partition`, con sus miembros.
     async fn stored_communities(&self, partition: &str) -> Result<Vec<Stored>> {
         let mut stored: Vec<Stored> = Vec::new();
@@ -350,12 +541,104 @@ fn pair_by_jaccard(
     pairing
 }
 
+/// Lee el contenido de las comunidades para su huella, con caché de nodos y
+/// de aristas salientes: en `stale_reports` un nodo está en una comunidad
+/// por nivel y se lee una sola vez.
+#[derive(Default)]
+struct ContentReader {
+    nodes: HashMap<NodeId, Option<Node>>,
+    outgoing: HashMap<NodeId, Vec<Edge>>,
+}
+
+impl ContentReader {
+    /// Huella de los miembros (etiqueta y propiedades) y de las aristas
+    /// entre ellos (tipo y propiedades), en orden canónico: FNV-1a de 128
+    /// bits, en hexadecimal. No entran los ids de arista: borrar y volver a
+    /// crear la misma relación no cambia el contenido.
+    async fn fingerprint(&mut self, graph: &Graph, members: &BTreeSet<NodeId>) -> Result<String> {
+        let missing: Vec<NodeId> = members.iter().filter(|m| !self.nodes.contains_key(m)).copied().collect();
+        if !missing.is_empty() {
+            for (id, node) in missing.iter().zip(graph.get_nodes(&missing).await?) {
+                self.nodes.insert(*id, node);
+            }
+        }
+        let mut hash = Fnv128::default();
+        let mut edges: Vec<Vec<u8>> = Vec::new();
+        for member in members {
+            hash.write(member.as_bytes());
+            if let Some(Some(node)) = self.nodes.get(member) {
+                hash.write(node.label.as_bytes());
+                hash.write(&canonical_properties(&node.properties));
+            }
+            if !self.outgoing.contains_key(member) {
+                let out = graph.get_outgoing_edges(*member).await?;
+                self.outgoing.insert(*member, out);
+            }
+            for edge in &self.outgoing[member] {
+                if members.contains(&edge.target) {
+                    let mut bytes = Vec::new();
+                    bytes.extend_from_slice(edge.source.as_bytes());
+                    bytes.extend_from_slice(edge.target.as_bytes());
+                    bytes.extend_from_slice(edge.edge_type.as_bytes());
+                    bytes.push(0);
+                    bytes.extend_from_slice(&canonical_properties(&edge.properties));
+                    edges.push(bytes);
+                }
+            }
+        }
+        edges.sort();
+        hash.write(b"edges");
+        for edge in &edges {
+            hash.write(edge);
+        }
+        Ok(format!("{:032x}", hash.0))
+    }
+}
+
+/// Propiedades en orden de clave, cada valor como JSON: bytes estables.
+fn canonical_properties(props: &HashMap<String, PropertyValue>) -> Vec<u8> {
+    let sorted: BTreeMap<&String, &PropertyValue> = props.iter().collect();
+    let mut out = Vec::new();
+    for (key, value) in sorted {
+        out.extend_from_slice(key.as_bytes());
+        out.push(0);
+        out.extend_from_slice(&serde_json::to_vec(value).unwrap_or_default());
+        out.push(0);
+    }
+    out
+}
+
+/// FNV-1a de 128 bits: estable entre versiones de Rust, a diferencia de
+/// `DefaultHasher`.
+struct Fnv128(u128);
+
+impl Default for Fnv128 {
+    fn default() -> Self {
+        Fnv128(0x6c62_272e_07bb_0142_62b8_2175_6295_c58d)
+    }
+}
+
+impl Fnv128 {
+    fn write(&mut self, bytes: &[u8]) {
+        const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013B;
+        for byte in bytes {
+            self.0 ^= u128::from(*byte);
+            self.0 = self.0.wrapping_mul(PRIME);
+        }
+        // Separador: ("ab","c") y ("a","bc") no deben dar lo mismo.
+        self.0 ^= 0xff;
+        self.0 = self.0.wrapping_mul(PRIME);
+    }
+}
+
 /// Key de una comunidad sin pareja: `partition/L<level>/<hash>`, con el hash
 /// (FNV-1a de 128 bits) de sus miembros ordenados. Estable entre versiones
 /// de Rust, a diferencia de `DefaultHasher`.
 fn derived_key(partition: &str, level: usize, members: &BTreeSet<NodeId>) -> String {
+    // Bytes contiguos de los ids, sin separadores: así se calculaba desde
+    // 0.6.11 (#190 c) y las keys ya persistidas no deben cambiar.
     const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013B;
-    let mut hash: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+    let mut hash: u128 = Fnv128::default().0;
     for member in members {
         for byte in member.as_bytes() {
             hash ^= u128::from(*byte);

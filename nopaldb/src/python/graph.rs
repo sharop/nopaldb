@@ -450,6 +450,89 @@ impl PyGraph {
         ]))
     }
 
+    /// Current fingerprint of the content a community report summarizes:
+    /// its members (label and properties) and the edges between them (type
+    /// and properties). `upsert_community_report` stores it as
+    /// `source_version`; `stale_reports` compares against it.
+    fn community_fingerprint(&self, py: Python<'_>, community_key: &str) -> PyResult<String> {
+        let graph = self.graph()?;
+        let key = community_key.to_string();
+        to_py_result(crate::python::runtime::block_on(py, async move { graph.community_fingerprint(&key).await }))
+    }
+
+    /// Write (or rewrite) the report of a community: upserts
+    /// (:Report {community_key, partition, level, title, summary, rating,
+    /// generated_at, source_version})-[:SUMMARIZES]->(:Community), one per
+    /// community, with source_version = the community's current fingerprint.
+    /// `vector`/`model` embed the summary so reports can be searched by
+    /// similarity. NopalDB does not call the LLM: you pass what it wrote.
+    /// Returns (outcome, report_id).
+    ///
+    /// Example:
+    ///     >>> g.upsert_community_report(key, title, summary, rating=7.5,
+    ///     ...                           vector=embed(summary), model="m")
+    #[pyo3(signature = (community_key, title, summary, rating=None, vector=None, model=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn upsert_community_report(
+        &self,
+        py: Python<'_>,
+        community_key: &str,
+        title: String,
+        summary: String,
+        rating: Option<f64>,
+        vector: Option<Vec<f32>>,
+        model: Option<String>,
+    ) -> PyResult<(String, String)> {
+        let embedding = match (vector, model) {
+            (Some(v), Some(m)) => Some((v, m)),
+            (None, None) => None,
+            _ => {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    "vector and model go together",
+                ))
+            }
+        };
+        let graph = self.graph()?;
+        let key = community_key.to_string();
+        let report = crate::graph::communities::CommunityReport { title, summary, rating, embedding };
+        let (outcome, id) = to_py_result(crate::python::runtime::block_on(py, async move {
+            graph.upsert_community_report(&key, report).await
+        }))?;
+        Ok((outcome.as_str().to_string(), id.to_string()))
+    }
+
+    /// Communities of `partition` (of `level`, or of every level) whose
+    /// report is missing or stale, plus orphan reports (their community no
+    /// longer exists), sorted by level and key. Each item:
+    /// {"status": "missing" | "stale" | "orphan", "community_key", "level",
+    /// "community": id or None, "report": id or None}. A community whose
+    /// report is up to date is not listed.
+    #[pyo3(signature = (partition="leiden", level=None))]
+    fn stale_reports(
+        &self,
+        py: Python<'_>,
+        partition: &str,
+        level: Option<usize>,
+    ) -> PyResult<Vec<Py<PyDict>>> {
+        let graph = self.graph()?;
+        let partition = partition.to_string();
+        let stale = to_py_result(crate::python::runtime::block_on(py, async move {
+            graph.stale_reports(&partition, level).await
+        }))?;
+        stale
+            .into_iter()
+            .map(|s| {
+                let d = PyDict::new(py);
+                d.set_item("status", s.status.as_str())?;
+                d.set_item("community_key", s.community_key)?;
+                d.set_item("level", s.level)?;
+                d.set_item("community", s.community.map(|id| id.to_string()))?;
+                d.set_item("report", s.report.map(|id| id.to_string()))?;
+                Ok(d.unbind())
+            })
+            .collect()
+    }
+
     /// Number of edges incident to `id`: "out", "in" or "both" (default).
     #[pyo3(signature = (id, direction="both"))]
     fn degree(&self, py: Python<'_>, id: &str, direction: &str) -> PyResult<usize> {
