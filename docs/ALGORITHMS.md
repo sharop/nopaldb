@@ -14,7 +14,7 @@ NopalDB includes 7 built-in graph algorithms, all integrated into the NQL query 
 | **Degree** | O(E) | Connectivity | `degree(n)` |
 | **Shortest Path** | O(E·log V) | Path finding | Rust API |
 | **Community (Louvain)** | O(E·log² V) | Community detection | `community(n)` |
-| **Community (Leiden)** | O(V·E·iter) | Well-connected communities | `leiden(n)` |
+| **Community (Leiden)** | ~O(E · levels · iterations) | Well-connected communities | `leiden(n)` |
 
 *k = iterations, d = avg degree, V = nodes, E = edges, iter = outer loop count*
 
@@ -268,10 +268,15 @@ H(P) = Σ_C [ e_C − γ · n_C · (n_C − 1) / 2 ]
 
 ### Phase 1 — Local Moving (CPM gain)
 
-For each node v moving from community s to t:
+Nodes carry a **size** (1 for an original node; the number of members for an
+aggregated one, see Phase 3). Moving node v (size s) from community S to T:
 ```
-ΔH(v: s→t) = e(v, C_t) − e(v, C_s\{v}) + γ · (|C_s| − 1 − |C_t|)
+ΔH(v: S→T) = e(v, C_T) − e(v, C_S\{v}) − γ · s · (‖C_T‖ − (‖C_S‖ − s))
 ```
+where ‖C‖ is the total size of C. With s = 1 this is the usual
+`e(v,C_t) − e(v,C_s\{v}) + γ·(|C_s| − 1 − |C_t|)`. A node may also move to an
+empty community. Nodes are processed through a queue (initially in node-id
+order); when one moves, its neighbours in other communities are re-queued.
 
 ### Phase 2 — Refinement (well-connectedness guarantee)
 
@@ -280,7 +285,50 @@ Within each community C from Phase 1, restarts from singletons and applies restr
 - Subset R is **well-connected** in C if: `e(R, C\R) ≥ γ · |R| · (|C| − |R|)`
 - Node v can join R only if it is still a singleton AND R is well-connected
 
-This refinement step is the key contribution of the paper — it prevents the disconnected-community pathology of Louvain.
+This refinement step is the key contribution of the paper — it prevents the disconnected-community pathology of Louvain. The refined partition is **not** the result: it only decides how to aggregate (Phase 3).
+
+### Phase 3 — Aggregation (since 0.6.11, #194)
+
+Each refined part becomes a node whose size is its number of members, with
+edge weights summed between parts; the Phase 1 partition is the starting
+partition of the aggregated graph. Phases 1–3 repeat until Phase 1 groups
+nothing. This is what lets whole communities merge: moving nodes one at a
+time cannot join two halves of a dense group, because the first node to move
+leaves its own neighbours behind. The result is the Phase 1 partition,
+projected to the original nodes. The whole procedure is then iterated from
+its own result until it no longer changes (at most `max_iterations` times).
+
+**Until 0.6.10 the implementation was flat and broken** (#194): it reused
+community ids across iterations (a community size could go below zero: a
+panic in debug builds, silently corrupted results in release), the refinement
+*replaced* the partition, and there was no aggregation. On graphs with planted
+50-node communities it returned ~17× more communities than blocks and a much
+lower CPM quality than the planted partition itself:
+
+| graph | partition | communities | CPM quality (γ = 0.1) |
+|---|---|---|---|
+| 2k nodes, 40 dense blocks (p = 0.3) | planted | 40 | 9 718 |
+| | ≤ 0.6.10 | 362 | 3 927 |
+| | 0.6.11 | 40 | 9 718 |
+| 10k nodes, 200 sparse blocks (~4 in-block edges per node) | planted | 200 | 12 031 |
+| | ≤ 0.6.10 | 3 451 | 7 401 |
+| | 0.6.11 | 632 | 14 290 |
+
+On the sparse graph the in-block density (≈ 0.155) is close to γ, random
+fluctuations form denser subgroups, and splitting a block genuinely raises
+the CPM quality — hence more communities than blocks, and a quality above the
+planted partition. `leiden(n)` results therefore change in 0.6.11: fewer,
+larger communities with a higher CPM quality.
+
+It is also faster (release build, sparse planted blocks, Apple Silicon):
+
+| nodes | ≤ 0.6.10 | 0.6.11 |
+|---|---|---|
+| 10 000 | 1 340 ms | 58 ms |
+| 100 000 | 18 067 ms | 761 ms |
+
+Dense `Vec` indices replace per-node hash maps, and each aggregation level
+works on far fewer nodes than the one before.
 
 ### Example (Rust API)
 
@@ -330,8 +378,8 @@ let communities = leiden.detect(&graph).await?;
   and options, so consecutive queries with different options do not reuse
   each other's partition. Python: `graph.leiden(labels=…, edge_types=…,
   weight=…, gamma=…)` returns `{node_id: community}` and shares that cache.
-- Still flat: nodes move one at a time and whole communities are never
-  merged. The aggregation phase (hierarchy) is #190 (b).
+- Since 0.6.11 the aggregation phase merges whole communities (#194); the
+  levels it builds are exposed as a hierarchy in #190 (b).
 
 ### Example (NQL)
 

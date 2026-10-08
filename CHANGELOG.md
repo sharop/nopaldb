@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Leiden correcto: núcleo reescrito según el paper** (#194). `leiden(n)`
+  (Rust `LeidenCommunity::detect`, NQL, Python `graph.leiden`) estaba roto:
+  - reutilizaba ids de comunidad entre iteraciones, así que el tamaño de una
+    comunidad podía bajar de cero: **pánico en debug** ("attempt to subtract
+    with overflow") y **resultado corrompido en silencio en release**;
+  - el refinamiento **reemplazaba** la partición (deshacía comunidades en
+    nodos sueltos) en lugar de servir para agregar;
+  - no había agregación: dos mitades de un grupo denso nunca se unían.
+
+  Núcleo nuevo con índices densos (sin ids inventados), nodos con tamaño y
+  el ciclo del paper: mover → refinar → agregar sobre la partición refinada
+  (con la del movimiento como partición inicial del nivel agregado), hasta
+  que mover no agrupe nada; luego se itera desde el propio resultado hasta
+  que no cambie. Se reporta la partición del movimiento. Se conserva lo de
+  #193 (alcance, pesos, caché por opciones, independencia del orden de
+  inserción).
+
+  **`leiden(n)` cambia su resultado:** menos comunidades, más grandes y con
+  mayor calidad CPM. En grafos con bloques sembrados de 50 nodos (γ = 0.1):
+  40 bloques densos → antes 362 comunidades (CPM 3 927), ahora 40 (CPM
+  9 718, la de los bloques); 200 bloques dispersos → antes 3 451 (CPM
+  7 401), ahora 632 (CPM 14 290, por encima de los bloques sembrados:
+  12 031). Además es más rápido (release, bloques dispersos): 10k nodos
+  1 340 → 58 ms, 100k nodos 18 067 → 761 ms (≈ 23×), por las estructuras
+  densas y porque la agregación reduce el trabajo de cada nivel. El test de las familias florentinas
+  pasa de 5 a 4 comunidades: la nueva partición tiene calidad CPM 11.7
+  contra 11.1. Detalle en `docs/ALGORITHMS.md` (Phase 3).
+
 ### Added
 - **Leiden ponderado y acotado** (#190 a). `LeidenConfig` gana `labels`,
   `edge_types` y `weight_property`; NQL `leiden(n, labels = [...],

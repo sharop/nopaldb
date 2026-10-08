@@ -344,16 +344,17 @@ impl LouvainCommunity {
 //    ninguna comunidad resultante tenga partes que sean internamente
 //    desconectadas (problema conocido de Louvain).
 //
-// 3. Complejidad: O(n · m · iterations) en la implementación plana usada
-//    aquí (sin agregación de grafo). El paper original usa agregación para
-//    escalar a grafos de millones de nodos, pero para los rangos típicos de
-//    NopalDB (hasta ~100K nodos) la versión plana es suficiente y más simple.
+// 3. Agregación (#194): cada parte refinada se vuelve un nodo del nivel
+//    siguiente, lo que permite unir comunidades enteras. Hasta 0.6.10 la
+//    implementación era plana, sin agregación, y estaba rota (ver el núcleo
+//    más abajo). Costo ≈ O(m) por nivel, con pocos niveles; 100k nodos en
+//    menos de 1 s (docs/ALGORITHMS.md).
 //
-// Invariante garantizado (ausente en Louvain)
-// ────────────────────────────────────────────
-// Al terminar, cada comunidad C cumple la condición de bien-conexión:
-//   Para todo subconjunto propio S ⊂ C: e(S, C\S) ≥ γ · |S| · (|C|−|S|)
-// Esto asegura que no existan "islas" desconectadas dentro de una comunidad.
+// Garantía (ausente en Louvain)
+// ─────────────────────────────
+// Como en el paper, tras cada iteración las comunidades son γ-conexas: se
+// construyen solo con fusiones bien conectadas, así que no quedan "islas"
+// desconectadas dentro de una comunidad.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Configuración del algoritmo Leiden.
@@ -374,7 +375,9 @@ pub struct LeidenConfig {
     /// se compara contra la densidad en unidades de peso: si los pesos no
     /// son del orden de 1, escalar `gamma` en proporción.
     pub gamma: f64,
-    /// Número máximo de iteraciones del bucle externo (Phase1 + Phase2). Default: 10.
+    /// Número máximo de iteraciones de Leiden completo (mover → refinar →
+    /// agregar, todos los niveles); cada iteración parte del resultado de la
+    /// anterior y se para antes si no cambia. Default: 10.
     pub max_iterations: usize,
     /// Ganancia CPM mínima para aceptar un movimiento de nodo. Default: 1e-9.
     pub min_gain: f64,
@@ -483,7 +486,24 @@ impl LeidenCommunity {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // CPU-bound core (ejecutado en spawn_blocking)
+    // Núcleo (#194): Leiden según Traag, Waltman y van Eck (2019), con CPM y
+    // nodos con tamaño. Hasta 0.6.10 el núcleo era plano, reutilizaba ids de
+    // comunidad entre iteraciones (el tamaño de una comunidad podía bajar de
+    // cero: pánico en debug, silencioso en release) y dejaba que el
+    // refinamiento REEMPLAZARA la partición. Ahora:
+    //
+    //   1. Mover (`move_nodes_fast`): cada nodo se va a la comunidad vecina
+    //      (o a una vacía) que más mejora la calidad CPM.
+    //   2. Refinar (`refine`): dentro de cada comunidad, se arma desde
+    //      singletons una partición más fina de partes bien conectadas.
+    //   3. Agregar (`aggregate`): cada parte refinada se vuelve un nodo con
+    //      TAMAÑO = sus miembros; la partición inicial del nivel siguiente es
+    //      la del paso 1. Se repite hasta que mover no agrupe nada.
+    //
+    // Se reporta la partición del paso 1 (no la refinada), proyectada a los
+    // nodos originales. Estructuras densas: nodos 0..n en orden de `NodeId`,
+    // vecinos ordenados, comunidades = índices; no se inventan ids, así que
+    // no hay choques. Determinista: colas y empates en orden de índice.
     // ─────────────────────────────────────────────────────────────────────────
 
     fn detect_cpu(
@@ -491,44 +511,62 @@ impl LeidenCommunity {
         edges: Vec<crate::types::Edge>,
         config: LeidenConfig,
     ) -> Result<HashMap<NodeId, usize>> {
-        // ── Alcance (#190): etiquetas y tipos de arista ─────────────────────
-        let nodes: Vec<crate::types::Node> = match &config.labels {
-            Some(labels) => nodes.into_iter().filter(|n| labels.contains(&n.label)).collect(),
-            None => nodes,
-        };
-        if nodes.is_empty() {
+        let Some(graph) = DenseGraph::from_scope(nodes, edges, &config)? else {
             return Ok(HashMap::new());
-        }
-        let in_scope: HashSet<NodeId> = nodes.iter().map(|n| n.id).collect();
-        let edges: Vec<crate::types::Edge> = edges
-            .into_iter()
-            .filter(|e| config.edge_types.as_ref().is_none_or(|t| t.contains(&e.edge_type)))
-            .filter(|e| in_scope.contains(&e.source) && in_scope.contains(&e.target))
-            .collect();
+        };
+        let partition = leiden_partition(&graph, &config);
+        Ok(graph.node_ids.iter().copied().zip(partition).collect())
+    }
+}
 
-        // ── Adyacencia no dirigida ───────────────────────────────────────────
-        // Vecinos en `BTreeMap`: las sumas de pesos (`edge_weight_to_community`)
-        // recorren los vecinos en orden de `NodeId`, así que con pesos reales
-        // el resultado no depende del orden de iteración de un `HashMap`
-        // (que cambia entre ejecuciones) y un empate se decide igual siempre.
-        // Sin `weight_property`: peso 1.0 por par con `insert` (no +=), para
-        // que una relación guardada en las dos direcciones (a→b y b→a) no
-        // pese 2.0 — el comportamiento de siempre. Con `weight_property`: el
-        // peso de cada arista se SUMA al del par (#190).
-        let mut adjacency: HashMap<NodeId, BTreeMap<NodeId, f64>> = HashMap::new();
-        match &config.weight_property {
-            None => {
-                for edge in &edges {
-                    adjacency.entry(edge.source).or_default().insert(edge.target, 1.0);
-                    adjacency.entry(edge.target).or_default().insert(edge.source, 1.0);
-                }
+/// Grafo no dirigido con nodos densos `0..n` (en orden de `NodeId`) y tamaño
+/// por nodo. `adj[i]` = vecinos `(j, peso)` ordenados por `j`, sin
+/// autolazos (el peso interno de un nodo no cambia al moverlo).
+struct DenseGraph {
+    node_ids: Vec<NodeId>,
+    adj: Vec<Vec<(usize, f64)>>,
+    size: Vec<f64>,
+}
+
+impl DenseGraph {
+    /// Alcance y pesos de `config` (#190 a) sobre los nodos y aristas dados.
+    /// `None` si no queda ningún nodo.
+    fn from_scope(
+        nodes: Vec<crate::types::Node>,
+        edges: Vec<crate::types::Edge>,
+        config: &LeidenConfig,
+    ) -> Result<Option<DenseGraph>> {
+        let mut node_ids: Vec<NodeId> = nodes
+            .into_iter()
+            .filter(|n| config.labels.as_ref().is_none_or(|l| l.contains(&n.label)))
+            .map(|n| n.id)
+            .collect();
+        if node_ids.is_empty() {
+            return Ok(None);
+        }
+        node_ids.sort_unstable();
+        node_ids.dedup();
+        let index: HashMap<NodeId, usize> = node_ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+        // Pares no dirigidos: sin `weight_property`, peso 1 por par conectado
+        // (una relación guardada en las dos direcciones no pesa 2); con ella,
+        // suma de los pesos de las aristas del par. Orden de suma fijo.
+        let mut sorted: Vec<&crate::types::Edge> = edges
+            .iter()
+            .filter(|e| config.edge_types.as_ref().is_none_or(|t| t.contains(&e.edge_type)))
+            .collect();
+        sorted.sort_by_key(|e| e.id);
+        let mut pairs: BTreeMap<(usize, usize), f64> = BTreeMap::new();
+        for edge in sorted {
+            let (Some(&a), Some(&b)) = (index.get(&edge.source), index.get(&edge.target)) else { continue };
+            if a == b {
+                continue;
             }
-            Some(prop) => {
-                // Orden fijo de suma: la partición no depende del orden en que
-                // el storage devuelve las aristas.
-                let mut sorted: Vec<&crate::types::Edge> = edges.iter().collect();
-                sorted.sort_by_key(|e| e.id);
-                for edge in sorted {
+            let key = (a.min(b), a.max(b));
+            match &config.weight_property {
+                None => {
+                    pairs.insert(key, 1.0);
+                }
+                Some(prop) => {
                     let weight = match edge.properties.get(prop) {
                         None => 1.0,
                         Some(v) => v.as_number().ok_or_else(|| {
@@ -544,472 +582,287 @@ impl LeidenCommunity {
                             edge.id
                         )));
                     }
-                    *adjacency.entry(edge.source).or_default().entry(edge.target).or_insert(0.0) += weight;
-                    if edge.source != edge.target {
-                        *adjacency.entry(edge.target).or_default().entry(edge.source).or_insert(0.0) += weight;
-                    }
+                    *pairs.entry(key).or_insert(0.0) += weight;
                 }
             }
         }
-
-        // Lista de NodeIds ordenada para iteración determinista
-        let mut node_ids: Vec<NodeId> = nodes.iter().map(|n| n.id).collect();
-        node_ids.sort_unstable();
-
-        // ── Partición inicial: cada nodo en su propia comunidad ─────────────
-        let mut communities: HashMap<NodeId, usize> = node_ids
-            .iter()
-            .enumerate()
-            .map(|(i, &id)| (id, i))
-            .collect();
-
-        // Tamaño de cada comunidad
-        let mut sizes: HashMap<usize, usize> = communities
-            .iter()
-            .map(|(_, &c)| (c, 1))
-            .collect();
-
-        // Peso total de aristas internas de cada comunidad (singletons → 0)
-        let mut e_in: HashMap<usize, f64> = (0..node_ids.len()).map(|i| (i, 0.0)).collect();
-
-        // ── Bucle principal: Phase1 + Phase2 ────────────────────────────────
-        for _iter in 0..config.max_iterations {
-            // Phase 1 — movimiento local greedy con CPM
-            let phase1_improved = Self::phase1_local_move(
-                &node_ids,
-                &adjacency,
-                &mut communities,
-                &mut sizes,
-                &mut e_in,
-                config.gamma,
-                config.min_gain,
-            );
-
-            // Phase 2 — refinamiento garantizando bien-conexión
-            let phase2_changed = Self::phase2_refine(
-                &node_ids,
-                &adjacency,
-                &mut communities,
-                &mut sizes,
-                &mut e_in,
-                config.gamma,
-            );
-
-            // Si ninguna fase produjo cambios, hemos convergido
-            if !phase1_improved && !phase2_changed {
-                break;
+        let n = node_ids.len();
+        let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+        for ((a, b), w) in pairs {
+            if w > 0.0 {
+                adj[a].push((b, w));
+                adj[b].push((a, w));
             }
         }
-
-        Self::renumber_communities(communities)
+        for list in &mut adj {
+            list.sort_unstable_by_key(|(j, _)| *j);
+        }
+        Ok(Some(DenseGraph { node_ids, adj, size: vec![1.0; n] }))
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Phase 1 — Movimiento local con CPM
-    //
-    // Para cada nodo v (en orden determinista):
-    //   1. Calcula la ganancia CPM de mover v a cada comunidad vecina t.
-    //   2. Si la mejor ganancia > min_gain, mueve v a t.
-    //
-    // Ganancia CPM de mover v desde comunidad s a comunidad t:
-    //   ΔH(v: s→t) = e(v, C_t) − e(v, C_s\{v}) + γ · (|C_s|−1 − |C_t|)
-    //
-    // donde e(v, C_t) = suma de pesos de aristas de v hacia nodos en C_t.
-    //
-    // Retorna true si se realizó al menos un movimiento.
-    // ─────────────────────────────────────────────────────────────────────────
-    fn phase1_local_move(
-        node_ids: &[NodeId],
-        adjacency: &HashMap<NodeId, BTreeMap<NodeId, f64>>,
-        communities: &mut HashMap<NodeId, usize>,
-        sizes: &mut HashMap<usize, usize>,
-        e_in: &mut HashMap<usize, f64>,
-        gamma: f64,
-        min_gain: f64,
-    ) -> bool {
-        let mut any_improved = false;
-        // Repetir hasta que una pasada completa no produzca cambios
-        loop {
-            let mut pass_improved = false;
-
-            for &node_id in node_ids {
-                let current_comm = communities[&node_id];
-                let n_s = sizes[&current_comm] as f64;
-
-                // e(v, C_s\{v}) — peso hacia otros nodos en la misma comunidad
-                let e_to_self_comm = Self::edge_weight_to_community(
-                    node_id, current_comm, adjacency, communities,
-                );
-
-                let mut best_gain = min_gain;
-                let mut best_comm = current_comm;
-
-                // Colectar comunidades vecinas distintas (determinista)
-                let mut candidate_comms: Vec<usize> = adjacency
-                    .get(&node_id)
-                    .map(|nbrs| {
-                        let mut cs: Vec<usize> = nbrs.keys()
-                            .filter_map(|nbr| {
-                                let c = communities[nbr];
-                                if c != current_comm { Some(c) } else { None }
-                            })
-                            .collect();
-                        cs.sort_unstable();
-                        cs.dedup();
-                        cs
-                    })
-                    .unwrap_or_default();
-                candidate_comms.sort_unstable();
-                candidate_comms.dedup();
-
-                for target_comm in candidate_comms {
-                    let n_t = sizes[&target_comm] as f64;
-                    let e_to_target = Self::edge_weight_to_community(
-                        node_id, target_comm, adjacency, communities,
-                    );
-                    // ΔH(v: s→t) = e(v,C_t) − e(v,C_s\{v}) + γ·(|C_s|−1 − |C_t|)
-                    let gain = e_to_target - e_to_self_comm + gamma * (n_s - 1.0 - n_t);
-                    if gain > best_gain {
-                        best_gain = gain;
-                        best_comm = target_comm;
-                    }
-                }
-
-                if best_comm != current_comm {
-                    // Actualizar e_in de la comunidad origen y destino
-                    let e_contrib = Self::edge_weight_to_community(
-                        node_id, current_comm, adjacency, communities,
-                    );
-                    *e_in.entry(current_comm).or_insert(0.0) -= e_contrib;
-                    *sizes.entry(current_comm).or_insert(1) -= 1;
-
-                    // Mover v a best_comm
-                    *communities.get_mut(&node_id).expect("node must be in communities") = best_comm;
-
-                    let e_to_new = Self::edge_weight_to_community(
-                        node_id, best_comm, adjacency, communities,
-                    );
-                    *e_in.entry(best_comm).or_insert(0.0) += e_to_new;
-                    *sizes.entry(best_comm).or_insert(0) += 1;
-
-                    pass_improved = true;
-                    any_improved = true;
-                }
-            }
-
-            if !pass_improved {
-                break;
-            }
-        }
-        any_improved
+    fn len(&self) -> usize {
+        self.adj.len()
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Phase 2 — Refinamiento con garantía de bien-conexión
-    //
-    // Para cada comunidad base C obtenida de Phase 1:
-    //   1. Inicializar: cada nodo de C en su propia comunidad singleton.
-    //   2. Para cada nodo v en C (orden determinista):
-    //      a. Comprobar elegibilidad de v:
-    //         e(v, C\{v}) ≥ γ · (|C| − 1)
-    //         Si no cumple, v queda en su singleton (no puede contaminar otras).
-    //      b. Para cada comunidad refinada vecina R dentro de C:
-    //         - Verificar bien-conexión de R en C:
-    //           e(R, C\R) ≥ γ · |R| · (|C| − |R|)
-    //           donde e(R, C\R) = Σ_{u∈R} e_c[u] − 2·e_int(R)
-    //         - Calcular ganancia CPM de fusionar {v} en R:
-    //           ΔH(v→R) = e(v, R) − γ · |R|
-    //         - Aceptar si ganancia > 0 y R está bien conectada.
-    //      c. Mover v a la mejor R si existe.
-    //   3. Actualizar asignaciones globales de comunidad.
-    //
-    // Retorna true si alguna asignación global cambió.
-    //
-    // Referencia: Algorithm 3 en Traag et al. (2019), Sección "Refined partition".
-    // ─────────────────────────────────────────────────────────────────────────
-    fn phase2_refine(
-        node_ids: &[NodeId],
-        adjacency: &HashMap<NodeId, BTreeMap<NodeId, f64>>,
-        communities: &mut HashMap<NodeId, usize>,
-        sizes: &mut HashMap<usize, usize>,
-        e_in: &mut HashMap<usize, f64>,
-        gamma: f64,
-    ) -> bool {
-        // Agrupar nodos por comunidad base (Phase1)
-        let mut by_comm: HashMap<usize, Vec<NodeId>> = HashMap::new();
-        for &nid in node_ids {
-            by_comm.entry(communities[&nid]).or_default().push(nid);
+    /// El grafo agregado de `parts` (comunidad por nodo, ids `0..k`
+    /// contiguos): un nodo por comunidad, tamaño = suma de tamaños, peso
+    /// entre comunidades = suma de pesos; los pesos internos se descartan.
+    fn aggregate(&self, parts: &[usize], k: usize) -> DenseGraph {
+        let mut size = vec![0.0; k];
+        for (i, &c) in parts.iter().enumerate() {
+            size[c] += self.size[i];
         }
-        // Ordenar nodos dentro de cada comunidad para determinismo
-        for nodes_in_c in by_comm.values_mut() {
-            nodes_in_c.sort_unstable();
-        }
-
-        let mut any_changed = false;
-        // ID global para comunidades refinadas (único en todo el grafo)
-        let mut next_ref_id: usize = node_ids.len(); // por encima de IDs de Phase1
-
-        // Iterar en orden determinista (por community ID) para que next_ref_id
-        // sea estable entre runs — crítico para reproducibilidad.
-        let mut sorted_comms: Vec<(usize, &Vec<NodeId>)> = by_comm.iter()
-            .map(|(&id, nodes)| (id, nodes))
-            .collect();
-        sorted_comms.sort_unstable_by_key(|(id, _)| *id);
-
-        for (base_comm_id, c_nodes) in sorted_comms {
-            let c_size = c_nodes.len();
-            if c_size <= 1 {
-                // Singleton base: nada que refinar
-                continue;
-            }
-
-            // Conjunto de nodos en esta comunidad base (para lookups O(1))
-            let c_set: HashSet<NodeId> = c_nodes.iter().copied().collect();
-
-            // e_c[v] = suma de pesos desde v hacia todos los nodos en C\{v}
-            // Precomputado una sola vez por comunidad base.
-            let e_c: HashMap<NodeId, f64> = c_nodes.iter().map(|&v| {
-                let w = adjacency.get(&v)
-                    .map(|nbrs| nbrs.iter()
-                        .filter(|(u, _)| c_set.contains(*u) && **u != v)
-                        .map(|(_, &w)| w)
-                        .sum::<f64>())
-                    .unwrap_or(0.0);
-                (v, w)
-            }).collect();
-
-            // ── Inicializar partición refinada: cada nodo en su singleton ──
-            // ref_comm[v] = ID de la comunidad refinada de v (local a esta iteración)
-            let mut ref_comm: HashMap<NodeId, usize> = c_nodes.iter()
-                .enumerate()
-                .map(|(i, &v)| (v, next_ref_id + i))
-                .collect();
-            // Consumir IDs para esta comunidad base
-            let ref_id_base = next_ref_id;
-            next_ref_id += c_size;
-
-            // Tamaño de cada comunidad refinada
-            let mut ref_sizes: HashMap<usize, usize> = (ref_id_base..ref_id_base + c_size)
-                .map(|id| (id, 1))
-                .collect();
-
-            // Aristas internas de cada comunidad refinada (singletons → 0)
-            let mut ref_e_int: HashMap<usize, f64> = (ref_id_base..ref_id_base + c_size)
-                .map(|id| (id, 0.0))
-                .collect();
-
-            // ── Procesar cada nodo ──────────────────────────────────────────
-            for &v in c_nodes {
-                let v_ref_comm_initial = ref_comm[&v];
-
-                // Guardia del paper (Algorithm 3, línea "if P_refined(v) == {v}"):
-                // solo procesar v si todavía está en su singleton original.
-                // Si otro nodo ya se fusionó hacia la comunidad de v, v no se procesa.
-                // Esto garantiza que la fórmula ΔH(v→R) = e(v,R) − γ·|R| sea correcta
-                // (solo válida para v singleton).
-                if ref_sizes[&v_ref_comm_initial] != 1 {
-                    continue;
+        let mut pairs: Vec<BTreeMap<usize, f64>> = vec![BTreeMap::new(); k];
+        for (i, list) in self.adj.iter().enumerate() {
+            for &(j, w) in list {
+                let (ci, cj) = (parts[i], parts[j]);
+                if ci != cj {
+                    *pairs[ci].entry(cj).or_insert(0.0) += w;
                 }
-
-                let e_cv = e_c[&v]; // e(v, C\{v})
-
-                // Verificar elegibilidad: v debe estar suficientemente conectado a C
-                // Condición: e(v, C\{v}) ≥ γ · (|C| − 1)
-                if e_cv < gamma * (c_size as f64 - 1.0) {
-                    // v no es elegible; permanece en su singleton refinado
-                    continue;
-                }
-
-                // Encontrar comunidades refinadas vecinas dentro de C (distintas de la propia)
-                let v_ref_comm = v_ref_comm_initial;
-                let mut candidate_refs: Vec<usize> = adjacency.get(&v)
-                    .map(|nbrs| {
-                        let mut cs: Vec<usize> = nbrs.keys()
-                            .filter(|u| c_set.contains(*u))
-                            .filter_map(|u| {
-                                let rc = ref_comm[u];
-                                if rc != v_ref_comm { Some(rc) } else { None }
-                            })
-                            .collect();
-                        cs.sort_unstable();
-                        cs.dedup();
-                        cs
-                    })
-                    .unwrap_or_default();
-                candidate_refs.sort_unstable();
-                candidate_refs.dedup();
-
-                let mut best_gain = 0.0_f64;
-                let mut best_ref: Option<usize> = None;
-
-                for r in candidate_refs {
-                    let r_size = ref_sizes[&r] as f64;
-                    let r_e_int = ref_e_int[&r];
-
-                    // ── Verificar bien-conexión de R en C ──────────────────
-                    // e(R, C\R) = Σ_{u∈R} e_c[u] − 2·e_int(R)
-                    // Bien-conectado si: e(R, C\R) ≥ γ · |R| · (|C| − |R|)
-                    let sum_ec_r: f64 = c_nodes.iter()
-                        .filter(|&&u| ref_comm[&u] == r)
-                        .map(|&u| e_c[&u])
-                        .sum();
-                    let e_ext_r = sum_ec_r - 2.0 * r_e_int;
-                    let threshold = gamma * r_size * (c_size as f64 - r_size);
-                    if e_ext_r < threshold {
-                        continue; // R no está bien conectada
-                    }
-
-                    // ── Ganancia CPM de fusionar singleton {v} en R ────────
-                    // ΔH(v→R) = e(v, R) − γ · |R|
-                    let e_v_r: f64 = adjacency.get(&v)
-                        .map(|nbrs| nbrs.iter()
-                            .filter(|(u, _)| ref_comm.get(*u) == Some(&r))
-                            .map(|(_, &w)| w)
-                            .sum())
-                        .unwrap_or(0.0);
-                    let gain = e_v_r - gamma * r_size;
-
-                    if gain > best_gain {
-                        best_gain = gain;
-                        best_ref = Some(r);
-                    }
-                }
-
-                // ── Aplicar fusión si hay ganancia ──────────────────────────
-                if let Some(target_r) = best_ref {
-                    // Peso de v hacia target_r (para actualizar e_int)
-                    let e_v_r: f64 = adjacency.get(&v)
-                        .map(|nbrs| nbrs.iter()
-                            .filter(|(u, _)| ref_comm.get(*u) == Some(&target_r))
-                            .map(|(_, &w)| w)
-                            .sum())
-                        .unwrap_or(0.0);
-
-                    *ref_comm.get_mut(&v).expect("v in ref_comm") = target_r;
-                    *ref_sizes.entry(target_r).or_insert(0) += 1;
-                    *ref_e_int.entry(target_r).or_insert(0.0) += e_v_r;
-                    // El singleton original de v queda vacío (ref_sizes = 0)
-                    *ref_sizes.entry(v_ref_comm).or_insert(1) -= 1;
-                }
-            }
-
-            // ── Mapear comunidades refinadas a asignaciones globales ────────
-            // Si la partición refinada coincide exactamente con la base
-            // (todos los nodos siguen en sus singletons originales O todos
-            // están juntos en una sola comunidad), no hay cambio real.
-            let refined_comm_ids: HashSet<usize> = c_nodes.iter()
-                .map(|&v| ref_comm[&v])
-                .collect();
-
-            if refined_comm_ids.len() == 1 {
-                // Todos en una comunidad: equivale a la base → sin cambio
-                // Asegurar que usen el ID base para consistencia
-                for &v in c_nodes {
-                    *communities.get_mut(&v).expect("v in communities") = base_comm_id;
-                }
-                continue;
-            }
-
-            if refined_comm_ids.len() == c_size {
-                // Todos en singletons: tampoco cambia la asignación global
-                // (Phase1 ya los tenía así o los consolidó)
-                // Actualizar sizes/e_in para reflejar singletons
-                for &v in c_nodes {
-                    let new_c = ref_id_base + c_nodes.iter().position(|&x| x == v).unwrap_or(0);
-                    *communities.get_mut(&v).expect("v in communities") = new_c;
-                    sizes.insert(new_c, 1);
-                    e_in.insert(new_c, 0.0);
-                    any_changed = true;
-                }
-                *sizes.entry(base_comm_id).or_insert(c_size) -= c_size;
-                e_in.entry(base_comm_id).and_modify(|e| *e = 0.0);
-                continue;
-            }
-
-            // Caso general: la comunidad base fue dividida en >1 y <c_size comunidades
-            any_changed = true;
-
-            // Asignar IDs globales únicos a cada grupo refinado.
-            // Se ordenan los IDs refinados para que la asignación sea determinista:
-            // el grupo con el menor ID refinado hereda el ID base, el resto recibe
-            // IDs nuevos en orden creciente.
-            let mut sorted_ref_ids: Vec<usize> = refined_comm_ids.iter().copied().collect();
-            sorted_ref_ids.sort_unstable();
-
-            let mut ref_to_global: HashMap<usize, usize> = HashMap::new();
-            for (idx, ref_id) in sorted_ref_ids.iter().enumerate() {
-                if idx == 0 {
-                    // El primero (menor ID) hereda el ID base
-                    ref_to_global.insert(*ref_id, base_comm_id);
-                } else {
-                    let new_id = next_ref_id;
-                    next_ref_id += 1;
-                    ref_to_global.insert(*ref_id, new_id);
-                }
-            }
-
-            // Actualizar asignaciones y estructuras
-            // Limpiar tamaño y e_in del ID base antes de reasignar
-            sizes.insert(base_comm_id, 0);
-            e_in.insert(base_comm_id, 0.0);
-
-            for &v in c_nodes {
-                let old_ref = ref_comm[&v];
-                let global_id = ref_to_global[&old_ref];
-                *communities.get_mut(&v).expect("v in communities") = global_id;
-                *sizes.entry(global_id).or_insert(0) += 1;
-
-                // Recalcular e_in para v hacia su nueva comunidad global
-                let e_v_new_comm: f64 = adjacency.get(&v)
-                    .map(|nbrs| nbrs.iter()
-                        .filter(|(u, _)| ref_comm.get(*u) == Some(&old_ref) && **u != v)
-                        .map(|(_, &w)| w)
-                        .sum())
-                    .unwrap_or(0.0);
-                *e_in.entry(global_id).or_insert(0.0) += e_v_new_comm;
             }
         }
-
-        any_changed
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Helpers
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /// Suma de pesos de aristas desde `node` hacia todos los nodos en `community`.
-    /// O(degree(node)).
-    fn edge_weight_to_community(
-        node: NodeId,
-        community: usize,
-        adjacency: &HashMap<NodeId, BTreeMap<NodeId, f64>>,
-        communities: &HashMap<NodeId, usize>,
-    ) -> f64 {
-        adjacency.get(&node)
-            .map(|nbrs| nbrs.iter()
-                .filter(|(nbr, _)| communities.get(*nbr) == Some(&community) && **nbr != node)
-                .map(|(_, &w)| w)
-                .sum())
-            .unwrap_or(0.0)
-    }
-
-    /// Renumera comunidades a IDs contiguos 0, 1, 2, …
-    fn renumber_communities(
-        communities: HashMap<NodeId, usize>,
-    ) -> Result<HashMap<NodeId, usize>> {
-        let mut unique: Vec<usize> = communities.values().copied().collect::<HashSet<_>>()
-            .into_iter().collect();
-        unique.sort_unstable();
-
-        let remap: HashMap<usize, usize> = unique.into_iter().enumerate()
-            .map(|(new_id, old_id)| (old_id, new_id))
-            .collect();
-
-        Ok(communities.into_iter()
-            .map(|(node, old)| (node, remap[&old]))
-            .collect())
+        let adj = pairs.into_iter().map(|m| m.into_iter().collect()).collect();
+        DenseGraph { node_ids: Vec::new(), adj, size }
     }
 }
+
+/// Renumera `parts` a ids contiguos en orden de primera aparición; devuelve
+/// la partición renumerada y cuántas comunidades hay.
+fn renumber(parts: &[usize]) -> (Vec<usize>, usize) {
+    let mut ids: HashMap<usize, usize> = HashMap::new();
+    let out: Vec<usize> = parts
+        .iter()
+        .map(|c| {
+            let next = ids.len();
+            *ids.entry(*c).or_insert(next)
+        })
+        .collect();
+    let k = ids.len();
+    (out, k)
+}
+
+/// Tope de niveles de agregación del bucle externo. Cada nivel reduce el
+/// número de nodos o termina, así que en la práctica para mucho antes.
+const LEIDEN_MAX_LEVELS: usize = 64;
+
+/// La partición de Leiden de `graph`, una comunidad por nodo (ids contiguos
+/// en orden de primera aparición).
+///
+/// Leiden se itera (Traag et al. 2019, sección "Iterating"): cada corrida
+/// empieza desde la partición de la anterior y no puede empeorarla, así que
+/// se repite hasta que no cambie, como mucho `max_iterations` veces. Una sola
+/// corrida desde singletons puede quedar en un óptimo local (en un grafo de
+/// 200 bloques densos dejaba 2 bloques partidos).
+fn leiden_partition(graph: &DenseGraph, config: &LeidenConfig) -> Vec<usize> {
+    let mut partition: Vec<usize> = (0..graph.len()).collect();
+    for _ in 0..config.max_iterations.max(1) {
+        let next = leiden_pass(graph, &partition, config);
+        if next == partition {
+            break;
+        }
+        partition = next;
+    }
+    partition
+}
+
+/// Una corrida de Leiden (mover → refinar → agregar, hasta que mover no
+/// agrupe nada) desde la partición `initial` de los nodos originales.
+fn leiden_pass(graph: &DenseGraph, initial: &[usize], config: &LeidenConfig) -> Vec<usize> {
+    let n = graph.len();
+    // Nodo del grafo actual que representa a cada nodo original.
+    let mut owner: Vec<usize> = (0..n).collect();
+    let mut level_graph: Option<DenseGraph> = None;
+    let mut parts: Vec<usize> = renumber(initial).0;
+    for _ in 0..LEIDEN_MAX_LEVELS {
+        let g = level_graph.as_ref().unwrap_or(graph);
+        let moved = move_nodes_fast(g, &parts, config.gamma, config.min_gain);
+        let (moved, k) = renumber(&moved);
+        // Proyectar la partición del paso 1 a los nodos originales.
+        let result: Vec<usize> = owner.iter().map(|&o| moved[o]).collect();
+        if k == g.len() {
+            // Mover no agrupó nada: cada nodo del nivel es su propia comunidad.
+            return renumber(&result).0;
+        }
+        let refined = refine(g, &moved, config.gamma);
+        let (refined, k_ref) = renumber(&refined);
+        // Agregar sobre la partición refinada; si el refinamiento no unió
+        // nada, sobre la del paso 1 (si no, el nivel no se reduciría).
+        let (basis, k_basis) = if k_ref < g.len() { (refined, k_ref) } else { (moved.clone(), k) };
+        let next_graph = g.aggregate(&basis, k_basis);
+        // Partición inicial del nivel agregado: la comunidad del paso 1 de
+        // cada nodo agregado (todos sus miembros comparten comunidad: el
+        // refinamiento parte dentro de cada comunidad).
+        let mut next_parts = vec![0usize; k_basis];
+        for (i, &b) in basis.iter().enumerate() {
+            next_parts[b] = moved[i];
+        }
+        owner = owner.iter().map(|&o| basis[o]).collect();
+        parts = next_parts;
+        level_graph = Some(next_graph);
+        // Cada nivel tiene menos nodos que el anterior (`k_basis < g.len()`),
+        // así que el bucle termina.
+    }
+    // Tope de niveles alcanzado: la última partición del paso 1.
+    let g = level_graph.as_ref().unwrap_or(graph);
+    let moved = renumber(&move_nodes_fast(g, &parts, config.gamma, config.min_gain)).0;
+    renumber(&owner.iter().map(|&o| moved[o]).collect::<Vec<_>>()).0
+}
+
+/// Paso 1 del paper (MoveNodesFast), determinista: cola de nodos en orden de
+/// índice; cada nodo se va a la comunidad (vecina o vacía) con la mayor
+/// ganancia CPM si supera `min_gain`, y sus vecinos de otras comunidades
+/// vuelven a la cola. Ganancia de mover `v` (tamaño `s`) de S a T:
+/// `w(v,T) − w(v,S∖v) − γ·s·(n_T − (n_S − s))`.
+fn move_nodes_fast(g: &DenseGraph, initial: &[usize], gamma: f64, min_gain: f64) -> Vec<usize> {
+    let n = g.len();
+    let mut comm: Vec<usize> = initial.to_vec();
+    // Las comunidades son índices 0..n (como mucho n comunidades no vacías).
+    let mut comm_size = vec![0.0f64; n];
+    for (i, &c) in comm.iter().enumerate() {
+        comm_size[c] += g.size[i];
+    }
+    let mut empty: std::collections::BTreeSet<usize> = (0..n).filter(|&c| comm_size[c] == 0.0).collect();
+    let mut queue: std::collections::VecDeque<usize> = (0..n).collect();
+    let mut queued = vec![true; n];
+    let mut weight_to = vec![0.0f64; n];
+    let mut touched: Vec<usize> = Vec::new();
+    while let Some(v) = queue.pop_front() {
+        queued[v] = false;
+        let current = comm[v];
+        for &(j, w) in &g.adj[v] {
+            let c = comm[j];
+            if weight_to[c] == 0.0 && !touched.contains(&c) {
+                touched.push(c);
+            }
+            weight_to[c] += w;
+        }
+        touched.sort_unstable();
+        let s_v = g.size[v];
+        let n_s = comm_size[current];
+        let w_self = weight_to[current];
+        let (mut best, mut best_gain) = (current, min_gain);
+        for &t in &touched {
+            if t == current {
+                continue;
+            }
+            let gain = weight_to[t] - w_self - gamma * s_v * (comm_size[t] - (n_s - s_v));
+            if gain > best_gain {
+                best_gain = gain;
+                best = t;
+            }
+        }
+        // Una comunidad vacía: no se gana peso, se deja de pagar la penalización.
+        if n_s > s_v
+            && let Some(&e) = empty.iter().next()
+        {
+            let gain = -w_self + gamma * s_v * (n_s - s_v);
+            if gain > best_gain {
+                best = e;
+            }
+        }
+        for &c in &touched {
+            weight_to[c] = 0.0;
+        }
+        touched.clear();
+        if best == current {
+            continue;
+        }
+        comm_size[current] -= s_v;
+        if comm_size[current] <= 0.0 {
+            comm_size[current] = 0.0;
+            empty.insert(current);
+        }
+        empty.remove(&best);
+        comm_size[best] += s_v;
+        comm[v] = best;
+        for &(j, _) in &g.adj[v] {
+            if comm[j] != best && !queued[j] {
+                queued[j] = true;
+                queue.push_back(j);
+            }
+        }
+    }
+    comm
+}
+
+/// Paso 2 del paper (RefinePartition / MergeNodesSubset), determinista: en
+/// cada comunidad S de `parts`, parte de singletons; cada nodo bien
+/// conectado a S que siga solo se une a la parte bien conectada de S con la
+/// mayor ganancia `w(v,C) − γ·s_v·‖C‖` si es positiva. Bien conectado:
+/// `w(X, S∖X) ≥ γ·‖X‖·(‖S‖ − ‖X‖)`. Las partes nunca cruzan comunidades.
+fn refine(g: &DenseGraph, parts: &[usize], gamma: f64) -> Vec<usize> {
+    let n = g.len();
+    let mut refined: Vec<usize> = (0..n).collect();
+    let mut members: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (i, &c) in parts.iter().enumerate() {
+        members.entry(c).or_default().push(i);
+    }
+    let mut ref_size: Vec<f64> = g.size.clone();
+    // Peso de cada parte refinada hacia el resto de su comunidad.
+    let mut ref_ext = vec![0.0f64; n];
+    let mut alone = vec![true; n];
+    let mut weight_to = vec![0.0f64; n];
+    let mut touched: Vec<usize> = Vec::new();
+    for nodes in members.values() {
+        let s_total: f64 = nodes.iter().map(|&i| g.size[i]).sum();
+        // w(v, S∖v) de cada nodo.
+        for &v in nodes {
+            ref_ext[v] = g.adj[v].iter().filter(|(j, _)| parts[*j] == parts[v]).map(|(_, w)| w).sum();
+        }
+        for &v in nodes {
+            if !alone[v] {
+                continue;
+            }
+            let s_v = g.size[v];
+            if ref_ext[v] < gamma * s_v * (s_total - s_v) {
+                continue; // v no está bien conectado a S
+            }
+            for &(j, w) in &g.adj[v] {
+                if parts[j] != parts[v] {
+                    continue;
+                }
+                let r = refined[j];
+                if r == refined[v] {
+                    continue;
+                }
+                if weight_to[r] == 0.0 && !touched.contains(&r) {
+                    touched.push(r);
+                }
+                weight_to[r] += w;
+            }
+            touched.sort_unstable();
+            let (mut best, mut best_gain) = (refined[v], 0.0f64);
+            for &r in &touched {
+                let well_connected = ref_ext[r] >= gamma * ref_size[r] * (s_total - ref_size[r]);
+                if !well_connected {
+                    continue;
+                }
+                let gain = weight_to[r] - gamma * s_v * ref_size[r];
+                if gain > best_gain {
+                    best_gain = gain;
+                    best = r;
+                }
+            }
+            if best != refined[v] {
+                let w_v_best = weight_to[best];
+                let old = refined[v];
+                refined[v] = best;
+                ref_size[best] += s_v;
+                ref_size[old] = 0.0;
+                // w(C ∪ v, S∖(C ∪ v)) = w(C, S∖C) + w(v, S∖v) − 2·w(v, C).
+                ref_ext[best] = ref_ext[best] + ref_ext[v] - 2.0 * w_v_best;
+                alone[v] = false;
+                alone[best] = false;
+            }
+            for &r in &touched {
+                weight_to[r] = 0.0;
+            }
+            touched.clear();
+        }
+    }
+    refined
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -1404,8 +1257,23 @@ mod tests {
         // Louvain: fórmula corregida → 5 comunidades
         assert_eq!(n_louv, 5, "Louvain Florentine: esperaba 5 comunidades, obtuvo {}", n_louv);
 
-        // Leiden con gamma=0.1: también 5 comunidades (CPM más estricto que modularity)
-        assert_eq!(n_leid, 5, "Leiden Florentine: esperaba 5 comunidades, obtuvo {}", n_leid);
+        // Leiden con gamma=0.1: 4 comunidades (#194). El núcleo anterior daba 5
+        // con calidad CPM 11.1; esta partición tiene 11.7: Barbadori va con
+        // Medici, y Albizzi/Ginori con Guadagni/Lamberteschi. Leiden maximiza
+        // CPM, así que se afirma la calidad, no solo el número.
+        assert_eq!(n_leid, 4, "Leiden Florentine: esperaba 4 comunidades, obtuvo {}", n_leid);
+        let cpm: f64 = leid_groups
+            .values()
+            .map(|members| {
+                let inside = edges_undirected
+                    .iter()
+                    .filter(|(a, b)| members.contains(a) && members.contains(b))
+                    .count() as f64;
+                let n = members.len() as f64;
+                inside - 0.1 * n * (n - 1.0) / 2.0
+            })
+            .sum();
+        assert!(cpm > 11.1 + 1e-9, "calidad CPM {cpm} no supera la del núcleo anterior (11.1)");
 
         // Louvain: bloque Medici (Acciaiuoli, Medici, Ridolfi, Tornabuoni)
         let medici_comm = louv_comm[&ids["Medici"]];
