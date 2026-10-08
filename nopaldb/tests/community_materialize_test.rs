@@ -4,7 +4,7 @@
 // 5 subbloques de 10 (probabilidad 0.8 dentro del subbloque, 0.15 entre
 // subbloques del bloque) y ~0.5 aristas por nodo hacia cualquier nodo.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use nopaldb::algorithms::community::{LeidenCommunity, LeidenConfig, LeidenHierarchyOptions};
 use nopaldb::graph::communities::{CommunityMaterializeOptions, COMMUNITY_LABEL, IN_COMMUNITY, PARENT_OF};
