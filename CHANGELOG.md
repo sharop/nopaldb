@@ -10,6 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Índice de propiedades: una entrada por nodo** (#197). Guardaba un
+  `Vec<NodeId>` por `(propiedad, valor)` y lo leía y reescribía entero en
+  cada alta y baja, así que escribir nodos con un valor compartido (`type`,
+  `status`, `level`) era **cuadrático** en todos los caminos de escritura.
+  Formato v3: clave `(propiedad, valor, node_id)` con valor vacío; alta y
+  baja son un put o un delete, y la búsqueda es un scan del prefijo con
+  longitud exacta (`"PER"` no abarca a `"PERSON"`). Medido con `type` y
+  `level` compartidos: `bulk_loader` de 40k nodos 18.4 s → 0.27 s,
+  transacción de 40k 20.0 s → 1.2 s, `add_node` directo de 10k 1.3 s →
+  0.16 s; a 100k, compartir el valor ya no cuesta nada (0.85 s contra 0.87 s
+  con valores únicos). La primera materialización de comunidades a 100k
+  pasa de 44 s a 21 s.
+
+  **Migración automática** al abrir: una pasada O(n) que reconstruye el
+  índice desde los nodos. El formato va en un sentinel nuevo
+  (`prop_idx_entries`) para que bajar a ≤ 0.6.10 siga funcionando: esa
+  versión no ve su sentinel y reconstruye su propio índice, y 0.6.11 lo
+  reconstruye otra vez al volver. Una base con un formato más nuevo que el
+  de la versión instalada se rechaza al abrir, en vez de leerse mal.
 - **Leiden correcto: núcleo reescrito según el paper** (#194). `leiden(n)`
   (Rust `LeidenCommunity::detect`, NQL, Python `graph.leiden`) estaba roto:
   - reutilizaba ids de comunidad entre iteraciones, así que el tamaño de una

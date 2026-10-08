@@ -459,14 +459,13 @@ Cost (release, on disk, sparse planted graph, 3 levels):
 
 | nodes | communities | first materialization | re-run, unchanged |
 |---|---|---|---|
-| 10 000 | 4 204 | 1.4 s | 44 ms |
-| 100 000 | 41 806 | 44 s | 0.5 s |
+| 10 000 | 4 204 | 1.0 s | 42 ms |
+| 100 000 | 41 806 | 21 s | 0.45 s |
 
-The first materialization at 100k is dominated by the property index, not by
-this code: it stores one `Vec<NodeId>` per `(property, value)` and rewrites it
-on every insert, so a value shared by many nodes (`partition`, `level`)
-makes the writes quadratic. That affects every write path and is tracked
-in [#197](https://github.com/sharop/nopaldb/issues/197).
+Before #197 (property index with one entry per node), the first
+materialization at 100k took 44 s: `partition` and `level`, shared by every
+community, made those writes quadratic. What remains is committing ~380k
+writes (42k nodes, 335k edges) in one transaction.
 
 | graph | `detect()` | `detect_hierarchy` | communities per level |
 |---|---|---|---|

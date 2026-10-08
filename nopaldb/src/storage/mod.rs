@@ -23,12 +23,26 @@ pub const META_NEXT_TIMESTAMP: &str = "next_timestamp";
 /// `Graph::open_with_options` (ver `migrate_property_index_if_needed`).
 /// El sentinel vive en `catalog` para bases nuevas (F5.4); el legacy
 /// `meta:prop_idx_format` del tree default lo leerá F5.5.
+///
+/// Desde 0.6.11 (#197) este sentinel solo lo escriben versiones ≤ 0.6.10: su
+/// presencia significa "una versión anterior (re)construyó el índice en el
+/// formato v2" y fuerza la migración a v3. Ver `META_PROP_IDX_ENTRIES`.
 pub const META_PROP_IDX_FORMAT: &str = "prop_idx_format";
 
-/// Valor actual de `META_PROP_IDX_FORMAT`.
-pub const PROP_IDX_FORMAT_CURRENT: u64 = 2;
+/// Sentinel del formato v3 del índice de propiedades (#197): una entrada por
+/// nodo. Va en una clave NUEVA a propósito: si v3 subiera
+/// `META_PROP_IDX_FORMAT` a 3, una versión ≤ 0.6.10 vería `3 >= 2`, no
+/// migraría y buscaría blobs que ya no existen (búsquedas vacías en
+/// silencio, upserts duplicados). Con la clave nueva, esa versión no ve su
+/// sentinel, reconstruye el índice en v2 y lo escribe; al volver a abrir con
+/// esta versión, el sentinel viejo presente fuerza la reconstrucción en v3.
+pub const META_PROP_IDX_ENTRIES: &str = "prop_idx_entries";
 
-/// Nombre del keyspace del índice de propiedades v2.
+/// Valor actual de `META_PROP_IDX_ENTRIES`.
+pub const PROP_IDX_FORMAT_CURRENT: u64 = 3;
+
+/// Nombre del keyspace del índice de propiedades. Conserva el nombre del v2:
+/// el v3 vive en el mismo keyspace (la migración lo vacía y lo reconstruye).
 const PROP_IDX_TREE: &str = "prop_idx_v2";
 /// Nombre del keyspace de aristas (registro current por EdgeId).
 const EDGES_TREE: &str = "edges";
@@ -209,6 +223,16 @@ fn parse_history_versions_key_strict(key: &[u8]) -> Result<NodeId> {
 //   String("1") compartían clave).
 // - El valor se codifica order-preserving (orden numérico == orden de bytes),
 //   dejando listos los range scans en disco sin costo extra hoy.
+//
+// v3 (#197): una ENTRADA por nodo, `[clave v2][node_id: 16 bytes]` con valor
+// vacío, en lugar de un `Vec<NodeId>` serializado por clave. El v2 leía,
+// deserializaba, buscaba linealmente y reescribía la lista entera en cada
+// alta y baja: O(n) por escritura y cuadrático en total para valores
+// compartidos por muchos nodos (`type`, `status`, `level`). Con entradas,
+// alta y baja son un put o un delete; la búsqueda es un scan del prefijo.
+// La codificación de `String` no lleva terminador, así que el prefijo de
+// "PER" también abarca las entradas de "PERSON": la búsqueda se queda solo
+// con las claves de longitud exacta `prefijo + 16`.
 
 const TAG_NULL: u8 = 0x00;
 const TAG_BOOL: u8 = 0x01;
@@ -270,6 +294,14 @@ pub(crate) fn encode_property_index_key(property: &str, value: &PropertyValue) -
         }
     }
 
+    Some(key)
+}
+
+/// Entrada v3 del índice de propiedades: clave de `(property, value)` más el
+/// `node_id` (#197).
+fn property_index_entry_key(property: &str, value: &PropertyValue, node_id: NodeId) -> Option<Vec<u8>> {
+    let mut key = encode_property_index_key(property, value)?;
+    key.extend_from_slice(node_id.as_bytes());
     Some(key)
 }
 
@@ -941,27 +973,16 @@ impl Storage {
 
         Ok((adjacency_out, adjacency_in))
     }
-    /// Guarda un índice de propiedad: clave -> valor -> lista de nodos
+    /// Agrega `node_id` al índice de `(property, value)`: una entrada, sin
+    /// leer nada (v3, #197). Idempotente.
     ///
     /// ⚠️ FORMATO EN DISCO: la clave la define `encode_property_index_key`
-    /// (v2, tipada). NO usar `Display`/`to_display_string` aquí.
+    /// (tipada) más el `node_id`. NO usar `Display`/`to_display_string` aquí.
     pub async fn save_property_index(&self, property: &str, value: &PropertyValue, node_id: NodeId) -> Result<()> {
-        let Some(key) = encode_property_index_key(property, value) else {
+        let Some(key) = property_index_entry_key(property, value, node_id) else {
             return Ok(()); // Variante no indexable (Bytes/List/Object, F2)
         };
-
-        // RMW bajo el single-writer applier (igual que el v1)
-        let mut nodes: Vec<NodeId> = match self.prop_idx_ks.get(&key)? {
-            Some(v) => deserialize(&v)?,
-            None => Vec::new(),
-        };
-
-        if !nodes.contains(&node_id) {
-            nodes.push(node_id);
-            self.prop_idx_ks.insert(&key, &serialize(&nodes)?)?;
-        }
-
-        Ok(())
+        self.prop_idx_ks.insert(&key, EMPTY_VALUE)
     }
 
     /// Remueve un NodeId de un índice de propiedad
@@ -971,42 +992,34 @@ impl Storage {
         value: &PropertyValue,
         node_id: NodeId,
     ) -> Result<()> {
-        let Some(key) = encode_property_index_key(property, value) else {
+        let Some(key) = property_index_entry_key(property, value, node_id) else {
             return Ok(());
         };
-
-        let mut nodes: Vec<NodeId> = match self.prop_idx_ks.get(&key)? {
-            Some(v) => deserialize(&v)?,
-            None => return Ok(()),
-        };
-
-        nodes.retain(|&id| id != node_id);
-
-        if nodes.is_empty() {
-            self.prop_idx_ks.remove(&key)?;
-        } else {
-            self.prop_idx_ks.insert(&key, &serialize(&nodes)?)?;
-        }
-
-        Ok(())
+        self.prop_idx_ks.remove(&key)
     }
 
     /// Obtiene lista de nodos que tienen una propiedad con cierto valor.
     ///
     /// Lookup TIPADO: `Int(1)`, `Float(1.0)` y `String("1")` son claves
     /// distintas (en el v1 colisionaban en la misma entrada).
+    ///
+    /// Los ids salen en orden de `NodeId` (con UUID v7, ≈ orden de creación).
     pub async fn get_nodes_by_property(&self, property: &str, value: &PropertyValue) -> Result<Vec<NodeId>> {
-        let Some(key) = encode_property_index_key(property, value) else {
+        let Some(prefix) = encode_property_index_key(property, value) else {
             return Ok(Vec::new());
         };
-
-        match self.prop_idx_ks.get(&key)? {
-            Some(v) => {
-                let nodes: Vec<NodeId> = deserialize(&v)?;
-                Ok(nodes)
+        let mut nodes = Vec::new();
+        for item in self.prop_idx_ks.scan_prefix(&prefix) {
+            let (key, _) = item?;
+            // Solo las claves de ESTE valor: "PER" no abarca a "PERSON".
+            if key.len() != prefix.len() + 16 {
+                continue;
             }
-            None => Ok(Vec::new()),
+            let id = NodeId::from_slice(&key[prefix.len()..])
+                .map_err(|_| malformed_key(PROP_IDX_TREE, &key))?;
+            nodes.push(id);
         }
+        Ok(nodes)
     }
 
     /// Borra las claves del formato LEGADO v1 (`idx:prop:*` en el tree
@@ -2146,11 +2159,12 @@ mod tests {
 
         let graph = crate::Graph::open(&path).await.unwrap();
 
-        // Sentinel escrito
+        // Sentinel v3 escrito; el viejo no existe
         assert_eq!(
-            graph.storage().get_meta_u64(META_PROP_IDX_FORMAT).await.unwrap(),
+            graph.storage().get_meta_u64(META_PROP_IDX_ENTRIES).await.unwrap(),
             Some(PROP_IDX_FORMAT_CURRENT)
         );
+        assert_eq!(graph.storage().get_meta_u64(META_PROP_IDX_FORMAT).await.unwrap(), None);
         // Legado eliminado
         assert_eq!(
             graph.storage().default_ks.scan_prefix(keys::LEGACY_PROP_IDX_PREFIX).count(),
@@ -2194,14 +2208,14 @@ mod tests {
             let graph = crate::Graph::open(&path).await.unwrap();
             let node = Node::new("P").with_property("k", PropertyValue::Int(7));
             node_id = graph.add_node(node).await.unwrap();
-            // Fabricar el estado post-crash: borrar sentinel y vaciar v2
-            graph.storage().delete_meta(META_PROP_IDX_FORMAT).await.unwrap();
+            // Fabricar el estado post-crash: borrar sentinel y vaciar el índice
+            graph.storage().delete_meta(META_PROP_IDX_ENTRIES).await.unwrap();
             graph.storage().clear_property_index_v2().await.unwrap();
         }
 
         let graph = crate::Graph::open(&path).await.unwrap();
         assert_eq!(
-            graph.storage().get_meta_u64(META_PROP_IDX_FORMAT).await.unwrap(),
+            graph.storage().get_meta_u64(META_PROP_IDX_ENTRIES).await.unwrap(),
             Some(PROP_IDX_FORMAT_CURRENT)
         );
         let hits = graph
@@ -2210,6 +2224,119 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(hits, vec![node_id]);
+    }
+
+    /// Estado que deja una versión ≤ 0.6.10: blobs v2 (`Vec<NodeId>` bajo la
+    /// clave tipada) y el sentinel viejo en 2.
+    async fn fabricate_v2_index(graph: &crate::Graph, entries: &[(&str, PropertyValue, Vec<NodeId>)]) {
+        let storage = graph.storage();
+        storage.clear_property_index_v2().await.unwrap();
+        for (prop, value, ids) in entries {
+            let key = encode_property_index_key(prop, value).unwrap();
+            storage.prop_idx_ks.insert(&key, &serialize(ids).unwrap()).unwrap();
+        }
+        storage.put_meta_u64_max(META_PROP_IDX_FORMAT, 2).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_prop_index_v2_blobs_migrate_to_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v2_db");
+        let (a, b);
+        {
+            let graph = crate::Graph::open(&path).await.unwrap();
+            a = graph.add_node(Node::new("P").with_property("type", "PERSON")).await.unwrap();
+            b = graph.add_node(Node::new("P").with_property("type", "PERSON")).await.unwrap();
+            fabricate_v2_index(&graph, &[("type", PropertyValue::String("PERSON".into()), vec![a, b])]).await;
+            graph.close().await.unwrap();
+        }
+        let graph = crate::Graph::open(&path).await.unwrap();
+        assert_eq!(graph.storage().get_meta_u64(META_PROP_IDX_FORMAT).await.unwrap(), None);
+        assert_eq!(
+            graph.storage().get_meta_u64(META_PROP_IDX_ENTRIES).await.unwrap(),
+            Some(PROP_IDX_FORMAT_CURRENT)
+        );
+        let mut hits = graph
+            .storage()
+            .get_nodes_by_property("type", &PropertyValue::String("PERSON".into()))
+            .await
+            .unwrap();
+        hits.sort();
+        let mut want = vec![a, b];
+        want.sort();
+        assert_eq!(hits, want);
+        // Ningún blob v2 sobrevive: toda clave es una entrada (prefijo + 16).
+        let prefix = encode_property_index_key("type", &PropertyValue::String("PERSON".into())).unwrap();
+        for item in graph.storage().prop_idx_ks.iter() {
+            let (key, value) = item.unwrap();
+            assert!(value.is_empty(), "entrada con valor: {key:?}");
+            assert_ne!(key, prefix, "blob v2 sobreviviente");
+        }
+    }
+
+    /// Bajar a ≤ 0.6.10 y volver: la versión vieja no ve su sentinel,
+    /// reconstruye en v2 y escribe `prop_idx_format = 2` (con altas que el
+    /// índice v3 no tiene). Al volver, ese sentinel fuerza la reconstrucción.
+    #[tokio::test]
+    async fn test_prop_index_rebuilds_after_an_older_version_wrote_v2() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("downgrade_db");
+        let (a, b);
+        {
+            let graph = crate::Graph::open(&path).await.unwrap();
+            a = graph.add_node(Node::new("P").with_property("k", 1i64)).await.unwrap();
+            // Lo que haría la versión vieja: un nodo nuevo, indexado solo en
+            // su blob v2 (el sentinel v3 quedó intacto, no lo conoce).
+            b = Node::new("P").with_property("k", 1i64).id;
+            graph.storage().insert_node(&Node::with_id(b, "P").with_property("k", 1i64)).await.unwrap();
+            fabricate_v2_index(&graph, &[("k", PropertyValue::Int(1), vec![a, b])]).await;
+            assert_eq!(
+                graph.storage().get_meta_u64(META_PROP_IDX_ENTRIES).await.unwrap(),
+                Some(PROP_IDX_FORMAT_CURRENT)
+            );
+            graph.close().await.unwrap();
+        }
+        let graph = crate::Graph::open(&path).await.unwrap();
+        let mut hits = graph.storage().get_nodes_by_property("k", &PropertyValue::Int(1)).await.unwrap();
+        hits.sort();
+        let mut want = vec![a, b];
+        want.sort();
+        assert_eq!(hits, want, "el nodo que escribió la versión vieja aparece");
+        assert_eq!(graph.storage().get_meta_u64(META_PROP_IDX_FORMAT).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_prop_index_from_a_newer_version_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("newer_db");
+        {
+            let graph = crate::Graph::open(&path).await.unwrap();
+            graph.storage().put_meta_u64_max(META_PROP_IDX_ENTRIES, PROP_IDX_FORMAT_CURRENT + 1).await.unwrap();
+            graph.close().await.unwrap();
+        }
+        let err = crate::Graph::open(&path).await.err().expect("open must fail").to_string();
+        assert!(err.contains("newer than this NopalDB"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_prop_index_lookup_is_exact_and_typed() {
+        let graph = crate::Graph::in_memory().await.unwrap();
+        let per = graph.add_node(Node::new("P").with_property("t", "PER")).await.unwrap();
+        let person = graph.add_node(Node::new("P").with_property("t", "PERSON")).await.unwrap();
+        let one = graph.add_node(Node::new("P").with_property("t", 1i64)).await.unwrap();
+        let get = |v: PropertyValue| {
+            let storage = graph.storage();
+            async move { storage.get_nodes_by_property("t", &v).await.unwrap() }
+        };
+        assert_eq!(get(PropertyValue::String("PER".into())).await, vec![per], "PER no abarca a PERSON");
+        assert_eq!(get(PropertyValue::String("PERSON".into())).await, vec![person]);
+        assert_eq!(get(PropertyValue::Int(1)).await, vec![one]);
+        assert!(get(PropertyValue::Float(1.0)).await.is_empty());
+        assert!(get(PropertyValue::String("1".into())).await.is_empty());
+        // Baja: sobrescribir retira la entrada vieja.
+        graph.add_node(Node::with_id(person, "P").with_property("t", "ORG")).await.unwrap();
+        assert!(get(PropertyValue::String("PERSON".into())).await.is_empty());
+        assert_eq!(get(PropertyValue::String("ORG".into())).await, vec![person]);
     }
 
     #[tokio::test]
