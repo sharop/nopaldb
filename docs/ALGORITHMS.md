@@ -14,7 +14,7 @@ NopalDB includes 7 built-in graph algorithms, all integrated into the NQL query 
 | **Degree** | O(E) | Connectivity | `degree(n)` |
 | **Shortest Path** | O(E·log V) | Path finding | Rust API |
 | **Community (Louvain)** | O(E·log² V) | Community detection | `community(n)` |
-| **Community (Leiden)** | ~O(E · levels · iterations) | Well-connected communities | `leiden(n)` |
+| **Community (Leiden)** | ~O(E · levels · iterations) | Well-connected communities, hierarchy | `leiden(n)` |
 
 *k = iterations, d = avg degree, V = nodes, E = edges, iter = outer loop count*
 
@@ -378,8 +378,57 @@ let communities = leiden.detect(&graph).await?;
   and options, so consecutive queries with different options do not reuse
   each other's partition. Python: `graph.leiden(labels=…, edge_types=…,
   weight=…, gamma=…)` returns `{node_id: community}` and shares that cache.
-- Since 0.6.11 the aggregation phase merges whole communities (#194); the
-  levels it builds are exposed as a hierarchy in #190 (b).
+- Since 0.6.11 the aggregation phase merges whole communities (#194).
+
+### Hierarchy (0.6.11, #190 b)
+
+`detect_hierarchy` returns the community levels, **coarsest first**. Level 0
+is exactly `detect()`. For level L+1, every community of level L with more
+than `max_cluster_size` nodes is split again by Leiden on its own subgraph,
+with `gamma · resolution_factor^(L+1)`; smaller ones carry over unchanged.
+It stops when nothing splits, or at `max_levels`. This is the scheme of the
+reference GraphRAG (hierarchical Leiden with a maximum cluster size).
+
+- **Nested by construction:** every community of level L+1 lies inside one
+  community of level L; `parent(level, community)` returns it.
+- **Each level is CPM-optimal at its own resolution.** CPM has no resolution
+  limit, so splitting a community's subgraph gives what the whole graph would
+  give at that `gamma`.
+- **Why not the aggregation levels?** The refined partitions the core
+  aggregates internally come for free, but they are refinement fragments,
+  not sub-communities. On 200 dense 50-node blocks with no inner structure
+  they would add 1 917 and 247 "communities" below the 202 real ones, and
+  never a level above the result.
+
+```rust
+use nopaldb::algorithms::community::{LeidenCommunity, LeidenConfig, LeidenHierarchyOptions};
+
+let h = LeidenCommunity::new(LeidenConfig::default())
+    .detect_hierarchy(&graph, &LeidenHierarchyOptions {
+        max_cluster_size: 10,    // split communities larger than this (default 10)
+        resolution_factor: 2.0,  // gamma multiplier per level (> 1, default 2)
+        max_levels: 8,           // including level 0 (default 8)
+    })
+    .await?;
+for (level, partition) in h.levels.iter().enumerate() {
+    // partition: HashMap<NodeId, usize>; level 0 == detect()
+}
+let up = h.parent(1, 3); // community of level 0 that contains community 3 of level 1
+```
+
+Python: `graph.leiden_hierarchy(labels=…, edge_types=…, weight=…, gamma=…,
+max_cluster_size=10, resolution_factor=2.0, max_levels=8)` returns a list of
+`{node_id: community}`, coarsest first. Not cached; NQL keeps `leiden(n)`,
+which is level 0.
+
+Cost (release, Apple Silicon, default options): about 1.1–1.4× `detect()`.
+
+| graph | `detect()` | `detect_hierarchy` | communities per level |
+|---|---|---|---|
+| 10k, sparse 50-node blocks | 58 ms | 72 ms | 638 · 1 668 · 1 898 |
+| 10k, 50-node blocks of 5 × 10 | 31 ms | 47 ms | 201 · 831 · 1 032 · 1 093 |
+| 100k, sparse 50-node blocks | 782 ms | 872 ms | 6 317 · 16 744 · 18 745 |
+| 100k, 50-node blocks of 5 × 10 | 396 ms | 546 ms | 2 024 · 8 478 · 10 317 · 10 836 |
 
 ### Example (NQL)
 

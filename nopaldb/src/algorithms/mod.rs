@@ -14,7 +14,7 @@ pub use betweenness::BetweennessCentrality;
 pub use clustering::ClusteringCoefficient;
 pub use degree::DegreeCentrality;
 pub use shortest_path::ShortestPath;
-pub use community::{LouvainCommunity, LeidenCommunity, LeidenConfig};
+pub use community::{LouvainCommunity, LeidenCommunity, LeidenConfig, LeidenHierarchy, LeidenHierarchyOptions};
 
 
 

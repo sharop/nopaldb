@@ -215,6 +215,16 @@ class Graph:
         weight: Optional[str] = None,
         gamma: float = 0.1,
     ) -> dict[str, int]: ...
+    def leiden_hierarchy(
+        self,
+        labels: Optional[list[str]] = None,
+        edge_types: Optional[list[str]] = None,
+        weight: Optional[str] = None,
+        gamma: float = 0.1,
+        max_cluster_size: int = 10,
+        resolution_factor: float = 2.0,
+        max_levels: int = 8,
+    ) -> list[dict[str, int]]: ...
     def neighborhood(
         self,
         ids: list[str],

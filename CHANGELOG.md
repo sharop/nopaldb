@@ -39,6 +39,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contra 11.1. Detalle en `docs/ALGORITHMS.md` (Phase 3).
 
 ### Added
+- **Jerarquía de comunidades de Leiden** (#190 b).
+  `LeidenCommunity::detect_hierarchy(&graph, &LeidenHierarchyOptions)` →
+  `LeidenHierarchy { levels }`, de la más gruesa a la más fina, con
+  `depth()` y `parent(level, community)`. El nivel 0 es `detect()`; cada
+  nivel siguiente parte con Leiden, sobre su propio subgrafo y con
+  `gamma · resolution_factor^L`, las comunidades con más de
+  `max_cluster_size` nodos (defaults 10, 2.0 y `max_levels` 8). Contención
+  entre niveles por construcción. Python: `graph.leiden_hierarchy(...)` →
+  lista de `{node_id: community}`. Cuesta ≈ 1.1–1.4× `detect()` (100k nodos:
+  872 ms contra 782 ms). Se descartaron como niveles las particiones
+  refinadas internas del núcleo: son fragmentos, no subcomunidades
+  (`docs/ALGORITHMS.md`, Hierarchy).
 - **Leiden ponderado y acotado** (#190 a). `LeidenConfig` gana `labels`,
   `edge_types` y `weight_property`; NQL `leiden(n, labels = [...],
   edge_types = [...], weight = "w", gamma = g)`; Python

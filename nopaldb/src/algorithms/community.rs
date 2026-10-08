@@ -485,6 +485,32 @@ impl LeidenCommunity {
         communities.values().copied().collect::<HashSet<_>>().len()
     }
 
+    /// Jerarquía de comunidades (#190 b): el nivel 0 es la partición de
+    /// [`Self::detect`] y cada nivel siguiente parte las comunidades
+    /// grandes del anterior. Ver [`LeidenHierarchyOptions`].
+    pub async fn detect_hierarchy<G: GraphView>(
+        &self,
+        graph: &G,
+        options: &LeidenHierarchyOptions,
+    ) -> Result<LeidenHierarchy> {
+        options.validate()?;
+        let nodes = graph.get_all_nodes().await?;
+        if nodes.is_empty() {
+            return Ok(LeidenHierarchy::default());
+        }
+        let edges = graph.get_all_edges().await?;
+        let (config, options) = (self.config.clone(), options.clone());
+        tokio::task::spawn_blocking(move || {
+            let Some(graph) = DenseGraph::from_scope(nodes, edges, &config)? else {
+                return Ok(LeidenHierarchy::default());
+            };
+            let levels = leiden_hierarchy(&graph, &config, &options);
+            Ok(LeidenHierarchy::from_levels(&graph.node_ids, levels))
+        })
+        .await
+        .map_err(|e| crate::error::NopalError::custom(format!("leiden hierarchy join error: {e}")))?
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Núcleo (#194): Leiden según Traag, Waltman y van Eck (2019), con CPM y
     // nodos con tamaño. Hasta 0.6.10 el núcleo era plano, reutilizaba ids de
@@ -516,6 +542,103 @@ impl LeidenCommunity {
         };
         let partition = leiden_partition(&graph, &config);
         Ok(graph.node_ids.iter().copied().zip(partition).collect())
+    }
+}
+
+/// Opciones de [`LeidenCommunity::detect_hierarchy`] (#190 b).
+///
+/// El nivel 0 es la partición de Leiden con el `gamma` de la configuración.
+/// Para el nivel L+1, cada comunidad del nivel L con más de
+/// `max_cluster_size` nodos se vuelve a partir con Leiden sobre su propio
+/// subgrafo, con `gamma · resolution_factor^(L+1)`; las demás pasan igual.
+/// Se para cuando ninguna comunidad se parte o al llegar a `max_levels`.
+/// Así cada comunidad del nivel L+1 está contenida en una sola del nivel L,
+/// por construcción, y cada nivel optimiza CPM a su resolución (CPM no tiene
+/// límite de resolución: partir el subgrafo equivale a lo que pediría el
+/// grafo entero a esa γ). Es el esquema del GraphRAG de referencia (Leiden
+/// jerárquico con tamaño máximo de comunidad).
+///
+/// Descartado: usar como niveles las particiones refinadas que el núcleo
+/// agrega internamente. Son gratis, pero son fragmentos del refinamiento,
+/// no subcomunidades: en un grafo de 200 bloques densos de 50 nodos (sin
+/// estructura interna) darían 1 917 y 247 "comunidades" debajo de las 202
+/// reales, y nunca un nivel por encima del resultado.
+#[derive(Debug, Clone)]
+pub struct LeidenHierarchyOptions {
+    /// Comunidades con más nodos que esto se parten en el nivel siguiente.
+    /// Default: 10 (el del GraphRAG de referencia).
+    pub max_cluster_size: usize,
+    /// Factor por el que se multiplica `gamma` en cada nivel (> 1).
+    /// Default: 2.0.
+    pub resolution_factor: f64,
+    /// Número máximo de niveles, contando el 0 (≥ 1). Default: 8.
+    pub max_levels: usize,
+}
+
+impl Default for LeidenHierarchyOptions {
+    fn default() -> Self {
+        LeidenHierarchyOptions { max_cluster_size: 10, resolution_factor: 2.0, max_levels: 8 }
+    }
+}
+
+impl LeidenHierarchyOptions {
+    fn validate(&self) -> Result<()> {
+        let invalid = |msg: &str| Err(crate::error::NopalError::custom(format!("leiden hierarchy: {msg}")));
+        if self.max_cluster_size == 0 {
+            return invalid("max_cluster_size must be >= 1");
+        }
+        if !(self.resolution_factor.is_finite() && self.resolution_factor > 1.0) {
+            return invalid("resolution_factor must be a number > 1");
+        }
+        if self.max_levels == 0 {
+            return invalid("max_levels must be >= 1");
+        }
+        Ok(())
+    }
+}
+
+/// Jerarquía de comunidades de Leiden (#190 b), de la más gruesa a la más
+/// fina. `levels[0]` es la partición de [`LeidenCommunity::detect`] (la
+/// misma, nodo por nodo); toda comunidad del nivel L+1 está contenida en
+/// una sola del nivel L. Ids contiguos desde 0 en cada nivel, en orden de
+/// primera aparición por `NodeId`.
+#[derive(Debug, Clone, Default)]
+pub struct LeidenHierarchy {
+    pub levels: Vec<HashMap<NodeId, usize>>,
+    /// `parents[L][c]`: la comunidad del nivel L que contiene a la `c` del
+    /// nivel L+1.
+    parents: Vec<Vec<usize>>,
+}
+
+impl LeidenHierarchy {
+    fn from_levels(node_ids: &[NodeId], levels: Vec<Vec<usize>>) -> LeidenHierarchy {
+        let parents = levels
+            .windows(2)
+            .map(|pair| {
+                let k = pair[1].iter().copied().max().map_or(0, |m| m + 1);
+                let mut parent = vec![0usize; k];
+                for (child, coarse) in pair[1].iter().zip(&pair[0]) {
+                    parent[*child] = *coarse;
+                }
+                parent
+            })
+            .collect();
+        let levels = levels
+            .into_iter()
+            .map(|level| node_ids.iter().copied().zip(level).collect())
+            .collect();
+        LeidenHierarchy { levels, parents }
+    }
+
+    /// Número de niveles (0 si no había nodos).
+    pub fn depth(&self) -> usize {
+        self.levels.len()
+    }
+
+    /// La comunidad del nivel `level - 1` que contiene a la comunidad
+    /// `community` del nivel `level`; `None` en el nivel 0 o si no existe.
+    pub fn parent(&self, level: usize, community: usize) -> Option<usize> {
+        self.parents.get(level.checked_sub(1)?)?.get(community).copied()
     }
 }
 
@@ -604,6 +727,18 @@ impl DenseGraph {
         self.adj.len()
     }
 
+    /// El subgrafo inducido por `members` (índices crecientes): el nodo `i`
+    /// del subgrafo es `members[i]`.
+    fn induced(&self, members: &[usize]) -> DenseGraph {
+        let index: HashMap<usize, usize> = members.iter().enumerate().map(|(i, &m)| (m, i)).collect();
+        let adj = members
+            .iter()
+            .map(|&m| self.adj[m].iter().filter_map(|&(j, w)| index.get(&j).map(|&i| (i, w))).collect())
+            .collect();
+        let size = members.iter().map(|&m| self.size[m]).collect();
+        DenseGraph { node_ids: Vec::new(), adj, size }
+    }
+
     /// El grafo agregado de `parts` (comunidad por nodo, ids `0..k`
     /// contiguos): un nodo por comunidad, tamaño = suma de tamaños, peso
     /// entre comunidades = suma de pesos; los pesos internos se descartan.
@@ -639,6 +774,43 @@ fn renumber(parts: &[usize]) -> (Vec<usize>, usize) {
         .collect();
     let k = ids.len();
     (out, k)
+}
+
+/// Los niveles de [`LeidenHierarchyOptions`], del más grueso al más fino.
+fn leiden_hierarchy(graph: &DenseGraph, config: &LeidenConfig, options: &LeidenHierarchyOptions) -> Vec<Vec<usize>> {
+    let mut levels = vec![leiden_partition(graph, config)];
+    let mut gamma = config.gamma;
+    while levels.len() < options.max_levels {
+        gamma *= options.resolution_factor;
+        let sub_config = LeidenConfig { gamma, ..config.clone() };
+        let prev = levels.last().expect("level 0");
+        let mut members: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (i, &c) in prev.iter().enumerate() {
+            members.entry(c).or_default().push(i);
+        }
+        let mut next = vec![0usize; graph.len()];
+        let (mut next_id, mut split) = (0usize, false);
+        for nodes in members.values() {
+            if nodes.len() <= options.max_cluster_size {
+                for &i in nodes {
+                    next[i] = next_id;
+                }
+                next_id += 1;
+                continue;
+            }
+            let (sub, k) = renumber(&leiden_partition(&graph.induced(nodes), &sub_config));
+            split |= k > 1;
+            for (&i, &c) in nodes.iter().zip(&sub) {
+                next[i] = next_id + c;
+            }
+            next_id += k;
+        }
+        if !split {
+            break;
+        }
+        levels.push(renumber(&next).0);
+    }
+    levels
 }
 
 /// Tope de niveles de agregación del bucle externo. Cada nivel reduce el
