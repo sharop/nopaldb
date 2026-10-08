@@ -362,7 +362,9 @@ async fn interaccion_con_migracion_prop_idx_legacy() {
         .await
         .unwrap()
         .is_empty());
-    assert_eq!(graph.storage().get_meta_u64("prop_idx_format").await.unwrap(), Some(2));
+    // Desde 0.6.11 (#197) el índice queda en v3: sentinel nuevo, el viejo borrado.
+    assert_eq!(graph.storage().get_meta_u64("prop_idx_entries").await.unwrap(), Some(3));
+    assert_eq!(graph.storage().get_meta_u64("prop_idx_format").await.unwrap(), None);
 }
 
 #[tokio::test]

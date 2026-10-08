@@ -957,10 +957,10 @@ impl Graph {
     /// Reconstruye el índice de propiedades COMPLETO desde los nodos (fuente
     /// de verdad), en chunks de memoria acotada. Devuelve nodos procesados.
     ///
-    /// Sirve para: (1) la migración v1→v2 al abrir; (2) `REINDEX` explícito;
-    /// (3) reparar un índice que quedó desalineado por una vía que no pasa por
-    /// el applier — hoy `add_nodes_batch`/`BulkLoader`, que no indexan a
-    /// propósito.
+    /// Sirve para: (1) la migración de formato al abrir (v1→v2, v2→v3);
+    /// (2) `REINDEX` explícito; (3) reparar un índice que quedó desalineado.
+    /// Todos los caminos de escritura indexan, `add_nodes_batch`/`BulkLoader`
+    /// incluidos.
     ///
     /// Ya NO es el remedio de las sobrescrituras: el applier retracta las
     /// entradas que un overwrite invalida antes de pisar el nodo viejo, en los
@@ -997,41 +997,46 @@ impl Graph {
         Ok(processed)
     }
 
-    /// Migración del índice de propiedades al formato v2 (claves tipadas).
+    /// Migración del índice de propiedades al formato actual (v3: una entrada
+    /// por nodo, #197; v2 eran claves tipadas con un blob por valor).
     ///
-    /// Idempotente y crash-safe: el sentinel `prop_idx_format` (keyspace
-    /// `catalog` desde F5.4; las bases v1 lo tenían como
-    /// `meta:prop_idx_format` en el tree default y la migración de layout —
-    /// que corre antes, al inicio del open — ya lo copió a `catalog`) se
-    /// escribe AL FINAL, así que un crash a mitad de migración simplemente
-    /// la repite en el próximo open (borrado y rebuild son idempotentes; los
-    /// índices de propiedades son datos DERIVADOS — los nodos jamás se
-    /// tocan). DEBE correr después del WAL replay: el replay reindexa vía
-    /// `apply_index_node_properties` y escribiría formato nuevo de todas
-    /// formas; migrar antes dejaría un índice mixto.
+    /// El índice está al día si `prop_idx_entries` ≥ actual y NO existe el
+    /// sentinel viejo `prop_idx_format`: ese solo lo escriben versiones ≤
+    /// 0.6.10, así que su presencia dice que una versión anterior abrió la
+    /// base y reconstruyó el índice en v2 (ver `META_PROP_IDX_ENTRIES`).
+    /// Un `prop_idx_entries` mayor que el actual es una base de una versión
+    /// más nueva: error, en lugar de leer un formato desconocido.
+    ///
+    /// Idempotente y crash-safe: el sentinel nuevo se escribe AL FINAL, así
+    /// que un crash a mitad repite la migración en el próximo open (borrado y
+    /// rebuild son idempotentes; los índices de propiedades son datos
+    /// DERIVADOS — los nodos jamás se tocan). DEBE correr después del WAL
+    /// replay: el replay reindexa vía `apply_index_node_properties` y
+    /// escribiría formato nuevo de todas formas; migrar antes dejaría un
+    /// índice mixto.
     async fn migrate_property_index_if_needed(&self) -> Result<()> {
-        let current = self
-            .storage
-            .get_meta_u64(crate::storage::META_PROP_IDX_FORMAT)
-            .await?
-            .unwrap_or(1);
-        if current >= crate::storage::PROP_IDX_FORMAT_CURRENT {
+        use crate::storage::{META_PROP_IDX_ENTRIES, META_PROP_IDX_FORMAT, PROP_IDX_FORMAT_CURRENT};
+        let legacy = self.storage.get_meta_u64(META_PROP_IDX_FORMAT).await?;
+        let entries = self.storage.get_meta_u64(META_PROP_IDX_ENTRIES).await?.unwrap_or(0);
+        if entries > PROP_IDX_FORMAT_CURRENT {
+            return Err(NopalError::custom(format!(
+                "property index format {entries} is newer than this NopalDB ({PROP_IDX_FORMAT_CURRENT}); open the database with a newer version"
+            )));
+        }
+        if legacy.is_none() && entries == PROP_IDX_FORMAT_CURRENT {
             return Ok(());
         }
 
         log::info!(
-            "Migrando índice de propiedades v{} → v{} (claves tipadas)…",
-            current,
-            crate::storage::PROP_IDX_FORMAT_CURRENT
+            "Migrando índice de propiedades (formato {:?}/{}) → v{} (una entrada por nodo)…",
+            legacy,
+            entries,
+            PROP_IDX_FORMAT_CURRENT
         );
         let removed = self.storage.clear_legacy_property_index().await?;
         let rebuilt = self.rebuild_property_index().await?;
-        self.storage
-            .put_meta_u64_max(
-                crate::storage::META_PROP_IDX_FORMAT,
-                crate::storage::PROP_IDX_FORMAT_CURRENT,
-            )
-            .await?;
+        self.storage.delete_meta(META_PROP_IDX_FORMAT).await?;
+        self.storage.put_meta_u64_max(META_PROP_IDX_ENTRIES, PROP_IDX_FORMAT_CURRENT).await?;
         log::info!(
             "Índice de propiedades migrado: {} claves legadas eliminadas, {} nodos reindexados",
             removed,
