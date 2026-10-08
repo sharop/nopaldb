@@ -94,6 +94,15 @@ with tempfile.TemporaryDirectory() as tmp:
     for coarse, fine in zip(levels, levels[1:]):
         parent: dict[int, int] = {}
         assert all(parent.setdefault(fine[n], coarse[n]) == coarse[n] for n in ents), "nested"
+    # Comunidades persistidas con keys estables (0.6.11, #190 c).
+    rep = g.materialize_communities(levels)
+    assert rep["created"] == rep["communities"] == sum(len(set(lv.values())) for lv in levels)
+    again = g.materialize_communities(g.leiden_hierarchy(labels=["Entity"], edge_types=["RELATED"],
+                                                         weight="w", max_cluster_size=1))
+    assert again["kept_keys"] == again["communities"] and again["created"] == again["deleted"] == 0
+    assert again["memberships_added"] == again["memberships_removed"] == 0, "unchanged: no writes"
+    found = list(g.execute_nql("find c.key, c.level, c.size from (c:Community) where c.level = 0"))
+    assert len(found) == len(set(levels[0].values()))
     try:
         g.leiden_hierarchy(resolution_factor=1.0)
         raise AssertionError("resolution_factor <= 1 must fail")

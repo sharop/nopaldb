@@ -423,6 +423,51 @@ which is level 0.
 
 Cost (release, Apple Silicon, default options): about 1.1–1.4× `detect()`.
 
+### Persisted communities with stable keys (0.6.11, #190 c)
+
+`Graph::materialize_communities(&levels, &CommunityMaterializeOptions)` stores
+a hierarchy (e.g. `detect_hierarchy(...).levels`) in the graph:
+
+```
+(:Community {partition, level, key, size})
+(member)-[:IN_COMMUNITY]->(:Community)          one edge per level
+(:Community level L)-[:PARENT_OF]->(:Community level L+1)
+```
+
+- **Desired-state upsert in one transaction:** it reads what `partition`
+  already holds, computes the diff and writes only that, atomically.
+  Re-running on an unchanged partition writes nothing.
+- **Stable keys:** a new community that overlaps a previous one of the same
+  level by Jaccard ≥ `min_jaccard` (default 0.5) inherits its `key` *and its
+  node id*, so anything attached to it (a community report) stays attached.
+  With `min_jaccard > 0.5` the pairing is unique; below, it is assigned by
+  descending Jaccard with deterministic tie-breaks. An unpaired community gets
+  `partition/L<level>/<hash of its sorted member ids>`: the same partition
+  gives the same keys regardless of insertion order.
+- **Several partitions coexist** (`partition` = a name per gamma or scope);
+  materializing one never touches another.
+- Python: `graph.materialize_communities(levels, partition="leiden",
+  min_jaccard=0.5)` takes what `leiden_hierarchy` returns and returns the
+  counts. The communities are ordinary nodes: `find c.key from (c:Community)
+  where c.level = 0`.
+
+Key retention after adding 1% random edges (2k nodes, 3 seeds): 100% on the
+hierarchical planted graph (its partition does not change), and 87–92% of
+nodes per level on the sparse one, where 89–92% of communities are paired.
+
+Cost (release, on disk, sparse planted graph, 3 levels):
+
+| nodes | communities | first materialization | re-run, unchanged |
+|---|---|---|---|
+| 10 000 | 4 204 | 1.4 s | 44 ms |
+| 100 000 | 41 806 | 44 s | 0.5 s |
+
+The first materialization at 100k is dominated by the property index, not by
+this code: it stores one `Vec<NodeId>` per `(property, value)` and rewrites it
+on every insert, so a value shared by many nodes (`partition`, `level`)
+makes the writes quadratic. That affects every write path and is tracked
+in [#197](https://github.com/sharop/nopaldb/issues/197).
+
 | graph | `detect()` | `detect_hierarchy` | communities per level |
 |---|---|---|---|
 | 10k, sparse 50-node blocks | 58 ms | 72 ms | 638 · 1 668 · 1 898 |

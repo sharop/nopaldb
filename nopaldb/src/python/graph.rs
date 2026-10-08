@@ -396,6 +396,60 @@ impl PyGraph {
             .collect())
     }
 
+    /// Persist a community hierarchy as graph nodes with stable keys.
+    ///
+    /// `levels` is what `leiden_hierarchy(...)` returns: a list of
+    /// {node_id: community}, coarsest first, nested. Writes
+    /// (:Community {partition, level, key, size}), (member)-[:IN_COMMUNITY]->
+    /// (community) for every level and (level L)-[:PARENT_OF]->(level L+1),
+    /// as a diff against what `partition` already holds, in one transaction.
+    /// A community that overlaps a previous one of its level by Jaccard >=
+    /// `min_jaccard` keeps its key and node id, so whatever hangs from it (a
+    /// report) stays attached; a new one gets a key derived from its members.
+    /// Re-running on an unchanged partition writes nothing. Returns counts:
+    /// communities, kept_keys, created, updated, deleted, memberships_added,
+    /// memberships_removed, parent_links_added, parent_links_removed.
+    ///
+    /// Example:
+    ///     >>> levels = graph.leiden_hierarchy(labels=["Entity"])
+    ///     >>> graph.materialize_communities(levels)["kept_keys"]
+    #[pyo3(signature = (levels, partition="leiden", min_jaccard=0.5))]
+    fn materialize_communities(
+        &self,
+        py: Python<'_>,
+        levels: Vec<std::collections::HashMap<String, usize>>,
+        partition: &str,
+        min_jaccard: f64,
+    ) -> PyResult<std::collections::HashMap<&'static str, usize>> {
+        let graph = self.graph()?;
+        let mut parsed = Vec::with_capacity(levels.len());
+        for level in levels {
+            let mut map = std::collections::HashMap::with_capacity(level.len());
+            for (id, c) in level {
+                map.insert(parse_uuid(&id, "node")?, c);
+            }
+            parsed.push(map);
+        }
+        let options = crate::graph::communities::CommunityMaterializeOptions {
+            partition: partition.to_string(),
+            min_jaccard,
+        };
+        let r = to_py_result(crate::python::runtime::block_on(py, async move {
+            graph.materialize_communities(&parsed, &options).await
+        }))?;
+        Ok(std::collections::HashMap::from([
+            ("communities", r.communities),
+            ("kept_keys", r.kept_keys),
+            ("created", r.created),
+            ("updated", r.updated),
+            ("deleted", r.deleted),
+            ("memberships_added", r.memberships_added),
+            ("memberships_removed", r.memberships_removed),
+            ("parent_links_added", r.parent_links_added),
+            ("parent_links_removed", r.parent_links_removed),
+        ]))
+    }
+
     /// Number of edges incident to `id`: "out", "in" or "both" (default).
     #[pyo3(signature = (id, direction="both"))]
     fn degree(&self, py: Python<'_>, id: &str, direction: &str) -> PyResult<usize> {
