@@ -225,6 +225,12 @@ class Graph:
         resolution_factor: float = 2.0,
         max_levels: int = 8,
     ) -> list[dict[str, int]]: ...
+    def materialize_communities(
+        self,
+        levels: list[dict[str, int]],
+        partition: str = "leiden",
+        min_jaccard: float = 0.5,
+    ) -> dict[str, int]: ...
     def neighborhood(
         self,
         ids: list[str],

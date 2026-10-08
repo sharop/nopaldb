@@ -39,6 +39,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contra 11.1. Detalle en `docs/ALGORITHMS.md` (Phase 3).
 
 ### Added
+- **Comunidades persistidas con keys estables** (#190 c).
+  `Graph::materialize_communities(&levels, &CommunityMaterializeOptions)`
+  guarda una jerarquía como `(:Community {partition, level, key, size})`,
+  `IN_COMMUNITY` (miembro → comunidad, un nivel por arista) y `PARENT_OF`
+  (nivel L → L+1). Upsert de estado deseado en una transacción: solo
+  escribe la diferencia, y recalcular sin cambios no escribe nada. Una
+  comunidad que se solapa con una previa del mismo nivel (Jaccard ≥
+  `min_jaccard`, 0.5) hereda su `key` y su `NodeId`; una nueva recibe una
+  key derivada de sus miembros. Varias particiones conviven por nombre.
+  Python: `graph.materialize_communities(levels, partition=, min_jaccard=)`.
+  Con 1% de aristas nuevas se conserva la key de 87–100% de los nodos por
+  nivel. Costo a 100k nodos: 44 s la primera vez (dominado por el índice
+  de propiedades, #197) y 0.5 s al recalcular sin cambios.
 - **Jerarquía de comunidades de Leiden** (#190 b).
   `LeidenCommunity::detect_hierarchy(&graph, &LeidenHierarchyOptions)` →
   `LeidenHierarchy { levels }`, de la más gruesa a la más fina, con
