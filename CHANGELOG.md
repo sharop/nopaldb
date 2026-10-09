@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.11] - unreleased
+## [0.6.11] - 2026-10-09
 
 Iteración GraphRAG B: estructura global. Leiden ponderado, acotado y
 jerárquico, con un núcleo reescrito según el paper; comunidades persistidas
