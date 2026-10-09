@@ -58,6 +58,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contra 11.1. Detalle en `docs/ALGORITHMS.md` (Phase 3).
 
 ### Added
+- **Reportes de comunidad y búsqueda global** (#191). Convención
+  `(:Report {community_key, partition, level, title, summary, rating,
+  generated_at, source_version})-[:SUMMARIZES]->(:Community)`, un reporte
+  por comunidad. `Graph::upsert_community_report(key, CommunityReport)` lo
+  escribe con `source_version` = la huella de la comunidad
+  (`community_fingerprint`: miembros con sus propiedades y aristas internas
+  con las suyas). `Graph::stale_reports(partition, level)` lista las
+  comunidades sin reporte (`missing`), con reporte viejo (`stale`) y los
+  reportes huérfanos (`orphan`); una arista nueva dentro de una comunidad
+  marca esa comunidad y sus ancestros, no sus hermanas. Python:
+  `community_fingerprint`, `upsert_community_report`, `stale_reports`.
+  Receta de búsqueda global (map-reduce sobre reportes, Python y NQL) en
+  `docs/GRAPHRAG.md`, con `global_search_sample.py` en `make check-python`.
 - **Comunidades persistidas con keys estables** (#190 c).
   `Graph::materialize_communities(&levels, &CommunityMaterializeOptions)`
   guarda una jerarquía como `(:Community {partition, level, key, size})`,

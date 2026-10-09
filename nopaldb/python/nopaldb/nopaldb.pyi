@@ -231,6 +231,17 @@ class Graph:
         partition: str = "leiden",
         min_jaccard: float = 0.5,
     ) -> dict[str, int]: ...
+    def community_fingerprint(self, community_key: str) -> str: ...
+    def upsert_community_report(
+        self,
+        community_key: str,
+        title: str,
+        summary: str,
+        rating: Optional[float] = None,
+        vector: Optional[list[float]] = None,
+        model: Optional[str] = None,
+    ) -> tuple[str, str]: ...
+    def stale_reports(self, partition: str = "leiden", level: Optional[int] = None) -> list[dict[str, Any]]: ...
     def neighborhood(
         self,
         ids: list[str],
