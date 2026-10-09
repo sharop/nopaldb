@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **El índice HNSW ya no reserva memoria que nunca usa** (#206). hnsw_rs
+  0.3.4 calcula mal la reserva inicial por capa cuando recibe el número de
+  puntos esperado (a la fracción le falta un `exp`): con M = 24 apartaba
+  ~3.4 KB por punto, 330 MiB para 100k, antes de insertar nada. `HnswIndex`
+  le pasa ahora 0 y las capas crecen al insertar; el argumento
+  `max_elements` de `HnswIndex::new` / `with_params` se acepta y se ignora.
+  Medido con `retrieval_dims` a 100k: 650 → 317 MiB a 384 dimensiones (4.4×
+  → 2.2× los vectores crudos) y 897 → 565 MiB a 1024 (2.3× → 1.45×), con el
+  mismo recall y tiempo de build. Un índice reabierto desde su dump no lo
+  sufría. `tests/hnsw_memory_test.rs` mide la reserva con un allocator
+  contador.
+
+---
+
 ## [0.6.11] - 2026-10-09
 
 Iteración GraphRAG B: estructura global. Leiden ponderado, acotado y

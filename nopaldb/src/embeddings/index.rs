@@ -25,6 +25,17 @@ const DEFAULT_MAX_NB_CONNECTION: usize = 24;
 const DEFAULT_EF_CONSTRUCTION: usize = 400;
 const DEFAULT_MAX_LAYER: usize = 16;
 
+/// Pista de capacidad que se pasa a `Hnsw::new`: 0, aunque el llamador sepa
+/// cuántos puntos vienen (#206). hnsw_rs 0.3.4 reserva por capa
+/// `frac · N` punteros con `frac = exp(-i/s) - (-(i+1)/s)`: al segundo
+/// término le falta el `exp`, así que con M = 24 la reserva suma ~433·N
+/// punteros en vez de N, unos 3.4 KB por punto que nunca se usan (330 MiB
+/// para 100k). Con 0 las capas crecen al insertar; medido a 100k × 384, la
+/// memoria baja de 651 a 318 MiB con el mismo recall y el mismo tiempo de
+/// build. El índice cargado de un dump no lo sufre: hnsw_rs dimensiona las
+/// capas con los puntos reales.
+const HNSW_CAPACITY_HINT: usize = 0;
+
 /// `ef_search` por defecto cuando el llamador no lo especifica
 /// (`search_knn`). Controla el tamaño de la lista de candidatos que HNSW
 /// explora: más alto = mejor recall, más lento. Solo aplica cuando la
@@ -197,15 +208,16 @@ pub struct HnswIndex {
 impl HnswIndex {
     /// Crea un índice vacío para el modelo y dimensión dados.
     ///
-    /// `max_elements` es un hint de capacidad inicial (no un límite duro).
+    /// `max_elements` se acepta por compatibilidad y no se usa: ver
+    /// `HNSW_CAPACITY_HINT` (#206).
     pub fn new(
         model: impl Into<String>,
         dimension: usize,
-        max_elements: usize,
+        _max_elements: usize,
     ) -> Self {
         let inner = Hnsw::<f32, DistCosine>::new(
             DEFAULT_MAX_NB_CONNECTION,
-            max_elements,
+            HNSW_CAPACITY_HINT,
             DEFAULT_MAX_LAYER,
             DEFAULT_EF_CONSTRUCTION,
             DistCosine {},
@@ -234,18 +246,19 @@ impl HnswIndex {
         }
     }
 
-    /// Crea un índice con parámetros HNSW custom.
+    /// Crea un índice con parámetros HNSW custom. `max_elements` no se usa:
+    /// ver `HNSW_CAPACITY_HINT` (#206).
     pub fn with_params(
         model: impl Into<String>,
         dimension: usize,
-        max_elements: usize,
+        _max_elements: usize,
         max_nb_connection: usize,
         ef_construction: usize,
         max_layer: usize,
     ) -> Self {
         let inner = Hnsw::<f32, DistCosine>::new(
             max_nb_connection,
-            max_elements,
+            HNSW_CAPACITY_HINT,
             max_layer,
             ef_construction,
             DistCosine {},

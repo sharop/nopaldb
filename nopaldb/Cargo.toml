@@ -342,3 +342,7 @@ required-features = ["storage-sled", "reasoner", "owl-import", "algorithms", "an
 [[test]]
 name = "hnsw_reachability_test"
 required-features = ["embeddings-index"]
+
+[[test]]
+name = "hnsw_memory_test"
+required-features = ["embeddings-index"]
