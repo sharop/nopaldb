@@ -135,7 +135,7 @@ which silently did not travel. If you copy a database with your own tools, put
 | 0.5.13 – 0.5.24, sled or redb | yes, either engine | 0.5.20+ writes `hnsw/`; 0.5.22+ mints UUID v7 ids (older versions read them as plain UUIDs). |
 | 0.6.x, redb | yes | a 0.5.x build with `storage-redb` opens it too, but sled-only wheels of 0.5.x do not: migrate to sled first (`dst_engine="sled"`). |
 | 0.6.x, sled | yes (with a migration hint in the log) | readable by 0.5.3+. |
-| ≤ 0.6.10 opened by 0.6.11+ | yes | the first open rebuilds the property index in its v3 format (one entry per node, #197): one O(n) pass. Going back to ≤ 0.6.10 works without manual steps: that version rebuilds its own index on open, and 0.6.11 rebuilds again when you return (see `docs/PROPERTY_INDEXING.md`). |
+| ≤ 0.6.10 opened by 0.6.11+ | yes | the first open rebuilds the property index in its v3 format (one entry per node, #197): one O(n) pass. Going back to ≤ 0.6.10 works without manual steps: that version rebuilds its own index on open, and 0.6.11 rebuilds again when you return (see `docs/PROPERTY_INDEXING.md`). The HNSW dump moves to format 3 (#201): the first vector search per model rebuilds the index once; going back, 0.6.10 sees an unknown format and rebuilds too. |
 
 Going back a version: restore the previous image and the untouched copy of the
 volume, or migrate to the engine that version supports. Never open a database
