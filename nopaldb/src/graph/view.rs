@@ -15,11 +15,36 @@ pub trait GraphView: Send + Sync {
 
     /// Returns the edges present in this view.
     fn get_all_edges(&self) -> impl std::future::Future<Output = Result<Vec<Edge>>> + Send;
+
+    /// Returns the nodes of this view whose label is one of `labels`. The
+    /// default filters `get_all_nodes`; `Graph` reads only those labels from
+    /// its label index (#207).
+    fn get_nodes_with_labels(
+        &self,
+        labels: &[String],
+    ) -> impl std::future::Future<Output = Result<Vec<Node>>> + Send {
+        async move {
+            let mut nodes = self.get_all_nodes().await?;
+            nodes.retain(|n| labels.contains(&n.label));
+            Ok(nodes)
+        }
+    }
 }
 
 impl GraphView for Graph {
     async fn get_all_nodes(&self) -> Result<Vec<Node>> {
         self.get_all_nodes().await
+    }
+
+    async fn get_nodes_with_labels(&self, labels: &[String]) -> Result<Vec<Node>> {
+        let mut seen = HashSet::new();
+        let mut nodes = Vec::new();
+        for label in labels {
+            if seen.insert(label.as_str()) {
+                nodes.extend(self.get_nodes_by_label(label).await?);
+            }
+        }
+        Ok(nodes)
     }
 
     async fn get_all_edges(&self) -> Result<Vec<Edge>> {

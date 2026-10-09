@@ -296,6 +296,20 @@ async fn assert_invariants(graph: &Graph) -> nopaldb::Result<()> {
         }
     }
 
+    // 6b. Índice de etiquetas (#207) ↔ datos: para cada etiqueta, lo que
+    //    devuelve el índice es exactamente lo que da un recorrido completo.
+    {
+        let all = graph.get_all_nodes().await?;
+        let labels: std::collections::BTreeSet<&str> = all.iter().map(|n| n.label.as_str()).collect();
+        for label in labels {
+            let mut want: Vec<_> = all.iter().filter(|n| n.label == label).map(|n| n.id).collect();
+            want.sort();
+            let mut got: Vec<_> = graph.get_nodes_by_label(label).await?.into_iter().map(|n| n.id).collect();
+            got.sort();
+            assert_eq!(got, want, "label index diverged from the data for {label} after crash recovery");
+        }
+    }
+
     // 7. El grafo sigue siendo escribible (los relojes no colisionan)
     let mut tx = graph.begin_transaction().await?;
     let probe = tx

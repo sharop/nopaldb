@@ -52,6 +52,8 @@ pub(crate) const ALL_KEYSPACES: &[&str] = &[
     "history",
     "adjacency",
     "indexes",
+    // Índice de etiquetas (#207).
+    "label_idx",
 ];
 
 const BATCH_PAIRS: usize = 10_000;

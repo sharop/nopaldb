@@ -248,9 +248,14 @@ projections), use the exact scan instead.
 - Since 0.6.10, `search_hybrid(label=...)` and NQL `hybrid()` no longer scan
   the label: each branch checks the label on its candidates (see
   [HYBRID_SEARCH.md](HYBRID_SEARCH.md#filter)). A label that is very rare among
-  the nearest neighbours still falls back to the scan; the label index removes
-  that case. A filter with properties (`props=`) still builds its allowed set
-  with a label scan.
+  the nearest neighbours, and a filter with properties (`props=`), build an
+  allowed set from the label's nodes; since 0.6.12 that set comes from the
+  label index and reads only the label's nodes (#207).
+- Since 0.6.12 every lookup by label reads a label index instead of every
+  node: `get_nodes_by_label`, NQL `from (n:Label)`, the `labels=` scope of
+  Leiden and the community reports. At 100k nodes, a label with 1 000 nodes
+  takes 0.64 ms instead of 41.7 ms, and one with 10 nodes 0.006 ms
+  (`make bench BENCH=graph_ops`, `label_lookup_100k`).
 - NQL `similar_to` does not scan either: it asks the index for 4·K neighbours
   and keeps the first K of the label, escalating ×4 while short and falling
   back to the label's own nodes when the label is rare among the neighbours.

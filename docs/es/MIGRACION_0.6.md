@@ -136,6 +136,7 @@ reabre.
 | 0.6.x, redb | sí | un build 0.5.x con `storage-redb` también la abre, pero las wheels solo-sled de 0.5.x no: migra a sled antes (`dst_engine="sled"`). |
 | 0.6.x, sled | sí (con aviso de migración en el log) | la lee 0.5.3+. |
 | ≤ 0.6.10 abierta por 0.6.11+ | sí | la primera apertura reconstruye el índice de propiedades en su formato v3 (una entrada por nodo, #197): una pasada O(n). Volver a ≤ 0.6.10 funciona sin pasos manuales: esa versión reconstruye su propio índice al abrir, y 0.6.11 lo reconstruye de nuevo al regresar (ver `docs/PROPERTY_INDEXING.md`). El dump del HNSW pasa al formato 3 (#201): la primera búsqueda vectorial de cada modelo reconstruye el índice una vez; al volver, 0.6.10 ve un formato desconocido y también lo reconstruye. |
+| ≤ 0.6.11 abierta por 0.6.12+ | sí | la primera apertura construye el índice de etiquetas (#207): una pasada O(n) sobre los nodos. Volver a ≤ 0.6.11 funciona sin pasos manuales: esa versión ignora el índice, y 0.6.12 detecta que escribió (el reloj lógico pasó la marca de sincronización del índice) y lo reconstruye al regresar. |
 
 Volver una versión atrás: restaura la imagen anterior y la copia intacta del
 volumen, o migra al motor que esa versión soporte. Nunca abras con una versión

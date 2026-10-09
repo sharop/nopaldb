@@ -48,8 +48,8 @@ for h in hits:
 ## Filter
 
 `filter = {label?, props: [equalities]}` (AND). With properties it is applied
-as a precomputed allowed-set (label scan ∩ property-index lookups) that both
-paths intersect. v1 supports label + equality; ranges/OR are a follow-up.
+as a precomputed allowed-set (label index ∩ property-index lookups) that both
+paths intersect. Until 0.6.11 the label part was a scan of every node (#207). v1 supports label + equality; ranges/OR are a follow-up.
 
 **A label-only filter does not scan the label (0.6.10).** Each path checks the
 label on its own candidates as it reads them, in rank order, and keeps the
