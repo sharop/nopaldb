@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **HNSW escala otra vez** (#201). El arreglo de #184 (0.6.10) no aguantaba
+  la escala: `keep_pruned` llenaba la lista de vecinos de cada nodo y el
+  enlace inverso a cada punto nuevo se podaba enseguida, así que a 100k × 384
+  un tercio de los puntos quedaba sin enlaces entrantes; la verificación los
+  reinsertaba en cascada (hasta 73 893 copias muertas) y cada búsqueda pedía
+  `k` más un vecino por reinserción, lo que anulaba el `ef_search` del
+  llamador. Ahora no se usa `keep_pruned`, y el ~1% de puntos que no se
+  encuentran a sí mismos tras insertarse quedan como **huérfanos** que cada
+  búsqueda compara directamente (`HnswIndex::orphans()`; `repaired()` queda
+  obsoleto y devuelve 0). Medido a 100k × 384 con datos agrupados: build
+  139 s → 44 s, memoria 1 111 → 646 MiB, p95 de `search_knn` k = 10 167 ms →
+  0.87 ms (el scan exacto tarda ~31 ms), recall@10 0.941 → 0.991 con
+  `ef_search` = 30 y 0.998 con 100. Los dumps de 0.6.10 (formato 2) se
+  reconstruyen una vez.
 - **Índice de propiedades: una entrada por nodo** (#197). Guardaba un
   `Vec<NodeId>` por `(propiedad, valor)` y lo leía y reescribía entero en
   cada alta y baja, así que escribir nodos con un valor compartido (`type`,

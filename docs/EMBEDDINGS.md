@@ -326,41 +326,69 @@ Measured (release, 384 dims):
 
 What costs time at scale is the HNSW index, not storage: one by one, each
 embedding added to a cached 100k index is an insert plus a reachability check
-(~13 ms). The first search after loading builds the whole index (≈ 2 min at
-100k, see "Every point is reachable").
+(~13 ms). The first search after loading builds the whole index (≈ 45 s at
+100k × 384 on clustered data, see "Every point is reachable").
 
-### Every point is reachable (0.6.10)
+### Every point is reachable (0.6.10, reworked in 0.6.11)
 
 HNSW prunes each node's neighbour list with a heuristic, and that pruning
-could leave a point with outgoing links but no incoming ones: it was in the
-index, and no search returned it, not even with `ef_search` equal to the
-index size. Measured before the fix (384 dims): ~0.5% of the points of a
-3000-point build, ~1.6% of points inserted afterwards, and 1.35% of a sample
-of a 100k build.
+can leave a point with outgoing links but no incoming ones: it is in the
+index, and no search returns it, not even with `ef_search` equal to the
+index size. Measured without a fix (384 dims): ~0.5% of the points of a
+3000-point build and ~0.8% of a 100k build.
 
-Two changes close it:
+How it is handled since 0.6.11 (#201):
 
-- the index keeps the candidates the heuristic prunes (`hnsw_rs`
-  `keep_pruned`), so far fewer points end up without incoming links;
 - after a build, and after each insert, every new point searches for itself
   (10 neighbours, `ef = 64`, in parallel for large builds). A point that does
-  not find itself is reinserted with a new internal id, up to 5 rounds;
-  `HnswIndex::repaired()` counts these reinsertions.
+  not find itself becomes an **orphan**: it stays in the index, and every
+  search compares the orphans directly (exact cosine distance) and merges
+  them with what the graph returns. `HnswIndex::orphans()` counts them;
+- the orphans and their vectors are saved in the dump's `.meta`, so a
+  reopened index keeps them without searching again.
 
-What is guaranteed: after a build every point is reachable, and a point is
-reachable right after it is inserted. A later insert can still prune the last
+What is guaranteed: after a build every point is found, and a point is
+found right after it is inserted. A later insert can still prune the last
 link into an earlier point; measured: 0 of 10 000 inserts at 384 dims, 1 of
 10 000 at 16 dims. A rebuild verifies every point again.
 
-Cost (release, 384 dims): build 2.5 → 3.5 s at 10k and 75 → 114 s at 100k;
-200 inserts into a 100k index 1.8 → 2.2 s. On the same random vectors,
-recall@10 at the default `ef_search` went from 0.08 to 0.98 at 100k (0.40 →
-0.56 at 10k): random uniform vectors are a worst case for any ANN index, so
-read the jump as "the old graph was badly connected", not as a figure for
-real embeddings.
+**What 0.6.10 did, and why it changed.** 0.6.10 kept the candidates the
+heuristic prunes (`hnsw_rs` `keep_pruned`) and reinserted every point that
+did not find itself, up to 5 rounds; every search then asked for `k` plus
+one neighbour per reinsertion. At 3000 points this worked. At scale it did
+the opposite:
 
-Dumps written by earlier versions (format 1) were built without this and
-are rebuilt once on the first search after upgrading.
+- `keep_pruned` fills every neighbour list up to its maximum with the
+  nearest candidates, and the back link to each new point, added to that
+  full list and pruned by distance, is dropped at once. At 100k × 384, a
+  third of the points had no incoming link;
+- a reinserted point lands in the same region and loses its back link
+  again (of 811 unreachable points without `keep_pruned`, 749 still were
+  after 5 rounds), and each attempt left a dead copy in the graph;
+- asking for `k + reinsertions` neighbours on every search overrode the
+  caller's `ef_search`.
+
+Measured with `make bench BENCH=retrieval_dims` (release, Apple M3 Max, 384
+dims, 100k points, `search_knn` k = 10):
+
+| clustered data | 0.6.10 | 0.6.11 |
+|---|---|---|
+| reinserted / orphan points | 73 893 | 810 |
+| index build | 139 s | 44 s |
+| index memory | 1 111 MiB | 646 MiB |
+| p95, `ef_search` = 30 | 167 ms | 0.87 ms |
+| recall@10, `ef_search` = 30 / 100 | 0.941 / 0.941 | 0.991 / 0.998 |
+
+An exact scan of the same 100k vectors takes ~31–36 ms. Dumps written by
+0.6.10 (format 2) are rebuilt once on the first search after upgrading.
+
+**On uniform random vectors** the 0.6.10 numbers looked better (recall@10
+0.97 at 100k) only because every search ran with an effective `ef` of ~2 460,
+as slow as the exact scan. With the caller's `ef_search` honoured, uniform
+random vectors at 384 dims give recall@10 of 0.11 at `ef_search` = 30 and
+0.25 at 100: they are the worst case for any ANN index (the nearest
+neighbour is barely closer than a random point). Embeddings from a real
+model cluster, and behave like the first table.
 
 ### Persistence across reopens
 
@@ -396,7 +424,7 @@ dump:
 | dump files changed or truncated | `Corrupt` → rebuild, never handed to `hnsw_rs` (its loader panics on bad input) |
 | fewer than 1024 live points (`EXACT_SEARCH_THRESHOLD`) | not persisted at all: the rebuild costs milliseconds and the exact path keeps its own vectors |
 | in-memory graph, read-only handle | loads if a dump exists (read-only), never writes |
-| dump written before 0.6.10 (format 1) | `Stale` → rebuild once (see "Every point is reachable") |
+| dump written before 0.6.11 (format 1 or 2) | `Stale` → rebuild once (see "Every point is reachable") |
 
 `embedding_index_stats(model)` reports `persisted` (the current in-memory
 state is on disk, i.e. reopening would load it) and `loaded_from_disk_ms`

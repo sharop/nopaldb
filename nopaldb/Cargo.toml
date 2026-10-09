@@ -154,6 +154,13 @@ name = "retrieval"
 harness = false
 required-features = ["hybrid"]
 
+# HNSW con dimensiones de modelos reales (384, 1024): carga, build, memoria,
+# latencia y recall@10 contra búsqueda exacta (#192).
+[[bench]]
+name = "retrieval_dims"
+harness = false
+required-features = ["embeddings-index"]
+
 [[test]]
 name = "owl_import_integration_test"
 required-features = ["owl-import"]

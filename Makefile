@@ -30,7 +30,7 @@ help:
 	@echo "  make clippy-full        - clippy full public feature set"
 	@echo "  make check-doc-links    - links relativos de docs/ y READMEs apuntan a archivos que existen"
 	@echo "  make publish-crate      - cargo publish SOLO desde main al dia (check-on-main + checks)"
-	@echo "  make bench BENCH=x      - cargo bench con panic=unwind (hnsw_ops | gc_removals | graph_ops | retrieval)"
+	@echo "  make bench BENCH=x      - cargo bench con panic=unwind (hnsw_ops | gc_removals | graph_ops | retrieval | retrieval_dims)"
 	@echo "  make package-qa         - valida y empaqueta nopaldb (binario + wheel python)"
 	@echo "  make build-wheel        - wheel para PYTHON (default: python3), ej: PYTHON=python3.12"
 	@echo "  make build-wheel-all    - wheels para Python 3.10, 3.11, 3.12 y 3.13 (los que existan)"
@@ -53,9 +53,9 @@ bench:
 	@# lleva panic = "abort" y el harness de criterion exige unwind, así que
 	@# las dependencias compiladas para release chocan ("requires panic
 	@# strategy abort"). El override compila las deps con unwind solo aquí.
-	@# Uso: make bench BENCH=hnsw_ops   (o gc_removals, graph_ops, retrieval)
+	@# Uso: make bench BENCH=hnsw_ops   (o gc_removals, graph_ops, retrieval, retrieval_dims)
 	@#      NOPALDB_BENCH_ENGINE=redb make bench BENCH=gc_removals
-	@test -n "$(BENCH)" || { echo "uso: make bench BENCH=hnsw_ops|gc_removals|graph_ops|retrieval"; exit 1; }
+	@test -n "$(BENCH)" || { echo "uso: make bench BENCH=hnsw_ops|gc_removals|graph_ops|retrieval|retrieval_dims"; exit 1; }
 	CARGO_PROFILE_RELEASE_PANIC=unwind cargo bench -p nopaldb --features core,storage-redb --bench $(BENCH)
 
 check-on-main:

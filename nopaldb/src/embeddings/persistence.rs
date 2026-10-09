@@ -70,7 +70,13 @@ use crate::types::NodeId;
 /// la verificación de alcanzabilidad y pueden traer ~0.5% de puntos que
 /// ninguna búsqueda encuentra. Subir la versión hace que se reconstruyan una
 /// vez, ya corregidos, en vez de cargarse tal cual.
-pub const DUMP_FORMAT_VERSION: u32 = 2;
+///
+/// 3 (#201): los grafos de la versión 2 se construyeron con `keep_pruned`,
+/// que a escala deja sin enlaces entrantes a buena parte de los puntos; la
+/// verificación los reinsertó y cada reinserción dejó una copia muerta (a
+/// 100k × 384, hasta 74k copias y 1.1 GiB). Se reconstruyen una vez. El
+/// meta cambia: `repaired` sale y entran los huérfanos con su vector.
+pub const DUMP_FORMAT_VERSION: u32 = 3;
 
 /// Subdirectorio de `data_dir` donde viven los dumps.
 pub const DUMP_SUBDIR: &str = "hnsw";
@@ -130,9 +136,9 @@ struct DumpMeta {
     id_map: HashMap<usize, NodeId>,
     next_data_id: usize,
     tombstones: usize,
-    /// `DataId` muertos que dejó la verificación de alcanzabilidad (#184,
-    /// formato 2); cuentan como puntos del grafo igual que los tombstones.
-    repaired: usize,
+    /// Puntos vivos a los que el grafo no llega, con su vector (#201,
+    /// formato 3); `HnswIndex` los compara en cada búsqueda.
+    orphans: Vec<(NodeId, Vec<f32>)>,
     /// Los embeddings que este dump describe.
     embeddings: EmbeddingsDigest,
     graph_file: FileDigest,
@@ -271,7 +277,7 @@ pub fn dump(
             id_map: index.id_map().clone(),
             next_data_id: index.next_data_id(),
             tombstones: index.tombstones(),
-            repaired: index.repaired(),
+            orphans: index.orphan_points().to_vec(),
             embeddings,
             graph_file,
             data_file,
@@ -360,15 +366,23 @@ pub fn load(model: &str, data_dir: &Path, expected: &EmbeddingsDigest) -> LoadOu
         Ok(h) => h,
         Err(e) => return LoadOutcome::Corrupt(format!("hnsw_rs load_hnsw: {e}")),
     };
-    let expected_points = meta.id_map.len() + meta.tombstones + meta.repaired;
+    let expected_points = meta.id_map.len() + meta.tombstones;
     if inner.get_nb_point() != expected_points {
         return LoadOutcome::Corrupt(format!(
-            "el grafo trae {} puntos y el meta {} ({} vivos + {} tombstones + {} reparados)",
+            "el grafo trae {} puntos y el meta {} ({} vivos + {} tombstones)",
             inner.get_nb_point(),
             expected_points,
             meta.id_map.len(),
-            meta.tombstones,
-            meta.repaired
+            meta.tombstones
+        ));
+    }
+    let live: std::collections::HashSet<&NodeId> = meta.id_map.values().collect();
+    if let Some((id, v)) = meta.orphans.iter().find(|(id, v)| !live.contains(id) || v.len() != meta.dimension) {
+        return LoadOutcome::Corrupt(format!(
+            "huérfano {id} incoherente: {} dims (el índice tiene {}), vivo: {}",
+            v.len(),
+            meta.dimension,
+            live.contains(id)
         ));
     }
     LoadOutcome::Loaded(Box::new(HnswIndex::from_parts(
@@ -378,7 +392,7 @@ pub fn load(model: &str, data_dir: &Path, expected: &EmbeddingsDigest) -> LoadOu
         meta.id_map,
         meta.next_data_id,
         meta.tombstones,
-        meta.repaired,
+        meta.orphans,
         start.elapsed(),
     )))
 }
@@ -459,6 +473,22 @@ mod tests {
         assert!(!loaded.is_dirty());
         assert!(loaded.loaded_in().is_some());
         assert_eq!(loaded.search_knn(q, 5).unwrap(), before);
+    }
+
+    #[test]
+    fn dump_then_load_preserves_orphans() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = vectors(EXACT_SEARCH_THRESHOLD + 200, 16);
+        let mut index = HnswIndex::build_batch(data.clone(), "m", 16).unwrap();
+        let before = index.orphans();
+        index.force_orphan(data[7].0, data[7].1.clone());
+        let digest = EmbeddingsDigest { count: index.len(), hash: 7 };
+        dump(&mut index, dir.path(), digest).unwrap();
+        let LoadOutcome::Loaded(loaded) = load("m", dir.path(), &digest) else {
+            panic!("expected Loaded")
+        };
+        assert_eq!(loaded.orphans(), before + 1);
+        assert_eq!(loaded.search_knn(&data[7].1, 1).unwrap()[0].0, data[7].0);
     }
 
     #[test]

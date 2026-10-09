@@ -74,19 +74,18 @@ pub const REBUILD_TOMBSTONE_MIN: usize = 64;
 /// Factor de crecimiento de `ef_search` entre intentos de la escalada.
 const EF_ESCALATION_FACTOR: usize = 4;
 
-/// Alcanzabilidad (#184): tras construir o insertar, cada punto nuevo se busca
-/// a sí mismo con `REACHABILITY_K` vecinos y este `ef`; el que no aparece se
-/// reinserta. Medido (384 dims, 3000 + 1000 puntos, 10 semillas): sin esto
-/// ~0.5% de los puntos de un build y ~1.6% de los insertados después no los
-/// encontraba ninguna búsqueda, ni con `ef` igual al tamaño del índice. Con
-/// `keep_pruned` y esta pasada, cero. `ef = 64` bastó en esas pruebas; uno
-/// mayor solo encarece la verificación.
+/// Alcanzabilidad (#184, #201): tras construir o insertar, cada punto nuevo
+/// se busca a sí mismo con `REACHABILITY_K` vecinos y este `ef`; el que no
+/// aparece va a los huérfanos (ver [`HnswIndex::orphans`]). Medido sin esto:
+/// ~0.5% de los puntos de un build de 3000 y ~0.8% de uno de 100k × 384 no
+/// los encontraba ninguna búsqueda. `ef = 64` basta: a 100k, de 811 puntos
+/// que no aparecen con 64, 781 tampoco aparecen con 4096 (no les llega
+/// ningún enlace; no es un fallo de la búsqueda aproximada), y un falso
+/// huérfano solo cuesta una distancia más por búsqueda.
 const REACHABILITY_EF: usize = 64;
 /// Vecinos pedidos al verificar: tolera puntos duplicados (otro con el mismo
 /// vector puede salir primero).
 const REACHABILITY_K: usize = 10;
-/// Rondas de reinserción antes de rendirse y avisar en el log.
-const REACHABILITY_MAX_ROUNDS: usize = 5;
 /// Consultas por bloque en la verificación de un build grande: acota la
 /// copia de vectores que `parallel_search` necesita.
 const REACHABILITY_CHUNK: usize = 10_000;
@@ -179,16 +178,13 @@ pub struct HnswIndex {
     /// así que el borrado es lógico: el `DataId` sale de `id_map` y las
     /// búsquedas lo descartan. Cada tombstone sigue ocupando un vecino en el
     /// recorrido, por eso las búsquedas piden `k + tombstones` y por eso,
-    /// pasado [`Self::needs_rebuild`], conviene reconstruir. Solo cuenta
-    /// retiros del llamador (`remove`, actualizaciones), no los de
-    /// [`Self::repaired`].
+    /// pasado [`Self::needs_rebuild`], conviene reconstruir.
     tombstones: usize,
-    /// Reinserciones hechas por la verificación de alcanzabilidad (#184):
-    /// puntos que tras insertarse no se encontraban a sí mismos. Cada una
-    /// deja su `DataId` viejo muerto en el grafo, igual que un tombstone, y
-    /// por eso cuenta en [`Self::dead_points`] y va al dump; pero no es un
-    /// retiro del llamador: no se suma a `tombstones` ni a `needs_rebuild`.
-    repaired: usize,
+    /// Puntos vivos a los que el grafo no llega: tras insertarse no se
+    /// encontraban a sí mismos (#184). Cada búsqueda los compara uno por uno
+    /// y los mezcla con lo que devuelve el grafo (#201). Ver
+    /// [`Self::orphans`].
+    orphans: Vec<(NodeId, Vec<f32>)>,
     /// `true` cuando el estado en memoria difiere de lo que hay (o no hay)
     /// en disco: recién construido, o con `insert`/`remove` desde el último
     /// dump. Lo limpia [`crate::embeddings::persistence`] al escribir/cargar.
@@ -207,17 +203,22 @@ impl HnswIndex {
         dimension: usize,
         max_elements: usize,
     ) -> Self {
-        let mut inner = Hnsw::<f32, DistCosine>::new(
+        let inner = Hnsw::<f32, DistCosine>::new(
             DEFAULT_MAX_NB_CONNECTION,
             max_elements,
             DEFAULT_MAX_LAYER,
             DEFAULT_EF_CONSTRUCTION,
             DistCosine {},
         );
-        // Conservar los candidatos podados por la heurística de selección
-        // de vecinos (#184): sin esto la poda deja puntos sin enlaces
-        // entrantes y ninguna búsqueda llega a ellos.
-        inner.set_keeping_pruned(true);
+        // Sin `keep_pruned` (el default de hnsw_rs), a propósito (#201). Lo
+        // activó #184 para que la poda no dejara puntos sin enlaces
+        // entrantes, y a 3k puntos funcionaba; a escala hace lo contrario:
+        // rellena cada lista de vecinos hasta 2M con sus candidatos más
+        // cercanos, y el enlace inverso a cada punto nuevo, que se agrega a
+        // esa lista llena y se poda por distancia, se descarta enseguida.
+        // Medido a 100k × 384 tras `parallel_insert`: 32k puntos sin enlaces
+        // entrantes con él, 0.8k sin él. Los que quedan van a los huérfanos
+        // (`collect_orphans`).
         Self {
             inner,
             id_map: HashMap::new(),
@@ -227,7 +228,7 @@ impl HnswIndex {
             next_data_id: 0,
             exact_store: Vec::new(),
             tombstones: 0,
-            repaired: 0,
+            orphans: Vec::new(),
             dirty: true,
             loaded_in: None,
         }
@@ -242,14 +243,14 @@ impl HnswIndex {
         ef_construction: usize,
         max_layer: usize,
     ) -> Self {
-        let mut inner = Hnsw::<f32, DistCosine>::new(
+        let inner = Hnsw::<f32, DistCosine>::new(
             max_nb_connection,
             max_elements,
             max_layer,
             ef_construction,
             DistCosine {},
         );
-        inner.set_keeping_pruned(true); // ver `new` (#184)
+        // Sin `keep_pruned`: ver `new` (#201).
         Self {
             inner,
             id_map: HashMap::new(),
@@ -259,7 +260,7 @@ impl HnswIndex {
             next_data_id: 0,
             exact_store: Vec::new(),
             tombstones: 0,
-            repaired: 0,
+            orphans: Vec::new(),
             dirty: true,
             loaded_in: None,
         }
@@ -327,15 +328,13 @@ impl HnswIndex {
         index.inner.set_searching_mode(true);
         drop(insert_data); // libera los préstamos sobre owned_vectors
 
-        // Por `NodeId`, no por `DataId`: la verificación puede reinsertar
-        // puntos y darles un `DataId` nuevo.
         let node_ids: Vec<NodeId> = data_ids.iter().map(|data_id| index.id_map[data_id]).collect();
         let points: Vec<(NodeId, &[f32])> = node_ids
             .iter()
             .zip(&owned_vectors)
             .map(|(node_id, vector)| (*node_id, vector.as_slice()))
             .collect();
-        index.ensure_reachable(&points);
+        index.collect_orphans(&points);
         drop(points);
 
         // Poblar el store del camino exacto solo si el índice queda bajo el
@@ -373,7 +372,7 @@ impl HnswIndex {
         self.id_map.insert(data_id, node_id);
         self.reverse_map.insert(node_id, data_id);
         self.dirty = true;
-        self.ensure_reachable(&[(node_id, vector.as_slice())]);
+        self.collect_orphans(&[(node_id, vector.as_slice())]);
 
         // Mantener el store exacto mientras estemos bajo el umbral; al
         // cruzarlo, liberarlo — la lectura pasa a HNSW y no hay vuelta atrás
@@ -387,73 +386,41 @@ impl HnswIndex {
         Ok(())
     }
 
-    /// Verifica que cada uno de `points` (ya insertados) sea alcanzable y
-    /// reinserta los que no; devuelve cuántos siguen sin serlo tras
-    /// `REACHABILITY_MAX_ROUNDS` rondas (0 en el caso normal).
+    /// Busca cada uno de `points` (ya insertados) con su propio vector y
+    /// pasa a los huérfanos los que no aparecen; devuelve cuántos.
     ///
-    /// HNSW poda la lista de vecinos de cada nodo con una heurística; un
-    /// punto puede quedar con enlaces salientes pero sin entrantes, y
-    /// entonces ninguna búsqueda lo alcanza aunque esté en el índice (#184).
-    /// Se detecta buscándolo con su propio vector; se corrige reinsertándolo
-    /// (el `DataId` viejo queda como tombstone y el nuevo vuelve a enlazarse).
+    /// HNSW poda la lista de vecinos de cada nodo; un punto puede quedar con
+    /// enlaces salientes pero sin entrantes, y entonces ninguna búsqueda lo
+    /// alcanza aunque esté en el índice (#184). Se descartó reinsertarlo
+    /// (#201): el punto vuelve a caer en la misma zona, sus vecinos tienen
+    /// la lista llena de puntos más cercanos y el enlace inverso se poda
+    /// otra vez (a 100k × 384, de 811 quedaban 749 tras cinco rondas), y
+    /// cada intento deja una copia muerta en el grafo. Un huérfano no toca
+    /// el grafo: la búsqueda lo compara directamente.
+    ///
     /// Desde `PARALLEL_INSERT_THRESHOLD` consultas la verificación usa
     /// `parallel_search`.
-    fn ensure_reachable(&mut self, points: &[(NodeId, &[f32])]) -> usize {
-        let mut todo: Vec<usize> = (0..points.len()).collect();
-        for round in 0..=REACHABILITY_MAX_ROUNDS {
-            let mut missing = Vec::new();
-            for block in todo.chunks(REACHABILITY_CHUNK) {
-                let queries: Vec<Vec<f32>> = block.iter().map(|&i| points[i].1.to_vec()).collect();
-                let results = if queries.len() >= PARALLEL_INSERT_THRESHOLD {
-                    self.inner.parallel_search(&queries, REACHABILITY_K, REACHABILITY_EF)
-                } else {
-                    queries
-                        .iter()
-                        .map(|q| self.inner.search(q, REACHABILITY_K, REACHABILITY_EF))
-                        .collect()
-                };
-                for (&i, found) in block.iter().zip(results) {
-                    let Some(&data_id) = self.reverse_map.get(&points[i].0) else { continue };
-                    if !found.iter().any(|n| n.d_id == data_id) {
-                        missing.push(i);
-                    }
+    fn collect_orphans(&mut self, points: &[(NodeId, &[f32])]) -> usize {
+        let mut found = 0;
+        for block in points.chunks(REACHABILITY_CHUNK) {
+            let queries: Vec<Vec<f32>> = block.iter().map(|(_, v)| v.to_vec()).collect();
+            let results = if queries.len() >= PARALLEL_INSERT_THRESHOLD {
+                self.inner.parallel_search(&queries, REACHABILITY_K, REACHABILITY_EF)
+            } else {
+                queries
+                    .iter()
+                    .map(|q| self.inner.search(q, REACHABILITY_K, REACHABILITY_EF))
+                    .collect()
+            };
+            for ((node_id, vector), hits) in block.iter().zip(results) {
+                let Some(&data_id) = self.reverse_map.get(node_id) else { continue };
+                if !hits.iter().any(|n| n.d_id == data_id) {
+                    self.orphans.push((*node_id, vector.to_vec()));
+                    found += 1;
                 }
             }
-            if missing.is_empty() {
-                return 0;
-            }
-            if round == REACHABILITY_MAX_ROUNDS {
-                log::warn!(
-                    "HnswIndex({}): {} points still unreachable after {} reinsertion rounds",
-                    self.model,
-                    missing.len(),
-                    REACHABILITY_MAX_ROUNDS
-                );
-                return missing.len();
-            }
-            for &i in &missing {
-                let (node_id, vector) = points[i];
-                self.reinsert(node_id, vector);
-            }
-            todo = missing;
         }
-        0
-    }
-
-    /// Reinserta un punto con un `DataId` nuevo: el viejo queda muerto en el
-    /// grafo (no se devuelve; cuenta en `repaired`, no en `tombstones`). No
-    /// toca el store exacto: el vector es el mismo.
-    fn reinsert(&mut self, node_id: NodeId, vector: &[f32]) {
-        if let Some(old) = self.reverse_map.remove(&node_id) {
-            self.id_map.remove(&old);
-        }
-        self.repaired += 1;
-        let data_id = self.next_data_id;
-        self.next_data_id += 1;
-        self.inner.insert((vector, data_id));
-        self.id_map.insert(data_id, node_id);
-        self.reverse_map.insert(node_id, data_id);
-        self.dirty = true;
+        found
     }
 
     /// Inserta un lote de puntos de una vez (#175).
@@ -465,7 +432,7 @@ impl HnswIndex {
     /// `PARALLEL_INSERT_THRESHOLD` puntos inserta con `parallel_insert`, como
     /// `build_batch`: insertar 1000 vectores de 384 dims de uno en uno en un
     /// índice de 100k costaba ~9 ms cada uno. Después verifica que cada punto
-    /// del lote sea alcanzable, igual que `insert` (#184).
+    /// del lote sea alcanzable, igual que `insert` (#184, #201).
     pub fn insert_batch(&mut self, items: Vec<(NodeId, Vec<f32>)>) -> Result<(), NopalError> {
         let mut seen = std::collections::HashSet::with_capacity(items.len());
         for (node_id, vector) in &items {
@@ -506,7 +473,7 @@ impl HnswIndex {
         self.dirty = true;
         // Como `insert`: cada punto del lote tiene que ser alcanzable (#184).
         let points: Vec<(NodeId, &[f32])> = items.iter().map(|(id, v)| (*id, v.as_slice())).collect();
-        self.ensure_reachable(&points);
+        self.collect_orphans(&points);
         drop(points);
         // Mismo criterio que `insert`: el store exacto vive solo bajo el umbral.
         if self.id_map.len() <= EXACT_SEARCH_THRESHOLD {
@@ -528,6 +495,7 @@ impl HnswIndex {
         if !self.exact_store.is_empty() {
             self.exact_store.retain(|(id, _)| *id != node_id);
         }
+        self.orphans.retain(|(id, _)| *id != node_id);
         self.tombstones += 1;
         self.dirty = true;
         true
@@ -543,17 +511,28 @@ impl HnswIndex {
         self.tombstones
     }
 
-    /// Cuántos puntos reinsertó la verificación de alcanzabilidad (#184).
-    /// Cada uno dejó un `DataId` muerto en el grafo.
-    pub fn repaired(&self) -> usize {
-        self.repaired
+    /// Cuántos puntos vivos no alcanza el grafo y compara cada búsqueda por
+    /// fuerza bruta (#201). Lo normal es menos del 1% tras un build.
+    ///
+    /// Tras construir o insertar, cada punto nuevo se busca con su propio
+    /// vector; el que no aparece queda aquí. La garantía es la de #184: un
+    /// punto recién insertado se encuentra. Una inserción posterior aún
+    /// puede podar el último enlace que llegaba a un punto anterior, que
+    /// entonces no es huérfano ni lo alcanza el grafo; medido: 0 de 10 000
+    /// inserciones (384 dims).
+    pub fn orphans(&self) -> usize {
+        self.orphans.len()
     }
 
-    /// `DataId` muertos que siguen en el grafo: tombstones del llamador más
-    /// los que dejaron las reinserciones de la verificación. Es lo que pesa
-    /// en cada búsqueda (se piden `k + dead_points` vecinos).
+    /// Siempre 0 desde 0.6.11: la verificación ya no reinserta puntos.
+    #[deprecated(since = "0.6.11", note = "la verificación ya no reinserta puntos; ver `orphans` (#201)")]
+    pub fn repaired(&self) -> usize {
+        0
+    }
+
+    /// `DataId` muertos que siguen en el grafo: los tombstones del llamador.
     pub fn dead_points(&self) -> usize {
-        self.tombstones + self.repaired
+        self.tombstones
     }
 
     /// `true` si el estado en memoria no está reflejado en un dump en disco
@@ -590,13 +569,10 @@ impl HnswIndex {
         id_map: HashMap<usize, NodeId>,
         next_data_id: usize,
         tombstones: usize,
-        repaired: usize,
+        orphans: Vec<(NodeId, Vec<f32>)>,
         loaded_in: std::time::Duration,
     ) -> Self {
         inner.set_searching_mode(true);
-        // El flag no se guarda en el dump: sin él, las inserciones sobre un
-        // índice recargado volverían a dejar puntos inalcanzables (#184).
-        inner.set_keeping_pruned(true);
         let reverse_map = id_map.iter().map(|(d, n)| (*n, *d)).collect();
         Self {
             inner,
@@ -607,7 +583,7 @@ impl HnswIndex {
             next_data_id,
             exact_store: Vec::new(),
             tombstones,
-            repaired,
+            orphans,
             dirty: false,
             loaded_in: Some(loaded_in),
         }
@@ -617,11 +593,6 @@ impl HnswIndex {
     /// puntos vivos (y al menos [`REBUILD_TOMBSTONE_MIN`]): cada búsqueda paga
     /// vecinos muertos y el recall se degrada; reconstruir desde storage
     /// devuelve un grafo limpio. Quien tiene el índice en caché decide cuándo.
-    ///
-    /// Solo cuentan los tombstones del llamador, no los `DataId` que dejó la
-    /// verificación de alcanzabilidad (`repaired`): un índice recién
-    /// reconstruido también repara, así que contarlos podría dejarlo sobre
-    /// el umbral justo después del rebuild y reconstruir en cada consulta.
     pub fn needs_rebuild(&self) -> bool {
         self.tombstones >= REBUILD_TOMBSTONE_MIN
             && self.tombstones as f64 > self.id_map.len() as f64 * REBUILD_TOMBSTONE_RATIO
@@ -630,7 +601,28 @@ impl HnswIndex {
     /// `k` a pedir al grafo para devolver `k` vivos: los tombstones pueden
     /// ocupar hasta `tombstones` de los vecinos devueltos.
     fn k_with_tombstones(&self, k: usize) -> usize {
-        k.saturating_add(self.dead_points()).min(self.id_map.len().max(k))
+        k.saturating_add(self.tombstones).min(self.id_map.len().max(k))
+    }
+
+    /// Mezcla con `hits` (ordenados por distancia) los huérfanos que pasan
+    /// `filter` y deja los `k` más cercanos, con el mismo desempate que
+    /// [`rank_exact`].
+    fn merge_orphans<F>(&self, query: &[f32], hits: &mut Vec<(NodeId, f32)>, k: usize, filter: F)
+    where
+        F: Fn(&NodeId) -> bool,
+    {
+        if self.orphans.is_empty() {
+            return;
+        }
+        let seen: std::collections::HashSet<NodeId> = hits.iter().map(|(id, _)| *id).collect();
+        let candidates = self
+            .orphans
+            .iter()
+            .filter(|(id, _)| !seen.contains(id) && filter(id))
+            .map(|(id, v)| (*id, v.as_slice()));
+        hits.extend(rank_exact(query, candidates, k));
+        hits.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        hits.truncate(k);
     }
 
     /// Busca los `k` nodos más cercanos al vector `query` en el espacio de embeddings.
@@ -680,14 +672,14 @@ impl HnswIndex {
         let neighbors = self.inner.search(query, k_eff, ef_search.max(k_eff));
         let mut results = Vec::with_capacity(k);
         for neighbor in neighbors {
-            let data_id = neighbor.d_id;
-            if let Some(&node_id) = self.id_map.get(&data_id) {
+            if let Some(&node_id) = self.id_map.get(&neighbor.d_id) {
                 results.push((node_id, neighbor.distance));
                 if results.len() == k {
                     break;
                 }
             }
         }
+        self.merge_orphans(query, &mut results, k, |_| true);
         Ok(results)
     }
 
@@ -829,6 +821,7 @@ impl HnswIndex {
                 }
             }
             hits.truncate(k);
+            self.merge_orphans(query, &mut hits, k, &filter);
 
             if hits.len() >= k || ef >= MAX_FILTERED_EF_SEARCH {
                 break;
@@ -889,6 +882,18 @@ impl HnswIndex {
     #[allow(dead_code)] // se usará en persistence.rs
     pub(crate) fn next_data_id(&self) -> usize {
         self.next_data_id
+    }
+
+    pub(crate) fn orphan_points(&self) -> &[(NodeId, Vec<f32>)] {
+        &self.orphans
+    }
+
+    /// Marca un punto vivo como huérfano, para probar la persistencia sin
+    /// depender de qué puntos deja sueltos un build concreto.
+    #[cfg(test)]
+    pub(crate) fn force_orphan(&mut self, node_id: NodeId, vector: Vec<f32>) {
+        assert!(self.contains(node_id));
+        self.orphans.push((node_id, vector));
     }
 }
 
