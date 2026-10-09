@@ -7,69 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.6.11] - unreleased
 
-### Fixed
-- **HNSW escala otra vez** (#201). El arreglo de #184 (0.6.10) no aguantaba
-  la escala: `keep_pruned` llenaba la lista de vecinos de cada nodo y el
-  enlace inverso a cada punto nuevo se podaba enseguida, así que a 100k × 384
-  un tercio de los puntos quedaba sin enlaces entrantes; la verificación los
-  reinsertaba en cascada (hasta 73 893 copias muertas) y cada búsqueda pedía
-  `k` más un vecino por reinserción, lo que anulaba el `ef_search` del
-  llamador. Ahora no se usa `keep_pruned`, y el ~1% de puntos que no se
-  encuentran a sí mismos tras insertarse quedan como **huérfanos** que cada
-  búsqueda compara directamente (`HnswIndex::orphans()`; `repaired()` queda
-  obsoleto y devuelve 0). Medido a 100k × 384 con datos agrupados: build
-  139 s → 44 s, memoria 1 111 → 646 MiB, p95 de `search_knn` k = 10 167 ms →
-  0.87 ms (el scan exacto tarda ~31 ms), recall@10 0.941 → 0.991 con
-  `ef_search` = 30 y 0.998 con 100. Los dumps de 0.6.10 (formato 2) se
-  reconstruyen una vez.
-- **Índice de propiedades: una entrada por nodo** (#197). Guardaba un
-  `Vec<NodeId>` por `(propiedad, valor)` y lo leía y reescribía entero en
-  cada alta y baja, así que escribir nodos con un valor compartido (`type`,
-  `status`, `level`) era **cuadrático** en todos los caminos de escritura.
-  Formato v3: clave `(propiedad, valor, node_id)` con valor vacío; alta y
-  baja son un put o un delete, y la búsqueda es un scan del prefijo con
-  longitud exacta (`"PER"` no abarca a `"PERSON"`). Medido con `type` y
-  `level` compartidos: `bulk_loader` de 40k nodos 18.4 s → 0.27 s,
-  transacción de 40k 20.0 s → 1.2 s, `add_node` directo de 10k 1.3 s →
-  0.16 s; a 100k, compartir el valor ya no cuesta nada (0.85 s contra 0.87 s
-  con valores únicos). La primera materialización de comunidades a 100k
-  pasa de 44 s a 21 s.
-
-  **Migración automática** al abrir: una pasada O(n) que reconstruye el
-  índice desde los nodos. El formato va en un sentinel nuevo
-  (`prop_idx_entries`) para que bajar a ≤ 0.6.10 siga funcionando: esa
-  versión no ve su sentinel y reconstruye su propio índice, y 0.6.11 lo
-  reconstruye otra vez al volver. Una base con un formato más nuevo que el
-  de la versión instalada se rechaza al abrir, en vez de leerse mal.
-- **Leiden correcto: núcleo reescrito según el paper** (#194). `leiden(n)`
-  (Rust `LeidenCommunity::detect`, NQL, Python `graph.leiden`) estaba roto:
-  - reutilizaba ids de comunidad entre iteraciones, así que el tamaño de una
-    comunidad podía bajar de cero: **pánico en debug** ("attempt to subtract
-    with overflow") y **resultado corrompido en silencio en release**;
-  - el refinamiento **reemplazaba** la partición (deshacía comunidades en
-    nodos sueltos) en lugar de servir para agregar;
-  - no había agregación: dos mitades de un grupo denso nunca se unían.
-
-  Núcleo nuevo con índices densos (sin ids inventados), nodos con tamaño y
-  el ciclo del paper: mover → refinar → agregar sobre la partición refinada
-  (con la del movimiento como partición inicial del nivel agregado), hasta
-  que mover no agrupe nada; luego se itera desde el propio resultado hasta
-  que no cambie. Se reporta la partición del movimiento. Se conserva lo de
-  #193 (alcance, pesos, caché por opciones, independencia del orden de
-  inserción).
-
-  **`leiden(n)` cambia su resultado:** menos comunidades, más grandes y con
-  mayor calidad CPM. En grafos con bloques sembrados de 50 nodos (γ = 0.1):
-  40 bloques densos → antes 362 comunidades (CPM 3 927), ahora 40 (CPM
-  9 718, la de los bloques); 200 bloques dispersos → antes 3 451 (CPM
-  7 401), ahora 632 (CPM 14 290, por encima de los bloques sembrados:
-  12 031). Además es más rápido (release, bloques dispersos): 10k nodos
-  1 340 → 58 ms, 100k nodos 18 067 → 761 ms (≈ 23×), por las estructuras
-  densas y porque la agregación reduce el trabajo de cada nivel. El test de las familias florentinas
-  pasa de 5 a 4 comunidades: la nueva partición tiene calidad CPM 11.7
-  contra 11.1. Detalle en `docs/ALGORITHMS.md` (Phase 3).
+Iteración GraphRAG B: estructura global. Leiden ponderado, acotado y
+jerárquico, con un núcleo reescrito según el paper; comunidades persistidas
+con keys estables; reportes de comunidad y receta de búsqueda global; y
+cifras del índice vectorial a 384 y 1024 dimensiones. Tres defectos de fondo
+corregidos al medir a escala: el índice de propiedades cuadrático con valores
+compartidos, el Leiden plano que no agregaba, y el HNSW que dejaba de escalar
+con el arreglo de 0.6.10 (100k × 384: p95 167 → 0.87 ms).
 
 ### Added
 - **Cifras del índice vectorial con embeddings de tamaño real** (#192,
@@ -137,6 +83,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `..Default::default()` tiene que añadirlos.
 
 ### Fixed
+- **HNSW escala otra vez** (#201). El arreglo de #184 (0.6.10) no aguantaba
+  la escala: `keep_pruned` llenaba la lista de vecinos de cada nodo y el
+  enlace inverso a cada punto nuevo se podaba enseguida, así que a 100k × 384
+  un tercio de los puntos quedaba sin enlaces entrantes; la verificación los
+  reinsertaba en cascada (hasta 73 893 copias muertas) y cada búsqueda pedía
+  `k` más un vecino por reinserción, lo que anulaba el `ef_search` del
+  llamador. Ahora no se usa `keep_pruned`, y el ~1% de puntos que no se
+  encuentran a sí mismos tras insertarse quedan como **huérfanos** que cada
+  búsqueda compara directamente (`HnswIndex::orphans()`; `repaired()` queda
+  obsoleto y devuelve 0). Medido a 100k × 384 con datos agrupados: build
+  139 s → 44 s, memoria 1 111 → 646 MiB, p95 de `search_knn` k = 10 167 ms →
+  0.87 ms (el scan exacto tarda ~31 ms), recall@10 0.941 → 0.991 con
+  `ef_search` = 30 y 0.998 con 100. Los dumps de 0.6.10 (formato 2) se
+  reconstruyen una vez.
+- **Índice de propiedades: una entrada por nodo** (#197). Guardaba un
+  `Vec<NodeId>` por `(propiedad, valor)` y lo leía y reescribía entero en
+  cada alta y baja, así que escribir nodos con un valor compartido (`type`,
+  `status`, `level`) era **cuadrático** en todos los caminos de escritura.
+  Formato v3: clave `(propiedad, valor, node_id)` con valor vacío; alta y
+  baja son un put o un delete, y la búsqueda es un scan del prefijo con
+  longitud exacta (`"PER"` no abarca a `"PERSON"`). Medido con `type` y
+  `level` compartidos: `bulk_loader` de 40k nodos 18.4 s → 0.27 s,
+  transacción de 40k 20.0 s → 1.2 s, `add_node` directo de 10k 1.3 s →
+  0.16 s; a 100k, compartir el valor ya no cuesta nada (0.85 s contra 0.87 s
+  con valores únicos). La primera materialización de comunidades a 100k
+  pasa de 44 s a 21 s.
+
+  **Migración automática** al abrir: una pasada O(n) que reconstruye el
+  índice desde los nodos. El formato va en un sentinel nuevo
+  (`prop_idx_entries`) para que bajar a ≤ 0.6.10 siga funcionando: esa
+  versión no ve su sentinel y reconstruye su propio índice, y 0.6.11 lo
+  reconstruye otra vez al volver. Una base con un formato más nuevo que el
+  de la versión instalada se rechaza al abrir, en vez de leerse mal.
+- **Leiden correcto: núcleo reescrito según el paper** (#194). `leiden(n)`
+  (Rust `LeidenCommunity::detect`, NQL, Python `graph.leiden`) estaba roto:
+  - reutilizaba ids de comunidad entre iteraciones, así que el tamaño de una
+    comunidad podía bajar de cero: **pánico en debug** ("attempt to subtract
+    with overflow") y **resultado corrompido en silencio en release**;
+  - el refinamiento **reemplazaba** la partición (deshacía comunidades en
+    nodos sueltos) en lugar de servir para agregar;
+  - no había agregación: dos mitades de un grupo denso nunca se unían.
+
+  Núcleo nuevo con índices densos (sin ids inventados), nodos con tamaño y
+  el ciclo del paper: mover → refinar → agregar sobre la partición refinada
+  (con la del movimiento como partición inicial del nivel agregado), hasta
+  que mover no agrupe nada; luego se itera desde el propio resultado hasta
+  que no cambie. Se reporta la partición del movimiento. Se conserva lo de
+  #193 (alcance, pesos, caché por opciones, independencia del orden de
+  inserción).
+
+  **`leiden(n)` cambia su resultado:** menos comunidades, más grandes y con
+  mayor calidad CPM. En grafos con bloques sembrados de 50 nodos (γ = 0.1):
+  40 bloques densos → antes 362 comunidades (CPM 3 927), ahora 40 (CPM
+  9 718, la de los bloques); 200 bloques dispersos → antes 3 451 (CPM
+  7 401), ahora 632 (CPM 14 290, por encima de los bloques sembrados:
+  12 031). Además es más rápido (release, bloques dispersos): 10k nodos
+  1 340 → 58 ms, 100k nodos 18 067 → 761 ms (≈ 23×), por las estructuras
+  densas y porque la agregación reduce el trabajo de cada nivel. El test de las familias florentinas
+  pasa de 5 a 4 comunidades: la nueva partición tiene calidad CPM 11.7
+  contra 11.1. Detalle en `docs/ALGORITHMS.md` (Phase 3).
 - **Un nodo sin comunidad ya no aparece en la comunidad 0** (#190). Por la
   ruta de agregación de NQL, `community(n)`/`leiden(n)` promediaban sobre
   los nodos del grupo que tenían valor y devolvían 0.0 si ninguno lo tenía;
