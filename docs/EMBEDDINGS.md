@@ -382,6 +382,10 @@ dims, 100k points, `search_knn` k = 10):
 An exact scan of the same 100k vectors takes ~31–36 ms. Dumps written by
 0.6.10 (format 2) are rebuilt once on the first search after upgrading.
 
+Since 0.6.12 a fresh build no longer holds memory the HNSW library reserved
+and never used (#206): 646 → 317 MiB for the same 100k × 384 index, 2.2×
+the raw vectors.
+
 **On uniform random vectors** the 0.6.10 numbers looked better (recall@10
 0.97 at 100k) only because every search ran with an effective `ef` of ~2 460,
 as slow as the exact scan. With the caller's `ef_search` honoured, uniform
