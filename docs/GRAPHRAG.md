@@ -197,6 +197,47 @@ Rust; `python/scripts/graphrag_sample.py` is the functional guard).
 
 Fill in the exact numbers for your data with `make bench BENCH=retrieval`.
 
+### Real embedding sizes: 384 and 1024 dimensions (0.6.11)
+
+The table above uses 64 dimensions. Text embedders produce 384 (small
+sentence models) or 1024 (large ones), so the vector index is measured
+again at those sizes: `HnswIndex` alone, KNN k=10, 200 queries, recall@10
+against an exact scan of the same vectors. Apple M3 Max (16 cores, 128 GB),
+release build, 8 October 2026; `make bench BENCH=retrieval_dims` reproduces
+it (`NOPALDB_BENCH_DIMS`, `NOPALDB_BENCH_SCALES` and `NOPALDB_BENCH_QUERIES`
+change the grid).
+
+The vectors are synthetic and clustered: 100 clusters with a 16-dimension
+spread plus noise, normalized. That is how embeddings of real text behave
+(nearby texts, nearby vectors); a real corpus may score somewhat lower.
+
+| dims | vectors | build | orphans | index memory | p95, `ef_search` 30 | p95, `ef_search` 100 | exact scan | recall@10, ef 30 / 100 |
+|---|---|---|---|---|---|---|---|---|
+| 384 | 10k | 3.4 s | 57 (0.6%) | 68 MiB | 0.28 ms | 0.64 ms | 3.0 ms | 0.995 / 1.000 |
+| 384 | 100k | 32 s | 832 (0.8%) | 650 MiB | 0.65 ms | 0.87 ms | 31 ms | 0.990 / 0.998 |
+| 1024 | 10k | 7.0 s | 59 (0.6%) | 93 MiB | 0.75 ms | 1.7 ms | 11 ms | 0.996 / 0.999 |
+| 1024 | 100k | 81 s | 806 (0.8%) | 897 MiB | 1.5 ms | 2.3 ms | 81 ms | 0.988 / 0.998 |
+
+- At 100k, the index answers 35–50× faster than the exact scan and finds
+  99% of the true top 10 or more. `ef_search` 100 buys the last point of
+  recall for about 1.5× the latency.
+- *Orphans* are the points the graph cannot reach; every search compares
+  them directly, so they are never lost (see
+  [EMBEDDINGS.md](EMBEDDINGS.md)). They stay under 1% at both sizes.
+- Memory is the index alone (vectors plus graph): 4.4× the raw vectors at
+  384 dimensions (100k × 384 × 4 bytes = 147 MiB) and 2.3× at 1024
+  (391 MiB), since the graph costs the same whatever the size of the
+  vector. Budget it per embedding model loaded.
+- Building is the slow part: 81 s for 100k × 1024, paid once; the index is
+  persisted, so reopening the database does not rebuild it.
+
+**Uniform random vectors** are the worst case for any HNSW index: with no
+structure, all points are almost equally far apart. The bench measures them
+too, as a floor, not as a reference. At 100k, recall@10 is 0.12 / 0.26 at
+384 dimensions and 0.08 / 0.17 at 1024, with 2.5% and 3.4% orphans and a
+build of 108 s and 251 s. If your vectors look like that (hashes, random
+projections), use the exact scan instead.
+
 ## Limits, and what comes next
 
 - Edges are still read one by one from storage during expansion (the

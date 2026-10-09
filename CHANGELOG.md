@@ -72,6 +72,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contra 11.1. Detalle en `docs/ALGORITHMS.md` (Phase 3).
 
 ### Added
+- **Cifras del índice vectorial con embeddings de tamaño real** (#192,
+  parte 1). `benches/retrieval_dims.rs` mide `HnswIndex` a 384 y 1024
+  dimensiones, 10k y 100k vectores, datos agrupados y uniformes: build,
+  huérfanos, memoria del índice, p50/p95 de KNN k = 10 con `ef_search` 30 y
+  100, scan exacto y recall@10. Tabla en `docs/GRAPHRAG.md` (Measured).
+  A 100k × 1024 con datos agrupados: p95 1.5 ms (ef 30) contra 81 ms del
+  scan exacto, recall@10 0.988 / 0.998, 0.8% de huérfanos, 897 MiB.
 - **Reportes de comunidad y búsqueda global** (#191). Convención
   `(:Report {community_key, partition, level, title, summary, rating,
   generated_at, source_version})-[:SUMMARIZES]->(:Community)`, un reporte
