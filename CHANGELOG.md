@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.6.12] - unreleased
+
+Índice de etiquetas y memoria del HNSW. Buscar nodos por etiqueta ya no
+recorre la base (100k nodos: una etiqueta de 1 000 nodos 41.7 → 0.64 ms),
+y el índice vectorial ocupa la mitad (100k × 384: 650 → 317 MiB) al dejar
+de usar una reserva de hnsw_rs mal calculada.
 
 ### Added
 - **Índice de etiquetas** (#207). Buscar nodos por etiqueta ya no recorre
