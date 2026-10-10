@@ -8,6 +8,8 @@
 //   (d) ingesta con BulkLoader, en base nueva y en base abierta
 //   (e) upsert_batch de 1 000 filas nuevas sobre una base de 1k y de 8k
 //       nodos: el coste por fila no debe depender del tamaño (#151)
+//   (f) búsqueda por etiqueta en una base de 100k nodos: el coste debe
+//       depender de los nodos de la etiqueta, no del tamaño de la base (#207)
 //
 // Correr: cargo bench -p nopaldb
 // Registrar los números ANTES de aterrizar el applier (I8), el commit atómico
@@ -431,6 +433,48 @@ fn bench_upsert_batch(c: &mut Criterion) {
     group.finish();
 }
 
+/// (f) #207: 100k nodos en 100 etiquetas de 1 000 (`L0`..`L99`) más una
+/// etiqueta rara de 10 (`Rare`). Sin índice de etiquetas cada búsqueda
+/// recorre los 100k nodos.
+fn bench_label_lookup(c: &mut Criterion) {
+    let rt = rt();
+    let dir = tempfile::tempdir().unwrap();
+    let graph = rt.block_on(async {
+        let graph = Graph::open_with_options(dir.path(), bench_options()).await.expect("open");
+        let mut loader = graph.bulk_loader(1000);
+        for i in 0..100_000usize {
+            loader
+                .add_node(Node::new(format!("L{}", i % 100)).with_property("i", PropertyValue::Int(i as i64)))
+                .await
+                .expect("bulk add");
+        }
+        for i in 0..10usize {
+            loader.add_node(Node::new("Rare").with_property("i", PropertyValue::Int(i as i64))).await.expect("bulk add");
+        }
+        loader.finish().await.expect("finish");
+        graph
+    });
+
+    let mut group = c.benchmark_group("label_lookup_100k");
+    group.sample_size(10);
+    group.bench_function("get_nodes_by_label_1k", |b| {
+        b.to_async(&rt).iter(|| async {
+            assert_eq!(graph.get_nodes_by_label("L7").await.unwrap().len(), 1000);
+        });
+    });
+    group.bench_function("get_nodes_by_label_rare_10", |b| {
+        b.to_async(&rt).iter(|| async {
+            assert_eq!(graph.get_nodes_by_label("Rare").await.unwrap().len(), 10);
+        });
+    });
+    group.bench_function("nql_match_rare_10", |b| {
+        b.to_async(&rt).iter(|| async {
+            assert_eq!(graph.execute_nql("find n.i from (n:Rare)").await.unwrap().len(), 10);
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_commit_small_tx,
@@ -441,6 +485,7 @@ criterion_group!(
     bench_bulk_load,
     bench_supernode_fanout,
     bench_writes_direct_concurrent,
-    bench_upsert_batch
+    bench_upsert_batch,
+    bench_label_lookup
 );
 criterion_main!(benches);

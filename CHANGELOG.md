@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Índice de etiquetas** (#207). Buscar nodos por etiqueta ya no recorre
+  la base: keyspace nuevo `label_idx` con una clave `len | label | node_id`
+  por nodo. Lo usan `get_nodes_by_label`, `scan_nodes_batch(Some(label))`,
+  NQL `from (n:Label)`, el filtro de `search_hybrid`/`hybrid()` con
+  `props=` o con etiqueta rara, el fallback de `similar_to`, el alcance
+  `labels=` de Leiden (nuevo `GraphView::get_nodes_with_labels`, con
+  implementación por defecto), las comunidades y reportes, las
+  transacciones, el importador RDF/OWL, SHACL y los exports. A 100k nodos
+  (`graph_ops`, `label_lookup_100k`): una etiqueta de 1 000 nodos 41.7 →
+  0.64 ms, una de 10 nodos 41.8 → 0.006 ms, NQL `from (n:Rare)` 38.0 →
+  0.011 ms.
+  - La entrada se escribe ANTES que el nodo (en el mismo lote atómico en
+    commits transaccionales y cargas por lote), así que un crash nunca deja
+    un nodo sin entrada; las entradas de más que pueda dejar (crash a
+    mitad, cambio de etiqueta) las descartan las lecturas, que comprueban
+    la etiqueta del nodo. Un upsert que cambia la etiqueta retira la vieja.
+  - Al abrir: si falta el índice (base de ≤ 0.6.11) o si el reloj lógico
+    pasó su marca de sincronización (`label_idx_synced_ts`, que escribe
+    `persist_clocks`: una versión anterior escribió en la base), se
+    reconstruye en una pasada; a 100k nodos el open pasa de 73 a 245 ms
+    esa vez. Un formato más nuevo que el del build es un error.
+  - Coste de escritura: una clave más por nodo; `bulk_load` sin cambio
+    medible, `upsert_batch` de 1 000 filas 26.3 → 28.8 ms.
+  - Crash harness (redb y sled) comprueba que el índice coincide con los
+    datos tras cada recuperación; `tests/label_index_test.rs` lo compara
+    con un recorrido tras altas, upserts con cambio de etiqueta, borrados,
+    lotes con ids repetidos, transacciones, NQL y reapertura.
+
 ### Fixed
 - **El índice HNSW ya no reserva memoria que nunca usa** (#206). hnsw_rs
   0.3.4 calcula mal la reserva inicial por capa cuando recibe el número de

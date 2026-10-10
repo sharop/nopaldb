@@ -623,6 +623,9 @@ impl Graph {
         // Migración del índice de propiedades a formato v2 (claves tipadas).
         // Después del WAL replay a propósito — ver el doc de la fn.
         graph.migrate_property_index_if_needed().await?;
+        // Índice de etiquetas (#207): también después del replay, que lo
+        // mantiene al reaplicar.
+        graph.migrate_label_index_if_needed().await?;
 
         // Rebuild TaxonomyIndex from Class nodes + subClassOf edges (if any).
         // Needed when a DB was populated via import_turtle in a previous session.
@@ -725,6 +728,7 @@ impl Graph {
 
         // Guardar en storage
         self.storage.insert_node(&node).await?;
+        self.retire_old_label_entry(old.as_ref(), &node).await?;
 
         self.register_node_in_ram(node_id, existed).await;
 
@@ -742,6 +746,19 @@ impl Graph {
             .await?;
 
         Ok(node_id)
+    }
+
+    /// Cambio de etiqueta (#207): retira la entrada de la etiqueta vieja.
+    /// Va DESPUÉS de escribir el nodo con la nueva (la entrada nueva ya
+    /// existe), así que un crash entre medio deja una entrada de más, nunca
+    /// un nodo sin entrada.
+    async fn retire_old_label_entry(&self, old: Option<&Node>, written: &Node) -> Result<()> {
+        match old {
+            Some(old) if old.label != written.label => {
+                self.storage.remove_label_index_entry(&old.label, old.id).await
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Lo que un nodo escrito en storage necesita en RAM: su entrada de
@@ -1045,6 +1062,48 @@ impl Graph {
         Ok(())
     }
 
+    /// Comprueba el índice de etiquetas (#207) al abrir y lo reconstruye si
+    /// no se puede confiar en él.
+    ///
+    /// Se confía si el formato es el actual y `label_idx_synced_ts` ≥
+    /// `next_timestamp`: esta versión escribe la marca junto al reloj
+    /// (`persist_clocks`), así que solo queda atrás si alguien escribió sin
+    /// mantener el índice (una versión ≤ 0.6.11) o si esta versión se cayó
+    /// entre su última escritura y la marca. En los dos casos se reconstruye,
+    /// una pasada O(n) sobre `entities`; lo segundo solo cuesta tiempo.
+    /// Un formato mayor que el actual es una base de una versión más nueva:
+    /// error, como el índice de propiedades.
+    ///
+    /// Crash-safe: el formato y la marca se escriben al final; un crash a
+    /// mitad repite la reconstrucción, que es idempotente.
+    async fn migrate_label_index_if_needed(&self) -> Result<()> {
+        use crate::storage::{LABEL_IDX_FORMAT_CURRENT, META_LABEL_IDX_ENTRIES, META_LABEL_IDX_SYNCED_TS, META_NEXT_TIMESTAMP};
+        let format = self.storage.get_meta_u64(META_LABEL_IDX_ENTRIES).await?.unwrap_or(0);
+        if format > LABEL_IDX_FORMAT_CURRENT {
+            return Err(NopalError::custom(format!(
+                "label index format {format} is newer than this NopalDB ({LABEL_IDX_FORMAT_CURRENT}); open the database with a newer version"
+            )));
+        }
+        let clock = self.storage.get_meta_u64(META_NEXT_TIMESTAMP).await?.unwrap_or(0);
+        let synced = self.storage.get_meta_u64(META_LABEL_IDX_SYNCED_TS).await?;
+        let trusted = format == LABEL_IDX_FORMAT_CURRENT && synced.is_some_and(|s| s >= clock);
+        if !trusted {
+            log::info!(
+                "Construyendo el índice de etiquetas (formato {format}, marca {synced:?}, reloj {clock})…"
+            );
+            let started = std::time::Instant::now();
+            let indexed = self.storage.rebuild_label_index().await?;
+            self.storage.put_meta_u64_max(META_LABEL_IDX_ENTRIES, LABEL_IDX_FORMAT_CURRENT).await?;
+            log::info!(
+                "Índice de etiquetas listo: {indexed} nodos en {:.1?}",
+                started.elapsed()
+            );
+        }
+        self.storage.set_label_index_ready(true);
+        // La marca alcanza al reloj actual (el replay pudo avanzarlo).
+        self.persist_clocks().await
+    }
+
     /// Crea un grafo en memoria (útil para tests)
     pub async fn in_memory() -> Result<Self> {
         Self::in_memory_with_options(crate::storage::StorageOptions::default()).await
@@ -1068,6 +1127,8 @@ impl Graph {
         let _index_manager = IndexManager::new(None);
 
         let mut graph = Self::from_storage(storage, wal);
+        // Base recién creada: el índice de etiquetas está completo (vacío).
+        graph.storage.set_label_index_ready(true);
 
         graph.direct_write_durability = options.direct_write_durability;
         graph.wal_checkpoint_bytes = options.wal_checkpoint_bytes;
@@ -1354,13 +1415,21 @@ impl Graph {
     /// Persiste las cotas actuales de los relojes lógicos (`next_timestamp`,
     /// `next_tx_id`) para que sobrevivan reinicios. Las keys meta solo crecen,
     /// así que es seguro llamarlo desde varios puntos concurrentes.
+    ///
+    /// Con el índice de etiquetas listo, escribe también su marca de
+    /// sincronización (#207) con el mismo valor, DESPUÉS del reloj: las
+    /// escrituras de esta versión mantienen el índice antes que el dato, así
+    /// que todo lo anterior a ese reloj ya tiene su entrada.
     pub(crate) async fn persist_clocks(&self) -> Result<()> {
+        let next_timestamp = self.next_timestamp.load(AtomicOrdering::SeqCst);
         self.storage
-            .put_meta_u64_max(
-                crate::storage::META_NEXT_TIMESTAMP,
-                self.next_timestamp.load(AtomicOrdering::SeqCst),
-            )
+            .put_meta_u64_max(crate::storage::META_NEXT_TIMESTAMP, next_timestamp)
             .await?;
+        if self.storage.label_index_ready() {
+            self.storage
+                .put_meta_u64_max(crate::storage::META_LABEL_IDX_SYNCED_TS, next_timestamp)
+                .await?;
+        }
         self.storage
             .put_meta_u64_max(
                 crate::storage::META_NEXT_TX_ID,
@@ -1565,11 +1634,10 @@ impl Graph {
     }
 
     /// Get all nodes with label filter (for query executor)
+    ///
+    /// Usa el índice de etiquetas (#207): lee solo los nodos de `label`.
     pub async fn get_nodes_by_label(&self, label: &str) -> Result<Vec<Node>> {
-        let all_nodes = self.storage.get_all_nodes().await?;
-        Ok(all_nodes.into_iter()
-            .filter(|n| n.label == label)
-            .collect())
+        self.storage.get_nodes_by_label(label).await
     }
 
     // ═════════════════════════════════════════════════════════
@@ -2935,6 +3003,7 @@ impl Graph {
                 let new_version = VersionedNode::new_version(&cur, node.clone(), commit_ts);
                 self.commit_node_atomic(&node, Some(&invalidated), &new_version)
                     .await?;
+                self.retire_old_label_entry(old.as_ref(), &node).await?;
                 // Adyacencia + índices de propiedades (el batch no los cubre)
                 self.add_node_internal(node, false).await?;
                 Ok(true)
@@ -2948,6 +3017,7 @@ impl Graph {
                 // Primera versión con el timestamp del commit
                 let first = VersionedNode::new(node.clone(), commit_ts);
                 self.commit_node_atomic(&node, None, &first).await?;
+                self.retire_old_label_entry(old.as_ref(), &node).await?;
                 self.add_node_internal(node, false).await?;
                 Ok(true)
             }
@@ -3704,12 +3774,14 @@ impl Graph {
         //     write de abajo pisa el nodo viejo, y con él la única fuente de
         //     qué valores había que retirar. La inserción de los nuevos va al
         //     final (paso 4), por eso `apply_add_node` recibe skip_indexing.
+        let mut olds = Vec::with_capacity(set.pending_nodes.len());
         for node in &set.pending_nodes {
             let old = self.observe_node_upsert(node).await?;
             self.retract_overwritten_index_entries(old.as_ref(), node).await?;
+            olds.push(old);
         }
 
-        for node in &set.pending_nodes {
+        for (node, old) in set.pending_nodes.iter().zip(&olds) {
             let existed = match self.storage.get_current_version(node.id).await {
                 Ok(current_version_num) => {
                     let current_version = self
@@ -3741,6 +3813,8 @@ impl Graph {
                     existed
                 }
             };
+
+            self.retire_old_label_entry(old.as_ref(), node).await?;
 
             // El registro del nodo ya lo escribió el batch atómico de arriba;
             // aquí solo falta la RAM (antes se reescribía `entities`, #143).
@@ -4174,6 +4248,7 @@ impl Graph {
         //    la segunda ocurrencia es la primera (último gana), así el
         //    esquema no cuenta dos nodos.
         let mut seen: HashMap<NodeId, usize> = HashMap::with_capacity(nodes.len());
+        let mut old_labels: Vec<(NodeId, String)> = Vec::new();
         for (i, node) in nodes.iter().enumerate() {
             let old = match seen.insert(node.id, i) {
                 Some(j) => {
@@ -4186,10 +4261,21 @@ impl Graph {
                 None => self.observe_node_upsert(node).await?,
             };
             self.retract_overwritten_index_entries(old.as_ref(), node).await?;
+            if let Some(old) = old {
+                old_labels.push((old.id, old.label));
+            }
         }
 
         // 1. Batch insert en storage
         let ids = self.storage.insert_nodes_batch(&nodes).await?;
+
+        // 1a. Cambios de etiqueta (#207): retirar las entradas de etiquetas
+        //     que el nodo ya no tiene, con la etiqueta final de cada id.
+        for (id, old_label) in &old_labels {
+            if nodes[seen[id]].label != *old_label {
+                self.storage.remove_label_index_entry(old_label, *id).await?;
+            }
+        }
 
         // 1b. Índice de propiedades + índices de usuario, como toda escritura.
         for node in &nodes {

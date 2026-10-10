@@ -467,7 +467,7 @@ impl LeidenCommunity {
     /// Retorna un mapa `NodeId → community_id` (IDs contiguos desde 0).
     /// La detección corre en `spawn_blocking` para no bloquear el runtime de Tokio.
     pub async fn detect<G: GraphView>(&self, graph: &G) -> Result<HashMap<NodeId, usize>> {
-        let nodes = graph.get_all_nodes().await?;
+        let nodes = self.scoped_nodes(graph).await?;
         if nodes.is_empty() {
             return Ok(HashMap::new());
         }
@@ -478,6 +478,15 @@ impl LeidenCommunity {
             .map_err(|e| crate::error::NopalError::custom(
                 format!("leiden detect join error: {e}")
             ))?
+    }
+
+    /// Nodos del alcance: con `labels`, solo los de esas etiquetas (por el
+    /// índice de etiquetas, #207); sin `labels`, todos.
+    async fn scoped_nodes<G: GraphView>(&self, graph: &G) -> Result<Vec<crate::types::Node>> {
+        match &self.config.labels {
+            Some(labels) => graph.get_nodes_with_labels(labels).await,
+            None => graph.get_all_nodes().await,
+        }
     }
 
     /// Retorna el número de comunidades detectadas.
@@ -494,7 +503,7 @@ impl LeidenCommunity {
         options: &LeidenHierarchyOptions,
     ) -> Result<LeidenHierarchy> {
         options.validate()?;
-        let nodes = graph.get_all_nodes().await?;
+        let nodes = self.scoped_nodes(graph).await?;
         if nodes.is_empty() {
             return Ok(LeidenHierarchy::default());
         }

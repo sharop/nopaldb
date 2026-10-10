@@ -41,9 +41,27 @@ pub const META_PROP_IDX_ENTRIES: &str = "prop_idx_entries";
 /// Valor actual de `META_PROP_IDX_ENTRIES`.
 pub const PROP_IDX_FORMAT_CURRENT: u64 = 3;
 
+/// Formato del índice de etiquetas (#207) en `catalog`. Ausente = la base
+/// no lo tiene (creada o escrita por ≤ 0.6.11): el open lo construye.
+pub const META_LABEL_IDX_ENTRIES: &str = "label_idx_entries";
+
+/// Valor actual de `META_LABEL_IDX_ENTRIES`.
+pub const LABEL_IDX_FORMAT_CURRENT: u64 = 1;
+
+/// Hasta qué `next_timestamp` el índice de etiquetas está completo. Lo
+/// escribe `Graph::persist_clocks` junto al reloj. Una versión ≤ 0.6.11 que
+/// escriba en la base avanza el reloj sin tocar esta marca, así que al
+/// volver `next_timestamp > label_idx_synced_ts` dice "hay nodos que el
+/// índice no vio" y el open lo reconstruye. Ver
+/// `Graph::migrate_label_index_if_needed`.
+pub const META_LABEL_IDX_SYNCED_TS: &str = "label_idx_synced_ts";
+
 /// Nombre del keyspace del índice de propiedades. Conserva el nombre del v2:
 /// el v3 vive en el mismo keyspace (la migración lo vacía y lo reconstruye).
 const PROP_IDX_TREE: &str = "prop_idx_v2";
+/// Nombre del keyspace del índice de etiquetas (#207): una clave
+/// `label_index_entry_key` por nodo, valor vacío.
+const LABEL_IDX_TREE: &str = "label_idx";
 /// Nombre del keyspace de aristas (registro current por EdgeId).
 const EDGES_TREE: &str = "edges";
 /// Nombre del keyspace de adyacencia v2 (F5): dos claves de 53 bytes por
@@ -144,6 +162,13 @@ pub struct Storage {
     versioned_edges_ks: Arc<dyn kv::KvKeyspace>,
     versioned_edges_current_ks: Arc<dyn kv::KvKeyspace>,
     prop_idx_ks: Arc<dyn kv::KvKeyspace>,
+    /// Índice de etiquetas (#207). Solo se lee con `label_index_ready`.
+    label_idx_ks: Arc<dyn kv::KvKeyspace>,
+    /// `true` cuando el índice de etiquetas está completo (lo decide
+    /// `Graph::migrate_label_index_if_needed` al abrir). En `false` las
+    /// lecturas por etiqueta recorren `entities`, como antes de #207; las
+    /// escrituras lo mantienen siempre.
+    label_index_ready: std::sync::atomic::AtomicBool,
     // Keyspaces del layout v2 (F5) — todos con consumidores de runtime:
     // catalog/adjacency desde F5.3, entities/history/indexes desde F5.4.
     catalog_ks: Arc<dyn kv::KvKeyspace>,
@@ -189,6 +214,24 @@ fn malformed_key(keyspace: &str, key: &[u8]) -> NopalError {
         ),
     )
     .into()
+}
+
+/// Prefijo del índice de etiquetas para `label`: `u16 BE len | label`. La
+/// longitud va delante para que el prefijo de `PER` no abarque a `PERSON`.
+fn label_index_prefix(label: &str) -> Vec<u8> {
+    let bytes = label.as_bytes();
+    let len = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
+    let mut key = Vec::with_capacity(2 + bytes.len() + 16);
+    key.extend_from_slice(&len.to_be_bytes());
+    key.extend_from_slice(&bytes[..len as usize]);
+    key
+}
+
+/// Clave del índice de etiquetas: prefijo de `label` + `node_id` (16 B).
+fn label_index_entry_key(label: &str, node_id: NodeId) -> Vec<u8> {
+    let mut key = label_index_prefix(label);
+    key.extend_from_slice(node_id.as_bytes());
+    key
 }
 
 /// Parser de clave de adyacencia con semántica de corrupción (ver
@@ -315,7 +358,7 @@ impl Storage {
     /// handles de keyspace que se usan en caliente (los de embeddings se
     /// abren on-demand, igual que antes del rewire).
     fn from_engine(engine: Arc<dyn kv::KvEngine>, profile: StorageProfile) -> Result<Self> {
-        // Los diez keyspaces en una llamada: un motor que crea tablas por
+        // Los once keyspaces en una llamada: un motor que crea tablas por
         // transacción (redb) lo hace en una sola.
         let mut ks = engine
             .keyspaces(&[
@@ -329,6 +372,7 @@ impl Storage {
                 HISTORY_TREE,
                 ADJACENCY_TREE,
                 INDEXES_TREE,
+                LABEL_IDX_TREE,
             ])?
             .into_iter();
         let mut next = || ks.next().expect("keyspaces devuelve uno por nombre");
@@ -342,6 +386,7 @@ impl Storage {
         let history_ks = next();
         let adjacency_ks = next();
         let indexes_ks = next();
+        let label_idx_ks = next();
         let interner = EdgeTypeInterner::load(&catalog_ks)?;
 
         Ok(Self {
@@ -351,6 +396,8 @@ impl Storage {
             versioned_edges_ks,
             versioned_edges_current_ks,
             prop_idx_ks,
+            label_idx_ks,
+            label_index_ready: std::sync::atomic::AtomicBool::new(false),
             catalog_ks,
             entities_ks,
             history_ks,
@@ -550,10 +597,15 @@ impl Storage {
     }
 
     /// Inserta un nodo (registro base, keyspace `entities`)
+    ///
+    /// La entrada del índice de etiquetas va ANTES que el registro: un crash
+    /// entre las dos deja una entrada de más (las lecturas comprueban la
+    /// etiqueta del nodo y la descartan), nunca un nodo sin entrada.
     pub async fn insert_node(&self, node: &Node) -> Result<()> {
         let key = keys::v2::node_key_v2(node.id);
         let value = serialize(node)?;
 
+        self.label_idx_ks.insert(&label_index_entry_key(&node.label, node.id), EMPTY_VALUE)?;
         self.entities_ks.insert(&key, &value)?;
 
         Ok(())
@@ -578,10 +630,17 @@ impl Storage {
         // El contrato KV no devuelve el valor previo en `remove`; la
         // existencia se verifica antes (mismo error observable que el
         // `remove` de sled devolviendo `None`).
-        if !self.entities_ks.contains_key(&key)? {
+        // Se lee el registro para conocer la etiqueta: la entrada del índice
+        // se borra DESPUÉS del registro (un crash entre las dos deja una
+        // entrada de más, que las lecturas descartan).
+        let Some(value) = self.entities_ks.get(&key)? else {
             return Err(NopalError::NodeNotFound(id.to_string()));
-        }
+        };
+        let label = deserialize::<Node>(&value).map(|n| n.label).ok();
         self.entities_ks.remove(&key)?;
+        if let Some(label) = label {
+            self.label_idx_ks.remove(&label_index_entry_key(&label, id))?;
+        }
 
         Ok(())
     }
@@ -1020,6 +1079,113 @@ impl Storage {
             nodes.push(id);
         }
         Ok(nodes)
+    }
+
+    // ─── Índice de etiquetas (#207) ────────────────────────────────────────
+
+    /// `true` si las lecturas por etiqueta pueden usar el índice.
+    pub(crate) fn label_index_ready(&self) -> bool {
+        self.label_index_ready.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Lo fija `Graph` al abrir, tras comprobar o reconstruir el índice.
+    pub(crate) fn set_label_index_ready(&self, ready: bool) {
+        self.label_index_ready.store(ready, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Retira la entrada de `(label, node_id)`. La usa el cambio de etiqueta
+    /// de un upsert, DESPUÉS de escribir el nodo con la etiqueta nueva.
+    pub(crate) async fn remove_label_index_entry(&self, label: &str, node_id: NodeId) -> Result<()> {
+        self.label_idx_ks.remove(&label_index_entry_key(label, node_id))
+    }
+
+    /// Ids con entrada para `label`, en orden de `NodeId`, empezando después
+    /// de `start_after` y como mucho `limit` (`usize::MAX` = todos). Puede
+    /// incluir entradas de más (un crash entre la entrada y el registro, o un
+    /// cambio de etiqueta a medias): quien lea los nodos comprueba la
+    /// etiqueta.
+    fn label_index_ids(&self, label: &str, start_after: Option<NodeId>, limit: usize) -> Result<Vec<NodeId>> {
+        let prefix = label_index_prefix(label);
+        let start = match start_after {
+            Some(id) => label_index_entry_key(label, id),
+            None => prefix.clone(),
+        };
+        let mut ids = Vec::new();
+        for item in self.label_idx_ks.range_from(&start) {
+            let (key, _) = item?;
+            if !key.starts_with(&prefix) {
+                break;
+            }
+            if key.len() != prefix.len() + 16 {
+                continue; // otra etiqueta con el mismo prefijo de bytes
+            }
+            let id = NodeId::from_slice(&key[prefix.len()..])
+                .map_err(|_| malformed_key(LABEL_IDX_TREE, &key))?;
+            if Some(id) == start_after {
+                continue; // range_from es inclusivo
+            }
+            ids.push(id);
+            if ids.len() >= limit {
+                break;
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Lee los nodos de `ids` que existen y tienen `label`; descarta las
+    /// entradas de más del índice.
+    fn nodes_with_label(&self, ids: &[NodeId], label: &str) -> Result<Vec<Node>> {
+        let mut nodes = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(value) = self.entities_ks.get(&keys::v2::node_key_v2(*id))? {
+                let node: Node = deserialize(&value)?;
+                if node.label == label {
+                    nodes.push(node);
+                }
+            }
+        }
+        Ok(nodes)
+    }
+
+    /// Nodos con `label`. Con el índice listo lee solo esos nodos; si no,
+    /// recorre `entities` (el comportamiento anterior a #207).
+    pub async fn get_nodes_by_label(&self, label: &str) -> Result<Vec<Node>> {
+        if self.label_index_ready() {
+            let ids = self.label_index_ids(label, None, usize::MAX)?;
+            return self.nodes_with_label(&ids, label);
+        }
+        let mut nodes = Vec::new();
+        for item in self.entities_ks.scan_prefix(&[keys::v2::ENTITY_TAG]) {
+            let (_, value) = item?;
+            let node: Node = deserialize(&value)?;
+            if node.label == label {
+                nodes.push(node);
+            }
+        }
+        Ok(nodes)
+    }
+
+    /// Reconstruye el índice de etiquetas desde `entities`: lo vacía y
+    /// escribe una entrada por nodo, en lotes. Idempotente. Devuelve los
+    /// nodos indexados.
+    pub(crate) async fn rebuild_label_index(&self) -> Result<usize> {
+        self.label_idx_ks.clear()?;
+        let mut batch = kv::WriteBatch::default();
+        let mut count = 0usize;
+        for item in self.entities_ks.scan_prefix(&[keys::v2::ENTITY_TAG]) {
+            let (key, value) = item?;
+            let id = keys::v2::parse_node_key_v2(&key).ok_or_else(|| malformed_key(ENTITIES_TREE, &key))?;
+            let node: Node = deserialize(&value)?;
+            batch.insert(label_index_entry_key(&node.label, id), EMPTY_VALUE);
+            count += 1;
+            if batch.ops().len() >= REBUILD_BATCH_OPS {
+                self.label_idx_ks.apply_batch(std::mem::take(&mut batch))?;
+            }
+        }
+        if !batch.ops().is_empty() {
+            self.label_idx_ks.apply_batch(batch)?;
+        }
+        Ok(count)
     }
 
     /// Borra las claves del formato LEGADO v1 (`idx:prop:*` en el tree
@@ -1483,10 +1649,15 @@ impl Storage {
         // 6. Registro base del nodo (keyspace `entities`)
         entities_batch.insert(keys::v2::node_key_v2(node.id), serialize(node)?);
 
+        // 7. Entrada del índice de etiquetas (#207), en el mismo lote
+        let mut label_batch = kv::WriteBatch::default();
+        label_batch.insert(label_index_entry_key(&node.label, node.id), EMPTY_VALUE);
+
         self.engine.apply_multi(vec![
             (HISTORY_TREE.to_string(), history_batch),
             (INDEXES_TREE.to_string(), indexes_batch),
             (ENTITIES_TREE.to_string(), entities_batch),
+            (LABEL_IDX_TREE.to_string(), label_batch),
         ])?;
 
         // Cota del reloj: fuera del batch, con CAS-max (los escritores directos
@@ -1856,6 +2027,12 @@ impl Storage {
             return Ok((Vec::new(), start_after.map(|s| s.to_string())));
         }
 
+        if let Some(label) = label
+            && self.label_index_ready()
+        {
+            return self.scan_label_batch(label, start_after, limit);
+        }
+
         let start: Vec<u8> = match start_after {
             Some(cursor) => {
                 let id = uuid::Uuid::parse_str(cursor).map_err(|_| {
@@ -1904,6 +2081,47 @@ impl Storage {
         Ok((nodes, next_cursor))
     }
 
+    /// `scan_nodes_batch` con etiqueta sobre el índice (#207): mismo cursor
+    /// (uuid del último nodo entregado) y mismo orden (por `NodeId`), sin
+    /// leer los nodos de otras etiquetas.
+    fn scan_label_batch(
+        &self,
+        label: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<Node>, Option<String>)> {
+        let mut cursor = match start_after {
+            Some(c) => Some(uuid::Uuid::parse_str(c).map_err(|_| {
+                crate::error::StorageError::new(
+                    crate::error::StorageErrorKind::InvalidData,
+                    format!("cursor de scan_nodes_batch inválido (se espera uuid): {c:?}"),
+                )
+            })?),
+            None => None,
+        };
+        let mut nodes = Vec::with_capacity(limit);
+        // Las entradas de más se descartan al leer: se piden más ids hasta
+        // juntar `limit` nodos o agotar la etiqueta.
+        loop {
+            let want = limit - nodes.len();
+            let ids = self.label_index_ids(label, cursor, want)?;
+            let exhausted = ids.len() < want;
+            if let Some(last) = ids.last() {
+                cursor = Some(*last);
+            }
+            nodes.extend(self.nodes_with_label(&ids, label)?);
+            if exhausted || nodes.len() >= limit {
+                break;
+            }
+        }
+        let next_cursor = if nodes.len() >= limit {
+            nodes.last().map(|n| n.id.to_string())
+        } else {
+            None
+        };
+        Ok((nodes, next_cursor))
+    }
+
     /// Obtiene todos los nodos versionados del storage (para MVCC export)
     ///
     /// Scan del namespace `v|` del keyspace `history`: el tag discrimina por
@@ -1939,16 +2157,22 @@ impl Storage {
         }
 
         let mut batch = kv::WriteBatch::default();
+        let mut labels = kv::WriteBatch::default();
         let mut ids = Vec::with_capacity(nodes.len());
 
         for node in nodes {
             let value = serialize(node)?;
             batch.insert(keys::v2::node_key_v2(node.id), value);
+            labels.insert(label_index_entry_key(&node.label, node.id), EMPTY_VALUE);
             ids.push(node.id);
         }
 
-        // Una sola operación de disco para todos los nodos
-        self.entities_ks.apply_batch(batch)?;
+        // Una sola operación de disco para todos los nodos y sus entradas
+        // del índice de etiquetas (#207)
+        self.engine.apply_multi(vec![
+            (LABEL_IDX_TREE.to_string(), labels),
+            (ENTITIES_TREE.to_string(), batch),
+        ])?;
 
         log::debug!("Batch inserted {} nodes", ids.len());
         Ok(ids)
@@ -2316,6 +2540,138 @@ mod tests {
         }
         let err = crate::Graph::open(&path).await.err().expect("open must fail").to_string();
         assert!(err.contains("newer than this NopalDB"), "{err}");
+    }
+
+    fn label_ids(nodes: Vec<Node>) -> Vec<NodeId> {
+        let mut ids: Vec<NodeId> = nodes.into_iter().map(|n| n.id).collect();
+        ids.sort();
+        ids
+    }
+
+    /// Lo que haría una versión ≤ 0.6.11: escribir el nodo sin entrada en
+    /// el índice de etiquetas y avanzar el reloj.
+    async fn write_like_an_older_version(storage: &Storage, node: &Node, clock: u64) {
+        storage.entities_ks.insert(&keys::v2::node_key_v2(node.id), &serialize(node).unwrap()).unwrap();
+        storage.put_meta_u64_max(META_NEXT_TIMESTAMP, clock).await.unwrap();
+    }
+
+    /// #207: una versión anterior escribió en la base después de esta. Su
+    /// nodo no tiene entrada en el índice; el reloj avanzó sin la marca, así
+    /// que el open reconstruye y el nodo aparece.
+    #[tokio::test]
+    async fn test_label_index_rebuilds_after_an_older_version_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("older_wrote_db");
+        let a = {
+            let graph = crate::Graph::open(&path).await.unwrap();
+            let a = graph.add_node(Node::new("P")).await.unwrap();
+            graph.close().await.unwrap();
+            a
+        };
+        let b = Node::new("P");
+        {
+            let storage = Storage::new(&path).await.unwrap();
+            let clock = storage.get_meta_u64(META_NEXT_TIMESTAMP).await.unwrap().unwrap_or(0);
+            write_like_an_older_version(&storage, &b, clock + 5).await;
+            storage.flush().await.unwrap();
+        }
+        let graph = crate::Graph::open(&path).await.unwrap();
+        let mut want = vec![a, b.id];
+        want.sort();
+        assert_eq!(label_ids(graph.get_nodes_by_label("P").await.unwrap()), want);
+        let synced = graph.storage().get_meta_u64(META_LABEL_IDX_SYNCED_TS).await.unwrap().unwrap();
+        let clock = graph.storage().get_meta_u64(META_NEXT_TIMESTAMP).await.unwrap().unwrap();
+        assert!(synced >= clock, "la marca alcanza al reloj tras reconstruir");
+    }
+
+    /// Una base de ≤ 0.6.11 no tiene índice de etiquetas: el primer open lo
+    /// construye con todos sus nodos.
+    #[tokio::test]
+    async fn test_label_index_is_built_for_a_database_without_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no_label_idx_db");
+        let ids = {
+            let graph = crate::Graph::open(&path).await.unwrap();
+            let mut ids = Vec::new();
+            for _ in 0..5 {
+                ids.push(graph.add_node(Node::new("Q")).await.unwrap());
+            }
+            graph.close().await.unwrap();
+            ids.sort();
+            ids
+        };
+        {
+            let storage = Storage::new(&path).await.unwrap();
+            storage.label_idx_ks.clear().unwrap();
+            storage.delete_meta(META_LABEL_IDX_ENTRIES).await.unwrap();
+            storage.delete_meta(META_LABEL_IDX_SYNCED_TS).await.unwrap();
+            storage.flush().await.unwrap();
+        }
+        let graph = crate::Graph::open(&path).await.unwrap();
+        assert_eq!(label_ids(graph.get_nodes_by_label("Q").await.unwrap()), ids);
+        assert_eq!(
+            graph.storage().get_meta_u64(META_LABEL_IDX_ENTRIES).await.unwrap(),
+            Some(LABEL_IDX_FORMAT_CURRENT)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_label_index_from_a_newer_version_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("newer_label_db");
+        {
+            let graph = crate::Graph::open(&path).await.unwrap();
+            graph.storage().put_meta_u64_max(META_LABEL_IDX_ENTRIES, LABEL_IDX_FORMAT_CURRENT + 1).await.unwrap();
+            graph.close().await.unwrap();
+        }
+        let err = crate::Graph::open(&path).await.err().expect("open must fail").to_string();
+        assert!(err.contains("label index format"), "{err}");
+    }
+
+    /// Las entradas de más (un crash entre la entrada y el registro, o un
+    /// cambio de etiqueta a medias) no aparecen en las lecturas, y la
+    /// paginación no se corta por ellas.
+    #[tokio::test]
+    async fn test_label_index_skips_entries_without_a_matching_node() {
+        let graph = crate::Graph::in_memory().await.unwrap();
+        let storage = graph.storage();
+        let mut real = Vec::new();
+        for i in 0..6i64 {
+            real.push(graph.add_node(Node::new("R").with_property("i", i)).await.unwrap());
+            // Una entrada sin nodo y otra de un nodo con otra etiqueta.
+            storage.label_idx_ks.insert(&label_index_entry_key("R", NodeId::new_v4()), EMPTY_VALUE).unwrap();
+            let other = graph.add_node(Node::new("S")).await.unwrap();
+            storage.label_idx_ks.insert(&label_index_entry_key("R", other), EMPTY_VALUE).unwrap();
+        }
+        real.sort();
+        assert_eq!(label_ids(graph.get_nodes_by_label("R").await.unwrap()), real);
+
+        let mut paged = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let (nodes, next) = storage.scan_nodes_batch(Some("R"), cursor.as_deref(), 2).await.unwrap();
+            assert!(nodes.len() <= 2);
+            paged.extend(nodes.into_iter().map(|n| n.id));
+            match next {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        paged.sort();
+        assert_eq!(paged, real);
+    }
+
+    /// Con el índice sin confirmar, las lecturas recorren `entities`.
+    #[tokio::test]
+    async fn test_label_reads_fall_back_to_a_scan_when_the_index_is_not_ready() {
+        let graph = crate::Graph::in_memory().await.unwrap();
+        let id = graph.add_node(Node::new("T")).await.unwrap();
+        let storage = graph.storage();
+        storage.label_idx_ks.clear().unwrap();
+        storage.set_label_index_ready(false);
+        assert_eq!(label_ids(graph.get_nodes_by_label("T").await.unwrap()), vec![id]);
+        let (nodes, _) = storage.scan_nodes_batch(Some("T"), None, 10).await.unwrap();
+        assert_eq!(label_ids(nodes), vec![id]);
     }
 
     #[tokio::test]
