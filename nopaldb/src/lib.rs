@@ -132,7 +132,7 @@ pub use graph::{
 pub use graph::SharedHnswIndex;
 #[cfg(feature = "hybrid")]
 pub use graph::{
-    BranchReport, ExplainedHit, HybridExplain, HybridFilter, HybridHit, HybridQuery, VectorPath,
+    BranchReport, ExplainedHit, HybridExplain, HybridFilter, HybridHit, HybridQuery, TextPath, VectorPath,
 };
 pub use traversal::{TraversalResult, TraversalConfig, NodeFilter};
 pub use query::{TraverseBuilder, SackBuilder, SackBlock, SackResult, SackItem, CycleMode, Truncation};

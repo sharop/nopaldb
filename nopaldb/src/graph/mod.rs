@@ -20,7 +20,7 @@ pub use stats::{
 };
 #[cfg(feature = "hybrid")]
 pub use hybrid::{
-    BranchReport, ExplainedHit, HybridExplain, HybridFilter, HybridHit, HybridQuery, VectorPath,
+    BranchReport, ExplainedHit, HybridExplain, HybridFilter, HybridHit, HybridQuery, TextPath, VectorPath,
 };
 
 use std::collections::{HashMap, BinaryHeap, VecDeque, HashSet};

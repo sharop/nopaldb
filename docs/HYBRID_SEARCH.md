@@ -58,8 +58,9 @@ would give, because each path is still restricted *before* the fusion, so the
 top-k is computed inside the label. Building the set instead meant reading every
 node of the label on every query: 132 ms at 100k chunks for 40 candidates.
 
-- **Text path:** a full-text index already belongs to one label, so with the
-  index of the filter's label the check only confirms.
+- **Text path** (`text_path = "global_label_checked"`): a full-text index
+  already belongs to one label, so with the index of the filter's label the
+  check only confirms.
 - **Vector path** (`vector_path = "label_checked"`): it asks the index for
   `k × overfetch` neighbours. When fewer of them carry the label, it asks again
   with 4× as many, up to 4096. If the label is still that rare among the
@@ -70,7 +71,71 @@ NQL `hybrid()` always passes the pattern's label as a filter, so it takes this
 path too.
 
 **Nothing outside the allowed-set is ever returned**, at any selectivity. That
-is a hard guarantee, independent of how the vector path resolved the query.
+is a hard guarantee, independent of how either path resolved the query.
+
+### How the text path applies the filter
+
+The text path is **complete** under a filter: every allowed document that
+matches the text is a candidate, whatever the selectivity. `text_path` in
+`search_hybrid_explain` says how that was reached:
+
+| Situation | `text_path` | Recall |
+|---|---|---|
+| no filter | `global`: top `k × overfetch` by BM25 | the top-N *is* the answer |
+| label-only filter | `global_label_checked`: global top-N, label checked in rank order, fetch escalated ×4 | complete (the index belongs to the label) |
+| property filter, allowed-set ≤ 512 | `term_set_over_allowed`: tantivy scores **only the allowed ids** (a term set over the stored `node_id`, AND-ed with the text); no global query | complete |
+| property filter, larger allowed-set, enough allowed documents inside the global top-N (escalating ×4 to 1000) | `global` | complete |
+| property filter, larger allowed-set, escalation reaches 1000 still short | `global_then_term_set`: the allowed-set scored in chunks of 512 and merged | complete |
+
+The question the branch answers is always *top-k of the text within the
+allowed-set*; the global top-N is only an opportunistic way to compute it,
+never a definition of the result. The scores are the same on every path —
+the term set contributes 0 to the score, and BM25's IDF is index-wide — so a
+document ranks where the global top-N would rank it; the filter only decides
+which documents are looked at.
+A short text branch under a filter therefore means *no more allowed documents
+match the text*, which is what a RAG layer needs before it abstains.
+
+**Cost.** The global top-N costs what BM25 over every matching document
+costs (0.25 ms per request at 100k chunks that all match); the term set
+costs ~4.3 µs per allowed id regardless of corpus size (8 ids → 0.09 ms,
+128 → 0.68 ms, 512 → 2.2 ms, 1000 → 3.8 ms, 4000 → 12 ms; `text_filter`
+bench, release). The 512 cutoff is where a term set costs about what the
+escalation it replaces (128 → 512 → 1000 global hits, ~2 ms) costs; it is
+also why small sets skip the global query altogether: that query's cost
+grows with the documents that contain the term (corpus size), the term
+set's does not. Queries
+whose allowed-set is large *and* whose allowed documents all rank behind
+1000 foreign ones pay both — the rare case, and the only one that was wrong
+before. End to end at 100k chunks (`retrieval` bench, release): text-only
+with a filter that leaves 20 chunks 0.23 ms, with one that leaves 1% (1000
+chunks, the chunked fallback) 11.4 ms; the same searches with a vector too
+2.4 ms and 17.5 ms; unfiltered 0.60 ms.
+
+The cutoff is by set size only. A *rare* query term makes the global path
+cheap (0.02 ms per request, 0.56 ms for the whole escalation at 1% document
+frequency) while the term set still costs its 2.3 ms at 512 ids, so sets of
+a few hundred with rare terms pay more than they could; choosing by term
+frequency as well is the planner of #214 (`CandidateSet`), which also makes
+any graph predicate — a community, a neighbourhood, an id list — the
+candidate space of both branches.
+
+The allowed-set itself starts from the property index (ids only) and the
+label is confirmed on those candidates; until 0.6.12 it started from the
+label, reading every node of it (197 ms for a 100k-node label, whatever the
+filter left).
+
+> **Changed in 0.6.13 (#213).** Before, the text path fetched a *global*
+> top-N by BM25 (escalating to 1000) and filtered afterwards, treating the
+> 1000 cap as "no more matches". With a selective filter the allowed
+> documents could all sit behind 1000 foreign ones — 1 allowed fragment
+> among 1024 that contain the term returned **0 hits** with
+> `underfilled = true` — the same design the vector path had dropped in
+> 0.5.5. Nothing disallowed ever leaked; the result was incomplete. Queries
+> that filled their candidates before are unchanged (same documents, same
+> order, same scores); the ones that came back short now come back complete,
+> and in a text+vector search a document that only the vector branch found
+> now carries its text rank too, so it can move up in the fusion.
 
 ### How the vector path applies the filter
 
@@ -149,8 +214,10 @@ what you did not choose: the resolved `text_index`, the effective `ef_search`,
 an allowed set (`None` with a label-only filter resolved as `label_checked`).
 
 Each branch reports `{requested, returned, underfilled}`. Underfill is the
-question a short result cannot answer on its own — and `vector_path` is what
-decides how to read it:
+question a short result cannot answer on its own. For the text branch,
+`text_path` (0.6.13) names the path taken and every one of them is complete
+under a filter — a short text branch means no more allowed documents match
+the text. For the vector branch, `vector_path` is what decides how to read it:
 
 | `vector_path` | Meaning of a short result |
 |---|---|
