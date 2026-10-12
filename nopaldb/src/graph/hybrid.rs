@@ -21,6 +21,7 @@ use crate::error::NopalError;
 use crate::index::{IndexQuery, IndexType};
 use crate::types::{NodeId, PropertyValue};
 
+use super::candidate_set::CandidateSet;
 use super::Graph;
 
 /// HNSW `ef_search` default when the query does not override it — the
@@ -63,6 +64,11 @@ pub struct HybridQuery {
     /// Candidates fetched per path = `k * overfetch`.
     pub overfetch: usize,
     pub filter: Option<HybridFilter>,
+    /// The universe the search runs in (#214). `All` (the default) is the
+    /// whole graph; an explicit set is only ever *reduced* by `filter`, never
+    /// widened, and both paths compute their top-k inside it. See
+    /// [`CandidateSet`] for the two invariants.
+    pub candidates: CandidateSet,
 }
 
 impl HybridQuery {
@@ -77,6 +83,7 @@ impl HybridQuery {
             rrf_k: 60.0,
             overfetch: 4,
             filter: None,
+            candidates: CandidateSet::All,
         }
     }
 }
@@ -233,8 +240,11 @@ pub struct HybridExplain {
     pub text_index: Option<String>,
     /// Tamaño del conjunto permitido por el filtro; `None` = sin filtro, o
     /// filtro de solo etiqueta resuelto sin conjunto (ver
-    /// [`VectorPath::LabelChecked`]).
+    /// [`VectorPath::LabelChecked`]). Igual a `candidate_set.size`; se
+    /// conserva por compatibilidad.
     pub allowed_set_size: Option<usize>,
+    /// De dónde salió el universo de la búsqueda y sus tamaños (#214).
+    pub candidate_set: CandidateSetReport,
     /// Traza de la rama de texto; `None` si la query no traía texto.
     pub text: Option<BranchReport>,
     /// Traza de la rama vectorial; `None` si la query no traía vector.
@@ -248,6 +258,39 @@ pub struct HybridExplain {
     pub vector_exact: Option<bool>,
     /// Cómo se resolvió la rama de texto; `None` si la query no traía texto.
     pub text_path: Option<TextPath>,
+}
+
+/// Where the candidate set of a hybrid search came from (#214).
+///
+/// Output only: the engine needs just the set, but a caller debugging a
+/// missing hit needs to know whether it was never *eligible* (left out when
+/// the set was built) or eligible and outranked. `CandidateSetReport` gives
+/// the sizes before and after the filter for the same reason.
+#[cfg(feature = "hybrid")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateSource {
+    /// No filter and no caller set: the whole graph.
+    Unrestricted,
+    /// `{label, props}` only (a label-only filter resolved without a set
+    /// reports no size).
+    Filter,
+    /// The caller's ids, as given.
+    Ids,
+    /// The caller's ids reduced by `{label, props}`.
+    IdsAndFilter,
+}
+
+/// The candidate set a hybrid search actually ran in (#214).
+#[cfg(feature = "hybrid")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CandidateSetReport {
+    pub source: CandidateSource,
+    /// Size of the set the caller passed; `None` without one.
+    pub caller_size: Option<usize>,
+    /// Size of the set both paths ran in, after the filter; `None` when no
+    /// set was built (unrestricted, or a label-only filter resolved by
+    /// checking the label on the candidates). Equal to `allowed_set_size`.
+    pub size: Option<usize>,
 }
 
 /// One fused result. `score` is the RRF score (ordering only, not a probability).
@@ -310,14 +353,23 @@ impl Graph {
         //    instead would rank the label's nodes against foreign ones and
         //    could return fewer than k. Any other filter goes through the
         //    allowed-set (None = no restriction).
+        //    With a caller set there is a set already (#214): the label is
+        //    confirmed on its members, so the shortcut does not apply.
         let label_only = q
             .filter
             .as_ref()
-            .filter(|f| f.props.is_empty())
+            .filter(|f| f.props.is_empty() && q.candidates.is_all())
             .and_then(|f| f.label.clone());
         let mut allowed = match label_only {
             Some(_) => None,
-            None => self.hybrid_allowed_set(q.filter.as_ref()).await?,
+            None => self.hybrid_allowed_set(&q.candidates, q.filter.as_ref()).await?,
+        };
+        let has_filter = q.filter.as_ref().is_some_and(|f| !f.is_empty());
+        let candidate_source = match (q.candidates.is_all(), has_filter) {
+            (true, false) => CandidateSource::Unrestricted,
+            (true, true) => CandidateSource::Filter,
+            (false, false) => CandidateSource::Ids,
+            (false, true) => CandidateSource::IdsAndFilter,
         };
 
         // 2. Full-text path → node ids ranked by relevance.
@@ -382,7 +434,7 @@ impl Graph {
                         // ahora (índice `label_idx`, #207); la rama vectorial lo
                         // reutiliza.
                         if allowed.is_none() {
-                            allowed = self.hybrid_allowed_set(q.filter.as_ref()).await?;
+                            allowed = self.hybrid_allowed_set(&q.candidates, q.filter.as_ref()).await?;
                         }
                         let set = allowed.as_ref().expect("filtro ⇒ conjunto permitido");
                         break (
@@ -433,7 +485,7 @@ impl Graph {
                     // escasa entre los vecinos que la escalada llegó al tope:
                     // el conjunto permitido (con su scan) es lo correcto.
                     if label_only.is_some() && allowed.is_none() {
-                        allowed = self.hybrid_allowed_set(q.filter.as_ref()).await?;
+                        allowed = self.hybrid_allowed_set(&q.candidates, q.filter.as_ref()).await?;
                     }
                     self.vector_path(&index, vector, model, allowed.as_ref(), candidates, ef)
                         .await?
@@ -498,6 +550,11 @@ impl Graph {
             ef_search: ef_used,
             text_index: text_index_used,
             allowed_set_size: allowed.as_ref().map(|s| s.len()),
+            candidate_set: CandidateSetReport {
+                source: candidate_source,
+                caller_size: q.candidates.len(),
+                size: allowed.as_ref().map(|s| s.len()),
+            },
             text: text_report,
             vector: vector_report,
             vector_path: vector_path_used,
@@ -719,12 +776,13 @@ impl Graph {
             return Ok((hits, VectorPath::LabelChecked));
         }
         let filter = HybridFilter { label: Some(label.to_string()), props: Vec::new() };
-        let allowed = self.hybrid_allowed_set(Some(&filter)).await?;
+        let allowed = self.hybrid_allowed_set(&CandidateSet::All, Some(&filter)).await?;
         self.vector_path(&index, vector, model, allowed.as_ref(), k, ef).await
     }
 
-    /// Build the allowed NodeId set from a label/property filter. `None` means no
-    /// restriction (empty filter or no filter). An empty set means nothing matches.
+    /// Build the allowed NodeId set from the caller's candidate set and a
+    /// label/property filter. `None` means no restriction (`All` with an
+    /// empty or absent filter). An empty set means nothing matches.
     ///
     /// With properties, the set starts from the property index (one lookup
     /// per equality, ids only) and the label is then *confirmed* on those
@@ -732,16 +790,28 @@ impl Graph {
     /// reading and deserializing every node of the label to get its ids:
     /// 190 ms for a label of 100k nodes, for a filter that leaves 20 (#213).
     /// Label alone still reads the label (the only source there is).
+    ///
+    /// A caller set (#214) is the *seed* of that same pipeline: the property
+    /// lookups intersect into it and the label is confirmed on what survives,
+    /// so the filter can only keep or shrink it (never widen, invariant 2 of
+    /// [`CandidateSet`]) and the equality semantics are the index's, not a
+    /// second implementation over hydrated nodes. Without a filter the ids
+    /// are taken as given, unread: an id that does not exist never scores.
     #[cfg(feature = "embeddings-index")]
     async fn hybrid_allowed_set(
         &self,
+        candidates: &CandidateSet,
         filter: Option<&HybridFilter>,
     ) -> Result<Option<HashSet<NodeId>>> {
-        let Some(filter) = filter else { return Ok(None) };
-        if filter.is_empty() {
-            return Ok(None);
+        let seed: Option<HashSet<NodeId>> = match candidates {
+            CandidateSet::All => None,
+            CandidateSet::Ids(ids) => Some(ids.to_hash_set()),
+        };
+        let Some(filter) = filter.filter(|f| !f.is_empty()) else { return Ok(seed) };
+        if seed.as_ref().is_some_and(|s| s.is_empty()) {
+            return Ok(seed);
         }
-        let mut set: Option<HashSet<NodeId>> = None;
+        let mut set: Option<HashSet<NodeId>> = seed;
 
         for (prop, val) in &filter.props {
             let by_prop: HashSet<NodeId> = self

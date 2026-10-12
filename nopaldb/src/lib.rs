@@ -130,9 +130,11 @@ pub use graph::{
 };
 #[cfg(feature = "embeddings-index")]
 pub use graph::SharedHnswIndex;
+pub use graph::{CandidateIds, CandidateSet};
 #[cfg(feature = "hybrid")]
 pub use graph::{
-    BranchReport, ExplainedHit, HybridExplain, HybridFilter, HybridHit, HybridQuery, TextPath, VectorPath,
+    BranchReport, CandidateSetReport, CandidateSource, ExplainedHit, HybridExplain, HybridFilter, HybridHit,
+    HybridQuery, TextPath, VectorPath,
 };
 pub use traversal::{TraversalResult, TraversalConfig, NodeFilter};
 pub use query::{TraverseBuilder, SackBuilder, SackBlock, SackResult, SackItem, CycleMode, Truncation};

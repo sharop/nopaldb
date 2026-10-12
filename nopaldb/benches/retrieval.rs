@@ -29,7 +29,7 @@ use std::time::Duration;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use nopaldb::index::IndexType;
 use nopaldb::types::{Edge, Node, NodeId, PropertyValue};
-use nopaldb::{ExpandOptions, Graph, HybridFilter, HybridQuery, StorageOptions};
+use nopaldb::{CandidateSet, ExpandOptions, Graph, HybridFilter, HybridQuery, StorageOptions};
 
 const DIM: usize = 64;
 const K: usize = 10;
@@ -82,6 +82,8 @@ const VOCAB: &[&str] = &[
 struct Fixture {
     graph: Graph,
     seeds: Vec<NodeId>,
+    /// 65 chunks del tenant 7: el conjunto explícito de un caller (#214).
+    tenant7_65: Vec<NodeId>,
     query: Vec<f32>,
     _dir: tempfile::TempDir,
 }
@@ -140,7 +142,8 @@ async fn build(n_chunks: usize) -> Fixture {
     let query = rng.vector();
     let _ = graph.knn_nodes_bench_warm(&query).await;
     let seeds: Vec<NodeId> = chunks.iter().step_by(n_chunks / 10).take(10).copied().collect();
-    Fixture { graph, seeds, query, _dir: dir }
+    let tenant7_65: Vec<NodeId> = chunks.iter().skip(7).step_by(100).take(65).copied().collect();
+    Fixture { graph, seeds, tenant7_65, query, _dir: dir }
 }
 
 /// Pequeño puente: calentar el índice sin exponer nada nuevo en la API.
@@ -165,6 +168,7 @@ fn hybrid(fx: &Fixture, label: Option<&str>) -> HybridQuery {
         rrf_k: 60.0,
         overfetch: 4,
         filter: label.map(|l| HybridFilter { label: Some(l.into()), props: Vec::new() }),
+        candidates: CandidateSet::All,
     }
 }
 
@@ -214,6 +218,44 @@ fn bench_retrieval(c: &mut Criterion) {
             })
         });
     }
+    // Universo explícito del caller (#214): 65 ids (lo que deja tenant ∩
+    // caso en un despliegue real), solos y reducidos por un filtro que
+    // confirma props y etiqueta sobre ellos. Coste ∝ |conjunto|.
+    g.bench_with_input(BenchmarkId::new("hybrid_k10_candidates_65", n), &n, |b, _| {
+        b.to_async(&rt).iter(|| async {
+            let mut q = hybrid(&fx, None);
+            q.candidates = CandidateSet::ids(fx.tenant7_65.iter().copied());
+            black_box(fx.graph.search_hybrid(q).await.expect("hybrid"))
+        })
+    });
+    // Por rama, para saber dónde va el coste del conjunto.
+    g.bench_with_input(BenchmarkId::new("text_only_k10_candidates_65", n), &n, |b, _| {
+        b.to_async(&rt).iter(|| async {
+            let mut q = hybrid(&fx, None);
+            q.vector = None;
+            q.candidates = CandidateSet::ids(fx.tenant7_65.iter().copied());
+            black_box(fx.graph.search_hybrid(q).await.expect("text"))
+        })
+    });
+    g.bench_with_input(BenchmarkId::new("vector_only_k10_candidates_65", n), &n, |b, _| {
+        b.to_async(&rt).iter(|| async {
+            let mut q = hybrid(&fx, None);
+            q.text = None;
+            q.candidates = CandidateSet::ids(fx.tenant7_65.iter().copied());
+            black_box(fx.graph.search_hybrid(q).await.expect("vector"))
+        })
+    });
+    g.bench_with_input(BenchmarkId::new("hybrid_k10_candidates_65_props_tenant", n), &n, |b, _| {
+        b.to_async(&rt).iter(|| async {
+            let mut q = hybrid(&fx, None);
+            q.candidates = CandidateSet::ids(fx.tenant7_65.iter().copied());
+            q.filter = Some(HybridFilter {
+                label: Some("Chunk".into()),
+                props: vec![("tenant".into(), PropertyValue::String("tenant-7".into()))],
+            });
+            black_box(fx.graph.search_hybrid(q).await.expect("hybrid"))
+        })
+    });
     g.finish();
 
     // Lo que cuesta construir el conjunto permitido de un filtro con

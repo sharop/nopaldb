@@ -1946,11 +1946,17 @@ impl PyGraph {
     ///     rrf_k (float): RRF constant (default 60.0).
     ///     hydrate (bool): if True each hit also carries `"node"` (the node
     ///         dict, read in the same call; None if it vanished). Default False.
+    ///     candidates (list[str], optional): the universe to search in — node
+    ///         ids the caller already resolved (a document's chunks, an ACL,
+    ///         tenant ∩ case ∩ authorized documents). Both branches compute
+    ///         their top-k inside it with the same scores they would get
+    ///         without it, and `label` / `props` can only reduce it, never
+    ///         widen it (#214). Ids that do not exist never score.
     ///
     /// Returns:
     ///     list[dict]: {node_id, score, text_rank, vector_rank[, node]}, best first.
     #[cfg(feature = "hybrid")]
-    #[pyo3(signature = (text=None, vector=None, model=None, k=10, ef=None, label=None, props=None, text_index=None, rrf_k=60.0, hydrate=false))]
+    #[pyo3(signature = (text=None, vector=None, model=None, k=10, ef=None, label=None, props=None, text_index=None, rrf_k=60.0, hydrate=false, candidates=None))]
     #[allow(clippy::too_many_arguments)]
     fn search_hybrid(
         &self,
@@ -1965,9 +1971,10 @@ impl PyGraph {
         text_index: Option<String>,
         rrf_k: f32,
         hydrate: bool,
+        candidates: Option<Vec<String>>,
     ) -> PyResult<Vec<Py<PyDict>>> {
         let graph = self.graph()?;
-        let hq = build_hybrid_query(text, vector, model, k, ef, label, props, text_index, rrf_k)?;
+        let hq = build_hybrid_query(text, vector, model, k, ef, label, props, text_index, rrf_k, candidates)?;
 
         let graph_for_hydrate = graph.clone();
         let hits = to_py_result(crate::python::runtime::block_on(py, async move {
@@ -2031,12 +2038,18 @@ impl PyGraph {
     ///         "term_set_over_allowed" | "global_then_term_set". With a
     ///         filter every one of them is complete: a short text branch
     ///         means no more allowed documents match the text (#213).
+    ///       - `candidate_set`: {source, caller_size, size} — where the
+    ///         universe came from ("unrestricted" | "filter" | "ids" |
+    ///         "ids_and_filter"), how many ids the caller passed, and how
+    ///         many both branches ran in after the filter (#214). A hit
+    ///         missing with `size` < `caller_size` was left out by the
+    ///         filter, not outranked.
     ///
     /// Example:
     ///     >>> e = graph.search_hybrid_explain(text="cactus", k=5)
     ///     >>> e["hits"][0]["text_score"], e["vector_path"]
     #[cfg(feature = "hybrid")]
-    #[pyo3(signature = (text=None, vector=None, model=None, k=10, ef=None, label=None, props=None, text_index=None, rrf_k=60.0))]
+    #[pyo3(signature = (text=None, vector=None, model=None, k=10, ef=None, label=None, props=None, text_index=None, rrf_k=60.0, candidates=None))]
     #[allow(clippy::too_many_arguments)]
     fn search_hybrid_explain(
         &self,
@@ -2050,9 +2063,10 @@ impl PyGraph {
         props: Option<&Bound<'_, PyDict>>,
         text_index: Option<String>,
         rrf_k: f32,
+        candidates: Option<Vec<String>>,
     ) -> PyResult<Py<PyDict>> {
         let graph = self.graph()?;
-        let hq = build_hybrid_query(text, vector, model, k, ef, label, props, text_index, rrf_k)?;
+        let hq = build_hybrid_query(text, vector, model, k, ef, label, props, text_index, rrf_k, candidates)?;
 
         let e = to_py_result(crate::python::runtime::block_on(py, async move {
             graph.search_hybrid_explain(hq).await
@@ -2090,6 +2104,19 @@ impl PyGraph {
         out.set_item("ef_search", e.ef_search)?;
         out.set_item("text_index", e.text_index.clone())?;
         out.set_item("allowed_set_size", e.allowed_set_size)?;
+        let cs = PyDict::new(py);
+        cs.set_item(
+            "source",
+            match e.candidate_set.source {
+                crate::CandidateSource::Unrestricted => "unrestricted",
+                crate::CandidateSource::Filter => "filter",
+                crate::CandidateSource::Ids => "ids",
+                crate::CandidateSource::IdsAndFilter => "ids_and_filter",
+            },
+        )?;
+        cs.set_item("caller_size", e.candidate_set.caller_size)?;
+        cs.set_item("size", e.candidate_set.size)?;
+        out.set_item("candidate_set", cs)?;
         out.set_item("text", branch(e.text)?)?;
         out.set_item("vector", branch(e.vector)?)?;
         out.set_item(
@@ -2200,8 +2227,18 @@ fn build_hybrid_query(
     props: Option<&Bound<'_, PyDict>>,
     text_index: Option<String>,
     rrf_k: f32,
+    candidates: Option<Vec<String>>,
 ) -> PyResult<crate::HybridQuery> {
     let embedding = build_embedding(vector, model)?;
+    let candidates = match candidates {
+        None => crate::CandidateSet::All,
+        Some(ids) => ids
+            .iter()
+            .map(|s| parse_uuid(s, "node"))
+            .collect::<PyResult<Vec<crate::NodeId>>>()?
+            .into_iter()
+            .collect(),
+    };
     let filter = if label.is_some() || props.is_some() {
         let mut f = crate::HybridFilter { label, props: Vec::new() };
         if let Some(p) = props {
@@ -2222,6 +2259,7 @@ fn build_hybrid_query(
         rrf_k,
         overfetch: 4,
         filter,
+        candidates,
     })
 }
 

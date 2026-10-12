@@ -282,13 +282,15 @@ class Graph:
         text_index: Optional[str] = None,
         rrf_k: float = 60.0,
         hydrate: bool = False,
+        candidates: Optional[list[str]] = None,
     ) -> list[dict[str, Any]]: ...
     # Misma búsqueda que search_hybrid, más la traza de por qué cada hit
     # quedó donde quedó: scores crudos por rama, configuración efectiva,
     # underfill y el camino de cada rama (`vector_path`, `text_path`; con
     # filtro, la rama de texto es completa en todos sus caminos, #213) y
     # `vector_exact`: si la rama vectorial tuvo recall = 1, ya resuelto por
-    # camino y tamaño del índice (#218).
+    # camino y tamaño del índice (#218). `candidate_set` = {source,
+    # caller_size, size}: de dónde salió el universo de la búsqueda (#214).
     # Ver docs/HYBRID_SEARCH.md.
     def search_hybrid_explain(
         self,
@@ -301,6 +303,7 @@ class Graph:
         props: Optional[Props] = None,
         text_index: Optional[str] = None,
         rrf_k: float = 60.0,
+        candidates: Optional[list[str]] = None,
     ) -> dict[str, Any]: ...
 
     # ── Schema & stats ──────────────────────────────────────────────

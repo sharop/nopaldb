@@ -6,9 +6,11 @@ sale aunque más de 1000 fragmentos de otros tenants también lo contengan.
 Antes de 0.6.13 la rama de texto pedía el top-1000 global y filtraba después:
 `hits = 0`, `text.underfilled = True`, y una capa RAG se abstenía con
 evidencia existente. `search_hybrid_explain` dice ahora por qué camino fue la
-rama de texto (`text_path`) y si la rama vectorial fue exacta (`vector_exact`,
+rama de texto (`text_path`), si la rama vectorial fue exacta (`vector_exact`,
 #218: con un índice chico el filtro se resolvía exacto pero se informaba
-`hnsw_filtered`). Corpus sintético. Se ejecuta en CI (job python-stubs) tras
+`hnsw_filtered`) y de dónde salió el universo (`candidate_set`, #214: el
+caller puede pasar `candidates=[ids]` y el filtro solo lo reduce). Corpus
+sintético. Se ejecuta en CI (job python-stubs) tras
 `maturin develop`.
 """
 
@@ -65,6 +67,24 @@ with tempfile.TemporaryDirectory() as tmp:
     assert e["vector"]["returned"] == 1 and e["vector"]["underfilled"], e["vector"]
     e = g.search_hybrid_explain(vector=[1.0, 0.0, 0.0], model="m", k=8)
     assert e["vector_path"] == "unfiltered" and e["vector_exact"] is True, e
+
+    # Universo explícito (#214): el fragmento del documento seleccionado está
+    # detrás de 64 distractores más cercanos; pedir 32 dentro del tenant y
+    # filtrar el documento después lo pierde. Darlo como `candidates` lo
+    # encuentra con rango en ambas ramas, y `label`/`props` solo pueden
+    # reducir el conjunto, nunca ampliarlo.
+    g.add_node_embeddings("m", [(allowed_id, [0.6, 0.8, 0.0])])
+    e = g.search_hybrid_explain(
+        text="fragmento", vector=[1.0, 0.0, 0.0], model="m", k=8,
+        label="Fragment", props={"tenant_id": "B"},
+        candidates=[allowed_id, *noise_ids[:4]],
+    )
+    assert [h["node_id"] for h in e["hits"]] == [allowed_id], e["hits"]
+    assert e["hits"][0]["text_rank"] == 0 and e["hits"][0]["vector_rank"] == 0, e["hits"][0]
+    assert e["candidate_set"] == {"source": "ids_and_filter", "caller_size": 5, "size": 1}, e["candidate_set"]
+    assert e["allowed_set_size"] == 1
+    hits = g.search_hybrid(text="fragmento", k=8, candidates=[allowed_id, *noise_ids[:4]])
+    assert {h["node_id"] for h in hits} == {allowed_id, *noise_ids[:4]}, hits
     g.close()
 
 print("hybrid_filter_sample: ok")

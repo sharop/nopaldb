@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+`search_hybrid` acepta el universo de la búsqueda como conjunto explícito de
+candidatos (`candidates`): el caller que ya sabe qué nodos son elegibles (un
+documento, una ACL, tenant ∩ caso ∩ documentos autorizados) obtiene el top-k
+calculado dentro de ese conjunto, con los mismos scores, y el filtro solo
+puede reducirlo. Es la fase 1 de #214.
+
+### Added
+- **`CandidateSet` y `HybridQuery.candidates`** (#214, fase 1). El universo
+  sobre el que corre la búsqueda híbrida: `All` (el grafo, o lo que deje el
+  filtro) o `Ids` (un conjunto explícito del caller, de representación
+  privada). No es otro filtro: cambia el universo puntuable, nunca el score
+  (`top-k(Q, C)`, no `top-k(Q, D) ∩ C`), y `{label, props}` solo lo
+  mantiene o lo reduce, nunca lo amplía, así que sirve como ACL. El
+  conjunto entra como semilla del mismo pipeline que construye el conjunto
+  permitido (índice de propiedades ∩ ids, etiqueta confirmada sobre los
+  supervivientes), y ambas ramas puntúan dentro de él por los caminos de
+  #213 y 0.5.5. Motiva el caso de un integrador: 65 fragmentos del mismo
+  tenant/caso, el único del documento seleccionado detrás de 64 distractores
+  más cercanos; pedir 32 dentro del filtro y quedarse con el documento
+  después devolvía 0, como conjunto de candidatos devuelve 1 con rango en
+  las dos ramas. Python: `search_hybrid(..., candidates=[ids])` y
+  `search_hybrid_explain`. Álgebra mínima (`is_all`, `len`, `contains`,
+  `intersect` con `All` identidad y ∅ absorbente). Tests:
+  `tests/candidate_set_test.rs` (caso 1-entre-64, nunca-ampliar, scores
+  idénticos, y una propiedad con `proptest`: todo resultado ∈ C y
+  `|resultados| = min(k, |C|)`). Medido (`retrieval`, 100k chunks, release,
+  conjunto de 65 ids): solo texto 0.16 ms, solo vector 2.2 ms, texto+vector
+  3.6 ms, texto+vector ∩ `{label, props}` 4.9 ms; sin conjunto ni filtro
+  0.96 ms (sin cambio). El coste va a la rama vectorial: el camino exacto
+  lee cada vector del conjunto de almacenamiento (~30 µs por id), un coste
+  de 0.5.5 anterior a esta fase y candidato a optimizar leyéndolos del
+  índice en memoria.
+- **`candidate_set` en `search_hybrid_explain`** (#214): `{source, caller_size,
+  size}` con `source` ∈ `unrestricted` | `filter` | `ids` | `ids_and_filter`.
+  Distingue "quedó fuera al construir el universo" (`size < caller_size`)
+  de "lo superó el ranking". `allowed_set_size` se conserva con el mismo
+  valor que `size`. En Rust `HybridExplain::candidate_set`
+  (`CandidateSetReport`, `CandidateSource`).
+
+### Changed
+- Con `candidates`, un filtro de solo etiqueta no toma el atajo sin
+  conjunto: la etiqueta se confirma sobre los ids del caller (coste
+  proporcional al conjunto). Sin `candidates` nada cambia.
+
 ## [0.6.14] - 2026-10-12
 
 `search_hybrid_explain` dice si la rama vectorial fue exacta (`vector_exact`),
