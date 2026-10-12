@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.6.15] - 2026-10-12
 
 `search_hybrid` acepta el universo de la búsqueda como conjunto explícito de
 candidatos (`candidates`): el caller que ya sabe qué nodos son elegibles (un
