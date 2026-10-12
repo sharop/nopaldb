@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.14] - unreleased
+## [0.6.14] - 2026-10-12
 
 `search_hybrid_explain` dice si la rama vectorial fue exacta (`vector_exact`),
 y ya no informa `hnsw_filtered` cuando un filtro sobre un índice chico se
