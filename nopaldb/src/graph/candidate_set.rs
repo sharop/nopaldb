@@ -57,8 +57,11 @@ impl CandidateIds {
         self.0.iter()
     }
 
-    /// The ids as a set, for the paths that score a set directly. Private so
-    /// the representation stays an implementation detail of this module.
+    /// The ids as a set, for the paths that score a set directly. Crate-only
+    /// so the representation stays an implementation detail of this module;
+    /// gated like its single consumer (`graph::hybrid`) so a build without
+    /// the vector index does not see dead code.
+    #[cfg(feature = "embeddings-index")]
     pub(crate) fn to_hash_set(&self) -> HashSet<NodeId> {
         self.0.clone()
     }
