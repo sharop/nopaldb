@@ -5750,6 +5750,9 @@ impl<'a> Executor<'a> {
             rrf_k: call.options.rrf_k.unwrap_or(60.0) as f32,
             overfetch: call.options.overfetch.unwrap_or(4),
             filter,
+            // Los predicados del `where` como conjunto de candidatos son la
+            // fase 2 de #214; hoy solo la etiqueta del patrón llega al filtro.
+            candidates: crate::graph::CandidateSet::All,
         };
         let hits = self.graph.search_hybrid(hq).await?;
         let ids: Vec<NodeId> = hits.iter().map(|h| h.node_id).collect();

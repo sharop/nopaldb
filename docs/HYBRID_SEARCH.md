@@ -73,6 +73,79 @@ path too.
 **Nothing outside the allowed-set is ever returned**, at any selectivity. That
 is a hard guarantee, independent of how either path resolved the query.
 
+## Candidate set
+
+A filter says *which properties* a hit must have. Sometimes the caller already
+knows *which nodes* are eligible — the chunks of the document the user
+selected, an ACL, `tenant ∩ case ∩ authorized documents` resolved upstream —
+and wants the ranking computed inside exactly that set. Since 0.6.15 (#214)
+`search_hybrid` takes that set as `candidates`:
+
+```python
+hits = graph.search_hybrid(
+    text="plazo de entrega", vector=q, model="e5-large", k=8,
+    label="Fragment", props={"tenant_id": "B"},
+    candidates=[chunk_id for chunk_id in authorized_chunks],
+)
+```
+
+A candidate set is **not another filter: it is the definition of the universe
+the retrieval runs in**. Two invariants hold, and both are tested
+(`tests/candidate_set_test.rs`, including a property test over random subsets):
+
+1. **It changes the scorable universe, never the score.** The result is
+   `top-k(query, C)`, not `top-k(query, D) ∩ C`. The BM25 score and the cosine
+   distance a node gets inside the set are the ones it gets without it: the
+   text path scores the set in tantivy with the index-wide IDF
+   (`term_set_over_allowed`), the vector path ranks the set's vectors exactly
+   (`exact_over_allowed` / `exact_index`).
+2. **It is never widened.** `label` and `props` can only keep or shrink the
+   caller's set: every hit is a member of `candidates`. Ids that do not exist
+   never score. That is what makes the set usable as an ACL.
+
+Why it matters: the shape of #213 reappears on the caller's side whenever a
+selection is applied *after* the search. One integrator's case: 65 fragments
+in the same tenant and case, the only fragment of the selected document behind
+64 closer distractors; asking for 32 inside the tenant filter and keeping the
+document afterwards returned nothing, because the fragment was never in the
+32. As a candidate set it comes back with a rank in both branches.
+
+How the set is built, and what `search_hybrid_explain` reports as
+`candidate_set = {source, caller_size, size}`:
+
+| `candidates` | filter | universe | `source` |
+|---|---|---|---|
+| none | none | the whole graph | `unrestricted` |
+| none | label only | the label, checked on each path's candidates (no set, `size = None`) | `filter` |
+| none | with props | property index ∩ …, label confirmed on the survivors | `filter` |
+| ids | none | the ids as given, unread (`size = caller_size`) | `ids` |
+| ids | any | the ids are the seed of the same pipeline: property lookups intersect into them, the label is confirmed on what survives (`size ≤ caller_size`) | `ids_and_filter` |
+
+`size` is the set both paths ran in. A hit that is missing with
+`size < caller_size` was left out when the set was built — by the filter — not
+outranked; that is the question `allowed_set_size` alone could not answer.
+
+Cost is proportional to the set, not to the corpus. Measured on the
+`retrieval` bench (100k chunks, 64 dims, release, k = 10) with a set of 65
+ids, what a tenant ∩ case leaves in one measured deployment:
+
+| query | ms |
+|---|---|
+| text only, 65 candidates (term set) | 0.16 |
+| vector only, 65 candidates (exact over the set) | 2.2 |
+| text + vector, 65 candidates | 3.6 |
+| text + vector, 65 candidates ∩ `{label, props}` (tenant lookup + label confirmed on the set) | 4.9 |
+| text + vector, no set, no filter (reference) | 0.96 |
+
+The vector side dominates: the exact path reads each of the set's vectors
+from storage (one key per id, ~30 µs each), a cost that predates candidate
+sets (`exact_over_allowed`, 0.5.5) and is the candidate for the next
+optimisation — the index already holds those vectors in memory.
+
+The NQL `where`, Leiden communities and `neighborhood` results as candidate
+sets, and a cost-based choice between the paths, are the second phase of
+#214.
+
 ### How the text path applies the filter
 
 The text path is **complete** under a filter: every allowed document that
@@ -210,8 +283,10 @@ that branch — "no score" rather than a zero that would read as "scored badly".
 
 Globally it reports the configuration that was actually **used**, including
 what you did not choose: the resolved `text_index`, the effective `ef_search`,
-`candidates` (= `k × overfetch`) and `allowed_set_size` when the filter built
-an allowed set (`None` with a label-only filter resolved as `label_checked`).
+`candidates` (= `k × overfetch`), `allowed_set_size` when the filter built
+an allowed set (`None` with a label-only filter resolved as `label_checked`)
+and `candidate_set = {source, caller_size, size}`: where the universe came
+from and its size before and after the filter (see *Candidate set*).
 
 Each branch reports `{requested, returned, underfilled}`. Underfill is the
 question a short result cannot answer on its own. For the text branch,
@@ -296,4 +371,5 @@ The search can also seed a one-hop pattern — search and expand in one query
 - Follow-ups: per-path weights; range/OR filters; property filters from the
   NQL `where` (today only the pattern label reaches the hybrid filter; the
   other predicates are applied to the top-K afterwards, so they can leave
-  fewer than K rows).
+  fewer than K rows — the second phase of #214 turns them into a candidate
+  set; from Rust and Python, `candidates` already does that today).

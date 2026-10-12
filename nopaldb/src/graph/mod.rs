@@ -10,6 +10,7 @@ pub mod communities;
 // necesita full-text sigue con su propio `cfg(feature = "hybrid")`.
 #[cfg(feature = "embeddings-index")]
 pub mod hybrid;
+pub mod candidate_set;
 pub(crate) mod applier;
 pub use view::{GraphView, Subgraph};
 pub use upsert::{LinkSpec, UpsertOutcome, UpsertRequest, UPSERT_TX_ROWS};
@@ -18,9 +19,11 @@ pub use stats::{
     GcAutoSummary, GcRun, GcSection, GraphSection, IndexSection, OpenPhasesMs, Progress,
     ProgressCallback, RecoverySection, StatsReport, StorageSection, WalSection,
 };
+pub use candidate_set::{CandidateIds, CandidateSet};
 #[cfg(feature = "hybrid")]
 pub use hybrid::{
-    BranchReport, ExplainedHit, HybridExplain, HybridFilter, HybridHit, HybridQuery, TextPath, VectorPath,
+    BranchReport, CandidateSetReport, CandidateSource, ExplainedHit, HybridExplain, HybridFilter, HybridHit,
+    HybridQuery, TextPath, VectorPath,
 };
 
 use std::collections::{HashMap, BinaryHeap, VecDeque, HashSet};
