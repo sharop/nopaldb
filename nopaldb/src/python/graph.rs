@@ -2018,10 +2018,15 @@ impl PyGraph {
     ///       - `text`, `vector`: {requested, returned, underfilled} per
     ///         branch, or None if that branch did not run.
     ///       - `vector_path`: "unfiltered" | "exact_over_allowed" |
-    ///         "hnsw_filtered" | "label_checked". The last two are
-    ///         approximate, which is what decides how to read a short
-    ///         result. "label_checked" is the label-only filter resolved
-    ///         without a label scan (`allowed_set_size` is then None).
+    ///         "exact_index" | "hnsw_filtered" | "label_checked".
+    ///         "label_checked" is the label-only filter resolved without a
+    ///         label scan (`allowed_set_size` is then None); "exact_index"
+    ///         is a filter over an index small enough to be scanned whole.
+    ///       - `vector_exact`: whether the vector branch had recall = 1,
+    ///         already resolved by path and index size (#218). This is what
+    ///         decides how to read a short vector branch: True means there
+    ///         genuinely are no more allowed vectors; False means no more
+    ///         were *found* by the HNSW walk. None without a vector branch.
     ///       - `text_path`: "global" | "global_label_checked" |
     ///         "term_set_over_allowed" | "global_then_term_set". With a
     ///         filter every one of them is complete: a short text branch
@@ -2092,10 +2097,12 @@ impl PyGraph {
             e.vector_path.map(|p| match p {
                 crate::VectorPath::Unfiltered => "unfiltered",
                 crate::VectorPath::ExactOverAllowed => "exact_over_allowed",
+                crate::VectorPath::ExactIndex => "exact_index",
                 crate::VectorPath::HnswFiltered => "hnsw_filtered",
                 crate::VectorPath::LabelChecked => "label_checked",
             }),
         )?;
+        out.set_item("vector_exact", e.vector_exact)?;
         out.set_item(
             "text_path",
             e.text_path.map(|p| match p {

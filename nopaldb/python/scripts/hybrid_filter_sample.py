@@ -6,8 +6,10 @@ sale aunque más de 1000 fragmentos de otros tenants también lo contengan.
 Antes de 0.6.13 la rama de texto pedía el top-1000 global y filtraba después:
 `hits = 0`, `text.underfilled = True`, y una capa RAG se abstenía con
 evidencia existente. `search_hybrid_explain` dice ahora por qué camino fue la
-rama de texto (`text_path`). Corpus sintético. Se ejecuta en CI (job
-python-stubs) tras `maturin develop`.
+rama de texto (`text_path`) y si la rama vectorial fue exacta (`vector_exact`,
+#218: con un índice chico el filtro se resolvía exacto pero se informaba
+`hnsw_filtered`). Corpus sintético. Se ejecuta en CI (job python-stubs) tras
+`maturin develop`.
 """
 
 import os
@@ -17,7 +19,7 @@ import nopaldb
 
 with tempfile.TemporaryDirectory() as tmp:
     g = nopaldb.Graph.open(os.path.join(tmp, "tenants"))
-    g.upsert_many(
+    upserted = g.upsert_many(
         [
             {
                 "label": "Fragment",
@@ -48,6 +50,21 @@ with tempfile.TemporaryDirectory() as tmp:
 
     # Sin filtro, el camino es el global de siempre.
     assert g.search_hybrid_explain(text="fragmento", k=8)["text_path"] == "global"
+
+    # Rama vectorial sobre un índice chico (1 permitido + 64 distractores más
+    # cercanos): el índice lo resuelve exacto y explain lo dice.
+    allowed_id = hits[0]["node_id"]
+    noise_ids = [node_id for (_outcome, node_id) in upserted[1:65]]
+    g.add_node_embeddings(
+        "m",
+        [(allowed_id, [0.0, 1.0, 0.0])] + [(nid, [1.0, 0.0, 0.0]) for nid in noise_ids],
+    )
+    e = g.search_hybrid_explain(vector=[1.0, 0.0, 0.0], model="m", k=8, label="Fragment", props={"tenant_id": "B", "case_id": "b"})
+    assert e["vector_path"] == "exact_index" and e["vector_exact"] is True, e
+    assert [h["node_id"] for h in e["hits"]] == [allowed_id], e["hits"]
+    assert e["vector"]["returned"] == 1 and e["vector"]["underfilled"], e["vector"]
+    e = g.search_hybrid_explain(vector=[1.0, 0.0, 0.0], model="m", k=8)
+    assert e["vector_path"] == "unfiltered" and e["vector_exact"] is True, e
     g.close()
 
 print("hybrid_filter_sample: ok")

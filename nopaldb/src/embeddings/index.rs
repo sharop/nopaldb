@@ -696,6 +696,17 @@ impl HnswIndex {
         Ok(results)
     }
 
+    /// `true` si la próxima búsqueda (`search_knn*`, filtrada o no) irá por
+    /// el camino exacto: scan lineal sobre todos los puntos, recall = 1.
+    ///
+    /// Es lo que la búsqueda híbrida necesita para informar `vector_exact`
+    /// (#218): no basta con `len() ≤ EXACT_SEARCH_THRESHOLD`, porque la copia
+    /// exacta se libera al cruzar el umbral y no vuelve aunque `remove`
+    /// baje el tamaño después.
+    pub fn is_exact(&self) -> bool {
+        self.uses_exact_path()
+    }
+
     /// `true` si la próxima búsqueda irá por el camino exacto (scan lineal).
     ///
     /// Requiere que el store cubra TODOS los puntos del índice: si por

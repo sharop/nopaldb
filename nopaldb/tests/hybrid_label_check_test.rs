@@ -172,6 +172,7 @@ async fn a_label_too_rare_among_the_neighbours_falls_back_to_the_allowed_set() {
     q.filter = solo_doc();
     let explain = graph.search_hybrid_explain(q).await.unwrap();
     assert_eq!(explain.vector_path, Some(VectorPath::ExactOverAllowed));
+    assert_eq!(explain.vector_exact, Some(true));
     assert_eq!(explain.allowed_set_size, Some(3));
     assert_eq!(explain.hits.len(), 3, "los tres Doc, aunque ningún vecino cercano lo sea");
 }

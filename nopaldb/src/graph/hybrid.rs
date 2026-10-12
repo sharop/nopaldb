@@ -30,7 +30,7 @@ use crate::embeddings::index::DEFAULT_EF_SEARCH;
 /// Exact-path pieces shared with the embeddings index: the same cosine
 /// distance and tie-break, so both branches of `vector_path` rank identically.
 #[cfg(feature = "embeddings-index")]
-use crate::embeddings::{rank_exact, EXACT_SEARCH_THRESHOLD};
+use crate::embeddings::{rank_exact, FilteredSearchPath, EXACT_SEARCH_THRESHOLD};
 
 /// Equality-conjunction filter over a node's label and properties.
 #[derive(Debug, Clone, Default)]
@@ -100,6 +100,12 @@ pub enum VectorPath {
     /// Small allowed set over a large index: exact cosine over just those
     /// vectors, read from storage. Recall = 1 by construction.
     ExactOverAllowed,
+    /// Filter over an index that is itself under `EXACT_SEARCH_THRESHOLD`:
+    /// the index scans every point exactly and applies the predicate, no
+    /// graph walk, no storage read. Recall = 1 by construction. Until 0.6.14
+    /// this was reported as `HnswFiltered` (#218), which told a caller that
+    /// a short result might be incomplete when it never was.
+    ExactIndex,
     /// HNSW walk with the predicate applied natively during traversal.
     /// Approximate: a short result may mean "found no more", not "there are
     /// no more".
@@ -109,6 +115,27 @@ pub enum VectorPath {
     /// carry the label. No label scan. Approximate like `HnswFiltered`; a
     /// short result means the whole index was walked.
     LabelChecked,
+}
+
+#[cfg(feature = "embeddings-index")]
+impl VectorPath {
+    /// Whether this path ranked with recall = 1, so that a short vector
+    /// branch means "there genuinely are no more allowed vectors".
+    ///
+    /// `ExactOverAllowed` and `ExactIndex` are exact by construction.
+    /// `HnswFiltered` is a graph walk and never is. `Unfiltered` and
+    /// `LabelChecked` ask the index for plain KNN, which is exact only while
+    /// the index itself reads exactly (`HnswIndex::is_exact`): that is what
+    /// `index_exact` carries. Kept here, not in the enum, because the same
+    /// variant is exact or approximate depending on the index size — a
+    /// variant per size would double the table for no information.
+    pub fn is_exact(self, index_exact: bool) -> bool {
+        match self {
+            VectorPath::ExactOverAllowed | VectorPath::ExactIndex => true,
+            VectorPath::HnswFiltered => false,
+            VectorPath::Unfiltered | VectorPath::LabelChecked => index_exact,
+        }
+    }
 }
 
 /// Which branch resolved the text path of a hybrid search (#213).
@@ -214,6 +241,11 @@ pub struct HybridExplain {
     pub vector: Option<BranchReport>,
     /// Cómo se resolvió la rama vectorial.
     pub vector_path: Option<VectorPath>,
+    /// Si la rama vectorial fue exacta (recall = 1), ya resuelto por camino y
+    /// tamaño del índice (ver [`VectorPath::is_exact`]); `None` si la query
+    /// no traía vector. Es la bandera que decide cómo leer un resultado
+    /// corto sin conocer la tabla de caminos (#218).
+    pub vector_exact: Option<bool>,
     /// Cómo se resolvió la rama de texto; `None` si la query no traía texto.
     pub text_path: Option<TextPath>,
 }
@@ -382,6 +414,7 @@ impl Graph {
         let mut vector_distances: HashMap<NodeId, f32> = HashMap::new();
         let mut vector_report: Option<BranchReport> = None;
         let mut vector_path_used: Option<VectorPath> = None;
+        let mut vector_exact_used: Option<bool> = None;
         let mut ef_used: Option<usize> = None;
         if let Some((vector, model)) = &q.vector {
             let index = self.get_or_build_embedding_index(model).await?;
@@ -411,6 +444,7 @@ impl Graph {
                 returned: hits.len(),
             });
             vector_path_used = Some(path);
+            vector_exact_used = Some(path.is_exact(index.read().unwrap_or_else(|e| e.into_inner()).is_exact()));
             ef_used = Some(ef);
             for (rank, (id, dist)) in hits.into_iter().enumerate() {
                 if vector_ranks.insert(id, rank).is_none() {
@@ -467,6 +501,7 @@ impl Graph {
             text: text_report,
             vector: vector_report,
             vector_path: vector_path_used,
+            vector_exact: vector_exact_used,
             text_path: text_path_used,
         })
     }
@@ -521,8 +556,10 @@ impl Graph {
     /// closure — so the decision lives here, not in `HnswIndex`.
     ///
     /// The exact branch is skipped when the index itself is under the threshold:
-    /// there `search_knn_filtered` is already exact over every point, without
-    /// touching storage.
+    /// there the index's filtered search is already exact over every point,
+    /// without touching storage, and it says so (`FilteredSearchPath::Exact`),
+    /// which is reported as [`VectorPath::ExactIndex`] rather than assumed
+    /// to be the graph walk (#218).
     ///
     /// The index lock is taken only around the synchronous index calls, never
     /// across an `await`: the exact branch reads storage with the lock released.
@@ -565,11 +602,15 @@ impl Graph {
             return Ok((hits, VectorPath::ExactOverAllowed));
         }
 
-        let hits = index
+        let outcome = index
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .search_knn_filtered(vector, candidates, ef, |id| set.contains(id))?;
-        Ok((hits, VectorPath::HnswFiltered))
+            .search_knn_filtered_explained(vector, candidates, ef, |id| set.contains(id))?;
+        let path = match outcome.path {
+            FilteredSearchPath::Exact => VectorPath::ExactIndex,
+            FilteredSearchPath::HnswFiltered => VectorPath::HnswFiltered,
+        };
+        Ok((outcome.hits, path))
     }
 
     /// Vector path for a label-only filter, without building the allowed set.
@@ -949,5 +990,56 @@ mod tests {
             hits.iter().all(|(id, _)| allowed.contains(id)),
             "el camino filtrado no debe devolver nada fuera del conjunto permitido"
         );
+        assert!(!path.is_exact(index.read().unwrap().is_exact()), "el recorrido HNSW no es exacto");
+    }
+
+    /// Un filtro sobre un índice que entero cabe bajo el umbral no recorre
+    /// el grafo: el índice puntúa todos los puntos y aplica el predicado.
+    /// Hasta 0.6.13 se informaba `HnswFiltered`, y un caller que se abstiene
+    /// leía un resultado definitivo como incierto (#218).
+    #[tokio::test]
+    async fn filter_over_a_small_index_is_reported_as_exact() {
+        let dir = tempfile::tempdir().unwrap();
+        let graph = Graph::open(dir.path()).await.unwrap();
+        let dim = 8;
+        let vecs = vectors(65, dim, 2026);
+        let mut allowed: HashSet<NodeId> = HashSet::new();
+        for (i, v) in vecs.iter().enumerate() {
+            let id = graph.add_node(Node::new("Frag")).await.unwrap();
+            graph.add_node_embedding(id, v.clone(), "m").await.unwrap();
+            if i % 3 == 0 {
+                allowed.insert(id);
+            }
+        }
+        let shared = graph.get_or_build_embedding_index("m").await.unwrap();
+        let index = &shared;
+        assert!(index.read().unwrap().is_exact(), "índice bajo el umbral ⇒ lectura exacta");
+
+        let (hits, path) = graph
+            .vector_path(index, &vecs[1], "m", Some(&allowed), 8, 30)
+            .await
+            .unwrap();
+        assert_eq!(path, VectorPath::ExactIndex);
+        assert!(path.is_exact(true));
+        assert_eq!(hits.len(), 8);
+        assert!(hits.iter().all(|(id, _)| allowed.contains(id)));
+
+        let (_, path) = graph.vector_path(index, &vecs[1], "m", None, 8, 30).await.unwrap();
+        assert_eq!(path, VectorPath::Unfiltered);
+        assert!(path.is_exact(true), "KNN sin filtro sobre índice chico también es exacto");
+    }
+
+    /// La bandera resume la tabla de caminos: los dos caminos exactos lo son
+    /// siempre, el recorrido HNSW nunca, y KNN plano (con o sin comprobación
+    /// de etiqueta) solo mientras el índice lee exacto.
+    #[test]
+    fn vector_exact_follows_the_path_and_the_index_size() {
+        for index_exact in [true, false] {
+            assert!(VectorPath::ExactOverAllowed.is_exact(index_exact));
+            assert!(VectorPath::ExactIndex.is_exact(index_exact));
+            assert!(!VectorPath::HnswFiltered.is_exact(index_exact));
+            assert_eq!(VectorPath::Unfiltered.is_exact(index_exact), index_exact);
+            assert_eq!(VectorPath::LabelChecked.is_exact(index_exact), index_exact);
+        }
     }
 }

@@ -217,13 +217,23 @@ Each branch reports `{requested, returned, underfilled}`. Underfill is the
 question a short result cannot answer on its own. For the text branch,
 `text_path` (0.6.13) names the path taken and every one of them is complete
 under a filter — a short text branch means no more allowed documents match
-the text. For the vector branch, `vector_path` is what decides how to read it:
+the text. For the vector branch, read `vector_exact` (0.6.14, #218): `True`
+means the branch had recall = 1, so a short result means there genuinely are
+no more allowed vectors; `False` means the HNSW walk found no more, which is
+not the same. It is resolved from `vector_path` and the index size, so the
+caller does not need the table below, which is there to say *why*:
 
-| `vector_path` | Meaning of a short result |
-|---|---|
-| `unfiltered` / `exact_over_allowed` | exact: there genuinely are no more |
-| `hnsw_filtered` | approximate: no more were *found*, which is not the same |
-| `label_checked` | the escalation walked the whole index: there are no more |
+| `vector_path` | What ran | `vector_exact` |
+|---|---|---|
+| `exact_over_allowed` | small allowed set over a large index: exact cosine over just those vectors | `True` |
+| `exact_index` | filter over an index of at most 1024 points: the index scans every point and applies the predicate | `True` |
+| `hnsw_filtered` | HNSW walk with the predicate applied during traversal, `ef_search` escalated up to 4096 | `False` |
+| `unfiltered` / `label_checked` | plain KNN on the index (the label checked on the candidates in rank order) | `True` while the index has at most 1024 points and reads exactly, else `False` |
+
+Until 0.6.13, a filter over a small index was reported as `hnsw_filtered`
+although the index had scanned it exactly, and `unfiltered` was documented as
+exact at any size. A caller abstaining on a short result would read a
+definitive answer as an uncertain one; the flag closes that gap.
 
 `search_hybrid` is the same computation with the trace dropped — it delegates
 to the explaining version rather than duplicating it, so asking for the
