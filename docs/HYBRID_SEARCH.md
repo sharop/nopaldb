@@ -118,12 +118,16 @@ How the set is built, and what `search_hybrid_explain` reports as
 | none | none | the whole graph | `unrestricted` |
 | none | label only | the label, checked on each path's candidates (no set, `size = None`) | `filter` |
 | none | with props | property index ∩ …, label confirmed on the survivors | `filter` |
-| ids | none | the ids as given, unread (`size = caller_size`) | `ids` |
+| ids | none | the ids as given, unread: `size = caller_size` counts the distinct ids passed, not nodes confirmed to exist or to carry an embedding, so fewer hits than `size` here is not a filter effect | `ids` |
 | ids | any | the ids are the seed of the same pipeline: property lookups intersect into them, the label is confirmed on what survives (`size ≤ caller_size`) | `ids_and_filter` |
 
-`size` is the set both paths ran in. A hit that is missing with
+`size` is the set both paths ran in, and `caller_size` the distinct ids the
+caller passed (duplicates count once). A hit that is missing with
 `size < caller_size` was left out when the set was built — by the filter — not
 outranked; that is the question `allowed_set_size` alone could not answer.
+Only a filter reads the ids: without one, an id that does not exist still
+counts in `size` and simply never scores, so to confirm membership of a
+caller set without a filter, pass `label` as well.
 
 Cost is proportional to the set, not to the corpus. Measured on the
 `retrieval` bench (100k chunks, 64 dims, release, k = 10) with a set of 65

@@ -285,11 +285,16 @@ pub enum CandidateSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CandidateSetReport {
     pub source: CandidateSource,
-    /// Size of the set the caller passed; `None` without one.
+    /// Distinct ids the caller passed (duplicates count once); `None`
+    /// without a caller set.
     pub caller_size: Option<usize>,
     /// Size of the set both paths ran in, after the filter; `None` when no
     /// set was built (unrestricted, or a label-only filter resolved by
     /// checking the label on the candidates). Equal to `allowed_set_size`.
+    /// With caller ids and no filter the ids are taken unread, so `size`
+    /// counts distinct ids as passed, not nodes confirmed to exist or to
+    /// carry an embedding: fewer hits than `size` there is not a filter
+    /// effect. Only a filter confirms membership.
     pub size: Option<usize>,
 }
 

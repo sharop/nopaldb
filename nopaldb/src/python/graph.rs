@@ -2043,7 +2043,9 @@ impl PyGraph {
     ///         "ids_and_filter"), how many ids the caller passed, and how
     ///         many both branches ran in after the filter (#214). A hit
     ///         missing with `size` < `caller_size` was left out by the
-    ///         filter, not outranked.
+    ///         filter, not outranked. `caller_size` counts distinct ids;
+    ///         without a filter the ids are taken unread, so `size` does
+    ///         not confirm that the nodes exist or carry an embedding.
     ///
     /// Example:
     ///     >>> e = graph.search_hybrid_explain(text="cactus", k=5)
