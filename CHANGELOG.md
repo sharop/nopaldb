@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.13] - unreleased
+## [0.6.13] - 2026-10-12
 
 Búsqueda híbrida con filtros selectivos. La rama de texto de `search_hybrid`
 ya no pierde documentos permitidos detrás del top-1000 global (1 permitido
