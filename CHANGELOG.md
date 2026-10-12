@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+`search_hybrid_explain` dice si la rama vectorial fue exacta (`vector_exact`),
+y ya no informa `hnsw_filtered` cuando un filtro sobre un índice chico se
+resolvió con un scan exacto.
+
+### Fixed
+- **`vector_path` informaba `hnsw_filtered` en índices de hasta 1024 puntos
+  aunque el camino era exacto** (#218). Con un filtro por propiedades y un
+  índice entero bajo el umbral exacto, `search_hybrid` deja que el índice
+  resuelva el filtro, y el índice puntúa todos los puntos y aplica el
+  predicado, sin recorrer el grafo. Pero el híbrido etiquetaba el resultado
+  como recorrido HNSW sin mirar qué camino había corrido, así que un caller
+  que se abstiene con fundamento leía un `underfilled` definitivo como
+  "quizá hay más" en tests, laboratorios y despliegues chicos. Ahora
+  propaga el camino que el índice ya informaba (`exact_index`). Sin cambio
+  de resultados ni de coste. Reportado por un integrador con un índice de
+  65 vectores.
+- **La tabla de explain en `HYBRID_SEARCH.md` listaba `unfiltered` como
+  exacto**; lo es solo mientras el índice lee exacto (≤ 1024 puntos), por
+  encima es KNN aproximado por HNSW. Corregido con la fila por tamaño.
+
+### Added
+- **`vector_exact` en `search_hybrid_explain`** (#218): `True` si la rama
+  vectorial tuvo recall = 1, resuelto por camino y tamaño del índice, de
+  modo que el caller decide cómo leer un resultado corto sin conocer la
+  tabla de caminos; `None` sin rama vectorial. En Rust
+  `HybridExplain::vector_exact` y `VectorPath::is_exact(index_exact)`;
+  `HnswIndex::is_exact` expone si el índice lee exacto. Nueva variante
+  `VectorPath::ExactIndex` (`"exact_index"` en Python).
+  `hybrid_filter_sample.py` lo comprueba con el caso 1 permitido + 64
+  distractores.
+
 ## [0.6.13] - 2026-10-12
 
 Búsqueda híbrida con filtros selectivos. La rama de texto de `search_hybrid`

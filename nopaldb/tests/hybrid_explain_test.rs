@@ -207,8 +207,10 @@ async fn filter_and_vector_path_are_visible() {
     let explain = graph.search_hybrid_explain(q).await.unwrap();
 
     assert_eq!(explain.allowed_set_size, Some(1), "un solo Doc se llama nopal");
-    // Índice chico ⇒ el camino filtrado del índice es exacto de por sí.
-    assert_eq!(explain.vector_path, Some(VectorPath::HnswFiltered));
+    // Índice chico ⇒ el camino filtrado del índice es exacto de por sí, y
+    // se informa como tal (#218: hasta 0.6.13 decía `HnswFiltered`).
+    assert_eq!(explain.vector_path, Some(VectorPath::ExactIndex));
+    assert_eq!(explain.vector_exact, Some(true));
 
     let mut solo_etiqueta = query_ambas();
     solo_etiqueta.filter = Some(HybridFilter {
@@ -218,9 +220,55 @@ async fn filter_and_vector_path_are_visible() {
     let explain = graph.search_hybrid_explain(solo_etiqueta).await.unwrap();
     assert_eq!(explain.allowed_set_size, None, "solo etiqueta: sin conjunto, sin scan");
     assert_eq!(explain.vector_path, Some(VectorPath::LabelChecked));
+    assert_eq!(explain.vector_exact, Some(true), "KNN plano sobre índice chico es exacto");
 
     let sin_filtro = graph.search_hybrid_explain(query_ambas()).await.unwrap();
     assert_eq!(sin_filtro.vector_path, Some(VectorPath::Unfiltered));
+    assert_eq!(sin_filtro.vector_exact, Some(true));
+
+    let mut solo_texto = query_ambas();
+    solo_texto.vector = None;
+    let sin_vector = graph.search_hybrid_explain(solo_texto).await.unwrap();
+    assert_eq!(sin_vector.vector_path, None);
+    assert_eq!(sin_vector.vector_exact, None, "sin rama vectorial no hay exactitud que informar");
+}
+
+/// Por encima del umbral exacto del índice (1024 puntos) el KNN plano es
+/// HNSW y `vector_exact` lo dice; un filtro que deja pocos permitidos vuelve
+/// al camino exacto sobre el conjunto. La misma consulta cambia de exactitud
+/// con el tamaño del índice, y eso es lo que la bandera resuelve por el
+/// caller (#218).
+#[tokio::test]
+async fn vector_exact_tracks_the_index_size() {
+    let graph = Graph::in_memory().await.unwrap();
+    let mut allowed = Vec::new();
+    for i in 0..1100u32 {
+        let angle = i as f32 * 0.005;
+        let node = Node::new("Doc").with_property("tenant", s(if i % 100 == 0 { "B" } else { "A" }));
+        let id = graph.add_node(node).await.unwrap();
+        graph.add_node_embedding(id, vec![angle.cos(), angle.sin(), 0.0], "m").await.unwrap();
+        if i % 100 == 0 {
+            allowed.push(id);
+        }
+    }
+
+    let mut q = HybridQuery::new();
+    q.vector = Some((vec![1.0, 0.0, 0.0], "m".into()));
+    q.k = 5;
+    let plain = graph.search_hybrid_explain(q.clone()).await.unwrap();
+    assert_eq!(plain.vector_path, Some(VectorPath::Unfiltered));
+    assert_eq!(plain.vector_exact, Some(false), "KNN plano sobre índice grande es HNSW");
+
+    q.filter = Some(HybridFilter {
+        label: Some("Doc".into()),
+        props: vec![("tenant".into(), s("B"))],
+    });
+    let filtered = graph.search_hybrid_explain(q).await.unwrap();
+    assert_eq!(filtered.allowed_set_size, Some(allowed.len()));
+    assert_eq!(filtered.vector_path, Some(VectorPath::ExactOverAllowed));
+    assert_eq!(filtered.vector_exact, Some(true));
+    assert_eq!(filtered.hits.len(), 5);
+    assert!(filtered.hits.iter().all(|h| allowed.contains(&h.node_id)));
 }
 
 /// Underfill: pedir más de lo que existe se reporta como tal en cada rama,
