@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **`search_hybrid` ya no pierde documentos permitidos detrás del top-1000
+  global** (#213). Con un filtro por propiedades, la rama de texto pedía a
+  tantivy el top-N global por BM25 (escalando hasta 1000) y filtraba
+  después, tratando el tope como "no hay más": 1 fragmento permitido entre
+  1024 que contienen el término devolvía 0 hits con `underfilled = true`,
+  y una capa RAG se abstenía con evidencia existente. Es el diseño que la
+  rama vectorial descartó en 0.5.5. Ahora la rama responde "top-k del
+  texto DENTRO del conjunto permitido": un conjunto de hasta 512 nodos se
+  puntúa entero en tantivy sin consulta global (`TermSetQuery` sobre el
+  `node_id` almacenado, AND con el texto, boost 0 ⇒ mismo BM25 que el
+  camino global); uno mayor prueba el top-N global escalando y, si agota el
+  tope corto, se puntúa entero por trozos. La rama es completa a
+  cualquier selectividad y `underfilled` vuelve a significar "no hay más
+  permitidos". Las consultas que ya llenaban sus candidatos devuelven lo
+  mismo (documentos, orden y scores); las que salían cortas salen
+  completas, y en texto+vector un documento que solo encontraba la rama
+  vectorial lleva ahora también su rango de texto, así que puede subir en
+  la fusión. Medido (`text_filter`, 100k documentos que contienen el
+  término, release): term set 8 ids 0.09 ms, 128 0.68 ms, 512 2.2 ms, 1000
+  3.8 ms; el escalado que sustituye ~2 ms. Nuevo `Index::query_scored_in` /
+  `IndexManager::query_scored_in`; `tests/hybrid_selective_filter_test.rs`;
+  `hybrid_filter_sample.py` en CI. Reportado por un integrador en 0.6.9 y
+  0.6.12.
+- **El conjunto permitido de un filtro con propiedades ya no lee la
+  etiqueta entera** (#213). `search_hybrid` con `label` + `props` construía
+  el conjunto leyendo y deserializando TODOS los nodos de la etiqueta para
+  sacar sus ids e intersectarlos con las propiedades: 197 ms por consulta
+  con una etiqueta de 100k nodos, para un filtro que deja 20. Ahora parte
+  del índice de propiedades (solo ids) y confirma la etiqueta hidratando
+  solo los candidatos. Mismo conjunto, mismo resultado. Medido en
+  `retrieval` a 100k chunks (release): solo texto con filtro que deja 20
+  chunks 193 → 0.23 ms (term set directo), con filtro que deja el 1 %
+  (1000 chunks: escalado global y term set por trozos) 207 → 11.4 ms;
+  híbrida texto+vector 194 → 2.4 ms y 206 → 17.5 ms. Las consultas sin
+  filtro o con solo etiqueta no se mueven (0.60 / 0.87 / 1.05 ms). Con un
+  término raro (1 % de los documentos) el camino global es más barato que
+  el term set en conjuntos de 300–512 (0.56 vs 2.3 ms): el planificador
+  por coste con frecuencia del término queda para #214.
+
+### Added
+- **`text_path` en `search_hybrid_explain`** (#213): `global` |
+  `global_label_checked` | `term_set_over_allowed` | `global_then_term_set`,
+  el equivalente de `vector_path` para la rama de texto (`TextPath` en
+  Rust, clave `"text_path"` en Python). Constante pública
+  `graph::hybrid::TEXT_EXACT_THRESHOLD` (512). Bench `text_filter` (ambos
+  caminos por tamaño del conjunto) y filas `*_props_doc` / `*_props_tenant`
+  en `retrieval`.
+
+---
+
 ## [0.6.12] - 2026-10-10
 
 Índice de etiquetas y memoria del HNSW. Buscar nodos por etiqueta ya no

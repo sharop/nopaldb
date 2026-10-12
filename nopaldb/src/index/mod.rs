@@ -101,6 +101,27 @@ pub trait Index: Send + Sync {
         Ok(hits)
     }
 
+    /// Like [`Index::query_scored_top`], but ranking **only** the nodes in
+    /// `allowed` (#213). A selective filter is applied inside the engine, so
+    /// the result is complete for any filter cardinality instead of being
+    /// whatever of the allowed set happened to fall inside a global top-N.
+    ///
+    /// The full-text index overrides it with a native set query; the default
+    /// filters the scored hits, which is correct but bounded by the cap of
+    /// `query_scored` — the non-scoring indexes never go through the hybrid
+    /// text branch anyway.
+    fn query_scored_in(
+        &self,
+        query: &IndexQuery,
+        allowed: &std::collections::HashSet<NodeId>,
+        limit: usize,
+    ) -> Result<Vec<(NodeId, Option<f32>)>> {
+        let mut hits = self.query_scored(query)?;
+        hits.retain(|(id, _)| allowed.contains(id));
+        hits.truncate(limit);
+        Ok(hits)
+    }
+
     /// Clear all entries
     fn clear(&mut self) -> Result<()>;
 
@@ -711,6 +732,28 @@ impl IndexManager {
 
         if let Some(index) = indexes.get(index_name) {
             index.query_scored(query)
+        } else {
+            Err(crate::error::NopalError::index_error(format!(
+                "Index not found: {}",
+                index_name
+            )))
+        }
+    }
+
+    /// Como [`IndexManager::query_scored_top`], puntuando solo los nodos de
+    /// `allowed` (ver [`Index::query_scored_in`], #213).
+    pub async fn query_scored_in(
+        &self,
+        index_name: &str,
+        query: &IndexQuery,
+        allowed: &std::collections::HashSet<NodeId>,
+        limit: usize,
+    ) -> Result<Vec<(NodeId, Option<f32>)>> {
+        self.flush_before_read().await?;
+        let indexes = self.indexes.read().await;
+
+        if let Some(index) = indexes.get(index_name) {
+            index.query_scored_in(query, allowed, limit)
         } else {
             Err(crate::error::NopalError::index_error(format!(
                 "Index not found: {}",

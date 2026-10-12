@@ -2022,6 +2022,10 @@ impl PyGraph {
     ///         approximate, which is what decides how to read a short
     ///         result. "label_checked" is the label-only filter resolved
     ///         without a label scan (`allowed_set_size` is then None).
+    ///       - `text_path`: "global" | "global_label_checked" |
+    ///         "term_set_over_allowed" | "global_then_term_set". With a
+    ///         filter every one of them is complete: a short text branch
+    ///         means no more allowed documents match the text (#213).
     ///
     /// Example:
     ///     >>> e = graph.search_hybrid_explain(text="cactus", k=5)
@@ -2090,6 +2094,15 @@ impl PyGraph {
                 crate::VectorPath::ExactOverAllowed => "exact_over_allowed",
                 crate::VectorPath::HnswFiltered => "hnsw_filtered",
                 crate::VectorPath::LabelChecked => "label_checked",
+            }),
+        )?;
+        out.set_item(
+            "text_path",
+            e.text_path.map(|p| match p {
+                crate::TextPath::Global => "global",
+                crate::TextPath::GlobalLabelChecked => "global_label_checked",
+                crate::TextPath::TermSetOverAllowed => "term_set_over_allowed",
+                crate::TextPath::GlobalThenTermSet => "global_then_term_set",
             }),
         )?;
         Ok(out.unbind())

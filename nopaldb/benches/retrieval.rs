@@ -6,7 +6,8 @@
 //! tardaba 0.2 ms y traer un hit por id vía NQL 327 ms). Grupos:
 //!
 //! - `search`: híbrida k=10 sin filtro y con filtro de etiqueta; solo texto
-//!   k=10 (aísla la rama full-text); KNN k=10
+//!   k=10 (aísla la rama full-text); solo texto e híbrida con filtro de
+//!   propiedades selectivo (`doc` = 20 chunks, `tenant` = 1 %, #213); KNN k=10
 //! - `hydrate`: `get_nodes` de 10 ids
 //! - `neighborhood`: 1 y 2 saltos desde 10 semillas; 2 saltos recortado a
 //!   50 nodos por BFS y por Personalized PageRank (#176)
@@ -107,6 +108,8 @@ async fn build(n_chunks: usize) -> Fixture {
             let words: Vec<&str> = (0..8).map(|_| VOCAB[(rng.next_u64() % VOCAB.len() as u64) as usize]).collect();
             let node = Node::new("Chunk")
                 .with_property("doc", PropertyValue::String(format!("doc-{}", i / 20)))
+                // 100 tenants ⇒ un filtro por tenant deja el 1 % de los chunks (#213).
+                .with_property("tenant", PropertyValue::String(format!("tenant-{}", i % 100)))
                 .with_property("text", PropertyValue::String(format!("{} entity-{}", words.join(" "), i % n_ent)));
             chunks.push(node.id);
             vectors.push(rng.vector());
@@ -187,6 +190,58 @@ fn bench_retrieval(c: &mut Criterion) {
             black_box(fx.graph.search_hybrid(q).await.expect("text"))
         })
     });
+    // Filtro selectivo por propiedades (#213): `doc` deja 20 chunks (term set
+    // directo), `tenant` deja el 1 % (el top-N global se agota corto y cae al
+    // term set por trozos). Antes de #213 ambos devolvían menos de lo que hay.
+    for (name, prop, value) in [("doc", "doc", "doc-7"), ("tenant", "tenant", "tenant-7")] {
+        let filter = HybridFilter {
+            label: Some("Chunk".into()),
+            props: vec![(prop.into(), PropertyValue::String(value.into()))],
+        };
+        g.bench_with_input(BenchmarkId::new(format!("text_only_k10_props_{name}"), n), &n, |b, _| {
+            b.to_async(&rt).iter(|| async {
+                let mut q = hybrid(&fx, None);
+                q.vector = None;
+                q.filter = Some(filter.clone());
+                black_box(fx.graph.search_hybrid(q).await.expect("text"))
+            })
+        });
+        g.bench_with_input(BenchmarkId::new(format!("hybrid_k10_props_{name}"), n), &n, |b, _| {
+            b.to_async(&rt).iter(|| async {
+                let mut q = hybrid(&fx, None);
+                q.filter = Some(filter.clone());
+                black_box(fx.graph.search_hybrid(q).await.expect("hybrid"))
+            })
+        });
+    }
+    g.finish();
+
+    // Lo que cuesta construir el conjunto permitido de un filtro con
+    // propiedades (#213): la etiqueta entera por `label_idx` y cada
+    // propiedad por `prop_idx`.
+    let mut g = c.benchmark_group("filter");
+    g.sample_size(20).measurement_time(Duration::from_secs(5));
+    g.bench_with_input(BenchmarkId::new("label_chunk_100pct", n), &n, |b, _| {
+        b.to_async(&rt).iter(|| async { black_box(fx.graph.get_nodes_by_label("Chunk").await.expect("label").len()) })
+    });
+    for (name, value) in [("doc_20", "doc-7"), ("tenant_1pct", "tenant-7")] {
+        let prop = name.split('_').next().unwrap();
+        g.bench_with_input(BenchmarkId::new(format!("prop_{name}"), n), &n, |b, _| {
+            b.to_async(&rt).iter(|| async {
+                black_box(
+                    fx.graph
+                        .get_all_nodes_by_property(prop, &PropertyValue::String(value.into()))
+                        .await
+                        .expect("prop")
+                        .len(),
+                )
+            })
+        });
+    }
+    g.finish();
+
+    let mut g = c.benchmark_group("search");
+    g.sample_size(20).measurement_time(Duration::from_secs(10));
     g.bench_with_input(BenchmarkId::new("knn_k10", n), &n, |b, _| {
         b.to_async(&rt).iter(|| async {
             let idx = fx.graph.get_or_build_embedding_index(MODEL).await.expect("index");

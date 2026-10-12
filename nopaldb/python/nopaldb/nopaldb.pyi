@@ -284,8 +284,10 @@ class Graph:
         hydrate: bool = False,
     ) -> list[dict[str, Any]]: ...
     # Misma búsqueda que search_hybrid, más la traza de por qué cada hit
-    # quedó donde quedó: scores crudos por rama, configuración efectiva y
-    # underfill. Ver docs/HYBRID_SEARCH.md.
+    # quedó donde quedó: scores crudos por rama, configuración efectiva,
+    # underfill y el camino de cada rama (`vector_path`, `text_path`; con
+    # filtro, la rama de texto es completa en todos sus caminos, #213).
+    # Ver docs/HYBRID_SEARCH.md.
     def search_hybrid_explain(
         self,
         text: Optional[str] = None,

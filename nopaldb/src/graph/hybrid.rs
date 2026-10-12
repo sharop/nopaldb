@@ -111,11 +111,39 @@ pub enum VectorPath {
     LabelChecked,
 }
 
+/// Which branch resolved the text path of a hybrid search (#213).
+///
+/// Like [`VectorPath`], what matters to a caller is *recall*: with a filter,
+/// every variant below is complete — a short text branch means "no more
+/// allowed documents match the text", never "the global top-N ran out before
+/// reaching them".
+#[cfg(feature = "hybrid")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextPath {
+    /// No filter: global top-N by BM25.
+    Global,
+    /// Label-only filter: global top-N, label checked on the hits in rank
+    /// order, fetch escalated ×4; enough hits carried the label before the
+    /// cap. The ranks are the ones the allowed set would give.
+    GlobalLabelChecked,
+    /// Allowed set of at most [`TEXT_EXACT_THRESHOLD`] nodes: tantivy scored
+    /// only the allowed nodes (`query_scored_in`), no global query at all.
+    /// Complete by construction, cost proportional to the set and
+    /// independent of how many documents match the text.
+    TermSetOverAllowed,
+    /// Large allowed set, or a label too rare among the matches: the global
+    /// escalation reached its cap still short, so the allowed set was
+    /// scored in chunks of [`TEXT_EXACT_THRESHOLD`] and merged. Complete;
+    /// the expensive case, paid only when the cheap one failed.
+    GlobalThenTermSet,
+}
+
 /// Qué pidió y qué obtuvo una de las dos ramas.
 ///
 /// `returned < requested` es la señal de underfill. En la rama de texto
-/// significa que el índice no tenía más coincidencias; en la vectorial
-/// depende del camino (ver [`VectorPath`]).
+/// significa que el índice no tenía más coincidencias — con filtro, que no
+/// hay más permitidos que coincidan (#213, ver [`TextPath`]); en la
+/// vectorial depende del camino (ver [`VectorPath`]).
 #[cfg(feature = "hybrid")]
 #[derive(Debug, Clone, Copy)]
 pub struct BranchReport {
@@ -186,6 +214,8 @@ pub struct HybridExplain {
     pub vector: Option<BranchReport>,
     /// Cómo se resolvió la rama vectorial.
     pub vector_path: Option<VectorPath>,
+    /// Cómo se resolvió la rama de texto; `None` si la query no traía texto.
+    pub text_path: Option<TextPath>,
 }
 
 /// One fused result. `score` is the RRF score (ordering only, not a probability).
@@ -263,34 +293,73 @@ impl Graph {
         let mut text_scores: HashMap<NodeId, f32> = HashMap::new();
         let mut text_index_used: Option<String> = None;
         let mut text_report: Option<BranchReport> = None;
+        let mut text_path_used: Option<TextPath> = None;
         if let Some(text) = &q.text {
             let index_name = self.resolve_fulltext_index(q.text_index.as_deref(), q.filter.as_ref()).await?;
-            // Pedir a tantivy solo lo que la rama usa (#174): `candidates`, y
-            // ×4 mientras el filtro deje menos, hasta el tope de siempre
+            let fq = IndexQuery::FullText(text.clone());
+            // Pedir a tantivy solo lo que la rama usa (#174): `candidates`,
+            // y ×4 mientras el filtro deje menos, hasta el tope de siempre
             // (1000, o `candidates` si es mayor). Antes pedía 1000 fijos y
             // leía el `node_id` de cada uno: 1.9 ms de los 2.2 ms de una
             // híbrida a 100k chunks.
+            //
+            // El tope NO es "no hay más" (#213): con un filtro selectivo los
+            // permitidos pueden estar detrás de más de `cap` ajenos por BM25.
+            // La pregunta de la rama es "top-k del texto DENTRO del conjunto
+            // permitido", y el top-N global es solo una forma oportunista de
+            // calcularlo: un conjunto chico se puntúa entero en tantivy
+            // directamente (`query_scored_in`, coste proporcional al conjunto
+            // e independiente del corpus); uno grande prueba el camino global
+            // y, si agota el tope corto, se puntúa entero por trozos.
+            //
+            // Se descartó probar siempre primero el top-N global: su coste
+            // crece con los documentos que contienen el término (0.25 ms a
+            // 100k, ~2.5 ms a 1M), así que para un conjunto chico en un
+            // corpus grande sería la parte cara de la consulta, y para un
+            // corpus chico el ahorro es de décimas de milisegundo.
             let cap = crate::index::fulltext::QUERY_DEFAULT_LIMIT.max(candidates);
             let mut limit = candidates.clamp(1, cap);
-            let kept = loop {
-                let scored = self
-                    .index_manager
-                    .query_scored_top(&index_name, &IndexQuery::FullText(text.clone()), limit)
-                    .await?;
-                let exhausted = scored.len() < limit || limit >= cap;
-                let scored = match &label_only {
-                    Some(label) => self.keep_label_in_rank_order(scored, label, candidates).await?,
-                    None => scored,
-                };
-                let kept: Vec<(NodeId, Option<f32>)> = scored
-                    .into_iter()
-                    .filter(|(id, _)| allowed.as_ref().is_none_or(|s| s.contains(id)))
-                    .take(candidates)
-                    .collect();
-                if kept.len() >= candidates || exhausted {
-                    break kept;
+            let small_set = allowed.as_ref().filter(|s| s.len() <= TEXT_EXACT_THRESHOLD);
+            let (kept, path) = if let Some(set) = small_set {
+                (
+                    self.text_term_set_in_chunks(&index_name, &fq, set, candidates).await?,
+                    TextPath::TermSetOverAllowed,
+                )
+            } else {
+                loop {
+                    let scored = self.index_manager.query_scored_top(&index_name, &fq, limit).await?;
+                    // Menos de lo pedido = el índice no tiene más coincidencias.
+                    let no_more = scored.len() < limit;
+                    let at_cap = limit >= cap;
+                    let scored = match &label_only {
+                        Some(label) => self.keep_label_in_rank_order(scored, label, candidates).await?,
+                        None => scored,
+                    };
+                    let kept: Vec<(NodeId, Option<f32>)> = scored
+                        .into_iter()
+                        .filter(|(id, _)| allowed.as_ref().is_none_or(|s| s.contains(id)))
+                        .take(candidates)
+                        .collect();
+                    let filtered = allowed.is_some() || label_only.is_some();
+                    if kept.len() >= candidates || no_more || !filtered {
+                        let path = if label_only.is_some() { TextPath::GlobalLabelChecked } else { TextPath::Global };
+                        break (kept, path);
+                    }
+                    if at_cap {
+                        // Con filtro de solo etiqueta el conjunto se construye
+                        // ahora (índice `label_idx`, #207); la rama vectorial lo
+                        // reutiliza.
+                        if allowed.is_none() {
+                            allowed = self.hybrid_allowed_set(q.filter.as_ref()).await?;
+                        }
+                        let set = allowed.as_ref().expect("filtro ⇒ conjunto permitido");
+                        break (
+                            self.text_term_set_in_chunks(&index_name, &fq, set, candidates).await?,
+                            TextPath::GlobalThenTermSet,
+                        );
+                    }
+                    limit = limit.saturating_mul(4).min(cap);
                 }
-                limit = limit.saturating_mul(4).min(cap);
             };
             for (id, score) in kept {
                 let n = text_ranks.len();
@@ -305,6 +374,7 @@ impl Graph {
                 returned: text_ranks.len(),
             });
             text_index_used = Some(index_name);
+            text_path_used = Some(path);
         }
 
         // 3. Vector path → node ids ranked by distance.
@@ -397,7 +467,43 @@ impl Graph {
             text: text_report,
             vector: vector_report,
             vector_path: vector_path_used,
+            text_path: text_path_used,
         })
+    }
+
+    /// Top `candidates` by BM25 among `allowed`, scoring the set in chunks of
+    /// [`TEXT_EXACT_THRESHOLD`] ids and merging (#213). Scores are comparable
+    /// across chunks (same query, index-wide IDF), so the best `candidates`
+    /// of the union of per-chunk tops is the best `candidates` of the whole
+    /// set. Chunking bounds the size of each tantivy term set; the cost is
+    /// still proportional to `allowed.len()`.
+    ///
+    /// Ties keep tantivy's order: with one chunk (the usual case) the hits
+    /// are returned as collected, so a document ranks exactly where the
+    /// global top-N would rank it; across chunks the merge is a stable sort
+    /// by score over chunks of sorted ids, deterministic for a given set.
+    #[cfg(feature = "hybrid")]
+    async fn text_term_set_in_chunks(
+        &self,
+        index_name: &str,
+        query: &IndexQuery,
+        allowed: &HashSet<NodeId>,
+        candidates: usize,
+    ) -> Result<Vec<(NodeId, Option<f32>)>> {
+        let chunk_size = TEXT_EXACT_THRESHOLD.max(1);
+        if allowed.len() <= chunk_size {
+            return self.index_manager.query_scored_in(index_name, query, allowed, candidates).await;
+        }
+        let mut ids: Vec<NodeId> = allowed.iter().copied().collect();
+        ids.sort_unstable();
+        let mut merged: Vec<(NodeId, Option<f32>)> = Vec::new();
+        for chunk in ids.chunks(chunk_size) {
+            let set: HashSet<NodeId> = chunk.iter().copied().collect();
+            merged.extend(self.index_manager.query_scored_in(index_name, query, &set, candidates).await?);
+        }
+        merged.sort_by(|a, b| b.1.unwrap_or(0.0).total_cmp(&a.1.unwrap_or(0.0)));
+        merged.truncate(candidates);
+        Ok(merged)
     }
 
     /// Run the vector path, choosing between an exact scan over the allowed set
@@ -578,6 +684,13 @@ impl Graph {
 
     /// Build the allowed NodeId set from a label/property filter. `None` means no
     /// restriction (empty filter or no filter). An empty set means nothing matches.
+    ///
+    /// With properties, the set starts from the property index (one lookup
+    /// per equality, ids only) and the label is then *confirmed* on those
+    /// candidates by reading them. Starting from the label instead meant
+    /// reading and deserializing every node of the label to get its ids:
+    /// 190 ms for a label of 100k nodes, for a filter that leaves 20 (#213).
+    /// Label alone still reads the label (the only source there is).
     #[cfg(feature = "embeddings-index")]
     async fn hybrid_allowed_set(
         &self,
@@ -589,15 +702,6 @@ impl Graph {
         }
         let mut set: Option<HashSet<NodeId>> = None;
 
-        if let Some(label) = &filter.label {
-            let by_label: HashSet<NodeId> = self
-                .get_nodes_by_label(label)
-                .await?
-                .into_iter()
-                .map(|n| n.id)
-                .collect();
-            set = Some(intersect(set, by_label));
-        }
         for (prop, val) in &filter.props {
             let by_prop: HashSet<NodeId> = self
                 .get_all_nodes_by_property(prop, val)
@@ -605,6 +709,33 @@ impl Graph {
                 .into_iter()
                 .collect();
             set = Some(intersect(set, by_prop));
+            if set.as_ref().is_some_and(|s| s.is_empty()) {
+                return Ok(set);
+            }
+        }
+
+        if let Some(label) = &filter.label {
+            set = Some(match set {
+                Some(candidates) => {
+                    let ids: Vec<NodeId> = candidates.into_iter().collect();
+                    let mut confirmed = HashSet::with_capacity(ids.len());
+                    for chunk in ids.chunks(1024) {
+                        let nodes = self.get_nodes(chunk).await?;
+                        for (id, node) in chunk.iter().zip(nodes) {
+                            if node.is_some_and(|n| n.label == *label) {
+                                confirmed.insert(*id);
+                            }
+                        }
+                    }
+                    confirmed
+                }
+                None => self
+                    .get_nodes_by_label(label)
+                    .await?
+                    .into_iter()
+                    .map(|n| n.id)
+                    .collect(),
+            });
         }
         Ok(set)
     }
@@ -645,6 +776,21 @@ impl Graph {
 /// the allowed set. Same bound as the filtered HNSW escalation.
 #[cfg(feature = "embeddings-index")]
 const LABEL_CHECK_MAX_FETCH: usize = crate::embeddings::MAX_FILTERED_EF_SEARCH;
+
+/// Allowed sets up to this size are scored directly as one term set
+/// ([`TextPath::TermSetOverAllowed`]); larger ones try the global top-N,
+/// escalating, and fall back to the term set in chunks of this size only if
+/// the cap runs out short ([`TextPath::GlobalThenTermSet`]).
+///
+/// Correctness never depends on it — the fallback is complete at any size —
+/// only cost does. Measured on the `text_filter` bench (100k documents all
+/// matching the query, release, #213): a term set costs ~4.3 µs per allowed
+/// id (8 → 0.09 ms, 128 → 0.68 ms, 256 → 1.25 ms, 512 → 2.2 ms, 1000 →
+/// 3.8 ms, 4000 → 12 ms), the escalation it replaces (128 → 512 → 1000)
+/// ~2 ms. 512 is where the two meet; below it the term set is both complete
+/// and cheaper.
+#[cfg(feature = "hybrid")]
+pub const TEXT_EXACT_THRESHOLD: usize = 512;
 
 /// Intersect an optional running set with a new set.
 #[cfg(feature = "embeddings-index")]

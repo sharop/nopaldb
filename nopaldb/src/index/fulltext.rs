@@ -8,11 +8,12 @@ use crate::types::{NodeId, PropertyValue};
 use crate::index::{Index, IndexQuery};
 use tantivy::*;
 use tantivy::schema::*;
-use tantivy::query::QueryParser;
+use tantivy::query::{BooleanQuery, BoostQuery, Occur, Query, QueryParser, TermSetQuery};
 use tantivy::collector::TopDocs;
 use tantivy::tokenizer::{
     AsciiFoldingFilter, Language, LowerCaser, RemoveLongFilter, SimpleTokenizer, Stemmer, StopWordFilter, TextAnalyzer,
 };
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// File next to the tantivy directory that records the index's analyzer.
@@ -173,6 +174,45 @@ impl FullTextIndex {
     }
 }
 
+impl FullTextIndex {
+    /// Parse the text of a `FullText` query against the content field.
+    fn parse_text_query(&self, query: &IndexQuery) -> Result<Box<dyn Query>> {
+        let query_text = match query {
+            IndexQuery::FullText(text) => text,
+            _ => return Err(NopalError::index_error(
+                "Full-text index only supports full-text queries".to_string()
+            )),
+        };
+        let query_parser = QueryParser::for_index(&self.index, vec![self.content_field]);
+        query_parser.parse_query(query_text)
+            .map_err(|e| NopalError::index_error(format!("Failed to parse query: {}", e)))
+    }
+
+    /// Run `query`, keep the top `limit` by score and read each hit's stored
+    /// `node_id`. Shared by the global and the allowed-set queries so the two
+    /// cannot diverge in how they rank or decode a hit.
+    fn collect_top(&self, query: &dyn Query, limit: usize) -> Result<Vec<(NodeId, Option<f32>)>> {
+        let searcher = self.reader.searcher();
+        let top_docs = searcher.search(query, &TopDocs::with_limit(limit.max(1)).order_by_score())
+            .map_err(|e| NopalError::index_error(format!("Search failed: {}", e)))?;
+
+        let mut node_ids = Vec::with_capacity(top_docs.len());
+        for (score, doc_address) in top_docs {
+            let retrieved_doc = searcher.doc::<tantivy::TantivyDocument>(doc_address)
+                .map_err(|e| NopalError::index_error(format!("Failed to retrieve document: {}", e)))?;
+            // Solo hay un valor de node_id por documento.
+            for field_value in retrieved_doc.get_all(self.node_id_field) {
+                if let Some(text) = field_value.as_str()
+                    && let Ok(node_id) = uuid::Uuid::parse_str(text) {
+                        node_ids.push((node_id, Some(score)));
+                        break;
+                }
+            }
+        }
+        Ok(node_ids)
+    }
+}
+
 impl Index for FullTextIndex {
     fn insert(&mut self, value: PropertyValue, node_id: NodeId) -> Result<()> {
         // Only index string values
@@ -268,43 +308,43 @@ impl Index for FullTextIndex {
     /// 1000 is what takes a hybrid search at 100k chunks from ~2 ms to the
     /// cost of the 40 (#174).
     fn query_scored_top(&self, query: &IndexQuery, limit: usize) -> Result<Vec<(NodeId, Option<f32>)>> {
-        let query_text = match query {
-            IndexQuery::FullText(text) => text,
-            _ => return Err(NopalError::index_error(
-                "Full-text index only supports full-text queries".to_string()
-            )),
-        };
+        let query = self.parse_text_query(query)?;
+        self.collect_top(&*query, limit)
+    }
 
-        let searcher = self.reader.searcher();
-
-        // Parse query
-        let query_parser = QueryParser::for_index(&self.index, vec![self.content_field]);
-        let query = query_parser.parse_query(query_text)
-            .map_err(|e| NopalError::index_error(format!("Failed to parse query: {}", e)))?;
-
-        // Search
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit.max(1)).order_by_score())
-            .map_err(|e| NopalError::index_error(format!("Search failed: {}", e)))?;
-
-        // Extract node IDs
-        let mut node_ids = Vec::new();
-        for (score, doc_address) in top_docs {
-            // Use turbofish to specify TantivyDocument type
-            let retrieved_doc = searcher.doc::<tantivy::TantivyDocument>(doc_address)
-                .map_err(|e| NopalError::index_error(format!("Failed to retrieve document: {}", e)))?;
-
-            // Get all values for node_id field
-            for field_value in retrieved_doc.get_all(self.node_id_field) {
-                // CompactDocValue tiene as_str() method
-                if let Some(text) = field_value.as_str()
-                    && let Ok(node_id) = uuid::Uuid::parse_str(text) {
-                        node_ids.push((node_id, Some(score)));
-                        break; // Solo necesitamos el primer valor
-                }
-            }
+    /// Top `limit` hits by BM25 **among `allowed` only** (#213).
+    ///
+    /// The node ids are sent to tantivy as a `TermSetQuery` over the
+    /// `node_id` field (indexed as one exact token, so no schema change) and
+    /// AND-ed with the text query: tantivy scores just the allowed documents
+    /// that match, and a selective filter can no longer lose a hit behind
+    /// the global top-N. The set clause is wrapped in a `BoostQuery(0.0)`
+    /// because a `TermSetQuery` scores every hit with a constant 1.0
+    /// (`AutomatonWeight` → `ConstScorer`); with the boost at zero the sum of
+    /// the boolean query is the BM25 of the text clause alone, so a hit gets
+    /// the same score here as in `query_scored_top` — the IDF is index-wide
+    /// in both.
+    ///
+    /// Cost is proportional to `allowed.len()` (one term lookup each), not to
+    /// the number of documents that contain the text, which is why the hybrid
+    /// planner takes this path for small sets and keeps the global top-N for
+    /// large ones.
+    fn query_scored_in(
+        &self,
+        query: &IndexQuery,
+        allowed: &HashSet<NodeId>,
+        limit: usize,
+    ) -> Result<Vec<(NodeId, Option<f32>)>> {
+        if allowed.is_empty() {
+            return Ok(Vec::new());
         }
-
-        Ok(node_ids)
+        let text = self.parse_text_query(query)?;
+        let terms = allowed
+            .iter()
+            .map(|id| Term::from_field_text(self.node_id_field, &id.to_string()));
+        let set: Box<dyn Query> = Box::new(BoostQuery::new(Box::new(TermSetQuery::new(terms)), 0.0));
+        let query = BooleanQuery::new(vec![(Occur::Must, text), (Occur::Must, set)]);
+        self.collect_top(&query, limit)
     }
 
     fn clear(&mut self) -> Result<()> {
@@ -627,5 +667,50 @@ mod tests {
             let top = index.query_scored_top(&q, limit).unwrap();
             assert_eq!(top, all[..limit.min(300)].to_vec(), "limit {limit}");
         }
+    }
+
+    /// `query_scored_in` devuelve los permitidos que matchean, en orden BM25
+    /// y con el MISMO score que tendrían en la consulta global (#213): el
+    /// `TermSetQuery` va con boost 0.0, así que no suma nada. Incluye el caso
+    /// del reporte: un permitido detrás de más de 1000 ajenos por BM25.
+    #[test]
+    fn query_scored_in_ranks_only_the_allowed_with_global_scores() {
+        let mut index = FullTextIndex::new(None).unwrap();
+        // 1200 documentos con "nopal"; los permitidos son los más largos,
+        // es decir, los de PEOR BM25: quedan fuera del top-1000 global.
+        let mut allowed = HashSet::new();
+        let mut all = Vec::new();
+        for i in 0..1200 {
+            let id = uuid::Uuid::new_v4();
+            let text = format!("nopal {}", "relleno ".repeat(i % 50 + 1));
+            if i % 50 == 49 {
+                allowed.insert(id);
+            }
+            index.insert(PropertyValue::String(text), id).unwrap();
+            all.push(id);
+        }
+        index.flush().unwrap();
+        let q = IndexQuery::FullText("nopal".to_string());
+
+        let global = index.query_scored_top(&q, 1200).unwrap();
+        assert_eq!(global.len(), 1200);
+        let expected: Vec<(NodeId, Option<f32>)> =
+            global.iter().filter(|(id, _)| allowed.contains(id)).cloned().collect();
+        assert_eq!(expected.len(), 24);
+        // Todos los permitidos están detrás del puesto 1000 del ranking global.
+        let first_allowed = global.iter().position(|(id, _)| allowed.contains(id)).unwrap();
+        assert!(first_allowed >= 1000, "el fixture debe dejar a los permitidos fuera del top-1000, primero en {first_allowed}");
+
+        let hits = index.query_scored_in(&q, &allowed, 100).unwrap();
+        assert_eq!(hits, expected, "mismos documentos, mismo orden, mismos scores");
+        assert_eq!(index.query_scored_in(&q, &allowed, 5).unwrap(), expected[..5].to_vec());
+
+        // Conjunto vacío = nada; permitidos que no contienen el término = nada.
+        assert!(index.query_scored_in(&q, &HashSet::new(), 10).unwrap().is_empty());
+        let other = IndexQuery::FullText("maguey".to_string());
+        assert!(index.query_scored_in(&other, &allowed, 10).unwrap().is_empty());
+        // Ids que no están en el índice no rompen nada.
+        let foreign: HashSet<NodeId> = (0..3).map(|_| uuid::Uuid::new_v4()).collect();
+        assert!(index.query_scored_in(&q, &foreign, 10).unwrap().is_empty());
     }
 }
