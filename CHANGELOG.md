@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.6.13] - unreleased
+
+Búsqueda híbrida con filtros selectivos. La rama de texto de `search_hybrid`
+ya no pierde documentos permitidos detrás del top-1000 global (1 permitido
+entre 1024 que contienen el término: 0 → 1 hit), y construir el conjunto
+permitido ya no lee la etiqueta entera (100k chunks, filtro que deja 20:
+193 → 0.23 ms). `search_hybrid_explain` dice por qué camino fue la rama de
+texto (`text_path`).
 
 ### Fixed
 - **`search_hybrid` ya no pierde documentos permitidos detrás del top-1000
