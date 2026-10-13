@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+NQL dice de dónde sale cada score y los asistentes de código encuentran los
+nombres reales de la API.
+
+### Added
+- **`rank(var)`, `text_score(var)` y `vector_score(var)` en el FIND de NQL**
+  (#228). Las piezas crudas que `score(var)` resume: la posición 0-based en
+  la búsqueda, el BM25 de la rama de texto y la similitud coseno de la rama
+  vectorial (`null` donde esa rama no puntuó el nodo). Mismas reglas que
+  `score`: solo columna del FIND, sobre la variable buscada, sin
+  agregaciones; errores con el nombre real. EXPLAIN nombra la fuente de cada
+  una. Con `hybrid` los valores son los de `search_hybrid_explain`; con
+  `similar_to`, `vector_score = score` y `text_score = null`. Motivo: el
+  score de `hybrid` es RRF (`Σ 1/(rrf_k + rango)`, como mucho `2/rrf_k`,
+  0.033 por defecto) y un umbral pensado para coseno lo descartaba todo en
+  silencio; la referencia EN/ES y `GRAPHRAG.md` traen ahora la tabla de
+  escalas y el umbral correcto para cada caso. `nql_scores_sample.py` en CI.
+- **Cheat sheet de la API Python y `llms.txt`** (#229).
+  `docs/python/API_CHEATSHEET.md`: una línea por método con la firma exacta
+  del stub, y la lista de nombres que NO existen con su equivalente
+  (`execute` → `execute_nql`, `upsert_node` → `upsert`,
+  `create_embedding_index` → nada que llamar). `llms.txt` en la raíz para los
+  asistentes. Guardia `check_cheatsheet.py` en `make check-python`: falla si
+  un nombre del cheat sheet deja de existir o si uno de los "no existen"
+  aparece.
+
 ## [0.6.16] - 2026-10-13
 
 La rama vectorial de `search_hybrid` con un conjunto chico (filtro selectivo

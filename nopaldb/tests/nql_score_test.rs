@@ -10,6 +10,10 @@ use nopaldb::index::IndexType;
 use nopaldb::types::{Edge, Node, NodeId, PropertyValue};
 use nopaldb::{Graph, HybridFilter, HybridQuery};
 
+// #228: `rank(var)`, `text_score(var)` y `vector_score(var)` exponen las
+// piezas crudas que `score` resume, con las mismas reglas. Los valores son
+// los de `search_hybrid_explain`.
+
 fn s(v: &str) -> PropertyValue {
     PropertyValue::String(v.to_string())
 }
@@ -137,6 +141,93 @@ async fn invalid_score_usages_are_named_errors() {
         (format!(r#"find c.name from (c:Chunk) where {search} and score(c) > 0.5"#), "only supported as a FIND column"),
         (format!(r#"find count(*), score(c) from (c:Chunk) where {search}"#), "cannot be combined with aggregations"),
         (format!(r#"find score(c.name) from (c:Chunk) where {search}"#), "exactly one argument"),
+    ];
+    for (nql, needle) in cases {
+        let err = graph.execute_nql(&nql).await.unwrap_err().to_string();
+        assert!(err.contains(needle), "{nql}\n  got: {err}\n  want: {needle}");
+    }
+}
+
+/// #228: con `hybrid`, `rank` es la posición fusionada, `text_score` el BM25
+/// crudo y `vector_score` la similitud coseno — los mismos valores que
+/// `search_hybrid_explain` — y `null` donde esa rama no puntuó el nodo.
+#[tokio::test]
+async fn hybrid_raw_columns_match_search_hybrid_explain() {
+    let (graph, ids) = fixture().await;
+    let q = r#"find c.name, rank(c), text_score(c) as bm25, vector_score(c) from (c:Chunk) where hybrid(c, text = "riego", vector = [1, 0, 0], model = "m", k = 4)"#;
+    let result = graph.execute_nql(q).await.unwrap();
+
+    let mut hq = HybridQuery::new();
+    hq.text = Some("riego".into());
+    hq.vector = Some((vec![1.0, 0.0, 0.0], "m".into()));
+    hq.k = 4;
+    hq.filter = Some(HybridFilter { label: Some("Chunk".into()), props: vec![] });
+    let expected = graph.search_hybrid_explain(hq).await.unwrap().hits;
+
+    let plan = format!("{:?}", graph.execute_nql(&format!("explain {q}")).await.unwrap().rows());
+    assert!(plan.contains("Score: rank(c) = 0-based position of c in the hybrid(c) ranking"), "{plan}");
+    assert!(plan.contains("Score: bm25 = raw BM25 of the text branch of hybrid(c)"), "{plan}");
+    assert!(plan.contains("Score: vector_score(c) = cosine similarity of the vector branch of hybrid(c)"), "{plan}");
+
+    let got = rows(&result, &["c.name", "rank(c)", "bm25", "vector_score(c)"]);
+    assert_eq!(got.len(), expected.len());
+    let mut saw_null_text = false;
+    for (i, (row, hit)) in got.iter().zip(&expected).enumerate() {
+        let idx = ids.iter().position(|id| *id == hit.node_id).unwrap();
+        assert_eq!(row[0], s(CHUNKS[idx].0), "mismo orden que search_hybrid_explain");
+        assert_eq!(row[1], PropertyValue::Int(i as i64), "rank = posición fusionada");
+        match (&row[2], hit.text_score) {
+            (PropertyValue::Float(b), Some(t)) => assert!((b - t as f64).abs() < 1e-6, "{b} vs {t}"),
+            (PropertyValue::Null, None) => saw_null_text = true,
+            other => panic!("text_score: {other:?}"),
+        }
+        match (&row[3], hit.vector_distance) {
+            (PropertyValue::Float(v), Some(d)) => assert!((v - (1.0 - d) as f64).abs() < 1e-6, "{v} vs {}", 1.0 - d),
+            (PropertyValue::Null, None) => {}
+            other => panic!("vector_score: {other:?}"),
+        }
+    }
+    assert!(saw_null_text, "c3 ('cosecha de tuna') no contiene 'riego': su text_score es null");
+}
+
+/// #228: con `similar_to`, `vector_score` es el coseno (igual que `score`),
+/// `rank` la posición y `text_score` siempre `null`; y las tres viajan con
+/// el nodo buscado en un patrón de un salto.
+#[tokio::test]
+async fn similar_to_raw_columns_and_one_hop_pattern() {
+    let (graph, _ids) = fixture().await;
+    let q = r#"find c.name, e.name, score(c), rank(c), text_score(c), vector_score(c)
+               from (c:Chunk)-[:MENTIONS]->(e:Entity)
+               where similar_to(c, vector = [1, 0, 0], model = "m", k = 3)"#;
+    let result = graph.execute_nql(q).await.unwrap();
+    let got = rows(&result, &["c.name", "e.name", "score(c)", "rank(c)", "text_score(c)", "vector_score(c)"]);
+    assert!(!got.is_empty());
+    let mut last_rank = -1i64;
+    for row in &got {
+        assert_eq!(row[1], s("riego"));
+        let PropertyValue::Float(score) = row[2] else { panic!("{row:?}") };
+        let PropertyValue::Int(rank) = row[3] else { panic!("{row:?}") };
+        assert_eq!(row[4], PropertyValue::Null, "similar_to no tiene rama de texto");
+        assert_eq!(row[5], PropertyValue::Float(score), "vector_score = score con similar_to");
+        assert!(rank >= last_rank, "las filas salen por rango");
+        last_rank = rank;
+    }
+    let plan = format!("{:?}", graph.execute_nql(&format!("explain {q}")).await.unwrap().rows());
+    assert!(plan.contains("Score: text_score(c) = null: similar_to(c) has no text branch"), "{plan}");
+}
+
+/// #228: las columnas nuevas siguen las reglas de `score`, con el nombre
+/// real en el error.
+#[tokio::test]
+async fn raw_columns_follow_the_score_rules() {
+    let (graph, _) = fixture().await;
+    let search = r#"similar_to(c, vector = [1, 0, 0], model = "m", k = 2)"#;
+    let cases = [
+        (r#"find c.name, rank(c) from (c:Chunk)"#.to_string(), "rank(c) needs similar_to(c"),
+        (format!(r#"find c.name from (c:Chunk) where {search} and vector_score(c) > 0.5"#), "only supported as a FIND column"),
+        (format!(r#"find c.name from (c:Chunk) where {search} order by rank(c)"#), "only supported as a FIND column"),
+        (format!(r#"find count(*), text_score(c) from (c:Chunk) where {search}"#), "text_score(var) cannot be combined with aggregations"),
+        (format!(r#"find vector_score(c.name) from (c:Chunk) where {search}"#), "vector_score takes exactly one argument"),
     ];
     for (nql, needle) in cases {
         let err = graph.execute_nql(&nql).await.unwrap_err().to_string();

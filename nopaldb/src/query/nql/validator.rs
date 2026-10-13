@@ -344,21 +344,26 @@ impl SemanticValidator {
         Ok(())
     }
 
-    /// `score(var)` (#174c): el score de la búsqueda vectorial del WHERE para
-    /// el nodo de `var`. Solo tiene sentido como columna del FIND y con un
-    /// `similar_to`/`hybrid` sobre esa misma variable; en cualquier otro
-    /// sitio no habría score que leer, y en vez de una columna `null` en
-    /// silencio es un error con nombre. En ORDER BY no hace falta: las filas
-    /// ya salen mejor-primero.
+    /// `score(var)` (#174c) y `rank(var)`, `text_score(var)`,
+    /// `vector_score(var)` (#228): lo que la búsqueda vectorial del WHERE
+    /// sabe del nodo de `var`. Solo tienen sentido como columna del FIND y
+    /// con un `similar_to`/`hybrid` sobre esa misma variable; en cualquier
+    /// otro sitio no habría score que leer, y en vez de una columna `null`
+    /// en silencio es un error con nombre. En ORDER BY no hace falta: las
+    /// filas ya salen mejor-primero.
     fn validate_score_usage(&self, query: &Query) -> Result<()> {
-        let is_score = |e: &Expression| matches!(e, Expression::FunctionCall { name, .. } if name.eq_ignore_ascii_case("score"));
-        let elsewhere = query.filter.as_ref().is_some_and(|f| expr_contains_function_validator(&f.condition, &["score"]))
-            || query.order_by.as_ref().is_some_and(|o| o.items.iter().any(|i| expr_contains_function_validator(&i.expression, &["score"])))
-            || query.group_by.as_ref().is_some_and(|g| g.expressions.iter().any(|e| expr_contains_function_validator(e, &["score"])))
-            || query.having.as_ref().is_some_and(|h| expr_contains_function_validator(&h.condition, &["score"]));
+        const SCORE_FNS: [&str; 4] = ["score", "rank", "text_score", "vector_score"];
+        let score_fn = |e: &Expression| match e {
+            Expression::FunctionCall { name, .. } => SCORE_FNS.iter().find(|f| name.eq_ignore_ascii_case(f)).copied(),
+            _ => None,
+        };
+        let elsewhere = query.filter.as_ref().is_some_and(|f| expr_contains_function_validator(&f.condition, &SCORE_FNS))
+            || query.order_by.as_ref().is_some_and(|o| o.items.iter().any(|i| expr_contains_function_validator(&i.expression, &SCORE_FNS)))
+            || query.group_by.as_ref().is_some_and(|g| g.expressions.iter().any(|e| expr_contains_function_validator(e, &SCORE_FNS)))
+            || query.having.as_ref().is_some_and(|h| expr_contains_function_validator(&h.condition, &SCORE_FNS));
         if elsewhere {
             return Err(NopalError::SemanticError(
-                "score(var) is only supported as a FIND column; rows already come best first, so ORDER BY is not needed".to_string(),
+                "score(var) / rank(var) / text_score(var) / vector_score(var) is only supported as a FIND column; rows already come best first, so ORDER BY is not needed".to_string(),
             ));
         }
         let mut searched: Vec<String> = Vec::new();
@@ -367,36 +372,31 @@ impl SemanticValidator {
         }
         for projection in &query.find.projections {
             let Projection::Expression { expr, .. } = projection else { continue };
-            if !expr_contains_function_validator(expr, &["score"]) {
+            if !expr_contains_function_validator(expr, &SCORE_FNS) {
                 continue;
             }
-            let Expression::FunctionCall { args, .. } = expr else {
+            let (Expression::FunctionCall { args, .. }, Some(fname)) = (expr, score_fn(expr)) else {
                 return Err(NopalError::SemanticError(
-                    "score(var) must be a column of its own, not part of another expression".to_string(),
+                    "score(var) (and rank/text_score/vector_score) must be a column of its own, not part of another expression".to_string(),
                 ));
             };
-            if !is_score(expr) {
-                return Err(NopalError::SemanticError(
-                    "score(var) must be a column of its own, not part of another expression".to_string(),
-                ));
-            }
             let var = match args.as_slice() {
                 [Expression::Property { variable, property }] if property.is_empty() => variable,
                 _ => {
-                    return Err(NopalError::SemanticError(
-                        "score takes exactly one argument: the variable searched by similar_to/hybrid (e.g. score(c))".to_string(),
-                    ))
+                    return Err(NopalError::SemanticError(format!(
+                        "{fname} takes exactly one argument: the variable searched by similar_to/hybrid (e.g. {fname}(c))"
+                    )))
                 }
             };
             if !searched.iter().any(|v| v == var) {
                 return Err(NopalError::SemanticError(format!(
-                    "score({var}) needs similar_to({var}, …) or hybrid({var}, …) in the WHERE: that search is where the score comes from"
+                    "{fname}({var}) needs similar_to({var}, …) or hybrid({var}, …) in the WHERE: that search is where the score comes from"
                 )));
             }
             if query.find.projections.iter().any(|p| matches!(p, Projection::Expression { expr, .. } if expr.is_aggregation())) {
-                return Err(NopalError::SemanticError(
-                    "score(var) cannot be combined with aggregations in the same FIND".to_string(),
-                ));
+                return Err(NopalError::SemanticError(format!(
+                    "{fname}(var) cannot be combined with aggregations in the same FIND"
+                )));
             }
         }
         Ok(())

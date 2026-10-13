@@ -262,8 +262,12 @@ projections), use the exact scan instead.
   Since 0.6.10 it returns K rows whenever the label has K embedded nodes
   (before, embeddings spread over several labels could leave it short).
 - Since 0.6.10 NQL rows can carry the score: `score(c)` in FIND (cosine
-  similarity with `similar_to`, RRF with `hybrid`), to cut the context at a
-  threshold or split a token budget. See the NQL reference.
+  similarity with `similar_to`, RRF with `hybrid`). Mind the scale before
+  cutting at a threshold: a cosine lives in `[0, 1]`, an RRF score is at most
+  `2/rrf_k` (0.033 by default), so a cosine-style threshold on `hybrid` keeps
+  nothing. Since 0.6.17 `rank(c)`, `text_score(c)` and `vector_score(c)`
+  expose the raw pieces (#228): cut by `vector_score` or `rank` with `hybrid`,
+  by `score` with `similar_to`. See the NQL reference § score.
 
 See also [HYBRID_SEARCH.md](HYBRID_SEARCH.md), [EMBEDDINGS.md](EMBEDDINGS.md)
 and the Python [API reference](python/API_REFERENCE.md).

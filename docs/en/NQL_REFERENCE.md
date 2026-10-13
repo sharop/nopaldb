@@ -358,6 +358,29 @@ only a FIND column: rows already come best first, so it is rejected in WHERE,
 ORDER BY, GROUP BY and HAVING, and next to aggregations. EXPLAIN names its
 source (`Score: score(c) = cosine similarity of similar_to(c) …`).
 
+**What `score(var)` returns depends on the search — and so does a sensible
+threshold (#228).** Since 0.6.17 the raw pieces are columns of their own,
+with the same rules as `score`:
+
+| column | with `similar_to` | with `hybrid` | with both |
+|---|---|---|---|
+| `score(var)` | cosine similarity, in `[0, 1]` | RRF score `Σ 1/(rrf_k + rank)`: **at most `2/rrf_k`** (0.033 with the default 60) | the `similar_to` one (it is the row order) |
+| `rank(var)` | 0-based position in the search | 0-based position in the fused ranking | position in `similar_to` |
+| `text_score(var)` | `null` | raw BM25 of the text branch; `null` if that branch did not rank the node | the `hybrid` one |
+| `vector_score(var)` | cosine similarity (= `score`) | cosine similarity of the vector branch; `null` if that branch did not rank the node | cosine of `similar_to` |
+
+So cut by an absolute threshold only on a cosine: `score(c)` with
+`similar_to`, or `vector_score(c)` with `hybrid`. An RRF score is a rank
+blend, not a similarity: a threshold such as `s > 0.45` keeps nothing, ever.
+With `hybrid`, cut by `rank(c)` or by `limit`, and use `text_score` /
+`vector_score` to see which branch brought the row:
+
+```nql
+find c.text, rank(c), text_score(c) as bm25, vector_score(c) as cos
+from (c:Chunk)
+where hybrid(c, text = "riego por goteo", vector = [...], model = "minilm", k = 10)
+```
+
 Where the search may live: a single-node pattern, or **one** pattern of a
 single hop `(a)-[:T]->(b)` whose first node is the searched variable (the
 candidates seed the pipeline; `LIMIT` then caps the expanded rows, so give

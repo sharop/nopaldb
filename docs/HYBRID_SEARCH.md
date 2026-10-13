@@ -331,7 +331,10 @@ the top-K hybrid results, best first. The vector is the embedding of the
 reference node resolved by its `name` property (the same convention as
 `similar_to`), or — since 0.6.9 — a literal written in the query:
 `hybrid(n, text = "…", vector = [0.1, -0.2, …], model = "m", k = 10)`, with
-`text` and/or `vector`. K is `k = N`, else the query `LIMIT` (default 10). The
+`text` and/or `vector`. K is `k = N`, else the query `LIMIT` (default 10). Since
+0.6.17 the FIND can project `score(n)` (RRF, at most `2/rrf_k`), `rank(n)`,
+`text_score(n)` and `vector_score(n)` (#228; see the NQL reference § score for
+the scales and the right threshold for each). The
 top-K is computed **inside the FROM pattern's label**: `(n:Chunk)` becomes the hybrid filter, so a better-matching
 node of another label cannot push a `Chunk` out of the K (before 0.5.19 the
 search ran over every label and the stream dropped the foreign hits afterwards,

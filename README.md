@@ -291,6 +291,7 @@ See `examples/`:
 ### Documentation 📖
 
 #### Query Language
+- **[Python API cheat sheet](docs/python/API_CHEATSHEET.md)** - One line per method, exact signatures, and the names that do not exist (also `llms.txt` for assistants)
 - **[NQL Reference (English)](docs/en/NQL_REFERENCE.md)** - Complete syntax
 - **[NQL Tutorial (English)](docs/en/NQL_TUTORIAL.md)** - Learn step-by-step
 - **[Referencia NQL (Español)](docs/es/NQL_REFERENCIA.md)** - Sintaxis completa
@@ -600,6 +601,7 @@ Ver **[Guía de Feature Tiers](docs/FEATURE_TIERS.md)** para opciones de compila
 #### Lenguaje de Consultas
 - **[Referencia NQL (Español)](docs/es/NQL_REFERENCIA.md)** - Sintaxis completa
 - **[Tutorial NQL (Español)](docs/es/NQL_TUTORIAL.md)** - Aprende paso a paso
+- **[Python API cheat sheet](docs/python/API_CHEATSHEET.md)** - One line per method, exact signatures, and the names that do not exist (also `llms.txt` for assistants)
 - **[NQL Reference (English)](docs/en/NQL_REFERENCE.md)** - Complete syntax
 - **[NQL Tutorial (English)](docs/en/NQL_TUTORIAL.md)** - Learn step-by-step
 

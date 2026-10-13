@@ -4,6 +4,8 @@ Get started with NopalDB in 5 minutes.
 
 ---
 
+> Looking for the exact method names? See the one-page [API cheat sheet](API_CHEATSHEET.md).
+
 ## 📦 Installation
 
 ### From PyPI (Recommended)
