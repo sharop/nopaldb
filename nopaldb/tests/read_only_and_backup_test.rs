@@ -59,6 +59,24 @@ async fn read_only_reads_everything() {
     g.close().await.unwrap();
 }
 
+/// Consultar embeddings en solo-lectura funciona y no escribe (#224): hasta
+/// 0.6.15 abrir el keyspace de embeddings bajo demanda corría, en redb, una
+/// transacción de escritura por consulta; ahora el handle se cachea al
+/// abrir, con el sello todavía abierto.
+#[cfg(feature = "embeddings")]
+#[tokio::test]
+async fn read_only_embedding_lookups_work_without_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = base_con_datos(dir.path()).await;
+
+    let g = Graph::open_read_only(dir.path()).await.unwrap();
+    assert!(g.try_node_embedding_exists_sync(a, "m").unwrap());
+    assert!(!g.try_node_embedding_exists_sync(b, "m").unwrap());
+    assert!(!g.try_node_embedding_exists_sync(NodeId::new_v4(), "m").unwrap());
+    assert_eq!(g.get_node_embedding(a, "m").await.unwrap().vector, vec![1.0, 0.0, 0.0]);
+    g.close().await.unwrap();
+}
+
 /// Ninguna vía de escritura pasa: ni directa, ni transaccional, ni de
 /// embeddings, ni de índices. Y falla con error, nunca con panic.
 #[tokio::test]

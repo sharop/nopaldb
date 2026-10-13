@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+La rama vectorial de `search_hybrid` con un conjunto chico (filtro selectivo
+o `candidates=`) pasa de milisegundos a microsegundos: lee los vectores del
+índice en memoria en vez de almacenamiento, y abrir el keyspace de
+embeddings ya no cuesta una transacción de escritura por consulta.
+
+### Performance
+- **El camino exacto del vector lee del índice, no de almacenamiento**
+  (#224). Con un conjunto permitido de hasta 1024 nodos sobre un índice
+  mayor (`vector_path = exact_over_allowed`), `search_hybrid` cargaba cada
+  vector del conjunto desde storage y lo puntuaba. El índice HNSW ya tiene
+  esos vectores en memoria, pero `hnsw_rs` solo los sirve por posición
+  `(capa, puesto)`, no por id; ahora `HnswIndex` guarda esa posición por
+  `DataId` (`Vec<PointId>`, 8 bytes por punto, no se persiste: se
+  reconstruye en una pasada al cargar) y `vectors_for` resuelve id → vector
+  en O(1). Mismos ids, mismas distancias (los mismos f32), mismo desempate.
+  Se confía en el índice, sin fallback por id a storage: todos los escritores
+  de embeddings lo actualizan en la misma llamada y la rama `hnsw_filtered`
+  ya leía solo del índice; un fallback reintroduciría una lectura de storage
+  por cada candidato que simplemente no tiene embedding. Se retira el filtro
+  por dimensión del camino exacto como código inalcanzable (el índice
+  rechaza al insertar cualquier vector de otra dimensión).
+- **El keyspace de embeddings se cachea al abrir** como los otros once
+  (#224). Se pedía bajo demanda en cada operación de embeddings, y en redb
+  eso era una transacción de escritura (commit incluido) más la
+  invalidación de las tablas de lectura cacheadas de TODOS los keyspaces:
+  4.6 ms por consulta a 100k chunks, y la hidratación posterior de 10 nodos
+  pasaba de 17 µs a 5.7 ms. Afecta a `search_hybrid`, a `get_node_embedding`
+  y a `has_embedding(...)` en NQL, que lo pagaba por fila. Una base abierta
+  de solo lectura deja de escribir al consultar embeddings.
+- **`KvKeyspace::get_many`** (#224): varias claves bajo una sola tabla de
+  lectura y una sola consulta al overlay en redb (default que itera `get`
+  en sled); lo usa la carga de embeddings por conjunto. Test de conformance
+  en ambos motores.
+
+  Medido (`retrieval`, 100k chunks, 64 dims, release, redb, conjunto de 65
+  ids; filas nuevas `embeddings_read/*` y `hydrate/get_nodes_10_after_embeddings_read`):
+  solo vector 3.5 ms → 13 µs; texto+vector 3.0 → 0.19 ms; texto+vector ∩
+  tenant 4.5 → 0.80 ms; filtro `doc` (20 chunks) 2.0 → 0.20 ms; sin conjunto
+  ni filtro 0.91 → 0.82 ms; `exists_sync` 4.6 ms → 0.22 µs; leer 65
+  embeddings 4.8 ms → 40 µs; hidratar 10 nodos tras leer un embedding
+  5.7 ms → 18 µs. En sled abrir el keyspace ya era barato y la mejora es la
+  del camino exacto: solo vector 54 → 13 µs; texto+vector 235 → 182 µs.
+
+### Changed
+- `search_hybrid_explain`: la doc de `candidate_set.size` precisa que, con
+  `candidates` y sin filtro, cuenta ids distintos tal cual se pasaron, no
+  nodos confirmados (sin filtro los ids no se leen); solo un filtro
+  confirma pertenencia. Observado por un integrador con un id inexistente.
+
 ## [0.6.15] - 2026-10-12
 
 `search_hybrid` acepta el universo de la búsqueda como conjunto explícito de

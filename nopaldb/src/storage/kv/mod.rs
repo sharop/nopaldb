@@ -107,6 +107,15 @@ impl WriteBatch {
 ///   clave (CAS-loop o lock interno del motor, según implementación).
 pub(crate) trait KvKeyspace: Send + Sync {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>>;
+    /// Varios `get` de una vez, en el orden de `keys` (`None` donde la
+    /// clave no existe; una clave repetida se devuelve repetida). Igual que
+    /// llamar a `get` por clave; un motor puede resolverlas todas bajo una
+    /// sola tabla/transacción de lectura (#224). Hoy lo usa la carga de
+    /// embeddings por conjunto; sin esa feature queda sin llamador.
+    #[cfg_attr(not(feature = "embeddings"), allow(dead_code))]
+    fn get_many(&self, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>> {
+        keys.iter().map(|k| self.get(k)).collect()
+    }
     fn insert(&self, key: &[u8], value: &[u8]) -> Result<()>;
     fn remove(&self, key: &[u8]) -> Result<()>;
     fn contains_key(&self, key: &[u8]) -> Result<bool>;
@@ -481,10 +490,11 @@ impl WriteSeal {
 
 /// Engine que deja de aceptar escrituras cuando su sello se cierra.
 ///
-/// Envuelve al ENGINE y no a los keyspaces ya abiertos a propósito: hay
-/// keyspaces que se piden bajo demanda —`embeddings` es uno— y sellar solo
-/// los cacheados dejaría esa puerta abierta. Todo keyspace nace de
-/// `keyspace()`, así que interceptarlo ahí los cubre a todos.
+/// Envuelve al ENGINE y no a los keyspaces ya abiertos a propósito: así
+/// cubre tanto los que `Storage` cachea al abrir (todos los del layout
+/// desde #224, embeddings incluidos) como cualquiera que se pida bajo
+/// demanda después. Todo keyspace nace de `keyspace()`, así que
+/// interceptarlo ahí los cubre a todos.
 pub(crate) struct SealedEngine {
     inner: Arc<dyn KvEngine>,
     seal: WriteSeal,
@@ -546,6 +556,11 @@ struct SealedKeyspace {
 impl KvKeyspace for SealedKeyspace {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         self.inner.get(key)
+    }
+    fn get_many(&self, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>> {
+        // Reenviado a propósito: con el default del trait el lote se
+        // desharía en `get`s sueltos al pasar por el sello.
+        self.inner.get_many(keys)
     }
     fn contains_key(&self, key: &[u8]) -> Result<bool> {
         self.inner.contains_key(key)

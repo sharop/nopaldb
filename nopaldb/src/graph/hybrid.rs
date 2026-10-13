@@ -285,11 +285,16 @@ pub enum CandidateSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CandidateSetReport {
     pub source: CandidateSource,
-    /// Size of the set the caller passed; `None` without one.
+    /// Distinct ids the caller passed (duplicates count once); `None`
+    /// without a caller set.
     pub caller_size: Option<usize>,
     /// Size of the set both paths ran in, after the filter; `None` when no
     /// set was built (unrestricted, or a label-only filter resolved by
     /// checking the label on the candidates). Equal to `allowed_set_size`.
+    /// With caller ids and no filter the ids are taken unread, so `size`
+    /// counts distinct ids as passed, not nodes confirmed to exist or to
+    /// carry an embedding: fewer hits than `size` there is not a filter
+    /// effect. Only a filter confirms membership.
     pub size: Option<usize>,
 }
 
@@ -487,7 +492,7 @@ impl Graph {
                     if label_only.is_some() && allowed.is_none() {
                         allowed = self.hybrid_allowed_set(&q.candidates, q.filter.as_ref()).await?;
                     }
-                    self.vector_path(&index, vector, model, allowed.as_ref(), candidates, ef)
+                    self.vector_path(&index, vector, allowed.as_ref(), candidates, ef)
                         .await?
                 }
             };
@@ -618,6 +623,22 @@ impl Graph {
     /// which is reported as [`VectorPath::ExactIndex`] rather than assumed
     /// to be the graph walk (#218).
     ///
+    /// The exact branch reads the set's vectors from the index itself
+    /// (`HnswIndex::vectors_for`), not from storage (#224). Until 0.6.15 it
+    /// loaded them with one storage read per id — and, on redb, opened the
+    /// embeddings keyspace per query, a write transaction that also dropped
+    /// every cached read table — which made the vector branch 2.2 ms for 65
+    /// ids where the text branch took 0.16. The index is trusted as the
+    /// source: every writer of node embeddings updates the cached index in
+    /// the same call, the `HnswFiltered` branch already reads only the
+    /// index, and `get_or_build_embedding_index` builds or verifies it
+    /// against storage before any search. There is deliberately no per-id
+    /// fallback to storage: it would reintroduce a storage read for every
+    /// allowed node that simply has no embedding (a candidate set mixing
+    /// labels), which is the common case, to cover the microseconds between
+    /// the storage write and the index insert that the other branch does
+    /// not cover either.
+    ///
     /// The index lock is taken only around the synchronous index calls, never
     /// across an `await`: the exact branch reads storage with the lock released.
     #[cfg(feature = "embeddings-index")]
@@ -625,7 +646,6 @@ impl Graph {
         &self,
         index: &super::SharedHnswIndex,
         vector: &[f32],
-        model: &str,
         allowed: Option<&HashSet<NodeId>>,
         candidates: usize,
         ef: usize,
@@ -635,27 +655,17 @@ impl Graph {
             return Ok((hits, VectorPath::Unfiltered));
         };
 
-        let (index_len, dim) = {
-            let idx = index.read().unwrap_or_else(|e| e.into_inner());
-            (idx.len(), idx.dimension())
-        };
+        let index_len = index.read().unwrap_or_else(|e| e.into_inner()).len();
         if set.len() <= EXACT_SEARCH_THRESHOLD && index_len > EXACT_SEARCH_THRESHOLD {
-            let embeddings = self
-                .storage
-                .load_node_embeddings_for(set.iter().copied(), model)
-                .await?;
-            // Vectores de otra dimensión no son comparables; el índice ya
-            // rechaza la query por dimensión, así que aquí solo pueden venir
-            // de embeddings viejos del mismo modelo. Se omiten en vez de
-            // envenenar el ranking con una distancia sin sentido.
-            let hits = rank_exact(
-                vector,
-                embeddings
-                    .iter()
-                    .filter(|e| e.vector.len() == dim)
-                    .map(|e| (e.node_id, e.vector.as_slice())),
-                candidates,
-            );
+            // Los vectores salen del índice, bajo el read lock y sin `await`
+            // dentro; se puntúan con el lock ya liberado. Todo vector
+            // indexado tiene la dimensión del índice (`insert` lo valida),
+            // así que no hay nada que filtrar.
+            let vectors = index
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .vectors_for(set.iter().copied());
+            let hits = rank_exact(vector, vectors.iter().map(|(id, v)| (*id, v.as_slice())), candidates);
             return Ok((hits, VectorPath::ExactOverAllowed));
         }
 
@@ -777,7 +787,7 @@ impl Graph {
         }
         let filter = HybridFilter { label: Some(label.to_string()), props: Vec::new() };
         let allowed = self.hybrid_allowed_set(&CandidateSet::All, Some(&filter)).await?;
-        self.vector_path(&index, vector, model, allowed.as_ref(), k, ef).await
+        self.vector_path(&index, vector, allowed.as_ref(), k, ef).await
     }
 
     /// Build the allowed NodeId set from the caller's candidate set and a
@@ -980,7 +990,7 @@ mod tests {
         let k = 10;
 
         let (hits, path) = graph
-            .vector_path(index, query, "m", Some(&allowed), k, 30)
+            .vector_path(index, query, Some(&allowed), k, 30)
             .await
             .unwrap();
 
@@ -1019,7 +1029,7 @@ mod tests {
         let shared = graph.get_or_build_embedding_index("m").await.unwrap();
         let index = &shared;
         let (hits, path) = graph
-            .vector_path(index, &[1.0, 0.0, 0.0, 0.0], "m", None, 5, 30)
+            .vector_path(index, &[1.0, 0.0, 0.0, 0.0], None, 5, 30)
             .await
             .unwrap();
         assert_eq!(path, VectorPath::Unfiltered);
@@ -1051,7 +1061,7 @@ mod tests {
         assert!(allowed.len() > EXACT_SEARCH_THRESHOLD, "permitidos por encima del umbral");
 
         let (hits, path) = graph
-            .vector_path(index, &vecs[3], "m", Some(&allowed), 10, 30)
+            .vector_path(index, &vecs[3], Some(&allowed), 10, 30)
             .await
             .unwrap();
 
@@ -1086,7 +1096,7 @@ mod tests {
         assert!(index.read().unwrap().is_exact(), "índice bajo el umbral ⇒ lectura exacta");
 
         let (hits, path) = graph
-            .vector_path(index, &vecs[1], "m", Some(&allowed), 8, 30)
+            .vector_path(index, &vecs[1], Some(&allowed), 8, 30)
             .await
             .unwrap();
         assert_eq!(path, VectorPath::ExactIndex);
@@ -1094,9 +1104,61 @@ mod tests {
         assert_eq!(hits.len(), 8);
         assert!(hits.iter().all(|(id, _)| allowed.contains(id)));
 
-        let (_, path) = graph.vector_path(index, &vecs[1], "m", None, 8, 30).await.unwrap();
+        let (_, path) = graph.vector_path(index, &vecs[1], None, 8, 30).await.unwrap();
         assert_eq!(path, VectorPath::Unfiltered);
         assert!(path.is_exact(true), "KNN sin filtro sobre índice chico también es exacto");
+    }
+
+    /// El camino exacto lee del índice, no de storage (#224): lo que entra
+    /// por `add_node_embedding` aparece y lo que sale por `delete_node`
+    /// desaparece sin rebuild (queda como tombstone), con el mismo ranking
+    /// que la fuerza bruta.
+    #[tokio::test]
+    async fn exact_branch_reads_the_index_not_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let graph = Graph::open(dir.path()).await.unwrap();
+        let dim = 8;
+        let n = EXACT_SEARCH_THRESHOLD + 50;
+        let vecs = vectors(n, dim, 31337);
+        let mut ids = Vec::with_capacity(n);
+        for v in &vecs {
+            let id = graph.add_node(Node::new("Frag")).await.unwrap();
+            graph.add_node_embedding(id, v.clone(), "m").await.unwrap();
+            ids.push(id);
+        }
+        let shared = graph.get_or_build_embedding_index("m").await.unwrap();
+        let index = &shared;
+        let query = &vecs[5];
+
+        // Un nodo nuevo, insertado DESPUÉS de construir el índice, con el
+        // vector más cercano posible: la rama exacta lo ve porque el índice
+        // cacheado lo recibió en la misma llamada.
+        let newcomer = graph.add_node(Node::new("Frag")).await.unwrap();
+        graph.add_node_embedding(newcomer, query.clone(), "m").await.unwrap();
+        let allowed: HashSet<NodeId> = ids.iter().step_by(40).copied().chain([newcomer]).collect();
+        assert!(allowed.len() <= EXACT_SEARCH_THRESHOLD);
+
+        let (hits, path) = graph.vector_path(index, query, Some(&allowed), 5, 30).await.unwrap();
+        assert_eq!(path, VectorPath::ExactOverAllowed);
+        assert_eq!(hits[0].0, newcomer, "el recién insertado es el más cercano");
+        assert!(hits[0].1.abs() < 1e-6);
+        let mut expected: Vec<(NodeId, f32)> = allowed
+            .iter()
+            .filter(|id| **id != newcomer)
+            .map(|id| (*id, cosine_ref(query, &vecs[ids.iter().position(|x| x == id).unwrap()])))
+            .chain([(newcomer, 0.0)])
+            .collect();
+        expected.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        let want: Vec<NodeId> = expected.iter().take(5).map(|(id, _)| *id).collect();
+        assert_eq!(hits.iter().map(|(id, _)| *id).collect::<Vec<_>>(), want, "ranking = fuerza bruta");
+
+        // Borrarlo lo saca de la rama exacta en el acto, sin reconstruir.
+        graph.delete_node(newcomer).await.unwrap();
+        assert_eq!(index.read().unwrap().tombstones(), 1, "borrado lógico, sin rebuild");
+        let (hits, path) = graph.vector_path(index, query, Some(&allowed), 5, 30).await.unwrap();
+        assert_eq!(path, VectorPath::ExactOverAllowed);
+        assert!(hits.iter().all(|(id, _)| *id != newcomer), "el tombstone no puntúa");
+        assert_eq!(hits.len(), 5);
     }
 
     /// La bandera resume la tabla de caminos: los dos caminos exactos lo son

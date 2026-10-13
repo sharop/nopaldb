@@ -56,6 +56,36 @@ fn get_ausente_es_none_y_roundtrip_de_tamanos() {
 }
 
 #[test]
+fn get_many_respeta_el_orden_y_devuelve_none_para_ausentes() {
+    for (name, engine) in engines() {
+        let ks = ks(&engine);
+        assert_eq!(ks.get_many(&[]).unwrap(), Vec::<Option<Vec<u8>>>::new(), "[{name}] vacío");
+        ks.insert(b"a", b"1").unwrap();
+        ks.insert(b"b", b"2").unwrap();
+        ks.insert(b"d", b"4").unwrap();
+        let got = ks.get_many(&[b"b", b"zzz", b"a", b"d", b"a"]).unwrap();
+        assert_eq!(
+            got,
+            vec![Some(b"2".to_vec()), None, Some(b"1".to_vec()), Some(b"4".to_vec()), Some(b"1".to_vec())],
+            "[{name}] orden de entrada, None para ausentes, repetidas repetidas"
+        );
+        // Igual que `get` clave a clave.
+        for (k, v) in [b"b".as_slice(), b"zzz", b"a", b"d", b"a"].iter().zip(&got) {
+            assert_eq!(&ks.get(k).unwrap(), v, "[{name}] get_many ≡ get");
+        }
+        // Con escrituras recién hechas y sin flush: read-your-writes también
+        // en lote (en redb pasan por el overlay de la ventana).
+        ks.insert(b"c", b"3").unwrap();
+        ks.remove(b"a").unwrap();
+        assert_eq!(
+            ks.get_many(&[b"a", b"c", b"b"]).unwrap(),
+            vec![None, Some(b"3".to_vec()), Some(b"2".to_vec())],
+            "[{name}] lote tras escrituras pendientes"
+        );
+    }
+}
+
+#[test]
 fn orden_lexicografico_y_enteros_be_ordenan_numericamente() {
     for (name, engine) in engines() {
         let ks = ks(&engine);

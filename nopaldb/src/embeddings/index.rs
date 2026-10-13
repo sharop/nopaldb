@@ -65,6 +65,10 @@ pub const EXACT_SEARCH_THRESHOLD: usize = 1024;
 /// threads de rayon). Por encima, la inserción paralela sí rinde.
 const PARALLEL_INSERT_THRESHOLD: usize = 128;
 
+/// Centinela de `HnswIndex::point_ids`: `DataId` sin punto vivo (tombstone
+/// o hueco). `hnsw_rs` nunca asigna una posición negativa.
+const NO_POINT: PointId = PointId(0, -1);
+
 /// Tope de la escalada adaptativa de `ef_search` en la búsqueda filtrada.
 ///
 /// Con un filtro selectivo el grafo HNSW puede necesitar explorar mucho más
@@ -178,6 +182,15 @@ pub struct HnswIndex {
     dimension: usize,
     /// Siguiente DataId disponible para asignar.
     next_data_id: usize,
+    /// `PointId` (capa, posición en la capa) de cada `DataId`, indexado por
+    /// `DataId` (#224). Es lo que permite leer el vector de un punto del
+    /// grafo en O(1) con `get_point_data`: `hnsw_rs` no busca por `DataId`.
+    /// Los `DataId` son densos (`next_data_id` sube de uno en uno y nunca
+    /// se reutiliza), así que un `Vec` cuesta 8 B por punto, frente a ~20 B
+    /// de un `HashMap` o a cambiar el tipo de `id_map` y del dump. No se
+    /// persiste: se reconstruye en una pasada al cargar. `NO_POINT` marca
+    /// tombstones y huecos.
+    point_ids: Vec<PointId>,
     /// Copia de los vectores para el camino de búsqueda exacta.
     ///
     /// Se mantiene solo mientras `len() ≤ EXACT_SEARCH_THRESHOLD`; al cruzar
@@ -238,6 +251,7 @@ impl HnswIndex {
             model: model.into(),
             dimension,
             next_data_id: 0,
+            point_ids: Vec::new(),
             exact_store: Vec::new(),
             tombstones: 0,
             orphans: Vec::new(),
@@ -271,6 +285,7 @@ impl HnswIndex {
             model: model.into(),
             dimension,
             next_data_id: 0,
+            point_ids: Vec::new(),
             exact_store: Vec::new(),
             tombstones: 0,
             orphans: Vec::new(),
@@ -331,11 +346,15 @@ impl HnswIndex {
         // del número de threads, lo que produce grafos HNSW ligeramente
         // distintos entre entornos (p. ej. un test que pasa local y falla en un
         // runner con más cores). Serial = determinista para N pequeño.
+        let before = index.layer_lens();
         if insert_data.len() >= PARALLEL_INSERT_THRESHOLD {
             index.inner.parallel_insert(&insert_data);
+            index.record_point_ids_since(&before);
         } else {
             for &(vec, data_id) in &insert_data {
+                let before = index.layer_lens();
                 index.inner.insert((vec, data_id));
+                index.record_single_insert(data_id, &before);
             }
         }
         index.inner.set_searching_mode(true);
@@ -381,7 +400,9 @@ impl HnswIndex {
         let data_id = self.next_data_id;
         self.next_data_id += 1;
 
+        let before = self.layer_lens();
         self.inner.insert((&vector, data_id));
+        self.record_single_insert(data_id, &before);
         self.id_map.insert(data_id, node_id);
         self.reverse_map.insert(node_id, data_id);
         self.dirty = true;
@@ -475,11 +496,15 @@ impl HnswIndex {
         }
         let insert_data: Vec<(&Vec<f32>, usize)> =
             items.iter().zip(&data_ids).map(|((_, v), &id)| (v, id)).collect();
+        let before = self.layer_lens();
         if insert_data.len() >= PARALLEL_INSERT_THRESHOLD {
             self.inner.parallel_insert(&insert_data);
+            self.record_point_ids_since(&before);
         } else {
             for &(vector, data_id) in &insert_data {
+                let before = self.layer_lens();
                 self.inner.insert((vector, data_id));
+                self.record_single_insert(data_id, &before);
             }
         }
         drop(insert_data);
@@ -505,6 +530,9 @@ impl HnswIndex {
     pub fn remove(&mut self, node_id: NodeId) -> bool {
         let Some(data_id) = self.reverse_map.remove(&node_id) else { return false };
         self.id_map.remove(&data_id);
+        if let Some(slot) = self.point_ids.get_mut(data_id) {
+            *slot = NO_POINT;
+        }
         if !self.exact_store.is_empty() {
             self.exact_store.retain(|(id, _)| *id != node_id);
         }
@@ -587,6 +615,21 @@ impl HnswIndex {
     ) -> Self {
         inner.set_searching_mode(true);
         let reverse_map = id_map.iter().map(|(d, n)| (*n, *d)).collect();
+        // `point_ids` no viaja en el dump: una pasada por todos los puntos
+        // (hnswio los restaura en su (capa, posición) original). Los
+        // tombstones quedan como `NO_POINT` al no estar en `id_map`.
+        let mut point_ids = vec![NO_POINT; next_data_id];
+        if inner.get_nb_point() > 0 {
+            for p in inner.get_point_indexation() {
+                let d = p.get_origin_id();
+                if id_map.contains_key(&d) {
+                    if d >= point_ids.len() {
+                        point_ids.resize(d + 1, NO_POINT);
+                    }
+                    point_ids[d] = p.get_point_id();
+                }
+            }
+        }
         Self {
             inner,
             id_map,
@@ -594,6 +637,7 @@ impl HnswIndex {
             model,
             dimension,
             next_data_id,
+            point_ids,
             exact_store: Vec::new(),
             tombstones,
             orphans,
@@ -890,6 +934,79 @@ impl HnswIndex {
         &self.inner
     }
 
+    /// Vectores de los nodos indexados entre `ids`, en el orden de `ids`,
+    /// omitiendo los que no están en el índice (nunca indexados o
+    /// retirados). O(1) por id: `reverse_map` → `DataId` → `PointId` →
+    /// `get_point_data` (clona el vector del grafo). Es lo que lee el camino
+    /// exacto de la búsqueda híbrida en vez de ir a storage (#224): los
+    /// mismos f32 que se insertaron, sin copia global de los datos.
+    pub fn vectors_for(&self, ids: impl IntoIterator<Item = NodeId>) -> Vec<(NodeId, Vec<f32>)> {
+        let pi = self.inner.get_point_indexation();
+        ids.into_iter()
+            .filter_map(|id| {
+                let d = *self.reverse_map.get(&id)?;
+                let p = *self.point_ids.get(d)?;
+                if p == NO_POINT {
+                    return None;
+                }
+                Some((id, pi.get_point_data(&p)?))
+            })
+            .collect()
+    }
+
+    /// Puntos por capa, para deducir el `PointId` de lo que se inserte a
+    /// continuación (ver `record_single_insert`). `get_layer_nb_point`
+    /// devuelve 0 para capas que no existen, así que sondear
+    /// `DEFAULT_MAX_LAYER` vale para cualquier `max_layer` ≤ 16.
+    fn layer_lens(&self) -> [usize; DEFAULT_MAX_LAYER] {
+        let pi = self.inner.get_point_indexation();
+        std::array::from_fn(|l| pi.get_layer_nb_point(l))
+    }
+
+    fn record_point_id(&mut self, data_id: usize, p_id: PointId) {
+        if self.point_ids.len() <= data_id {
+            self.point_ids.resize(data_id + 1, NO_POINT);
+        }
+        self.point_ids[data_id] = p_id;
+    }
+
+    /// Tras UN `insert` serial: `hnsw_rs` asigna al punto nuevo la posición
+    /// `len(capa)` de la capa que le tocó, bajo write lock, así que es el
+    /// último de la única capa que creció en uno. Si por lo que fuera no se
+    /// reconociera esa capa, se recorre lo nuevo (nunca se deja sin mapa).
+    fn record_single_insert(&mut self, data_id: usize, before: &[usize; DEFAULT_MAX_LAYER]) {
+        let after = self.layer_lens();
+        match (0..DEFAULT_MAX_LAYER).find(|&l| after[l] == before[l] + 1) {
+            Some(l) => self.record_point_id(data_id, PointId(l as u8, before[l] as i32)),
+            None => self.record_point_ids_since(before),
+        }
+    }
+
+    /// Tras `parallel_insert`: rayon reparte las posiciones, pero todo lo
+    /// nuevo ocupa `before[l]..len(capa)` de cada capa. Se recorren solo
+    /// esas colas (el iterador de capa sostiene un read guard: se recoge
+    /// primero y se escribe después). En `build_batch` es una pasada O(N)
+    /// que la construcción absorbe; en un lote incremental grande, saltar
+    /// los primeros `before[l]` clona un `Arc` por punto (≈ 10–30 ms a 1M),
+    /// mucho menos que el lote que acaba de insertarse.
+    fn record_point_ids_since(&mut self, before: &[usize; DEFAULT_MAX_LAYER]) {
+        let found: Vec<(usize, PointId)> = {
+            let pi = self.inner.get_point_indexation();
+            let mut found = Vec::new();
+            for (l, &seen) in before.iter().enumerate() {
+                if pi.get_layer_nb_point(l) > seen {
+                    for p in pi.get_layer_iterator(l).skip(seen) {
+                        found.push((p.get_origin_id(), p.get_point_id()));
+                    }
+                }
+            }
+            found
+        };
+        for (d, p) in found {
+            self.record_point_id(d, p);
+        }
+    }
+
     /// Acceso al mapeo DataId → NodeId (para persistencia).
     #[allow(dead_code)] // se usará en persistence.rs
     pub(crate) fn id_map(&self) -> &HashMap<usize, NodeId> {
@@ -1180,5 +1297,72 @@ mod tests {
             hnsw,
             hnsw / iters,
         );
+    }
+
+    /// `vectors_for` devuelve bit a bit lo insertado por los tres caminos
+    /// (build paralelo, inserts seriales, `insert_batch` paralelo) y omite
+    /// lo que no está (#224).
+    #[test]
+    fn vectors_for_returns_exactly_the_inserted_vectors() {
+        let dim = 12;
+        let built = seeded_vectors(EXACT_SEARCH_THRESHOLD + 300, dim, 1); // ≥ 128 ⇒ parallel_insert
+        let mut index = HnswIndex::build_batch(built.clone(), "m", dim).unwrap();
+        let serial = seeded_vectors(5, dim, 2);
+        for (id, v) in &serial {
+            index.insert(*id, v.clone()).unwrap();
+        }
+        let batch = seeded_vectors(200, dim, 3); // ≥ 128 ⇒ parallel_insert incremental
+        index.insert_batch(batch.clone()).unwrap();
+
+        for group in [&built, &serial, &batch] {
+            let got = index.vectors_for(group.iter().map(|(id, _)| *id));
+            assert_eq!(got.len(), group.len());
+            for ((gid, gv), (id, v)) in got.iter().zip(group) {
+                assert_eq!(gid, id, "mismo orden que los ids pedidos");
+                assert_eq!(gv, v, "los mismos f32 que se insertaron");
+            }
+        }
+        // Un id nunca indexado se omite sin alterar el orden del resto.
+        let ghost = NodeId::from_u128(0xDEAD);
+        let got = index.vectors_for([serial[1].0, ghost, serial[3].0]);
+        assert_eq!(got.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![serial[1].0, serial[3].0]);
+        // El mapa es consistente con el grafo: cada DataId vivo apunta a un
+        // punto cuyo origen es ese DataId.
+        let pi = index.inner().get_point_indexation();
+        for d in index.id_map.keys() {
+            let p = index.point_ids[*d];
+            assert_ne!(p, NO_POINT, "DataId vivo sin PointId");
+            assert!(pi.get_point_data(&p).is_some());
+        }
+    }
+
+    /// Retirar deja el DataId como `NO_POINT` y `vectors_for` lo omite;
+    /// actualizar (remove + insert) devuelve el vector nuevo, no el viejo
+    /// que sigue en el grafo bajo el DataId anterior.
+    #[test]
+    fn vectors_for_skips_removed_and_returns_the_updated_vector() {
+        let dim = 8;
+        let data = seeded_vectors(EXACT_SEARCH_THRESHOLD + 10, dim, 7);
+        let mut index = HnswIndex::build_batch(data.clone(), "m", dim).unwrap();
+        let (victim, _) = data[4];
+        assert!(index.remove(victim));
+        assert!(index.vectors_for([victim]).is_empty(), "retirado ⇒ omitido");
+        assert_eq!(index.tombstones(), 1);
+
+        let fresh: Vec<f32> = vec![0.25; dim];
+        index.insert(victim, fresh.clone()).unwrap();
+        let got = index.vectors_for([victim]);
+        assert_eq!(got, vec![(victim, fresh)], "tras el update sale el vector nuevo");
+    }
+
+    /// Un índice chico (camino exacto interno) también resuelve por el mapa:
+    /// los puntos están en el grafo aunque la lectura vaya por `exact_store`.
+    #[test]
+    fn vectors_for_works_below_the_exact_threshold_too() {
+        let dim = 4;
+        let data = seeded_vectors(20, dim, 9); // < 128 ⇒ inserts seriales
+        let index = HnswIndex::build_batch(data.clone(), "m", dim).unwrap();
+        let got = index.vectors_for(data.iter().map(|(id, _)| *id));
+        assert_eq!(got, data);
     }
 }

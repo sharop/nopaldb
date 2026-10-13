@@ -118,29 +118,39 @@ How the set is built, and what `search_hybrid_explain` reports as
 | none | none | the whole graph | `unrestricted` |
 | none | label only | the label, checked on each path's candidates (no set, `size = None`) | `filter` |
 | none | with props | property index ∩ …, label confirmed on the survivors | `filter` |
-| ids | none | the ids as given, unread (`size = caller_size`) | `ids` |
+| ids | none | the ids as given, unread: `size = caller_size` counts the distinct ids passed, not nodes confirmed to exist or to carry an embedding, so fewer hits than `size` here is not a filter effect | `ids` |
 | ids | any | the ids are the seed of the same pipeline: property lookups intersect into them, the label is confirmed on what survives (`size ≤ caller_size`) | `ids_and_filter` |
 
-`size` is the set both paths ran in. A hit that is missing with
+`size` is the set both paths ran in, and `caller_size` the distinct ids the
+caller passed (duplicates count once). A hit that is missing with
 `size < caller_size` was left out when the set was built — by the filter — not
 outranked; that is the question `allowed_set_size` alone could not answer.
+Only a filter reads the ids: without one, an id that does not exist still
+counts in `size` and simply never scores, so to confirm membership of a
+caller set without a filter, pass `label` as well.
 
 Cost is proportional to the set, not to the corpus. Measured on the
-`retrieval` bench (100k chunks, 64 dims, release, k = 10) with a set of 65
-ids, what a tenant ∩ case leaves in one measured deployment:
+`retrieval` bench (100k chunks, 64 dims, release, k = 10, redb) with a set of
+65 ids, what a tenant ∩ case leaves in one measured deployment; the second
+column is 0.6.15, the third 0.6.16 (#224):
 
-| query | ms |
-|---|---|
-| text only, 65 candidates (term set) | 0.16 |
-| vector only, 65 candidates (exact over the set) | 2.2 |
-| text + vector, 65 candidates | 3.6 |
-| text + vector, 65 candidates ∩ `{label, props}` (tenant lookup + label confirmed on the set) | 4.9 |
-| text + vector, no set, no filter (reference) | 0.96 |
+| query | 0.6.15 (ms) | 0.6.16 (ms) |
+|---|---|---|
+| text only, 65 candidates (term set) | 0.16 | 0.16 |
+| vector only, 65 candidates (exact over the set) | 3.5 | 0.013 |
+| text + vector, 65 candidates | 3.0 | 0.19 |
+| text + vector, 65 candidates ∩ `{label, props}` (tenant lookup + label confirmed on the set) | 4.5 | 0.80 |
+| text + vector, no set, no filter (reference) | 0.91 | 0.82 |
 
-The vector side dominates: the exact path reads each of the set's vectors
-from storage (one key per id, ~30 µs each), a cost that predates candidate
-sets (`exact_over_allowed`, 0.5.5) and is the candidate for the next
-optimisation — the index already holds those vectors in memory.
+Until 0.6.15 the vector side dominated for two reasons that had nothing to do
+with ranking: the exact path read each of the set's vectors from storage, and
+opening the embeddings keyspace for that read was, on redb, a write
+transaction per query that also dropped every cached read table (the
+hydration that followed paid it again: 17 µs → 5.7 ms). Since 0.6.16 the
+exact path takes the vectors from the index itself, which already holds them
+in memory, and the embeddings keyspace is cached like the others. What is
+left with a filter is the property lookup and the label confirmation on the
+set.
 
 The NQL `where`, Leiden communities and `neighborhood` results as candidate
 sets, and a cost-based choice between the paths, are the second phase of
@@ -300,7 +310,7 @@ caller does not need the table below, which is there to say *why*:
 
 | `vector_path` | What ran | `vector_exact` |
 |---|---|---|
-| `exact_over_allowed` | small allowed set over a large index: exact cosine over just those vectors | `True` |
+| `exact_over_allowed` | small allowed set over a large index: exact cosine over just those vectors, read from the index itself (0.6.16, #224) | `True` |
 | `exact_index` | filter over an index of at most 1024 points: the index scans every point and applies the predicate | `True` |
 | `hnsw_filtered` | HNSW walk with the predicate applied during traversal, `ef_search` escalated up to 4096 | `False` |
 | `unfiltered` / `label_checked` | plain KNN on the index (the label checked on the candidates in rank order) | `True` while the index has at most 1024 points and reads exactly, else `False` |
