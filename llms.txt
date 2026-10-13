@@ -1,0 +1,30 @@
+# NopalDB
+
+> Embedded graph database in Rust with a Python API: nodes, edges, MVCC transactions, property and full-text indexes, HNSW vector search, BM25 + vector hybrid search fused with RRF, and NQL, a Cypher-inspired query language where semantic search lives in the WHERE clause. Built for GraphRAG.
+
+Use the exact method names from the cheat sheet; `execute`, `upsert_node`, `create_embedding_index` do not exist.
+
+## Python API
+
+- [API cheat sheet](https://github.com/sharop/nopaldb/blob/main/docs/python/API_CHEATSHEET.md): one line per method, exact signatures, and the names that do not exist
+- [Quick start](https://github.com/sharop/nopaldb/blob/main/docs/python/QUICKSTART.md)
+- [API reference](https://github.com/sharop/nopaldb/blob/main/docs/python/API_REFERENCE.md)
+- [Type stub](https://github.com/sharop/nopaldb/blob/main/nopaldb/python/nopaldb/nopaldb.pyi): the authoritative signatures
+
+## NQL
+
+- [NQL reference (English)](https://github.com/sharop/nopaldb/blob/main/docs/en/NQL_REFERENCE.md): `find … from (pattern) where … limit n`; `similar_to` / `hybrid` as WHERE predicates; `score`, `rank`, `text_score`, `vector_score` columns
+- [Referencia NQL (Español)](https://github.com/sharop/nopaldb/blob/main/docs/es/NQL_REFERENCIA.md)
+- [NQL guide for Python](https://github.com/sharop/nopaldb/blob/main/docs/python/NQL_GUIDE.md)
+
+## Retrieval
+
+- [Hybrid search](https://github.com/sharop/nopaldb/blob/main/docs/HYBRID_SEARCH.md): RRF, filters, candidate sets, explain
+- [GraphRAG](https://github.com/sharop/nopaldb/blob/main/docs/GRAPHRAG.md): search and expand in one query, neighborhood, communities
+- [Embeddings](https://github.com/sharop/nopaldb/blob/main/docs/EMBEDDINGS.md)
+
+## Project
+
+- [README](https://github.com/sharop/nopaldb/blob/main/README.md)
+- [CHANGELOG](https://github.com/sharop/nopaldb/blob/main/CHANGELOG.md)
+- [Repository](https://github.com/sharop/nopaldb) · [PyPI](https://pypi.org/project/nopaldb/) · [crates.io](https://crates.io/crates/nopaldb)

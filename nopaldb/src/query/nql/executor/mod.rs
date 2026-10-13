@@ -381,10 +381,64 @@ fn path_embedding_projection_key(name: &str, args: &[Expression]) -> Result<Stri
 pub struct Executor<'a> {
     graph: &'a Graph,
     path_profile: Mutex<Option<PathProfileCounters>>,
-    /// Score de cada candidato de la búsqueda vectorial del WHERE de la
-    /// consulta en curso, para proyectar `score(var)` (#174c). Lo llena
+    /// Scores de cada candidato de la búsqueda vectorial del WHERE de la
+    /// consulta en curso, para proyectar `score(var)` (#174c) y, desde #228,
+    /// `rank(var)`, `text_score(var)` y `vector_score(var)`. Lo llena
     /// `vector_search_candidates`; vacío si la consulta no busca.
-    search_scores: Mutex<HashMap<NodeId, f32>>,
+    search_scores: Mutex<HashMap<NodeId, SearchScores>>,
+}
+
+/// Lo que la búsqueda del WHERE sabe de un candidato (#228). `score` es lo
+/// que ordena las filas (coseno con `similar_to`, RRF con `hybrid`); el
+/// resto son las piezas crudas que `score` resume: la posición en el
+/// ranking y, cuando la búsqueda las tiene, el BM25 del texto y la similitud
+/// coseno del vector. Son las mismas que `search_hybrid_explain` expone.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SearchScores {
+    pub score: f32,
+    pub rank: usize,
+    pub text_score: Option<f32>,
+    pub vector_score: Option<f32>,
+}
+
+/// Qué columna de score pide el FIND (#228). Las cuatro siguen las mismas
+/// reglas que `score(var)`: solo FIND, sobre la variable buscada.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScoreKind {
+    Score,
+    Rank,
+    TextScore,
+    VectorScore,
+}
+
+impl ScoreKind {
+    fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "score" => Some(ScoreKind::Score),
+            "rank" => Some(ScoreKind::Rank),
+            "text_score" => Some(ScoreKind::TextScore),
+            "vector_score" => Some(ScoreKind::VectorScore),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            ScoreKind::Score => "score",
+            ScoreKind::Rank => "rank",
+            ScoreKind::TextScore => "text_score",
+            ScoreKind::VectorScore => "vector_score",
+        }
+    }
+
+    fn value(self, s: &SearchScores) -> PropertyValue {
+        match self {
+            ScoreKind::Score => PropertyValue::Float(s.score as f64),
+            ScoreKind::Rank => PropertyValue::Int(s.rank as i64),
+            ScoreKind::TextScore => s.text_score.map(|v| PropertyValue::Float(v as f64)).unwrap_or(PropertyValue::Null),
+            ScoreKind::VectorScore => s.vector_score.map(|v| PropertyValue::Float(v as f64)).unwrap_or(PropertyValue::Null),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -781,7 +835,7 @@ impl<'a> Executor<'a> {
             }
             // `score(var)` se resuelve por el id del nodo de cada fila; si la
             // consulta no pedía `var.id`, se añade y se retira tras inyectar.
-            for (_, var) in score_projections(&query) {
+            for (_, var, _) in score_projections(&query) {
                 let id_key = format!("{var}.id");
                 if !projection_strings.contains(&id_key) {
                     projection_strings.push(id_key.clone());
@@ -1468,7 +1522,7 @@ impl<'a> Executor<'a> {
             }
         }
         // `score(var)` (#174c) también se resuelve por el id del nodo.
-        for (_, var) in score_projections(&query) {
+        for (_, var, _) in score_projections(&query) {
             let id_key = format!("{var}.id");
             if !projection_strings.contains(&id_key) {
                 projection_strings.push(id_key.clone());
@@ -5342,16 +5396,26 @@ impl<'a> Executor<'a> {
                     explanation.push_str("\nHybrid: ");
                     explanation.push_str(&describe_hybrid(&call, &query));
                 }
-                for (column, var) in score_projections(&query) {
+                for (column, var, kind) in score_projections(&query) {
                     let has = |f: &str| {
                         query.filter.as_ref().is_some_and(|w| expr_searches_var(&w.condition, f, &var))
                     };
-                    let source = if has("similar_to") {
-                        format!("cosine similarity of similar_to({var}) = 1 - distance, higher is better")
-                    } else if has("hybrid") {
-                        format!("RRF score of hybrid({var}), higher is better")
-                    } else {
-                        "no vector search on this variable".to_string()
+                    let search = if has("similar_to") { "similar_to" } else if has("hybrid") { "hybrid" } else { "" };
+                    let source = match (kind, search) {
+                        (_, "") => "no vector search on this variable".to_string(),
+                        (ScoreKind::Score, "similar_to") => {
+                            format!("cosine similarity of similar_to({var}) = 1 - distance, higher is better")
+                        }
+                        (ScoreKind::Score, _) => format!("RRF score of hybrid({var}), higher is better (at most 2/rrf_k)"),
+                        (ScoreKind::Rank, f) => format!("0-based position of {var} in the {f}({var}) ranking"),
+                        (ScoreKind::TextScore, "hybrid") => {
+                            format!("raw BM25 of the text branch of hybrid({var}); null if that branch did not rank it")
+                        }
+                        (ScoreKind::TextScore, _) => format!("null: similar_to({var}) has no text branch"),
+                        (ScoreKind::VectorScore, "hybrid") => {
+                            format!("cosine similarity of the vector branch of hybrid({var}); null if that branch did not rank it")
+                        }
+                        (ScoreKind::VectorScore, _) => format!("cosine similarity of similar_to({var}) = 1 - distance"),
                     };
                     explanation.push_str(&format!("\nScore: {column} = {source}"));
                 }
@@ -5605,9 +5669,11 @@ impl<'a> Executor<'a> {
     /// etiqueta y conserva el ranking. Con ambas funciones a la vez el
     /// resultado es la intersección en el orden de `similar_to`.
     ///
-    /// El score de cada candidato queda en `search_scores` para `score(var)`
-    /// (#174c): similitud coseno (`1 - distancia`) para `similar_to`, score
-    /// RRF para `hybrid`; con las dos, el de `similar_to`, que es el orden.
+    /// Los scores de cada candidato quedan en `search_scores` para
+    /// `score(var)` (#174c) y las columnas crudas de #228: similitud coseno
+    /// (`1 - distancia`) para `similar_to`, score RRF para `hybrid`; con las
+    /// dos, los de `similar_to`, que es el orden, más el `text_score` que el
+    /// `hybrid` tenga para ese nodo.
     #[cfg(feature = "embeddings-index")]
     async fn vector_search_candidates(&self, query: &Query) -> Result<Option<Vec<Node>>> {
         let Some(filter) = &query.filter else { return Ok(None) };
@@ -5615,13 +5681,20 @@ impl<'a> Executor<'a> {
         #[cfg(feature = "hybrid")]
         let hybrid = self.precompute_hybrid(&filter.condition, query).await?;
         #[cfg(not(feature = "hybrid"))]
-        let hybrid: Option<Vec<(Node, f32)>> = None;
-        let scored = match (similar, hybrid) {
+        let hybrid: Option<Vec<(Node, SearchScores)>> = None;
+        let scored: Vec<(Node, SearchScores)> = match (similar, hybrid) {
             (None, None) => return Ok(None),
             (Some(nodes), None) | (None, Some(nodes)) => nodes,
             (Some(similar), Some(hybrid)) => {
-                let keep: HashSet<NodeId> = hybrid.iter().map(|(n, _)| n.id).collect();
-                similar.into_iter().filter(|(n, _)| keep.contains(&n.id)).collect()
+                let text: HashMap<NodeId, Option<f32>> = hybrid.iter().map(|(n, s)| (n.id, s.text_score)).collect();
+                similar
+                    .into_iter()
+                    .filter(|(n, _)| text.contains_key(&n.id))
+                    .map(|(n, mut s)| {
+                        s.text_score = text.get(&n.id).copied().flatten();
+                        (n, s)
+                    })
+                    .collect()
             }
         };
         let mut scores = self.search_scores.lock().unwrap_or_else(|e| e.into_inner());
@@ -5634,18 +5707,18 @@ impl<'a> Executor<'a> {
     /// nodo de `var` (la fila trae `var.id`, añadido como columna auxiliar si
     /// la consulta no lo pedía). Una fila cuyo nodo no vino de la búsqueda
     /// recibe `null`.
-    fn inject_scores(&self, rows: &mut [Row], score_projs: &[(String, String)]) {
+    fn inject_scores(&self, rows: &mut [Row], score_projs: &[(String, String, ScoreKind)]) {
         if score_projs.is_empty() {
             return;
         }
         let scores = self.search_scores.lock().unwrap_or_else(|e| e.into_inner());
         for row in rows.iter_mut() {
-            for (key, var) in score_projs {
+            for (key, var, kind) in score_projs {
                 let value = match row.values.get(&format!("{var}.id")) {
                     Some(PropertyValue::String(id)) => uuid::Uuid::parse_str(id)
                         .ok()
                         .and_then(|id| scores.get(&id))
-                        .map(|s| PropertyValue::Float(*s as f64))
+                        .map(|s| kind.value(s))
                         .unwrap_or(PropertyValue::Null),
                     _ => PropertyValue::Null,
                 };
@@ -5688,7 +5761,7 @@ impl<'a> Executor<'a> {
     /// and with embeddings spread over several labels the query returned
     /// fewer rows without saying so; before 0.6.9 the label was ignored.
     #[cfg(feature = "embeddings-index")]
-    async fn precompute_similar_to(&self, condition: &Expression, query: &Query) -> Result<Option<Vec<(Node, f32)>>> {
+    async fn precompute_similar_to(&self, condition: &Expression, query: &Query) -> Result<Option<Vec<(Node, SearchScores)>>> {
         let Some(call) = extract_similar_to_params(condition) else { return Ok(None) };
         let k = effective_k(call.k, query);
         let label = pattern_label_for(query, &call.variable);
@@ -5716,6 +5789,10 @@ impl<'a> Executor<'a> {
             .filter_map(|(node, (_, distance))| node.map(|n| (n, 1.0 - distance)))
             .filter(|(n, _)| label.as_deref().is_none_or(|l| l == n.label))
             .take(k)
+            .enumerate()
+            .map(|(rank, (n, cosine))| {
+                (n, SearchScores { score: cosine, rank, text_score: None, vector_score: Some(cosine) })
+            })
             .collect();
         Ok(Some(nodes))
     }
@@ -5732,7 +5809,7 @@ impl<'a> Executor<'a> {
     /// branch's candidates instead of scanning the label (see
     /// `Graph::search_hybrid_explain`).
     #[cfg(feature = "hybrid")]
-    async fn precompute_hybrid(&self, condition: &Expression, query: &Query) -> Result<Option<Vec<(Node, f32)>>> {
+    async fn precompute_hybrid(&self, condition: &Expression, query: &Query) -> Result<Option<Vec<(Node, SearchScores)>>> {
         let Some(call) = extract_hybrid_params(condition) else { return Ok(None) };
         let k = effective_k(call.k, query);
         let filter = pattern_label_for(query, &call.variable)
@@ -5754,7 +5831,10 @@ impl<'a> Executor<'a> {
             // fase 2 de #214; hoy solo la etiqueta del patrón llega al filtro.
             candidates: crate::graph::CandidateSet::All,
         };
-        let hits = self.graph.search_hybrid(hq).await?;
+        // La versión explicada es el mismo cómputo (`search_hybrid` delega en
+        // ella) y trae las piezas crudas que #228 proyecta: BM25 del texto y
+        // distancia del vector por hit.
+        let hits = self.graph.search_hybrid_explain(hq).await?.hits;
         let ids: Vec<NodeId> = hits.iter().map(|h| h.node_id).collect();
         let nodes = self
             .graph
@@ -5762,7 +5842,20 @@ impl<'a> Executor<'a> {
             .await?
             .into_iter()
             .zip(hits)
-            .filter_map(|(node, hit)| node.map(|n| (n, hit.score)))
+            .enumerate()
+            .filter_map(|(rank, (node, hit))| {
+                node.map(|n| {
+                    (
+                        n,
+                        SearchScores {
+                            score: hit.score,
+                            rank,
+                            text_score: hit.text_score,
+                            vector_score: hit.vector_distance.map(|d| 1.0 - d),
+                        },
+                    )
+                })
+            })
             .collect();
         Ok(Some(nodes))
     }
@@ -5781,31 +5874,33 @@ fn expr_searches_var(expr: &Expression, fname: &str, var: &str) -> bool {
     }
 }
 
-/// Nombre de columna de `score(var)` sin alias; `None` si no es esa llamada.
+/// Nombre de columna de `score(var)` / `rank(var)` / `text_score(var)` /
+/// `vector_score(var)` sin alias; `None` si no es una de esas llamadas.
 fn score_column(name: &str, args: &[Expression]) -> Option<String> {
+    let kind = ScoreKind::from_name(name)?;
     match args {
-        [Expression::Property { variable, property }] if property.is_empty() && name.eq_ignore_ascii_case("score") => {
-            Some(format!("score({variable})"))
+        [Expression::Property { variable, property }] if property.is_empty() => {
+            Some(format!("{}({variable})", kind.name()))
         }
         _ => None,
     }
 }
 
-/// Las proyecciones `score(var)` del FIND (#174c): `(columna, variable)`. La
-/// columna es el alias, o `score(var)` sin alias.
-fn score_projections(query: &Query) -> Vec<(String, String)> {
+/// Las proyecciones de score del FIND (#174c, #228): `(columna, variable,
+/// qué columna)`. La columna es el alias, o `fn(var)` sin alias.
+fn score_projections(query: &Query) -> Vec<(String, String, ScoreKind)> {
     query
         .find
         .projections
         .iter()
         .filter_map(|p| match p {
-            Projection::Expression { expr: Expression::FunctionCall { name, args }, alias }
-                if name.eq_ignore_ascii_case("score") =>
-            {
+            Projection::Expression { expr: Expression::FunctionCall { name, args }, alias } => {
+                let kind = ScoreKind::from_name(name)?;
                 match args.as_slice() {
                     [Expression::Property { variable, property }] if property.is_empty() => Some((
-                        alias.clone().unwrap_or_else(|| format!("score({variable})")),
+                        alias.clone().unwrap_or_else(|| format!("{}({variable})", kind.name())),
                         variable.clone(),
+                        kind,
                     )),
                     _ => None,
                 }

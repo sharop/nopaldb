@@ -360,6 +360,29 @@ buscado) y solo es columna del FIND: las filas ya salen mejor-primero, así que
 se rechaza en WHERE, ORDER BY, GROUP BY y HAVING, y junto a agregaciones.
 EXPLAIN nombra su fuente (`Score: score(c) = cosine similarity of similar_to(c) …`).
 
+**Lo que devuelve `score(var)` depende de la búsqueda, y con ello el umbral
+que tiene sentido (#228).** Desde 0.6.17 las piezas crudas son columnas
+propias, con las mismas reglas que `score`:
+
+| columna | con `similar_to` | con `hybrid` | con ambas |
+|---|---|---|---|
+| `score(var)` | similitud coseno, en `[0, 1]` | score RRF `Σ 1/(rrf_k + rango)`: **como mucho `2/rrf_k`** (0.033 con el default 60) | el de `similar_to` (es el orden de las filas) |
+| `rank(var)` | posición 0-based en la búsqueda | posición 0-based en el ranking fusionado | posición en `similar_to` |
+| `text_score(var)` | `null` | BM25 crudo de la rama de texto; `null` si esa rama no puntuó el nodo | el de `hybrid` |
+| `vector_score(var)` | similitud coseno (= `score`) | similitud coseno de la rama vectorial; `null` si esa rama no puntuó el nodo | coseno de `similar_to` |
+
+Corta por umbral absoluto solo sobre un coseno: `score(c)` con `similar_to`,
+o `vector_score(c)` con `hybrid`. Un score RRF es una mezcla de rangos, no
+una similitud: un umbral como `s > 0.45` no deja pasar nada, nunca. Con
+`hybrid`, corta por `rank(c)` o por `limit`, y usa `text_score` /
+`vector_score` para ver qué rama trajo la fila:
+
+```nql
+find c.text, rank(c), text_score(c) as bm25, vector_score(c) as cos
+from (c:Chunk)
+where hybrid(c, text = "riego por goteo", vector = [...], model = "minilm", k = 10)
+```
+
 Dónde puede ir la búsqueda: un patrón de un solo nodo, o **un** patrón de un
 salto `(a)-[:T]->(b)` cuyo primer nodo es la variable buscada (los candidatos
 siembran el pipeline; el `LIMIT` acota entonces las filas expandidas, así que

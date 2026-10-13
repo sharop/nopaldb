@@ -106,9 +106,10 @@ date-changelog:
 # intérprete actual (`maturin develop -m nopaldb/Cargo.toml`, features del
 # pyproject). Lo corre el job python-stubs del CI; en local, con el venv
 # activado. Stubs (mypy stubtest), samples ejecutables y mypy --strict.
-PY_SAMPLES := roundtrip turtle_roundtrip fulltext_analyzer hybrid_filter shacl hnsw migrate stats bulk_loader graphrag global_search typecheck
+PY_SAMPLES := roundtrip turtle_roundtrip fulltext_analyzer hybrid_filter nql_scores shacl hnsw migrate stats bulk_loader graphrag global_search typecheck
 check-python:
 	$(PYTHON) nopaldb/python/scripts/check_stubs.py
+	$(PYTHON) nopaldb/python/scripts/check_cheatsheet.py
 	@for s in $(PY_SAMPLES); do \
 	  echo "== $$s"; $(PYTHON) nopaldb/python/scripts/$${s}_sample.py || exit 1; done
 	$(PYTHON) -m mypy --strict nopaldb/python/scripts/typecheck_sample.py
