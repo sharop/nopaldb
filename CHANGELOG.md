@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.17] - unreleased
+## [0.6.17] - 2026-10-13
 
 NQL dice de dónde sale cada score y los asistentes de código encuentran los
 nombres reales de la API.
