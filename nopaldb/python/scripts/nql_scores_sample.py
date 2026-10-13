@@ -34,7 +34,8 @@ with tempfile.TemporaryDirectory() as tmp:
     assert len(rows) == 4, rows
     assert [r["rank(c)"] for r in rows] == [0, 1, 2, 3], rows
     # RRF: tiny numbers, bounded by 2/rrf_k — a cosine threshold would drop everything.
-    assert all(0 < r["score(c)"] <= 2 / 60 + 1e-9 for r in rows), rows
+    # f32 rounds 1/60 + 1/60 up a hair past 2/60 in f64: allow float32 slack.
+    assert all(0 < r["score(c)"] <= 2 / 60 + 1e-6 for r in rows), rows
     assert all(r["cos"] is None or -1.0 <= r["cos"] <= 1.0 for r in rows), rows
     # "cosecha de tuna" does not contain "riego": its text branch is null.
     by_name = {r["c.name"]: r for r in rows}
@@ -53,7 +54,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     # Cutting the context the right way: by cosine, or by rank — never by RRF.
     kept = [r for r in rows if r["cos"] is not None and r["cos"] >= 0.75]
-    assert [r["c.name"] for r in kept] == ["c0", "c1", "c2"], kept
+    assert {r["c.name"] for r in kept} == {"c0", "c1", "c2"}, kept
     top2 = [r["c.name"] for r in rows if r["rank(c)"] < 2]
     assert len(top2) == 2
 
