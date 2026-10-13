@@ -475,6 +475,30 @@ mod tests {
         assert_eq!(loaded.search_knn(q, 5).unwrap(), before);
     }
 
+    /// `point_ids` no viaja en el dump: se reconstruye al cargar y
+    /// `vectors_for` devuelve los mismos vectores que antes (#224), y sigue
+    /// omitiendo el tombstone.
+    #[test]
+    fn dump_then_load_rebuilds_the_point_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = vectors(EXACT_SEARCH_THRESHOLD + 150, 16);
+        let mut index = HnswIndex::build_batch(data.clone(), "m", 16).unwrap();
+        index.remove(data[9].0);
+        let ids: Vec<NodeId> = data.iter().map(|(id, _)| *id).collect();
+        let before = index.vectors_for(ids.iter().copied());
+        assert_eq!(before.len(), data.len() - 1);
+        let digest = EmbeddingsDigest { count: index.len(), hash: 11 };
+        dump(&mut index, dir.path(), digest).unwrap();
+        let LoadOutcome::Loaded(loaded) = load("m", dir.path(), &digest) else {
+            panic!("expected Loaded")
+        };
+        assert_eq!(loaded.vectors_for(ids.iter().copied()), before);
+        assert!(loaded.vectors_for([data[9].0]).is_empty(), "el tombstone sigue omitido tras cargar");
+        for (id, v) in &data[..5] {
+            assert_eq!(loaded.vectors_for([*id]), vec![(*id, v.clone())]);
+        }
+    }
+
     #[test]
     fn dump_then_load_preserves_orphans() {
         let dir = tempfile::tempdir().unwrap();

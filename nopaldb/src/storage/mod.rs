@@ -81,6 +81,13 @@ const INDEXES_TREE: &str = "indexes";
 const CATALOG_TREE: &str = "catalog";
 const VERSIONED_EDGES_TREE: &str = "versioned_edges";
 const VERSIONED_EDGES_CURRENT_TREE: &str = "versioned_edges_current";
+/// Embeddings de nodo (`{uuid}:{model}`) y de arista (`e:{uuid}:{model}`).
+/// Cacheado como los demás desde #224: pedirlo bajo demanda costaba, en
+/// redb, una transacción de escritura y la invalidación de todas las
+/// tablas de lectura cacheadas por cada consulta que leía un embedding.
+const EMBEDDINGS_TREE: &str = "embeddings";
+/// Referencias de path embedding (E-8).
+const PATH_REF_EMBEDDINGS_TREE: &str = "path_ref_embeddings";
 /// Nombre meta con la cota superior persistida del contador de transaction
 /// ids. Vive en `catalog` (F5.4); legacy: `meta:next_tx_id` (F5.5).
 pub const META_NEXT_TX_ID: &str = "next_tx_id";
@@ -176,6 +183,14 @@ pub struct Storage {
     history_ks: Arc<dyn kv::KvKeyspace>,
     adjacency_ks: Arc<dyn kv::KvKeyspace>,
     indexes_ks: Arc<dyn kv::KvKeyspace>,
+    /// `embeddings` y `path_ref_embeddings`, cacheados al abrir (#224). Las
+    /// tablas se crean siempre (los nombres están en `ALL_KEYSPACES` y una
+    /// tabla vacía no cuesta nada); los handles solo se guardan cuando hay
+    /// quien los lea.
+    #[cfg(feature = "embeddings")]
+    embeddings_ks: Arc<dyn kv::KvKeyspace>,
+    #[cfg(feature = "embeddings")]
+    path_ref_embeddings_ks: Arc<dyn kv::KvKeyspace>,
     /// Interning nombre↔u32 de tipos de arista (RAM, respaldado por
     /// `catalog_ks`), cargado completo al abrir.
     interner: EdgeTypeInterner,
@@ -349,16 +364,20 @@ fn property_index_entry_key(property: &str, value: &PropertyValue, node_id: Node
 }
 
 impl Storage {
+    /// Handle cacheado del keyspace de embeddings. Devuelve `Result` para
+    /// que los llamadores no cambien; ya no puede fallar.
     #[cfg(feature = "embeddings")]
     fn open_embeddings_tree_sync(&self) -> Result<Arc<dyn kv::KvKeyspace>> {
-        self.engine.keyspace("embeddings")
+        Ok(Arc::clone(&self.embeddings_ks))
     }
 
     /// Construye la capa de dominio sobre un engine ya abierto, cacheando los
-    /// handles de keyspace que se usan en caliente (los de embeddings se
-    /// abren on-demand, igual que antes del rewire).
+    /// handles de TODOS los keyspaces que se usan en caliente. Los de
+    /// embeddings se abrían bajo demanda hasta #224: en redb cada apertura
+    /// era una transacción de escritura más la invalidación de las tablas
+    /// de lectura cacheadas, pagada por cada consulta que leía un vector.
     fn from_engine(engine: Arc<dyn kv::KvEngine>, profile: StorageProfile) -> Result<Self> {
-        // Los once keyspaces en una llamada: un motor que crea tablas por
+        // Los trece keyspaces en una llamada: un motor que crea tablas por
         // transacción (redb) lo hace en una sola.
         let mut ks = engine
             .keyspaces(&[
@@ -373,6 +392,8 @@ impl Storage {
                 ADJACENCY_TREE,
                 INDEXES_TREE,
                 LABEL_IDX_TREE,
+                EMBEDDINGS_TREE,
+                PATH_REF_EMBEDDINGS_TREE,
             ])?
             .into_iter();
         let mut next = || ks.next().expect("keyspaces devuelve uno por nombre");
@@ -387,6 +408,10 @@ impl Storage {
         let adjacency_ks = next();
         let indexes_ks = next();
         let label_idx_ks = next();
+        let embeddings_ks = next();
+        let path_ref_embeddings_ks = next();
+        #[cfg(not(feature = "embeddings"))]
+        drop((embeddings_ks, path_ref_embeddings_ks));
         let interner = EdgeTypeInterner::load(&catalog_ks)?;
 
         Ok(Self {
@@ -403,6 +428,10 @@ impl Storage {
             history_ks,
             adjacency_ks,
             indexes_ks,
+            #[cfg(feature = "embeddings")]
+            embeddings_ks,
+            #[cfg(feature = "embeddings")]
+            path_ref_embeddings_ks,
             interner,
             profile,
         })
@@ -1323,8 +1352,9 @@ impl Storage {
     /// el llamador típico es un camino de búsqueda sobre un conjunto de nodos
     /// que pasaron un filtro de grafo, donde tener embedding es opcional.
     /// A diferencia de [`Self::load_all_node_embeddings_for_model`], no
-    /// escanea el keyspace: hace un get por id, así que el costo lo acota el
-    /// llamador y no el tamaño del índice.
+    /// escanea el keyspace: resuelve las claves en un solo `get_many` (una
+    /// tabla de lectura, una toma del overlay, #224), así que el costo lo
+    /// acota el llamador y no el tamaño del índice.
     #[cfg(feature = "embeddings")]
     pub async fn load_node_embeddings_for(
         &self,
@@ -1332,12 +1362,14 @@ impl Storage {
         model: &str,
     ) -> Result<Vec<crate::embeddings::Embedding>> {
         let tree = self.open_embeddings_tree_sync()?;
-        let mut out = Vec::new();
-        for node_id in node_ids {
-            let key = format!("{}:{}", node_id, model);
-            if let Some(value) = tree.get(key.as_bytes())? {
-                out.push(deserialize::<crate::embeddings::Embedding>(&value)?);
-            }
+        let keys: Vec<Vec<u8>> = node_ids
+            .into_iter()
+            .map(|node_id| format!("{}:{}", node_id, model).into_bytes())
+            .collect();
+        let refs: Vec<&[u8]> = keys.iter().map(|k| k.as_slice()).collect();
+        let mut out = Vec::with_capacity(refs.len());
+        for value in tree.get_many(&refs)?.into_iter().flatten() {
+            out.push(deserialize::<crate::embeddings::Embedding>(&value)?);
         }
         Ok(out)
     }
@@ -1397,7 +1429,7 @@ impl Storage {
 
     #[cfg(feature = "embeddings")]
     fn open_path_ref_tree_sync(&self) -> Result<Arc<dyn kv::KvKeyspace>> {
-        self.engine.keyspace("path_ref_embeddings")
+        Ok(Arc::clone(&self.path_ref_embeddings_ks))
     }
 
     /// Persiste una referencia de path embedding (E-8).

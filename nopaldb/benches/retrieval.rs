@@ -84,6 +84,9 @@ struct Fixture {
     seeds: Vec<NodeId>,
     /// 65 chunks del tenant 7: el conjunto explícito de un caller (#214).
     tenant7_65: Vec<NodeId>,
+    /// 512 y 1000 chunks repartidos: los tamaños mayores del camino exacto.
+    set_512: Vec<NodeId>,
+    set_1000: Vec<NodeId>,
     query: Vec<f32>,
     _dir: tempfile::TempDir,
 }
@@ -143,7 +146,9 @@ async fn build(n_chunks: usize) -> Fixture {
     let _ = graph.knn_nodes_bench_warm(&query).await;
     let seeds: Vec<NodeId> = chunks.iter().step_by(n_chunks / 10).take(10).copied().collect();
     let tenant7_65: Vec<NodeId> = chunks.iter().skip(7).step_by(100).take(65).copied().collect();
-    Fixture { graph, seeds, tenant7_65, query, _dir: dir }
+    let set_512: Vec<NodeId> = chunks.iter().step_by((n_chunks / 512).max(1)).take(512).copied().collect();
+    let set_1000: Vec<NodeId> = chunks.iter().skip(3).step_by((n_chunks / 1000).max(1)).take(1000).copied().collect();
+    Fixture { graph, seeds, tenant7_65, set_512, set_1000, query, _dir: dir }
 }
 
 /// Pequeño puente: calentar el índice sin exponer nada nuevo en la API.
@@ -293,10 +298,35 @@ fn bench_retrieval(c: &mut Criterion) {
     });
     g.finish();
 
+    // Lectura de embeddings desde storage (#224): el coste fijo de abrir el
+    // keyspace (`exists_sync_1`) frente al coste por clave (`load_for_N`).
+    // Es lo que paga el camino exacto del vector antes de puntuar.
+    let mut g = c.benchmark_group("embeddings_read");
+    g.sample_size(20).measurement_time(Duration::from_secs(10));
+    g.bench_with_input(BenchmarkId::new("exists_sync_1", n), &n, |b, _| {
+        b.iter(|| black_box(fx.graph.try_node_embedding_exists_sync(seed, MODEL).expect("exists")))
+    });
+    for (name, ids) in [("1", &fx.seeds[..1]), ("65", fx.tenant7_65.as_slice()), ("512", fx.set_512.as_slice()), ("1000", fx.set_1000.as_slice())] {
+        g.bench_with_input(BenchmarkId::new(format!("load_for_{name}"), n), &n, |b, _| {
+            b.to_async(&rt).iter(|| async {
+                black_box(fx.graph.storage().load_node_embeddings_for(ids.iter().copied(), MODEL).await.expect("load"))
+            })
+        });
+    }
+    g.finish();
+
     let mut g = c.benchmark_group("hydrate");
     g.sample_size(20).measurement_time(Duration::from_secs(10));
     g.bench_with_input(BenchmarkId::new("get_nodes_10", n), &n, |b, _| {
         b.to_async(&rt).iter(|| async { black_box(fx.graph.get_nodes(&fx.seeds).await.expect("get_nodes")) })
+    });
+    // La misma hidratación justo después de leer embeddings: mide la
+    // invalidación colateral de la caché de lectura (#224).
+    g.bench_with_input(BenchmarkId::new("get_nodes_10_after_embeddings_read", n), &n, |b, _| {
+        b.to_async(&rt).iter(|| async {
+            let _ = fx.graph.storage().load_node_embeddings_for(fx.seeds[..1].iter().copied(), MODEL).await.expect("load");
+            black_box(fx.graph.get_nodes(&fx.seeds).await.expect("get_nodes"))
+        })
     });
     g.finish();
 

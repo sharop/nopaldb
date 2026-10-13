@@ -313,6 +313,18 @@ fn overlay_lookup(shared: &Shared, keyspace: &str, key: &[u8]) -> Option<Option<
     window.overlay.get(keyspace)?.get(key).cloned()
 }
 
+/// `overlay_lookup` para varias claves con UNA sola toma del mutex de la
+/// ventana (#224). Mismo contrato por posición.
+fn overlay_lookup_many(shared: &Shared, keyspace: &str, keys: &[&[u8]]) -> Vec<Option<Option<Vec<u8>>>> {
+    if !shared.window_open.load(Ordering::Acquire) {
+        return vec![None; keys.len()];
+    }
+    let guard = shared.window.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(window) = guard.as_ref() else { return vec![None; keys.len()] };
+    let Some(ks) = window.overlay.get(keyspace) else { return vec![None; keys.len()] };
+    keys.iter().map(|k| ks.get(*k).cloned()).collect()
+}
+
 /// Anota en el overlay una escritura (`Some`) o un borrado (`None`).
 fn overlay_put(overlay: &mut Overlay, keyspace: &str, key: &[u8], value: Option<&[u8]>) {
     overlay
@@ -824,6 +836,25 @@ impl ChunkedIter {
 impl KvKeyspace for RedbKeyspace {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         self.current_value(key)
+    }
+
+    /// Todas las claves bajo la misma tabla de lectura cacheada y una sola
+    /// consulta al overlay: lo que `get` paga N veces se paga una (#224).
+    fn get_many(&self, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pending = overlay_lookup_many(&self.read_slots, &self.name, keys);
+        self.with_read_table(|table| {
+            let mut out = Vec::with_capacity(keys.len());
+            for (key, pending) in keys.iter().zip(pending) {
+                out.push(match pending {
+                    Some(v) => v,
+                    None => table.get(*key).map_err(NopalError::from)?.map(|v| v.value().to_vec()),
+                });
+            }
+            Ok(out)
+        })
     }
 
     fn insert(&self, key: &[u8], value: &[u8]) -> Result<()> {
