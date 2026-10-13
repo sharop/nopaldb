@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.16] - unreleased
+## [0.6.16] - 2026-10-13
 
 La rama vectorial de `search_hybrid` con un conjunto chico (filtro selectivo
 o `candidates=`) pasa de milisegundos a microsegundos: lee los vectores del
