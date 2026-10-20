@@ -8,7 +8,7 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::reasoner::{Axiom, CompletionRule, ELReasoner};
+use crate::reasoner::{Axiom, CompletionRule, ELReasoner, Unsatisfiable, OWL_NOTHING};
 use crate::types::NodeId;
 use super::to_py_result;
 
@@ -34,13 +34,53 @@ fn inference_to_py(inf: &crate::reasoner::Inference) -> PyInference {
         Axiom::ExistentialDomain { role, filler, result } => {
             (format!("exists({}).{}", role, filler), result.to_string())
         }
+        Axiom::DisjointClasses { classes } => {
+            // Asserted, never derived; a display fallback like the conjunction's.
+            let ids: Vec<String> = classes.iter().map(|c| c.to_string()).collect();
+            (format!("disjoint({})", ids.join(",")), OWL_NOTHING.to_string())
+        }
     };
     let rule = match inf.rule {
         CompletionRule::CR1 => "CR1",
         CompletionRule::CR2 => "CR2",
         CompletionRule::CR3 => "CR3",
+        CompletionRule::CR4 => "CR4",
     };
     PyInference { sub, super_class, rule: rule.to_string() }
+}
+
+fn parse_id(s: &str) -> PyResult<NodeId> {
+    s.parse().map_err(|_| pyo3::exceptions::PyValueError::new_err(format!("Invalid UUID: {}", s)))
+}
+
+fn unsatisfiable_to_py<'py>(py: Python<'py>, cause: &Unsatisfiable) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    match cause {
+        Unsatisfiable::Disjoint { left, right } => {
+            d.set_item("cause", "disjoint")?;
+            d.set_item("rule", "CR2")?;
+            d.set_item("classes", vec![left.to_string(), right.to_string()])?;
+        }
+        Unsatisfiable::Asserted => {
+            d.set_item("cause", "asserted")?;
+            d.set_item("rule", py.None())?;
+        }
+        Unsatisfiable::Inherited { parent } => {
+            d.set_item("cause", "inherited")?;
+            d.set_item("rule", "CR1")?;
+            d.set_item("parent", parent.to_string())?;
+        }
+        Unsatisfiable::Existential { role, filler } => {
+            d.set_item("cause", "existential")?;
+            d.set_item("rule", "CR4")?;
+            d.set_item("role", role)?;
+            d.set_item("filler", filler.to_string())?;
+        }
+        // `Unsatisfiable` is non_exhaustive.
+        #[allow(unreachable_patterns)]
+        _ => d.set_item("cause", "other")?,
+    }
+    Ok(d)
 }
 
 // ---------------------------------------------------------------------------
@@ -56,7 +96,7 @@ fn inference_to_py(inf: &crate::reasoner::Inference) -> PyInference {
 /// super_class : str
 ///     UUID string of the superclass node.
 /// rule : str
-///     Completion rule that fired: ``"CR1"``, ``"CR2"``, or ``"CR3"``.
+///     Completion rule that fired: ``"CR1"``, ``"CR2"``, ``"CR3"`` or ``"CR4"``.
 #[pyclass(name = "Inference", skip_from_py_object)]
 pub struct PyInference {
     #[pyo3(get)]
@@ -97,6 +137,12 @@ impl PyInference {
 /// - **CR1** — transitivity: A ⊑ B ∧ B ⊑ C → A ⊑ C
 /// - **CR2** — conjunction: A ⊑ B ∧ A ⊑ C ∧ B ⊓ C ⊑ D → A ⊑ D
 /// - **CR3** — existential: A ⊑ ∃R.B ∧ B ⊑ C ∧ ∃R.C ⊑ D → A ⊑ D
+/// - **CR4** — ⊥ through an existential: A ⊑ ∃R.B ∧ B ⊑ ⊥ → A ⊑ ⊥
+///
+/// ⊥ (``owl:Nothing``) is built in as :attr:`ELReasoner.NOTHING`. Disjoint
+/// classes (:meth:`assert_disjoint`) make a class below two of them
+/// unsatisfiable: :meth:`unsatisfiable_classes` lists them and
+/// :meth:`why_unsatisfiable` says which pair caused it.
 ///
 /// Quick start
 /// -----------
@@ -130,6 +176,39 @@ impl PyELReasoner {
     #[new]
     pub fn new() -> Self {
         Self { inner: ELReasoner::new() }
+    }
+
+    /// ⊥ (``owl:Nothing``) as a UUID string. Built in: no need to register
+    /// it. ``assert_subclass(c, ELReasoner.NOTHING)`` declares ``c``
+    /// unsatisfiable; ``is_subclass_of(c, ELReasoner.NOTHING)`` asks it.
+    #[classattr]
+    #[allow(non_snake_case)]
+    fn NOTHING() -> String {
+        OWL_NOTHING.to_string()
+    }
+
+    /// Build a reasoner from the class hierarchy stored in ``graph``: class
+    /// nodes, ``subClassOf`` edges and ``disjointWith`` edges (what
+    /// ``import_turtle`` writes for ``owl:disjointWith`` and
+    /// ``owl:AllDisjointClasses``). Does not classify: call
+    /// :meth:`classify_all` or :meth:`unsatisfiable_classes`.
+    ///
+    /// Parameters
+    /// ----------
+    /// graph : Graph
+    ///     An open graph.
+    ///
+    /// Returns
+    /// -------
+    /// ELReasoner
+    #[staticmethod]
+    pub fn from_graph(py: Python<'_>, graph: &super::graph::PyGraph) -> PyResult<Self> {
+        let g = graph.graph()?;
+        // `u64::MAX`: every version still valid (the current state).
+        let inner = to_py_result(crate::python::runtime::block_on(py, async move {
+            ELReasoner::from_graph_at(&g, u64::MAX).await
+        }))?;
+        Ok(Self { inner })
     }
 
     /// Register a class node in the reasoner's internal taxonomy.
@@ -274,7 +353,59 @@ impl PyELReasoner {
         Ok(inferences.iter().map(inference_to_py).collect())
     }
 
-    /// Run CR1, CR2, and CR3 to saturation over all currently known axioms.
+    /// Assert that ``classes`` are pairwise disjoint (``owl:AllDisjointClasses``;
+    /// two classes = ``owl:disjointWith``): ``ci ⊓ cj ⊑ ⊥`` for every pair.
+    ///
+    /// Parameters
+    /// ----------
+    /// classes : list[str]
+    ///     Two or more distinct class UUIDs.
+    ///
+    /// Returns
+    /// -------
+    /// list[Inference]
+    ///     What CR2 derived right away (classes already below two of them go below ⊥).
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     An invalid UUID. Fewer than two classes, a repeated one or
+    ///     ``NOTHING`` among them raise too.
+    pub fn assert_disjoint(&mut self, classes: Vec<String>) -> PyResult<Vec<PyInference>> {
+        let ids: Vec<NodeId> = classes.iter().map(|c| parse_id(c)).collect::<PyResult<_>>()?;
+        let inferences = to_py_result(self.inner.assert_disjoint(&ids))?;
+        Ok(inferences.iter().map(inference_to_py).collect())
+    }
+
+    /// ``False`` if ``node`` is below ⊥ (no individual can belong to it).
+    /// Classifies first, so the answer is complete.
+    pub fn is_satisfiable(&mut self, node: &str) -> PyResult<bool> {
+        Ok(self.inner.is_satisfiable(parse_id(node)?))
+    }
+
+    /// Every class below ⊥ (UUID strings, sorted). Classifies first.
+    pub fn unsatisfiable_classes(&mut self) -> Vec<String> {
+        self.inner.unsatisfiable_classes().iter().map(|i| i.to_string()).collect()
+    }
+
+    /// Why ``node`` is unsatisfiable, or ``None`` if it is satisfiable.
+    ///
+    /// Returns
+    /// -------
+    /// dict | None
+    ///     ``cause`` is ``"disjoint"`` (with ``classes``: the disjoint pair it is
+    ///     below), ``"asserted"`` (declared below ⊥), ``"inherited"`` (with
+    ///     ``parent``: the class declared below ⊥) or ``"existential"`` (with
+    ///     ``role`` and ``filler``: ``node ⊑ ∃role.filler`` and the filler is
+    ///     unsatisfiable); ``rule`` is the completion rule.
+    pub fn why_unsatisfiable<'py>(&mut self, py: Python<'py>, node: &str) -> PyResult<Option<Bound<'py, PyDict>>> {
+        match self.inner.why_unsatisfiable(parse_id(node)?) {
+            Some(cause) => Ok(Some(unsatisfiable_to_py(py, &cause)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Run CR1–CR4 to saturation over all currently known axioms.
     ///
     /// Returns
     /// -------
@@ -337,7 +468,7 @@ impl PyELReasoner {
         self.inner.axiom_count()
     }
 
-    /// Number of inferences derived so far (CR1 + CR2).
+    /// Number of inferences derived so far (CR1–CR4).
     pub fn derived_count(&self) -> usize {
         self.inner.derived_inferences().len()
     }

@@ -1,9 +1,18 @@
-//! OWL-EL Reasoner — Steps 5, 9 and CR3 of the NopalDB ontological roadmap.
+//! OWL-EL Reasoner — Steps 5, 9 and CR3 of the NopalDB ontological roadmap,
+//! plus disjoint classes and ⊥ (`owl:Nothing`, #235).
 //!
 //! Implements:
 //! - CR1 (transitivity): A ⊑ B ∧ B ⊑ C → A ⊑ C
 //! - CR2 (conjunction):  A ⊑ B ∧ A ⊑ C ∧ B ⊓ C ⊑ D → A ⊑ D
 //! - CR3 (existential):  A ⊑ ∃R.B ∧ B ⊑ C ∧ ∃R.C ⊑ D → A ⊑ D
+//! - CR4 (⊥ through an existential): A ⊑ ∃R.B ∧ B ⊑ ⊥ → A ⊑ ⊥
+//!
+//! ⊥ is the built-in class [`OWL_NOTHING`]. Disjoint classes
+//! ([`ELReasoner::assert_disjoint`]) are normalised to `A ⊓ B ⊑ ⊥` per pair,
+//! so they stay inside EL++ and in polynomial time; a class below ⊥ is
+//! **unsatisfiable** ([`ELReasoner::unsatisfiable_classes`]) and
+//! [`ELReasoner::why_unsatisfiable`] says which disjoint pair (or existential)
+//! caused it.
 //!
 //! The reasoner is a standalone value type that operates over a [`TaxonomyIndex`].
 //! It does NOT write inferences back to the graph automatically — callers decide
@@ -12,11 +21,23 @@
 //! # Feature gate
 //! Compiled only when the `reasoner` feature is enabled.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::error::{NopalError, Result};
 use crate::index::taxonomy::TaxonomyIndex;
 use crate::types::NodeId;
+
+/// ⊥ — `owl:Nothing`, the empty class. Built in: the reasoner knows it without
+/// [`ELReasoner::register_class`]. A class below it is unsatisfiable.
+///
+/// A fixed id so it is the same in every process and every graph: the UUID v5
+/// of `http://www.w3.org/2002/07/owl#Nothing` in the URL namespace.
+pub const OWL_NOTHING: NodeId = uuid::Uuid::from_u128(0xdb39_00d2_6051_5ea5_a5b9_1126_1cdb_f979);
+
+/// Edge type of a disjointness between two class nodes in the graph
+/// (`owl:disjointWith`, and each pair of an `owl:AllDisjointClasses`).
+/// [`ELReasoner::from_graph_at`] reads it back.
+pub const EDGE_DISJOINT_WITH: &str = "disjointWith";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -64,6 +85,12 @@ pub enum Axiom {
         /// The conclusion superclass.
         result: NodeId,
     },
+    /// `DisjointClasses(c1 … cn)` — no two of the classes share an instance.
+    /// Normalised to `ci ⊓ cj ⊑ ⊥` for every pair (n·(n−1)/2 conjunctions).
+    DisjointClasses {
+        /// Two or more distinct classes.
+        classes: Vec<NodeId>,
+    },
 }
 
 /// An inference derived by the reasoner via a completion rule.
@@ -76,7 +103,7 @@ pub struct Inference {
 }
 
 /// Which OWL-EL completion rule produced an inference.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompletionRule {
     /// CR1: transitivity — A ⊑ B ∧ B ⊑ C → A ⊑ C
     CR1,
@@ -84,6 +111,41 @@ pub enum CompletionRule {
     CR2,
     /// CR3: existential — A ⊑ ∃R.B ∧ B ⊑ C ∧ ∃R.C ⊑ D → A ⊑ D
     CR3,
+    /// CR4: ⊥ through an existential — A ⊑ ∃R.B ∧ B ⊑ ⊥ → A ⊑ ⊥
+    CR4,
+}
+
+/// Why a class is unsatisfiable (below ⊥): the first cause the
+/// classification found. Answers "rejected because its parents X and Y are
+/// disjoint" without walking the derivation.
+///
+/// It is not the full proof: a class with several causes reports one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Unsatisfiable {
+    /// CR2: the class is below both `left` and `right`, and `left ⊓ right ⊑ ⊥`
+    /// (a disjoint pair, or a conjunction asserted into ⊥).
+    Disjoint {
+        /// One class of the pair.
+        left: NodeId,
+        /// The other class of the pair.
+        right: NodeId,
+    },
+    /// The class was asserted directly as a subclass of ⊥.
+    Asserted,
+    /// CR1: the class is below `parent`, which was asserted below ⊥.
+    Inherited {
+        /// The class asserted below ⊥.
+        parent: NodeId,
+    },
+    /// CR4 / CR3: the class is below `∃role.filler` and `filler` is
+    /// unsatisfiable (or `∃role.filler`'s domain is ⊥).
+    Existential {
+        /// The role of the restriction.
+        role: String,
+        /// The filler class.
+        filler: NodeId,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -92,8 +154,11 @@ pub enum CompletionRule {
 
 /// An OWL-EL reasoner that operates over a [`TaxonomyIndex`].
 ///
-/// Step 5 implements CR1 (transitivity) only.
-/// CR2 (conjunction inclusions) is planned for Step 9.
+/// [`classify_all`](Self::classify_all) computes the full closure of CR1–CR4
+/// (EL completion over subsumer sets with a work queue: every rule sees what
+/// the others derived, so the result is a fixpoint, not one pass). The
+/// `assert_*` methods apply their own rule incrementally, one step, and
+/// return what that step derived; `classify_all` completes the rest.
 ///
 /// The reasoner owns a cloned working copy of the `TaxonomyIndex` so that
 /// it can mutate it incrementally without affecting the caller's original index.
@@ -101,14 +166,23 @@ pub enum CompletionRule {
 /// All methods are synchronous — no Tokio runtime is needed.
 pub struct ELReasoner {
     taxonomy: TaxonomyIndex,
-    /// Pairs `(sub, super_class)` derived by CR1, CR2, or CR3 (not directly asserted).
-    derived: HashSet<(NodeId, NodeId)>,
+    /// Pairs `(sub, super_class)` derived by CR1–CR4 (not directly asserted),
+    /// with the rule that derived them. One byte per pair: a 1 000-class
+    /// chain derives ~500 000 pairs, so the explanation of ⊥ lives apart in
+    /// `unsat`, not here.
+    derived: HashMap<(NodeId, NodeId), CompletionRule>,
     /// CR2 conjunction axioms: `(left, right, result)` meaning `left ⊓ right ⊑ result`.
     conjunctions: Vec<(NodeId, NodeId, NodeId)>,
+    /// `conjunctions` deduplicated, with the conjuncts in a fixed order.
+    conjunction_keys: HashSet<(NodeId, NodeId, NodeId)>,
     /// CR3 left-side axioms: `(sub=A, role=R, filler=B)` for `A ⊑ ∃R.B`.
     existentials: Vec<(NodeId, String, NodeId)>,
     /// CR3 right-side axioms: `(role=R, filler=C, result=D)` for `∃R.C ⊑ D`.
     existential_domains: Vec<(String, NodeId, NodeId)>,
+    /// Unsatisfiable classes and their cause, as of the last `classify_all`.
+    unsat: HashMap<NodeId, Unsatisfiable>,
+    /// `true` while nothing changed since the last `classify_all`.
+    saturated: bool,
 }
 
 impl Default for ELReasoner {
@@ -120,13 +194,25 @@ impl Default for ELReasoner {
 impl ELReasoner {
     /// Create a new, empty reasoner.
     pub fn new() -> Self {
+        Self::with_taxonomy(TaxonomyIndex::new())
+    }
+
+    fn with_taxonomy(taxonomy: TaxonomyIndex) -> Self {
         Self {
-            taxonomy: TaxonomyIndex::new(),
-            derived: HashSet::new(),
+            taxonomy,
+            derived: HashMap::new(),
             conjunctions: Vec::new(),
+            conjunction_keys: HashSet::new(),
             existentials: Vec::new(),
             existential_domains: Vec::new(),
+            unsat: HashMap::new(),
+            saturated: false,
         }
+    }
+
+    /// ⊥ — [`OWL_NOTHING`].
+    pub fn nothing() -> NodeId {
+        OWL_NOTHING
     }
 
     /// Register a class node (label) in the internal taxonomy.
@@ -134,8 +220,8 @@ impl ELReasoner {
     /// Idempotent — calling with the same `id` twice overwrites the label.
     pub fn register_class(&mut self, id: NodeId, label: impl Into<String>) {
         self.taxonomy.register_class(id, label);
+        self.saturated = false;
     }
-
 
     /// Build a reasoner from an existing [`TaxonomyIndex`].
     ///
@@ -143,13 +229,7 @@ impl ELReasoner {
     /// Does NOT run classification — call [`classify_all`](Self::classify_all)
     /// to saturate.
     pub fn from_taxonomy(taxonomy: &TaxonomyIndex) -> Self {
-        Self {
-            taxonomy: taxonomy.clone(),
-            derived: HashSet::new(),
-            conjunctions: Vec::new(),
-            existentials: Vec::new(),
-            existential_domains: Vec::new(),
-        }
+        Self::with_taxonomy(taxonomy.clone())
     }
 
     /// Build an [`ELReasoner`] from a historical graph snapshot at `timestamp`.
@@ -157,7 +237,10 @@ impl ELReasoner {
     /// Reconstructs the class hierarchy by:
     /// 1. Fetching all `NodeKind::Class` nodes valid at `timestamp`.
     /// 2. Fetching all `subClassOf` edges at `timestamp`.
-    /// 3. Populating a fresh [`TaxonomyIndex`] and wrapping it.
+    /// 3. Fetching all [`EDGE_DISJOINT_WITH`] edges at `timestamp` (what
+    ///    `import_turtle` writes for `owl:disjointWith` and
+    ///    `owl:AllDisjointClasses`) as disjoint pairs.
+    /// 4. Populating a fresh [`TaxonomyIndex`] and wrapping it.
     ///
     /// Does NOT run classification — call [`classify_all`](Self::classify_all)
     /// to derive transitive inferences over the historical snapshot.
@@ -165,6 +248,9 @@ impl ELReasoner {
     /// # Errors
     /// Propagates storage errors from [`Graph::get_class_nodes_at`] or
     /// [`Graph::get_edges_of_type_at`].
+    ///
+    /// [`Graph::get_class_nodes_at`]: crate::graph::Graph::get_class_nodes_at
+    /// [`Graph::get_edges_of_type_at`]: crate::graph::Graph::get_edges_of_type_at
     pub async fn from_graph_at(
         graph: &crate::graph::Graph,
         timestamp: u64,
@@ -192,13 +278,48 @@ impl ELReasoner {
             }
         }
 
-        Ok(Self {
-            taxonomy,
-            derived: HashSet::new(),
-            conjunctions: Vec::new(),
-            existentials: Vec::new(),
-            existential_domains: Vec::new(),
-        })
+        let mut reasoner = Self::with_taxonomy(taxonomy);
+
+        // Step 3 — disjoint pairs. Symmetric: the pair is normalised, so an
+        // edge written both ways (or twice) is one conjunction.
+        let disjoint_edges = graph.get_edges_of_type_at(EDGE_DISJOINT_WITH, timestamp).await?;
+        for edge in &disjoint_edges {
+            if edge.source != edge.target
+                && registered_ids.contains(&edge.source)
+                && registered_ids.contains(&edge.target)
+            {
+                reasoner.add_conjunction(edge.source, edge.target, OWL_NOTHING);
+            }
+        }
+
+        Ok(reasoner)
+    }
+
+    /// Records `left ⊓ right ⊑ result` once (the conjuncts commute).
+    /// `false` if it was already there.
+    fn add_conjunction(&mut self, left: NodeId, right: NodeId, result: NodeId) -> bool {
+        let key = if left <= right { (left, right, result) } else { (right, left, result) };
+        if !self.conjunction_keys.insert(key) {
+            return false;
+        }
+        self.conjunctions.push((left, right, result));
+        self.saturated = false;
+        true
+    }
+
+    /// `sub ⊑ sup` as known right now: equal, derived, or through the
+    /// asserted hierarchy.
+    fn subsumes(&mut self, sub: NodeId, sup: NodeId) -> bool {
+        sub == sup || self.derived.contains_key(&(sub, sup)) || self.taxonomy.is_subclass_of(sub, sup)
+    }
+
+    /// Records a derived pair; `true` if it is new.
+    fn derive(&mut self, sub: NodeId, sup: NodeId, rule: CompletionRule) -> bool {
+        if self.derived.contains_key(&(sub, sup)) {
+            return false;
+        }
+        self.derived.insert((sub, sup), rule);
+        true
     }
 
     /// Assert a new SubClassOf axiom: `sub ⊑ super_class`.
@@ -207,8 +328,11 @@ impl ELReasoner {
     /// propagate new transitive inferences. Returns the list of NEW inferences
     /// derived (not including the asserted direct edge itself).
     ///
+    /// `super_class` may be [`OWL_NOTHING`]: that declares `sub` unsatisfiable.
+    ///
     /// # Errors
-    /// Returns [`NopalError::custom`] if `sub == super_class` (self-loop).
+    /// Returns [`NopalError::custom`] if `sub == super_class` (self-loop) or
+    /// if `sub` is [`OWL_NOTHING`] (⊥ is below every class already).
     pub fn assert_subclass(
         &mut self,
         sub: NodeId,
@@ -219,46 +343,39 @@ impl ELReasoner {
                 "assert_subclass: self-loops are not allowed (sub == super_class)",
             ));
         }
+        if sub == OWL_NOTHING {
+            return Err(NopalError::custom(
+                "assert_subclass: owl:Nothing is a subclass of every class already; it cannot be the subclass",
+            ));
+        }
 
         // TaxonomyIndex convention: add_subclass(parent, child) means child ⊑ parent.
         // To assert sub ⊑ super_class: add_subclass(super_class, sub).
         self.taxonomy.add_subclass(super_class, sub)?;
+        self.saturated = false;
 
         let mut new_inferences: Vec<Inference> = Vec::new();
+        let mut push = |r: &mut Self, s: NodeId, sup: NodeId| {
+            if r.derive(s, sup, CompletionRule::CR1) {
+                new_inferences.push(Inference {
+                    axiom: Axiom::SubClassOf { sub: s, super_class: sup },
+                    rule: CompletionRule::CR1,
+                });
+            }
+        };
 
         // CR1 forward: sub ⊑ super_class and super_class ⊑ X → derive sub ⊑ X
         let ancestors_of_super: Vec<NodeId> = self.taxonomy.ancestors(super_class);
         for ancestor in &ancestors_of_super {
-            let pair = (sub, *ancestor);
-            if !self.derived.contains(&pair) {
-                self.derived.insert(pair);
-                new_inferences.push(Inference {
-                    axiom: Axiom::SubClassOf { sub, super_class: *ancestor },
-                    rule: CompletionRule::CR1,
-                });
-            }
+            push(self, sub, *ancestor);
         }
 
         // CR1 backward: Y ⊑ sub and sub ⊑ super_class → derive Y ⊑ super_class (and Y ⊑ X)
         let descendants_of_sub: Vec<NodeId> = self.taxonomy.descendants(sub);
         for desc in &descendants_of_sub {
-            let pair_desc_super = (*desc, super_class);
-            if !self.derived.contains(&pair_desc_super) {
-                self.derived.insert(pair_desc_super);
-                new_inferences.push(Inference {
-                    axiom: Axiom::SubClassOf { sub: *desc, super_class },
-                    rule: CompletionRule::CR1,
-                });
-            }
+            push(self, *desc, super_class);
             for ancestor in &ancestors_of_super {
-                let pair = (*desc, *ancestor);
-                if !self.derived.contains(&pair) {
-                    self.derived.insert(pair);
-                    new_inferences.push(Inference {
-                        axiom: Axiom::SubClassOf { sub: *desc, super_class: *ancestor },
-                        rule: CompletionRule::CR1,
-                    });
-                }
+                push(self, *desc, *ancestor);
             }
         }
 
@@ -269,20 +386,60 @@ impl ELReasoner {
     ///
     /// Records the axiom and immediately applies CR2 to derive any new
     /// `X ⊑ result` inferences for all classes X already known to be
-    /// subclasses of both `left` and `right`.
-    ///
-    /// # Errors
-    /// Returns an error if `left == right == result` (trivial self-inclusion).
+    /// subclasses of both `left` and `right`. `result` may be
+    /// [`OWL_NOTHING`]: that makes `left` and `right` disjoint.
     pub fn assert_conjunction(
         &mut self,
         left: NodeId,
         right: NodeId,
         result: NodeId,
     ) -> Result<Vec<Inference>> {
-        // Store the conjunction axiom.
-        self.conjunctions.push((left, right, result));
+        self.add_conjunction(left, right, result);
         // Apply CR2 immediately for existing knowledge.
         Ok(self.apply_cr2_for_conjunction(left, right, result))
+    }
+
+    /// Assert that `classes` are pairwise disjoint (`owl:AllDisjointClasses`;
+    /// two classes = `owl:disjointWith`): `ci ⊓ cj ⊑ ⊥` for every pair.
+    ///
+    /// Applies CR2 for each pair now and returns what it derived; a class
+    /// below two of them becomes unsatisfiable. Asserting a pair again is a
+    /// no-op.
+    ///
+    /// # Errors
+    /// Fewer than two classes, a repeated class, or [`OWL_NOTHING`] among
+    /// them (⊥ is disjoint with everything already).
+    pub fn assert_disjoint(&mut self, classes: &[NodeId]) -> Result<Vec<Inference>> {
+        if classes.len() < 2 {
+            return Err(NopalError::custom("assert_disjoint: needs at least two classes"));
+        }
+        let distinct: HashSet<NodeId> = classes.iter().copied().collect();
+        if distinct.len() != classes.len() {
+            return Err(NopalError::custom("assert_disjoint: a class appears twice"));
+        }
+        if distinct.contains(&OWL_NOTHING) {
+            return Err(NopalError::custom(
+                "assert_disjoint: owl:Nothing is disjoint with every class already",
+            ));
+        }
+        let mut out = Vec::new();
+        for (i, &a) in classes.iter().enumerate() {
+            for &b in &classes[i + 1..] {
+                out.extend(self.assert_conjunction(a, b, OWL_NOTHING)?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Assert any [`Axiom`]: dispatches to the matching `assert_*` method.
+    pub fn assert_axiom(&mut self, axiom: Axiom) -> Result<Vec<Inference>> {
+        match axiom {
+            Axiom::SubClassOf { sub, super_class } => self.assert_subclass(sub, super_class),
+            Axiom::ConjunctionInclusion { left, right, result } => self.assert_conjunction(left, right, result),
+            Axiom::ExistentialRestriction { sub, role, filler } => self.assert_existential(sub, &role, filler),
+            Axiom::ExistentialDomain { role, filler, result } => self.assert_existential_domain(&role, filler, result),
+            Axiom::DisjointClasses { classes } => self.assert_disjoint(&classes),
+        }
     }
 
     /// Assert a CR3 left-side axiom: `sub ⊑ ∃role.filler`.
@@ -305,6 +462,7 @@ impl ELReasoner {
             ));
         }
         self.existentials.push((sub, role.to_string(), filler));
+        self.saturated = false;
         Ok(self.apply_cr3_for_existential(sub, role, filler))
     }
 
@@ -320,6 +478,7 @@ impl ELReasoner {
         result: NodeId,
     ) -> Result<Vec<Inference>> {
         self.existential_domains.push((role.to_string(), filler, result));
+        self.saturated = false;
         Ok(self.apply_cr3_for_domain(role, filler, result))
     }
 
@@ -339,22 +498,14 @@ impl ELReasoner {
             if r != role || sub == *d {
                 continue;
             }
-            // B ⊑ C: direct equality or transitive via taxonomy / derived set.
-            let filler_sub_c = filler == *c
-                || self.taxonomy.is_subclass_of(filler, *c)
-                || self.derived.contains(&(filler, *c));
-
-            if filler_sub_c {
-                let pair = (sub, *d);
-                if !self.derived.contains(&pair)
-                    && !self.taxonomy.direct_parents(sub).contains(d)
-                {
-                    self.derived.insert(pair);
-                    new_inferences.push(Inference {
-                        axiom: Axiom::SubClassOf { sub, super_class: *d },
-                        rule: CompletionRule::CR3,
-                    });
-                }
+            if self.subsumes(filler, *c)
+                && !self.taxonomy.direct_parents(sub).contains(d)
+                && self.derive(sub, *d, CompletionRule::CR3)
+            {
+                new_inferences.push(Inference {
+                    axiom: Axiom::SubClassOf { sub, super_class: *d },
+                    rule: CompletionRule::CR3,
+                });
             }
         }
 
@@ -377,22 +528,14 @@ impl ELReasoner {
             if r != role || *a == result {
                 continue;
             }
-            // B ⊑ filler: direct equality or transitive.
-            let b_sub_filler = *b == filler
-                || self.taxonomy.is_subclass_of(*b, filler)
-                || self.derived.contains(&(*b, filler));
-
-            if b_sub_filler {
-                let pair = (*a, result);
-                if !self.derived.contains(&pair)
-                    && !self.taxonomy.direct_parents(*a).contains(&result)
-                {
-                    self.derived.insert(pair);
-                    new_inferences.push(Inference {
-                        axiom: Axiom::SubClassOf { sub: *a, super_class: result },
-                        rule: CompletionRule::CR3,
-                    });
-                }
+            if self.subsumes(*b, filler)
+                && !self.taxonomy.direct_parents(*a).contains(&result)
+                && self.derive(*a, result, CompletionRule::CR3)
+            {
+                new_inferences.push(Inference {
+                    axiom: Axiom::SubClassOf { sub: *a, super_class: result },
+                    rule: CompletionRule::CR3,
+                });
             }
         }
 
@@ -401,8 +544,8 @@ impl ELReasoner {
 
     /// Apply CR2 for a single conjunction axiom `left ⊓ right ⊑ result`.
     ///
-    /// For every class X such that X ⊑ left (direct or derived) AND X ⊑ right,
-    /// derive X ⊑ result.
+    /// For every registered class X such that X ⊑ left AND X ⊑ right
+    /// (asserted or derived so far), derive X ⊑ result.
     fn apply_cr2_for_conjunction(
         &mut self,
         left: NodeId,
@@ -416,75 +559,58 @@ impl ELReasoner {
             if x == result {
                 continue;
             }
-            // X ⊑ left (direct or transitive) AND X ⊑ right (direct or transitive)
-            let x_sub_left  = x == left  || self.taxonomy.is_subclass_of(x, left);
-            let x_sub_right = x == right || self.taxonomy.is_subclass_of(x, right);
-
-            if x_sub_left && x_sub_right {
-                let pair = (x, result);
-                if !self.derived.contains(&pair) && !self.taxonomy.direct_parents(x).contains(&result) {
-                    self.derived.insert(pair);
-                    new_inferences.push(Inference {
-                        axiom: Axiom::SubClassOf { sub: x, super_class: result },
-                        rule: CompletionRule::CR2,
-                    });
-                }
+            if self.subsumes(x, left)
+                && self.subsumes(x, right)
+                && !self.taxonomy.direct_parents(x).contains(&result)
+                && self.derive(x, result, CompletionRule::CR2)
+            {
+                new_inferences.push(Inference {
+                    axiom: Axiom::SubClassOf { sub: x, super_class: result },
+                    rule: CompletionRule::CR2,
+                });
             }
         }
 
         new_inferences
     }
 
-    /// Run CR1 and CR2 to saturation over all currently known axioms.
+    /// Run CR1–CR4 to saturation over all currently known axioms.
     ///
-    /// Idempotent — safe to call multiple times; subsequent calls after
-    /// saturation return an empty Vec.
+    /// EL completion: every class X has a set of subsumers S(X), every new
+    /// `Y ∈ S(X)` goes through a work queue and fires the rules whose
+    /// premises mention Y, and `A ⊑ ∃R.B` is inherited by the subclasses of
+    /// A. So what one rule derives feeds the others (a pair derived by CR3
+    /// can satisfy a CR2 conjunction, a class made unsatisfiable by CR2 makes
+    /// its existential holders unsatisfiable by CR4) and the result is the
+    /// fixpoint. Until 0.6.17 this was one pass in rule order, and CR2 only
+    /// saw the asserted hierarchy.
     ///
-    /// For each registered class X:
-    /// - CR1: finds transitive ancestors not already in `derived`.
-    /// - CR2: for each conjunction `B ⊓ C ⊑ D`, checks if X ⊑ B ∧ X ⊑ C → X ⊑ D.
+    /// Returns the inferences that are new since the last call (asserted
+    /// edges excluded), sorted. Idempotent: with nothing asserted since the
+    /// last call it returns an empty Vec without recomputing.
     pub fn classify_all(&mut self) -> Vec<Inference> {
-        let all_nodes = self.taxonomy.all_class_ids();
+        if self.saturated {
+            return Vec::new();
+        }
+        let completion = Completion::run(self);
+
         let mut new_inferences: Vec<Inference> = Vec::new();
-
-        // CR1: transitive closure.
-        for node in &all_nodes {
-            let direct_parents = self.taxonomy.direct_parents(*node);
-            let ancestors = self.taxonomy.ancestors(*node);
-
-            for ancestor in &ancestors {
-                // Only record as CR1-derived if it is NOT a direct edge.
-                if !direct_parents.contains(ancestor) {
-                    let pair = (*node, *ancestor);
-                    if !self.derived.contains(&pair) {
-                        self.derived.insert(pair);
-                        new_inferences.push(Inference {
-                            axiom: Axiom::SubClassOf {
-                                sub: *node,
-                                super_class: *ancestor,
-                            },
-                            rule: CompletionRule::CR1,
-                        });
-                    }
+        for (&x, sups) in &completion.s {
+            let direct = self.taxonomy.direct_parents(x);
+            for (&y, &rule) in sups {
+                if y == x || direct.contains(&y) || self.derived.contains_key(&(x, y)) {
+                    continue;
                 }
+                self.derived.insert((x, y), rule);
+                new_inferences.push(Inference { axiom: Axiom::SubClassOf { sub: x, super_class: y }, rule });
             }
         }
-
-        // CR2: conjunction inclusions.
-        let conjunctions = self.conjunctions.clone();
-        for (left, right, result) in conjunctions {
-            let cr2_new = self.apply_cr2_for_conjunction(left, right, result);
-            new_inferences.extend(cr2_new);
-        }
-
-        // CR3: existential restrictions.
-        // For each A ⊑ ∃R.B, check all ∃R.C ⊑ D; if B ⊑ C → derive A ⊑ D.
-        let existentials = self.existentials.clone();
-        for (sub, role, filler) in &existentials {
-            let cr3_new = self.apply_cr3_for_existential(*sub, role, *filler);
-            new_inferences.extend(cr3_new);
-        }
-
+        new_inferences.sort_by_key(|i| match &i.axiom {
+            Axiom::SubClassOf { sub, super_class } => (*sub, *super_class),
+            _ => (NodeId::nil(), NodeId::nil()),
+        });
+        self.unsat = completion.unsat;
+        self.saturated = true;
         new_inferences
     }
 
@@ -495,21 +621,67 @@ impl ELReasoner {
             return false;
         }
         // Check derived set first (O(1)).
-        if self.derived.contains(&(sub, super_class)) {
+        if self.derived.contains_key(&(sub, super_class)) {
             return true;
         }
         // Fall through to taxonomy BFS (handles the direct-edge case).
         self.taxonomy.is_subclass_of(sub, super_class)
     }
 
-    /// All superclasses of `node` — direct and inferred — via BFS upward.
-    pub fn superclasses(&self, node: NodeId) -> Vec<NodeId> {
-        self.taxonomy.ancestors(node)
+    /// `false` if `class` is below ⊥ (no individual can belong to it).
+    /// Runs [`classify_all`](Self::classify_all) first (a no-op when nothing
+    /// changed). ⊥ itself is unsatisfiable.
+    pub fn is_satisfiable(&mut self, class: NodeId) -> bool {
+        self.classify_all();
+        class != OWL_NOTHING && !self.unsat.contains_key(&class)
     }
 
-    /// All subclasses of `node` — direct and inferred — via BFS downward.
+    /// Every class below ⊥, sorted by id. Runs
+    /// [`classify_all`](Self::classify_all) first, so it is complete.
+    /// ⊥ itself is not listed.
+    pub fn unsatisfiable_classes(&mut self) -> Vec<NodeId> {
+        self.classify_all();
+        let mut out: Vec<NodeId> = self.unsat.keys().copied().collect();
+        out.sort();
+        out
+    }
+
+    /// Why `class` is unsatisfiable, or `None` if it is satisfiable. Runs
+    /// [`classify_all`](Self::classify_all) first.
+    pub fn why_unsatisfiable(&mut self, class: NodeId) -> Option<Unsatisfiable> {
+        self.classify_all();
+        self.unsat.get(&class).cloned()
+    }
+
+    /// All superclasses of `node` — asserted ancestors and derived ones.
+    /// Includes [`OWL_NOTHING`] for an unsatisfiable class once classified.
+    pub fn superclasses(&self, node: NodeId) -> Vec<NodeId> {
+        let mut out = self.taxonomy.ancestors(node);
+        let known: HashSet<NodeId> = out.iter().copied().collect();
+        let mut extra: Vec<NodeId> = self
+            .derived
+            .keys()
+            .filter(|(s, sup)| *s == node && !known.contains(sup))
+            .map(|(_, sup)| *sup)
+            .collect();
+        extra.sort();
+        out.extend(extra);
+        out
+    }
+
+    /// All subclasses of `node` — asserted descendants and derived ones.
     pub fn subclasses(&mut self, node: NodeId) -> Vec<NodeId> {
-        self.taxonomy.descendants(node)
+        let mut out = self.taxonomy.descendants(node);
+        let known: HashSet<NodeId> = out.iter().copied().collect();
+        let mut extra: Vec<NodeId> = self
+            .derived
+            .keys()
+            .filter(|(sub, sup)| *sup == node && !known.contains(sub))
+            .map(|(sub, _)| *sub)
+            .collect();
+        extra.sort();
+        out.extend(extra);
+        out
     }
 
     /// Number of direct subClassOf edges currently in the working taxonomy.
@@ -517,27 +689,179 @@ impl ELReasoner {
         self.taxonomy.edge_count()
     }
 
-    /// All inferences derived by CR1 since construction or the last
-    /// [`clear_derived`](Self::clear_derived) call.
+    /// All inferences derived since construction or the last
+    /// [`clear_derived`](Self::clear_derived) call, each with the rule that
+    /// derived it. (Until 0.6.17 every one was labelled CR1.)
     pub fn derived_inferences(&self) -> Vec<Inference> {
         self.derived
             .iter()
-            .map(|(sub, super_class)| Inference {
-                axiom: Axiom::SubClassOf {
-                    sub: *sub,
-                    super_class: *super_class,
-                },
-                rule: CompletionRule::CR1,
+            .map(|(&(sub, super_class), &rule)| Inference {
+                axiom: Axiom::SubClassOf { sub, super_class },
+                rule,
             })
             .collect()
     }
 
-    /// Clear the derived inference set.
+    /// Clear the derived inference set (and the unsatisfiability causes).
     ///
     /// Does NOT affect the underlying taxonomy direct edges. Useful for
     /// re-running [`classify_all`](Self::classify_all) after adding more axioms.
     pub fn clear_derived(&mut self) {
         self.derived.clear();
+        self.unsat.clear();
+        self.saturated = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EL completion (classify_all)
+// ---------------------------------------------------------------------------
+
+enum Work {
+    /// `y` was added to S(x).
+    Sub(NodeId, NodeId),
+    /// `x ⊑ ∃role.b` became known (asserted on x or inherited from a superclass).
+    Link(NodeId, String, NodeId),
+}
+
+/// One classification run: subsumer sets with the rule that first put each
+/// subsumer there, the existential links, and the causes of ⊥.
+struct Completion {
+    /// x → { y ∈ S(x) → rule }. Reflexive pairs are implicit.
+    s: HashMap<NodeId, HashMap<NodeId, CompletionRule>>,
+    links: HashSet<(NodeId, String, NodeId)>,
+    /// b → the (x, role) with `x ⊑ ∃role.b`.
+    pred: HashMap<NodeId, Vec<(NodeId, String)>>,
+    queue: VecDeque<Work>,
+    unsat: HashMap<NodeId, Unsatisfiable>,
+}
+
+impl Completion {
+    fn run(r: &mut ELReasoner) -> Self {
+        // Indices over the told axioms.
+        let mut conj_by_operand: HashMap<NodeId, Vec<(NodeId, NodeId, NodeId, NodeId)>> = HashMap::new();
+        for &(l, rr, res) in &r.conjunctions {
+            conj_by_operand.entry(l).or_default().push((rr, l, rr, res));
+            if rr != l {
+                conj_by_operand.entry(rr).or_default().push((l, l, rr, res));
+            }
+        }
+        let mut exist_by_sub: HashMap<NodeId, Vec<(String, NodeId)>> = HashMap::new();
+        for (a, role, b) in &r.existentials {
+            exist_by_sub.entry(*a).or_default().push((role.clone(), *b));
+        }
+        let mut domains: HashMap<(String, NodeId), Vec<NodeId>> = HashMap::new();
+        for (role, c, d) in &r.existential_domains {
+            domains.entry((role.clone(), *c)).or_default().push(*d);
+        }
+
+        // Every class the axioms mention, registered or not.
+        let mut universe: HashSet<NodeId> = r.taxonomy.hierarchy_ids().into_iter().collect();
+        for &(l, rr, res) in &r.conjunctions {
+            universe.extend([l, rr, res]);
+        }
+        for (a, _, b) in &r.existentials {
+            universe.extend([*a, *b]);
+        }
+        for (_, c, d) in &r.existential_domains {
+            universe.extend([*c, *d]);
+        }
+        universe.remove(&OWL_NOTHING);
+        let mut universe: Vec<NodeId> = universe.into_iter().collect();
+        universe.sort(); // deterministic first causes
+
+        let mut c = Completion {
+            s: HashMap::new(),
+            links: HashSet::new(),
+            pred: HashMap::new(),
+            queue: VecDeque::new(),
+            unsat: HashMap::new(),
+        };
+        for &x in &universe {
+            c.s.entry(x).or_default();
+            c.queue.push_back(Work::Sub(x, x));
+        }
+
+        while let Some(work) = c.queue.pop_front() {
+            match work {
+                Work::Sub(x, y) => {
+                    // CR1 over the asserted hierarchy.
+                    for z in r.taxonomy.direct_parents(y) {
+                        let cause = if y == x { Unsatisfiable::Asserted } else { Unsatisfiable::Inherited { parent: y } };
+                        c.add(x, z, CompletionRule::CR1, || cause);
+                    }
+                    // CR2: the other conjunct already in S(x).
+                    if let Some(list) = conj_by_operand.get(&y) {
+                        for &(other, l, rr, res) in list {
+                            if c.has(x, other) {
+                                c.add(x, res, CompletionRule::CR2, || Unsatisfiable::Disjoint { left: l, right: rr });
+                            }
+                        }
+                    }
+                    // `y ⊑ ∃R.B` holds for x too.
+                    if let Some(list) = exist_by_sub.get(&y) {
+                        for (role, b) in list {
+                            c.link(x, role.clone(), *b);
+                        }
+                    }
+                    // x is the filler of some `w ⊑ ∃R.x`: CR3 / CR4 for w.
+                    if let Some(holders) = c.pred.get(&x).cloned() {
+                        for (w, role) in holders {
+                            if y == OWL_NOTHING {
+                                c.add(w, OWL_NOTHING, CompletionRule::CR4, || Unsatisfiable::Existential { role: role.clone(), filler: x });
+                            }
+                            if let Some(ds) = domains.get(&(role.clone(), y)) {
+                                for &d in ds {
+                                    c.add(w, d, CompletionRule::CR3, || Unsatisfiable::Existential { role: role.clone(), filler: x });
+                                }
+                            }
+                        }
+                    }
+                }
+                Work::Link(x, role, b) => {
+                    let mut fillers: Vec<NodeId> = c.s.get(&b).map(|m| m.keys().copied().collect()).unwrap_or_default();
+                    fillers.push(b);
+                    for f in fillers {
+                        if f == OWL_NOTHING {
+                            c.add(x, OWL_NOTHING, CompletionRule::CR4, || Unsatisfiable::Existential { role: role.clone(), filler: b });
+                        }
+                        if let Some(ds) = domains.get(&(role.clone(), f)) {
+                            for &d in ds {
+                                c.add(x, d, CompletionRule::CR3, || Unsatisfiable::Existential { role: role.clone(), filler: b });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        c
+    }
+
+    fn has(&self, x: NodeId, y: NodeId) -> bool {
+        x == y || self.s.get(&x).is_some_and(|m| m.contains_key(&y))
+    }
+
+    /// `y ∈ S(x)` by `rule`; `cause` is recorded when `y` is ⊥.
+    fn add(&mut self, x: NodeId, y: NodeId, rule: CompletionRule, cause: impl FnOnce() -> Unsatisfiable) {
+        if x == y {
+            return;
+        }
+        let set = self.s.entry(x).or_default();
+        if set.contains_key(&y) {
+            return;
+        }
+        set.insert(y, rule);
+        if y == OWL_NOTHING {
+            self.unsat.entry(x).or_insert_with(cause);
+        }
+        self.queue.push_back(Work::Sub(x, y));
+    }
+
+    fn link(&mut self, x: NodeId, role: String, b: NodeId) {
+        if self.links.insert((x, role.clone(), b)) {
+            self.pred.entry(b).or_default().push((x, role.clone()));
+            self.queue.push_back(Work::Link(x, role, b));
+        }
     }
 }
 
@@ -1139,5 +1463,227 @@ mod tests {
         // Second call must not produce A ⊑ D again (already in derived set)
         assert!(!first.is_empty(), "first call should derive A ⊑ D");
         assert!(second.is_empty(), "second call must produce no new inferences (idempotent)");
+    }
+
+    // -----------------------------------------------------------------------
+    // #235 — disjoint classes and ⊥ (owl:Nothing)
+    // -----------------------------------------------------------------------
+
+    /// Receta and Utensilio are disjoint; Hibrido is declared below both.
+    fn disjoint_fixture() -> (ELReasoner, NodeId, NodeId, NodeId, NodeId) {
+        let mut r = ELReasoner::new();
+        let (cosa, receta, utensilio, hibrido) = (nid(), nid(), nid(), nid());
+        for (id, l) in [(cosa, "Cosa"), (receta, "Receta"), (utensilio, "Utensilio"), (hibrido, "Hibrido")] {
+            r.register_class(id, l);
+        }
+        r.assert_subclass(receta, cosa).unwrap();
+        r.assert_subclass(utensilio, cosa).unwrap();
+        r.assert_subclass(hibrido, receta).unwrap();
+        r.assert_subclass(hibrido, utensilio).unwrap();
+        r.assert_disjoint(&[receta, utensilio]).unwrap();
+        (r, receta, utensilio, hibrido, cosa)
+    }
+
+    fn is_pair(cause: &Option<Unsatisfiable>, a: NodeId, b: NodeId) -> bool {
+        matches!(cause, Some(Unsatisfiable::Disjoint { left, right })
+            if (*left == a && *right == b) || (*left == b && *right == a))
+    }
+
+    #[test]
+    fn test_disjoint_parents_make_the_class_unsatisfiable() {
+        let (mut r, receta, utensilio, hibrido, cosa) = disjoint_fixture();
+        assert_eq!(r.unsatisfiable_classes(), vec![hibrido]);
+        assert!(!r.is_satisfiable(hibrido));
+        assert!(r.is_satisfiable(receta) && r.is_satisfiable(utensilio) && r.is_satisfiable(cosa));
+        assert!(r.is_subclass_of(hibrido, OWL_NOTHING));
+        assert!(is_pair(&r.why_unsatisfiable(hibrido), receta, utensilio), "{:?}", r.why_unsatisfiable(hibrido));
+        assert_eq!(r.why_unsatisfiable(receta), None);
+        assert!(r.superclasses(hibrido).contains(&OWL_NOTHING), "⊥ shows up among the superclasses");
+        assert!(!r.is_satisfiable(OWL_NOTHING), "⊥ itself is empty");
+    }
+
+    #[test]
+    fn test_subclass_of_unsatisfiable_is_unsatisfiable() {
+        let (mut r, receta, utensilio, hibrido, _) = disjoint_fixture();
+        let nieto = nid();
+        r.register_class(nieto, "Nieto");
+        r.assert_subclass(nieto, hibrido).unwrap();
+        let mut expected = vec![hibrido, nieto];
+        expected.sort();
+        assert_eq!(r.unsatisfiable_classes(), expected);
+        assert!(is_pair(&r.why_unsatisfiable(nieto), receta, utensilio), "the inherited case names the pair too");
+    }
+
+    #[test]
+    fn test_a_subsumption_derived_by_cr3_feeds_cr2() {
+        // A ⊑ ∃r.B, ∃r.B ⊑ Receta ⇒ A ⊑ Receta (CR3, only derived);
+        // A ⊑ Utensilio asserted; Receta, Utensilio disjoint ⇒ A ⊑ ⊥.
+        // Until 0.6.17 CR2 only asked the asserted hierarchy and missed it.
+        let mut r = ELReasoner::new();
+        let (a, b, receta, utensilio) = (nid(), nid(), nid(), nid());
+        for (id, l) in [(a, "A"), (b, "B"), (receta, "Receta"), (utensilio, "Utensilio")] {
+            r.register_class(id, l);
+        }
+        r.assert_existential(a, "r", b).unwrap();
+        r.assert_existential_domain("r", b, receta).unwrap();
+        r.assert_subclass(a, utensilio).unwrap();
+        r.assert_disjoint(&[receta, utensilio]).unwrap();
+        assert_eq!(r.unsatisfiable_classes(), vec![a]);
+    }
+
+    #[test]
+    fn test_existential_on_an_unsatisfiable_filler_propagates_bottom() {
+        let (mut r, _, _, hibrido, _) = disjoint_fixture();
+        let (plato, menu) = (nid(), nid());
+        r.register_class(plato, "Plato");
+        r.register_class(menu, "Menu");
+        r.assert_existential(plato, "usa", hibrido).unwrap(); // Plato ⊑ ∃usa.Hibrido
+        r.assert_subclass(menu, plato).unwrap(); // Menu ⊑ Plato inherits the restriction
+        let unsat = r.unsatisfiable_classes();
+        assert!(unsat.contains(&plato) && unsat.contains(&menu), "{unsat:?}");
+        assert_eq!(
+            r.why_unsatisfiable(plato),
+            Some(Unsatisfiable::Existential { role: "usa".into(), filler: hibrido })
+        );
+        let rules: HashSet<CompletionRule> = r.derived_inferences().iter().map(|i| i.rule).collect();
+        assert!(rules.contains(&CompletionRule::CR2) && rules.contains(&CompletionRule::CR4), "{rules:?}");
+    }
+
+    #[test]
+    fn test_existential_chain_through_bottom_needs_more_than_one_round() {
+        // C ⊑ ⊥ (asserted), B ⊑ ∃r.C, A ⊑ ∃s.B, Y ⊑ A: CR4 twice, then CR1.
+        let mut r = ELReasoner::new();
+        let (a, b, c, y) = (nid(), nid(), nid(), nid());
+        r.assert_subclass(c, OWL_NOTHING).unwrap();
+        r.assert_existential(b, "r", c).unwrap();
+        r.assert_existential(a, "s", b).unwrap();
+        r.assert_subclass(y, a).unwrap();
+        let mut expected = vec![a, b, c, y];
+        expected.sort();
+        assert_eq!(r.unsatisfiable_classes(), expected, "unregistered classes are classified too");
+        assert_eq!(r.why_unsatisfiable(c), Some(Unsatisfiable::Asserted));
+    }
+
+    #[test]
+    fn test_asserted_bottom_is_inherited_by_subclasses() {
+        let mut r = ELReasoner::new();
+        let (x, hijo) = (nid(), nid());
+        r.assert_subclass(x, OWL_NOTHING).unwrap();
+        r.assert_subclass(hijo, x).unwrap();
+        assert_eq!(r.why_unsatisfiable(x), Some(Unsatisfiable::Asserted));
+        assert_eq!(r.why_unsatisfiable(hijo), Some(Unsatisfiable::Inherited { parent: x }));
+    }
+
+    #[test]
+    fn test_schema_without_conflicts_has_no_unsatisfiable_class() {
+        let (mut r, ids) = chain(&["Cosa", "Receta", "Postre"]);
+        let otra = nid();
+        r.register_class(otra, "Utensilio");
+        r.assert_subclass(otra, ids[0]).unwrap();
+        r.assert_disjoint(&[ids[1], otra]).unwrap();
+        assert!(r.unsatisfiable_classes().is_empty());
+        for id in ids.iter().chain([&otra]) {
+            assert!(r.is_satisfiable(*id));
+            assert!(!r.superclasses(*id).contains(&OWL_NOTHING));
+        }
+        assert!(r.derived_inferences().iter().all(|i| i.axiom != Axiom::SubClassOf { sub: ids[2], super_class: OWL_NOTHING }));
+    }
+
+    #[test]
+    fn test_all_disjoint_of_four_is_six_pairs() {
+        let mut r = ELReasoner::new();
+        let ids: Vec<NodeId> = (0..4).map(|_| nid()).collect();
+        r.assert_disjoint(&ids).unwrap();
+        assert_eq!(r.conjunctions.len(), 6);
+        assert!(r.conjunctions.iter().all(|&(_, _, res)| res == OWL_NOTHING));
+        // Asserting a pair again, in either order, adds nothing.
+        r.assert_disjoint(&[ids[3], ids[0]]).unwrap();
+        assert_eq!(r.conjunctions.len(), 6);
+        // A class below the 2nd and the 4th is unsatisfiable.
+        let x = nid();
+        r.assert_subclass(x, ids[1]).unwrap();
+        r.assert_subclass(x, ids[3]).unwrap();
+        assert_eq!(r.unsatisfiable_classes(), vec![x]);
+        assert!(is_pair(&r.why_unsatisfiable(x), ids[1], ids[3]));
+    }
+
+    #[test]
+    fn test_assert_disjoint_and_bottom_errors() {
+        let mut r = ELReasoner::new();
+        let (a, b) = (nid(), nid());
+        assert!(r.assert_disjoint(&[a]).is_err(), "one class");
+        assert!(r.assert_disjoint(&[a, b, a]).is_err(), "repeated class");
+        assert!(r.assert_disjoint(&[a, OWL_NOTHING]).is_err(), "⊥ is already disjoint with all");
+        assert!(r.assert_subclass(OWL_NOTHING, a).is_err(), "⊥ cannot be the subclass");
+        assert_eq!(ELReasoner::nothing(), OWL_NOTHING);
+        assert!(r.assert_axiom(Axiom::DisjointClasses { classes: vec![a, b] }).is_ok());
+        assert_eq!(r.conjunctions.len(), 1);
+    }
+
+    #[test]
+    fn test_classification_does_not_depend_on_assertion_order() {
+        let ids: Vec<NodeId> = (0..8).map(|_| nid()).collect();
+        let axioms = vec![
+            Axiom::SubClassOf { sub: ids[1], super_class: ids[0] },
+            Axiom::SubClassOf { sub: ids[2], super_class: ids[0] },
+            Axiom::SubClassOf { sub: ids[3], super_class: ids[1] },
+            Axiom::SubClassOf { sub: ids[3], super_class: ids[2] },
+            Axiom::DisjointClasses { classes: vec![ids[1], ids[2]] },
+            Axiom::ExistentialRestriction { sub: ids[4], role: "r".into(), filler: ids[3] },
+            Axiom::ExistentialRestriction { sub: ids[5], role: "r".into(), filler: ids[6] },
+            Axiom::ExistentialDomain { role: "r".into(), filler: ids[6], result: ids[1] },
+            Axiom::SubClassOf { sub: ids[5], super_class: ids[2] },
+            Axiom::SubClassOf { sub: ids[7], super_class: ids[4] },
+        ];
+        let outcome = |order: &[Axiom]| {
+            let mut r = ELReasoner::new();
+            for ax in order {
+                r.assert_axiom(ax.clone()).unwrap();
+            }
+            r.classify_all();
+            let mut pairs: Vec<(NodeId, NodeId)> = r.derived.keys().copied().collect();
+            pairs.sort();
+            (r.unsatisfiable_classes(), pairs)
+        };
+        let reference = outcome(&axioms);
+        let mut expected_unsat = vec![ids[3], ids[4], ids[5], ids[7]];
+        expected_unsat.sort();
+        assert_eq!(reference.0, expected_unsat);
+        for shift in 0..axioms.len() {
+            let mut order = axioms.clone();
+            order.rotate_left(shift);
+            assert_eq!(outcome(&order), reference, "rotation {shift}");
+            order.reverse();
+            assert_eq!(outcome(&order), reference, "reversed rotation {shift}");
+        }
+    }
+
+    #[test]
+    fn test_unsatisfiability_at_scale() {
+        // A chain of 1 000 classes under a class that is below two disjoint
+        // ones: every class of the chain is unsatisfiable. Tiny graphs hid a
+        // broken algorithm before (Leiden); this one runs in debug too.
+        let mut r = ELReasoner::new();
+        let (left, right, top) = (nid(), nid(), nid());
+        r.assert_subclass(top, left).unwrap();
+        r.assert_subclass(top, right).unwrap();
+        r.assert_disjoint(&[left, right]).unwrap();
+        let mut prev = top;
+        let mut chain_ids = vec![top];
+        for _ in 0..1_000 {
+            let id = nid();
+            r.assert_subclass(id, prev).unwrap();
+            chain_ids.push(id);
+            prev = id;
+        }
+        let t = std::time::Instant::now();
+        let unsat = r.unsatisfiable_classes();
+        let elapsed = t.elapsed();
+        chain_ids.sort();
+        assert_eq!(unsat, chain_ids);
+        assert!(r.is_satisfiable(left) && r.is_satisfiable(right));
+        assert!(elapsed < std::time::Duration::from_secs(60), "classification took {elapsed:?}");
+        // Idempotent: a second call does not recompute.
+        assert!(r.classify_all().is_empty());
     }
 }

@@ -403,6 +403,16 @@ impl TaxonomyIndex {
         self.labels.keys().copied().collect()
     }
 
+    /// Every class id the hierarchy knows: registered (with a label) or only
+    /// an endpoint of a subClassOf edge. The reasoner classifies all of
+    /// them, not only the labelled ones.
+    pub fn hierarchy_ids(&self) -> Vec<NodeId> {
+        let mut ids: HashSet<NodeId> = self.labels.keys().copied().collect();
+        ids.extend(self.children.keys().copied());
+        ids.extend(self.parents.keys().copied());
+        ids.into_iter().collect()
+    }
+
     /// Total number of direct subClassOf edges in the DAG.
     pub fn edge_count(&self) -> usize {
         self.children.values().map(|v| v.len()).sum()

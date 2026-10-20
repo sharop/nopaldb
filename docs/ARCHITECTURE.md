@@ -244,8 +244,17 @@ Tres modulos feature-gated que extienden el grafo con capacidades ontologicas:
 
 Implementa OWL-EL inference rules:
 - **CR1**: transitividad de subclases (`A ⊑ B, B ⊑ C → A ⊑ C`)
-- **CR2**: conjuncion (`A ⊑ B ⊓ C → A ⊑ B, A ⊑ C`)
-- **CR3**: existencial (`A ⊑ ∃r.B → ...)
+- **CR2**: conjuncion (`A ⊑ B, A ⊑ C, B ⊓ C ⊑ D → A ⊑ D`)
+- **CR3**: existencial (`A ⊑ ∃r.B, B ⊑ C, ∃r.C ⊑ D → A ⊑ D`)
+- **CR4**: ⊥ por un existencial (`A ⊑ ∃r.B, B ⊑ ⊥ → A ⊑ ⊥`)
+
+⊥ (`owl:Nothing`) viene incorporada (`OWL_NOTHING`); las clases disjuntas
+(`assert_disjoint`, y `owl:disjointWith` / `owl:AllDisjointClasses` del
+import como aristas `disjointWith`) se normalizan a `A ⊓ B ⊑ ⊥`. Una clase
+bajo ⊥ es insatisfacible: `unsatisfiable_classes()` las lista y
+`why_unsatisfiable()` dice qué par disjunto (o qué existencial) la causó.
+`classify_all` es completación EL a punto fijo: lo que deriva una regla
+alimenta a las demás.
 
 No modifica el grafo. Opera sobre una copia interna de la taxonomia. Soporta time-travel via `ELReasoner::from_graph_at(graph, timestamp)`.
 

@@ -173,6 +173,36 @@ sin tener que enumerar cada droga individualmente.
 
 ---
 
+#### ⊥, clases disjuntas y CR4 — clases insatisfacibles
+
+`owl:Nothing` (⊥) es la clase vacía: ningún individuo puede pertenecer a ella.
+Dos clases **disjuntas** no comparten individuos, que en EL se escribe
+`A ⊓ B ⊑ ⊥`. Una clase que queda debajo de dos disjuntas cae debajo de ⊥: es
+**insatisfacible**, y casi siempre es un error de modelado.
+
+```
+Axioma 1: ViralInfection ⊑ Infection
+Axioma 2: ViralInfection ⊑ Treatment          (error: un virus no es un tratamiento)
+Axioma 3: Infection y Treatment son disjuntas  (Infection ⊓ Treatment ⊑ ⊥)
+
+CR2 dispara:
+  ViralInfection ⊑ ⊥  ← INSATISFACIBLE
+```
+
+**CR4** lleva ⊥ por las restricciones existenciales: si `A ⊑ ∃r.B` y `B` es
+insatisfacible, `A` también lo es (necesitaría algo de tipo `B`, y no lo hay).
+
+```
+Si:  A ⊑ ∃r.B   y   B ⊑ ⊥
+→    A ⊑ ⊥        (derivado)
+```
+
+**Por qué importa:** es la pregunta más común de un verificador de ontologías
+("¿hay alguna clase imposible?"), y la forma barata de rechazar un esquema mal
+formado antes de cargar datos en él.
+
+---
+
 ## El contraste clave: grafo de propiedades vs knowledge graph
 
 Esta es la diferencia más importante del Acto 3, vale detenerse:
@@ -361,6 +391,23 @@ termina en tiempo polinomial.
 | `ViralInfection ⊑ InfectiousDisease` | CR2 | No |
 | `BacterialInfection ⊑ InfectiousDisease` | CR2 | No |
 | `Treatment ⊑ TreatableEntity` | CR3 | No |
+
+**Clases insatisfacibles.** ⊥ es `nopaldb.ELReasoner.NOTHING`; `assert_disjoint`
+declara clases disjuntas y `unsatisfiable_classes()` lista las que quedaron
+debajo de ⊥, con la causa en `why_unsatisfiable()`:
+
+```python
+reasoner.assert_disjoint([ids["Infection"], ids["Treatment"]])
+reasoner.assert_subclass(ids["ViralInfection"], ids["Treatment"])  # el error de modelado
+
+print(reasoner.unsatisfiable_classes())               # [ids["ViralInfection"]]
+print(reasoner.why_unsatisfiable(ids["ViralInfection"]))
+# {'cause': 'disjoint', 'rule': 'CR2', 'classes': [<Infection>, <Treatment>]}
+```
+
+Si la ontología viene de Turtle, `owl:disjointWith` y `owl:AllDisjointClasses`
+se importan como aristas `disjointWith`, y `ELReasoner.from_graph(graph)` arma
+el razonador con la jerarquía y las disyunciones del grafo.
 
 ---
 

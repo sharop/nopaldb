@@ -166,6 +166,21 @@ reasoner.classify_all()
 print(reasoner.is_subclass_of(infection_id, disease_id))
 ```
 
+Clases disjuntas y ⊥ (`owl:Nothing`, `ELReasoner.NOTHING`): una clase debajo
+de dos clases disjuntas es insatisfacible.
+
+```python
+reasoner.assert_disjoint([receta_id, utensilio_id])   # owl:disjointWith / AllDisjointClasses
+reasoner.assert_subclass(hibrido_id, receta_id)
+reasoner.assert_subclass(hibrido_id, utensilio_id)
+reasoner.unsatisfiable_classes()        # [hibrido_id]
+reasoner.is_satisfiable(hibrido_id)     # False
+reasoner.why_unsatisfiable(hibrido_id)  # {'cause': 'disjoint', 'rule': 'CR2', 'classes': [...]}
+
+# Desde un grafo importado de Turtle (subClassOf + disjointWith):
+reasoner = nopaldb.ELReasoner.from_graph(graph)
+```
+
 ## Resultados
 
 `NqlResult` expone `kind`, `query`, `write`, `explain`, `profile`, `message` y

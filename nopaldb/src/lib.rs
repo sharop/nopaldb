@@ -102,7 +102,7 @@ pub mod rdf_owl;
 pub mod reasoner;
 
 #[cfg(feature = "reasoner")]
-pub use reasoner::{Axiom, CompletionRule, ELReasoner, Inference};
+pub use reasoner::{Axiom, CompletionRule, ELReasoner, Inference, Unsatisfiable, OWL_NOTHING};
 
 // SHACL Core validator (feature-gated)
 #[cfg(feature = "shacl")]

@@ -74,6 +74,19 @@ g = nopaldb.Graph.open("./data")
 | `bulk_loader(batch_size: int) -> "BulkLoader"` | Batched loader for large ingestions. |
 | `storage_engine() -> str` | Which engine the open database uses. |
 
+## Ontology reasoning (`nopaldb.ELReasoner`)
+
+Methods of `ELReasoner`, not of `Graph`. Ids are class UUID strings; ⊥ is `ELReasoner.NOTHING`.
+
+| method | what it does |
+|---|---|
+| `from_graph(graph: Graph) -> ELReasoner` | Reasoner over the graph's classes, `subClassOf` and `disjointWith` edges (what `import_turtle` writes). |
+| `assert_subclass(sub: str, super_class: str) -> list[Inference]` | `sub ⊑ super_class`; with `NOTHING` as the superclass, declares `sub` unsatisfiable. |
+| `assert_disjoint(classes: list[str]) -> list[Inference]` | Pairwise disjoint classes (`owl:AllDisjointClasses`). |
+| `classify_all() -> list[Inference]` | Saturate CR1–CR4; returns what is new. |
+| `unsatisfiable_classes() -> list[str]` | Every class below ⊥. |
+| `why_unsatisfiable(node: str) -> dict[str, Any] | None` | The cause: the disjoint pair, an asserted ⊥, or an existential. |
+
 ## Names that do NOT exist
 
 Assistants tend to invent these. Use the real one:

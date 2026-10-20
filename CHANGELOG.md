@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-SHACL reporta cada valor que falla, no solo el primero, y comprueba dominio y
-rango de una propiedad.
+SHACL reporta cada valor que falla y comprueba dominio y rango de una
+propiedad; el razonador detecta clases insatisfacibles y dice por qué.
 
 ### Added
 - **SHACL: `sh:targetSubjectsOf` y `sh:targetObjectsOf`** (#237). La forma
@@ -28,6 +28,29 @@ rango de una propiedad.
   `#[non_exhaustive]`: un `match` exhaustivo externo necesita los brazos
   nuevos). Docs en `SHACL.md` EN/ES.
 
+- **ELReasoner: clases disjuntas y ⊥ (`owl:Nothing`)** (#235). ⊥ viene
+  incorporada (`OWL_NOTHING`, un id fijo: el UUID v5 de su IRI;
+  `ELReasoner.NOTHING` en Python). `assert_disjoint([…])` declara clases
+  disjuntas dos a dos (`ci ⊓ cj ⊑ ⊥` por par, sigue dentro de EL++);
+  `Axiom::DisjointClasses` y `assert_axiom` para asertar cualquier axioma.
+  Regla nueva **CR4**: `A ⊑ ∃R.B` con `B` insatisfacible ⇒ `A` insatisfacible.
+  Consultas: `unsatisfiable_classes()`, `is_satisfiable(id)` y
+  `why_unsatisfiable(id)`, que dice la causa (el par disjunto, un ⊥ asertado,
+  la herencia de uno, o el existencial) sin recorrer la derivación; las tres
+  clasifican antes, así que la respuesta es completa. Python:
+  `assert_disjoint`, `is_satisfiable`, `unsatisfiable_classes`,
+  `why_unsatisfiable` (dict) y **`ELReasoner.from_graph(graph)`**, que arma el
+  razonador con la jerarquía y las disyunciones del grafo.
+  `reasoner_sample.py` en CI.
+- **`import_turtle` importa `owl:disjointWith` y `owl:AllDisjointClasses`**
+  (#235) como aristas `disjointWith` entre los nodos clase, una por par no
+  ordenado (escrito en ambos sentidos o repetido, es una; cuatro miembros son
+  seis). `ImportReport.disjoint_pairs_added` las cuenta y ya no suman a
+  `triples_skipped` (antes se perdían sin aviso). `ELReasoner::from_graph_at`
+  las lee; `export_turtle` las escribe como `owl:disjointWith`.
+  `:A rdfs:subClassOf owl:Nothing` ya no crea un nodo clase `Nothing`: sale en
+  `warnings` (⊥ no es un nodo).
+
 ### Fixed
 - **SHACL: una violación por cada valor que no cumple** (#236). Las
   restricciones de valor (`sh:datatype`, los cuatro rangos, `sh:minLength`/
@@ -41,6 +64,22 @@ rango de una propiedad.
   contaba violaciones verá más, ahora correctas. `evaluate_constraint`
   devuelve `Vec` y `first_bad` pasa a `bad_values`; docs en `SHACL.md` EN/ES
   § "The report".
+- **`ELReasoner::classify_all` llega al punto fijo** (#235). Era una pasada
+  en orden de reglas y CR2 solo miraba la jerarquía asertada: una subsunción
+  derivada por CR3 nunca alimentaba una conjunción (`A ⊑ Receta` derivada,
+  `A ⊑ Utensilio` asertada, `Receta ⊓ Utensilio ⊑ ⊥` ⇒ `A ⊑ ⊥` no salía).
+  Ahora es completación EL con conjuntos de subsumidores y cola de trabajo:
+  cada regla ve lo que derivan las demás, `A ⊑ ∃R.B` se hereda a las
+  subclases de `A`, y se clasifican también las clases que solo aparecen en
+  axiomas (antes, solo las registradas con etiqueta). Una cadena de 1 000
+  clases (~500 000 pares) clasifica en ~0.1 s en debug.
+- `ELReasoner::derived_inferences()` dice la regla que derivó cada par (antes
+  todas salían como CR1); `superclasses()`/`subclasses()` incluyen lo
+  derivado, como decía su doc.
+
+`Axiom` y `CompletionRule` ganan variantes (`DisjointClasses`, `CR4`): son
+enums públicas sin `#[non_exhaustive]`, así que un `match` exhaustivo externo
+necesita los brazos nuevos. `Unsatisfiable` nace `#[non_exhaustive]`.
 
 ## [0.6.17] - 2026-10-13
 
