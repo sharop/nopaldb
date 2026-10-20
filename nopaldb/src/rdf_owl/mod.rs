@@ -32,6 +32,9 @@
 //! | `:x a :Z` with `Z` never declared | the class `Z` is created, and the import reports it |
 //! | `:x :p :y` with `:y` never described | a **placeholder** node for `:y` (`iri`, `rdf_placeholder = true`), upgraded in place when a later document types it — edges pointing at it stay valid |
 //! | `:x a owl:NamedIndividual` | consumed as a no-op |
+//! | `:A owl:disjointWith :B` | one edge of type `disjointWith` between the two classes (one per unordered pair, whichever way and however often it is stated); `ELReasoner::from_graph_at` reads it back |
+//! | `[] a owl:AllDisjointClasses ; owl:members ( :A :B … )` | one `disjointWith` edge per pair of members (four members are six edges) |
+//! | `:A rdfs:subClassOf owl:Nothing` | nothing stored (⊥ is built into the reasoner, never a node); a warning says so |
 //!
 //! Reserved edge types: `rdf:type` becomes `instanceOf` and `rdfs:subClassOf`
 //! stays `subClassOf`. A user predicate whose local name is one of those is
@@ -104,6 +107,7 @@
 //! |---|---|
 //! | Class node | `a owl:Class`, its literals (`rdfs_label` → `rdfs:label`) |
 //! | `subClassOf` edge between two classes | `rdfs:subClassOf` |
+//! | `disjointWith` edge | `owl:disjointWith` (an `owl:AllDisjointClasses` comes back as its pairs) |
 //! | `instanceOf` edge | `a <C>`, one per edge (no edges: the label is the class; a placeholder gets no type) |
 //! | any other edge to an exported node | one triple, predicate = the edge's `iri`, or the export namespace + edge type when it has none |
 //! | `Int` / `Float` / `Bool` / `String` | `xsd:integer` / `xsd:double` / `xsd:boolean` / plain literal |

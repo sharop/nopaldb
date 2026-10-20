@@ -268,3 +268,112 @@ async fn test_user_subclassof_between_individuals_survives_reopen() {
     let labels: Vec<_> = result.rows().iter().filter_map(|r| r.get("c.label").cloned()).collect();
     assert_eq!(labels, vec![nopaldb::types::PropertyValue::String("Arbol".into())], "{result:?}");
 }
+
+// ---------------------------------------------------------------------------
+// #235 — owl:disjointWith / owl:AllDisjointClasses reach the reasoner
+// ---------------------------------------------------------------------------
+
+const DISJOINT_TTL: &str = r#"
+@prefix : <http://cocina.example/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+:Cosa a owl:Class .
+:Receta a owl:Class ; rdfs:subClassOf :Cosa .
+:Utensilio a owl:Class ; rdfs:subClassOf :Cosa .
+:Hibrido a owl:Class ; rdfs:subClassOf :Receta , :Utensilio .
+:Receta owl:disjointWith :Utensilio .
+:Utensilio owl:disjointWith :Receta .
+"#;
+
+async fn class_id(graph: &Graph, label: &str) -> nopaldb::types::NodeId {
+    graph.get_nodes_by_label(label).await.unwrap()[0].id
+}
+
+#[tokio::test]
+async fn test_disjoint_with_becomes_one_edge_and_feeds_the_reasoner() {
+    use nopaldb::reasoner::{ELReasoner, Unsatisfiable, EDGE_DISJOINT_WITH};
+    let (graph, _dir) = open_temp_graph().await;
+    let report = graph.import_turtle(DISJOINT_TTL).await.unwrap();
+
+    // Stated both ways: one edge for the unordered pair.
+    assert_eq!(report.disjoint_pairs_added, 1);
+    assert_eq!(report.triples_skipped, 0, "owl:disjointWith is consumed, not skipped");
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    let edges = graph.get_edges_by_label(EDGE_DISJOINT_WITH).await.unwrap();
+    assert_eq!(edges.len(), 1);
+
+    // Second import: nothing new.
+    let again = graph.import_turtle(DISJOINT_TTL).await.unwrap();
+    assert_eq!(again.disjoint_pairs_added, 0);
+
+    let (receta, utensilio, hibrido) = (
+        class_id(&graph, "Receta").await,
+        class_id(&graph, "Utensilio").await,
+        class_id(&graph, "Hibrido").await,
+    );
+    let mut reasoner = ELReasoner::from_graph_at(&graph, u64::MAX).await.unwrap();
+    assert_eq!(reasoner.unsatisfiable_classes(), vec![hibrido]);
+    match reasoner.why_unsatisfiable(hibrido) {
+        Some(Unsatisfiable::Disjoint { left, right }) => {
+            let mut pair = [left, right];
+            pair.sort();
+            let mut want = [receta, utensilio];
+            want.sort();
+            assert_eq!(pair, want);
+        }
+        other => panic!("expected the disjoint pair, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_all_disjoint_classes_of_four_writes_six_pairs() {
+    use nopaldb::reasoner::{ELReasoner, EDGE_DISJOINT_WITH};
+    let (graph, _dir) = open_temp_graph().await;
+    let ttl = r#"
+@prefix : <http://cocina.example/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+:Sopa a owl:Class . :Postre a owl:Class . :Bebida a owl:Class . :Salsa a owl:Class .
+[] a owl:AllDisjointClasses ; owl:members ( :Sopa :Postre :Bebida :Salsa ) .
+:Atole a owl:Class ; rdfs:subClassOf :Bebida , :Postre .
+"#;
+    let report = graph.import_turtle(ttl).await.unwrap();
+    assert_eq!(report.disjoint_pairs_added, 6);
+    assert_eq!(report.triples_skipped, 0, "the AllDisjointClasses node and its list are consumed");
+    assert_eq!(graph.get_edges_by_label(EDGE_DISJOINT_WITH).await.unwrap().len(), 6);
+
+    let atole = class_id(&graph, "Atole").await;
+    let mut reasoner = ELReasoner::from_graph_at(&graph, u64::MAX).await.unwrap();
+    assert_eq!(reasoner.unsatisfiable_classes(), vec![atole]);
+}
+
+#[tokio::test]
+async fn test_subclass_of_owl_nothing_is_a_warning_not_a_node() {
+    let (graph, _dir) = open_temp_graph().await;
+    let ttl = r#"
+@prefix : <http://cocina.example/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+:Imposible a owl:Class ; rdfs:subClassOf owl:Nothing .
+"#;
+    let report = graph.import_turtle(ttl).await.unwrap();
+    assert_eq!(report.classes_added, 1, "no node for owl:Nothing");
+    assert_eq!(report.subclass_edges_added, 0);
+    assert!(graph.get_nodes_by_label("Nothing").await.unwrap().is_empty());
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(report.warnings[0].contains("owl:Nothing"), "{}", report.warnings[0]);
+    assert_eq!(report.triples_skipped, 1, "the triple is reported, not stored");
+}
+
+#[tokio::test]
+async fn test_disjoint_with_round_trips_through_export() {
+    let (graph, _dir) = open_temp_graph().await;
+    graph.import_turtle(DISJOINT_TTL).await.unwrap();
+    let exported = graph.export_turtle().await.unwrap().turtle;
+    assert!(exported.contains("owl:disjointWith") || exported.contains("http://www.w3.org/2002/07/owl#disjointWith"), "{exported}");
+
+    let (other, _dir2) = open_temp_graph().await;
+    let report = other.import_turtle(&exported).await.unwrap();
+    assert_eq!(report.disjoint_pairs_added, 1);
+}

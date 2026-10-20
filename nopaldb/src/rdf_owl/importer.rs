@@ -40,6 +40,15 @@ pub(crate) const OWL_CLASS: NamedNodeRef<'static> =
 /// consumed as a no-op — the individual's real class is its other `rdf:type`.
 const OWL_NAMED_INDIVIDUAL: NamedNodeRef<'static> =
     NamedNodeRef::new_unchecked("http://www.w3.org/2002/07/owl#NamedIndividual");
+/// `owl:disjointWith`: written as an [`EDGE_DISJOINT_WITH`] edge between the
+/// two class nodes, the edge the reasoner reads back (#235).
+const OWL_DISJOINT_WITH: &str = "http://www.w3.org/2002/07/owl#disjointWith";
+/// `owl:AllDisjointClasses` with its `owl:members ( … )` list: one
+/// [`EDGE_DISJOINT_WITH`] edge per pair of members.
+const OWL_ALL_DISJOINT_CLASSES: &str = "http://www.w3.org/2002/07/owl#AllDisjointClasses";
+const OWL_MEMBERS: &str = "http://www.w3.org/2002/07/owl#members";
+/// `owl:Nothing` (⊥). Never a node: the reasoner has it built in.
+const OWL_NOTHING_IRI: &str = "http://www.w3.org/2002/07/owl#Nothing";
 
 pub(crate) const NS_RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 pub(crate) const NS_RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
@@ -52,6 +61,9 @@ pub(crate) const NS_XSD: &str = "http://www.w3.org/2001/XMLSchema#";
 pub const EDGE_INSTANCE_OF: &str = "instanceOf";
 /// Edge type of `rdfs:subClassOf` (unchanged since the first importer).
 pub const EDGE_SUBCLASS_OF: &str = "subClassOf";
+/// Edge type of a disjointness between two classes: `owl:disjointWith`, and
+/// each pair of an `owl:AllDisjointClasses`. One edge per unordered pair.
+pub use crate::reasoner::EDGE_DISJOINT_WITH;
 
 /// Property carrying a node's IRI (classes and individuals alike).
 pub const PROP_IRI: &str = "iri";
@@ -97,6 +109,11 @@ pub struct ImportReport {
     pub classes_added: usize,
     /// `subClassOf` edges created.
     pub subclass_edges_added: usize,
+    /// [`EDGE_DISJOINT_WITH`] edges created: one per unordered pair of
+    /// classes declared disjoint (`owl:disjointWith`, or every pair of an
+    /// `owl:AllDisjointClasses` — four members are six pairs). The reasoner
+    /// reads them back ([`ELReasoner::from_graph_at`](crate::reasoner::ELReasoner::from_graph_at)).
+    pub disjoint_pairs_added: usize,
     /// Individual nodes created (typed subjects; placeholders are counted in
     /// `placeholders_created` instead, and move here only in spirit when a
     /// later import types them).
@@ -283,6 +300,33 @@ fn object_of(term: &Term, document_hash: u64) -> Object<'_> {
         Term::BlankNode(b) => Object::Resource(blank_iri(b.as_str(), document_hash)),
         Term::Literal(l) => Object::Literal(l),
     }
+}
+
+/// Members of the RDF list starting at `head` (`( a b c )`), in order, with
+/// the list cells it walked. Only resources: a literal member is skipped. A
+/// cycle or a broken list ends the walk.
+fn rdf_list(triples: &[Triple], document_hash: u64, head: &str) -> (Vec<String>, Vec<String>) {
+    let (mut members, mut cells) = (Vec::new(), Vec::new());
+    let mut cur = head.to_string();
+    let mut seen = HashSet::new();
+    while cur != rdf::NIL.as_str() && seen.insert(cur.clone()) {
+        let next = |pred: NamedNodeRef<'_>| {
+            triples
+                .iter()
+                .find(|t| t.predicate == pred && subject_iri(&t.subject, document_hash) == cur)
+                .map(|t| object_of(&t.object, document_hash))
+        };
+        let Some(first) = next(rdf::FIRST) else { break };
+        cells.push(cur.clone());
+        if let Object::Resource(m) = first {
+            members.push(m);
+        }
+        match next(rdf::REST) {
+            Some(Object::Resource(rest)) => cur = rest,
+            _ => break,
+        }
+    }
+    (members, cells)
 }
 
 /// Local name of an IRI: the part after `#`, or after the last `/`. For a
@@ -692,6 +736,14 @@ pub async fn import_turtle(
         }
         let Object::Resource(obj) = object_of(&t.object, hash) else { continue };
         let subj = subject_iri(&t.subject, hash);
+        if obj == OWL_NOTHING_IRI {
+            // ⊥ is not a node; checked before `ensure_class`, which would create one.
+            im.report.warnings.push(format!(
+                "`{} rdfs:subClassOf owl:Nothing` declara la clase insatisfacible; no se guarda en el grafo: asértalo en el razonador (`assert_subclass(c, OWL_NOTHING)`)",
+                qualified_name(&subj, im.prefixes)
+            ));
+            continue;
+        }
         let sub_id = im.ensure_class(&subj, declared_classes.contains(&subj)).await?;
         let super_id = im.ensure_class(&obj, declared_classes.contains(&obj)).await?;
         if im.ensure_edge(sub_id, super_id, EDGE_SUBCLASS_OF, rdfs::SUB_CLASS_OF.as_str()).await? {
@@ -699,6 +751,68 @@ pub async fn import_turtle(
         }
         // Convention: add_subclass(parent, child) means child ⊑ parent. Idempotent.
         im.taxonomy.add_subclass(super_id, sub_id)?;
+    }
+
+    // Pass 2b — disjoint classes (#235): `owl:disjointWith` and
+    // `owl:AllDisjointClasses ( … )`, one `disjointWith` edge per unordered
+    // pair, written in IRI order so the pair is one edge whichever way (and
+    // however many times) the document states it.
+    let mut disjoint_pairs: Vec<(String, String)> = Vec::new();
+    let mut disjoint_consumed: HashSet<String> = HashSet::new(); // AllDisjointClasses subjects + list cells
+    for t in triples {
+        if t.predicate.as_str() != OWL_DISJOINT_WITH {
+            continue;
+        }
+        if let Object::Resource(obj) = object_of(&t.object, hash) {
+            disjoint_pairs.push((subject_iri(&t.subject, hash), obj));
+        }
+    }
+    for t in triples {
+        if t.predicate != rdf::TYPE || !matches!(object_of(&t.object, hash), Object::Resource(o) if o == OWL_ALL_DISJOINT_CLASSES) {
+            continue;
+        }
+        let subj = subject_iri(&t.subject, hash);
+        let Some(head) = triples.iter().find_map(|m| {
+            (m.predicate.as_str() == OWL_MEMBERS && subject_iri(&m.subject, hash) == subj)
+                .then(|| object_of(&m.object, hash))
+                .and_then(|o| match o {
+                    Object::Resource(h) => Some(h),
+                    Object::Literal(_) => None,
+                })
+        }) else {
+            continue; // no members: stays skipped
+        };
+        let (members, cells) = rdf_list(triples, hash, &head);
+        for (i, a) in members.iter().enumerate() {
+            for b in &members[i + 1..] {
+                disjoint_pairs.push((a.clone(), b.clone()));
+            }
+        }
+        disjoint_consumed.insert(subj);
+        disjoint_consumed.extend(cells);
+    }
+    let mut seen_pairs: HashSet<(String, String)> = HashSet::new();
+    for (a, b) in disjoint_pairs {
+        if a == b {
+            continue;
+        }
+        if a == OWL_NOTHING_IRI || b == OWL_NOTHING_IRI {
+            im.report.warnings.push(format!(
+                "una disyunción con owl:Nothing ({} / {}) no dice nada: ⊥ ya es disjunta de toda clase; se ignora",
+                qualified_name(&a, im.prefixes),
+                qualified_name(&b, im.prefixes)
+            ));
+            continue;
+        }
+        let (a, b) = if a <= b { (a, b) } else { (b, a) };
+        if !seen_pairs.insert((a.clone(), b.clone())) {
+            continue;
+        }
+        let a_id = im.ensure_class(&a, declared_classes.contains(&a)).await?;
+        let b_id = im.ensure_class(&b, declared_classes.contains(&b)).await?;
+        if im.ensure_edge(a_id, b_id, EDGE_DISJOINT_WITH, OWL_DISJOINT_WITH).await? {
+            im.report.disjoint_pairs_added += 1;
+        }
     }
 
     // Pass 3 — individuals: node (label = first type) + one instanceOf edge per type.
@@ -827,15 +941,20 @@ pub async fn import_turtle(
     // here, once, with the same tests the passes used.
     for t in triples {
         let subj = subject_iri(&t.subject, hash);
-        let consumed = if im.vocabulary_subjects.contains(&subj) {
+        let consumed = if disjoint_consumed.contains(&subj) {
+            true // an owl:AllDisjointClasses and its member list: became edges
+        } else if im.vocabulary_subjects.contains(&subj) {
             false
+        } else if t.predicate.as_str() == OWL_DISJOINT_WITH {
+            matches!(object_of(&t.object, hash), Object::Resource(_))
         } else if t.predicate == rdf::TYPE {
             match object_of(&t.object, hash) {
                 Object::Resource(obj) => !is_reserved_namespace(&obj) || obj == OWL_CLASS.as_str() || obj == OWL_NAMED_INDIVIDUAL.as_str(),
                 Object::Literal(_) => false,
             }
         } else if t.predicate == rdfs::SUB_CLASS_OF {
-            matches!(object_of(&t.object, hash), Object::Resource(_))
+            // `owl:Nothing` as the superclass is reported in `warnings`, not stored.
+            matches!(object_of(&t.object, hash), Object::Resource(o) if o != OWL_NOTHING_IRI)
         } else {
             let p = t.predicate.as_str();
             p == rdfs::LABEL.as_str() || p == rdfs::COMMENT.as_str() || !is_reserved_namespace(p)

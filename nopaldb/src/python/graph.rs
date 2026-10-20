@@ -113,7 +113,7 @@ pub struct PyGraph {
 
 impl PyGraph {
     /// Devuelve un clone del Arc interno, o error si el grafo ya fue cerrado.
-    fn graph(&self) -> PyResult<Arc<RustGraph>> {
+    pub(crate) fn graph(&self) -> PyResult<Arc<RustGraph>> {
         self.inner
             .lock()
             .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
@@ -1735,8 +1735,10 @@ impl PyGraph {
     ///     ttl_source (str): Contenido Turtle como string.
     ///
     /// Returns:
-    ///     dict: {classes_added, subclass_edges_added, instances_added, edges_created,
-    ///           placeholders_created, triples_skipped, warnings}.
+    ///     dict: {classes_added, subclass_edges_added, disjoint_pairs_added, instances_added,
+    ///           edges_created, placeholders_created, triples_skipped, warnings}.
+    ///     `disjoint_pairs_added` cuenta las aristas `disjointWith` (una por par de clases
+    ///     de `owl:disjointWith` u `owl:AllDisjointClasses`), que `ELReasoner.from_graph` lee.
     ///     `triples_skipped` cuenta solo los triples que no dejaron nada en el grafo
     ///     (metadatos de clases, tipos desconocidos, axiomas no modelados); las data
     ///     properties de individuos se importan y no cuentan.
@@ -1753,6 +1755,7 @@ impl PyGraph {
         let dict = pyo3::types::PyDict::new(py);
         dict.set_item("classes_added",        report.classes_added)?;
         dict.set_item("subclass_edges_added", report.subclass_edges_added)?;
+        dict.set_item("disjoint_pairs_added", report.disjoint_pairs_added)?;
         dict.set_item("instances_added",      report.instances_added)?;
         dict.set_item("triples_skipped",      report.triples_skipped)?;
         dict.set_item("edges_created",        report.edges_created)?;
