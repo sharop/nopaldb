@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.19] - unreleased
+## [0.6.19] - 2026-10-20
 
 NQL siembra el multi-hop de GraphRAG en una consulta.
 
