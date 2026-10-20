@@ -23,8 +23,8 @@ g = nopaldb.Graph.open("./data")
 |---|---|
 | `add_node(label: str, properties: Props) -> str` | One node; returns its id. |
 | `add_edge(source: str, target: str, edge_type: str, properties: Optional[Props] = None) -> str` | One edge between existing nodes. |
-| `upsert(label: str, key: str, props: Props, vector: Optional[list[float]] = None, model: Optional[str] = None, links: Optional[list[dict[str, Any]]] = None,) -> tuple[str, str]` | Idempotent write by `(label, key)`; `vector`/`model` attach an embedding, `links` create edges in the same call. |
-| `upsert_many(requests: list[dict[str, Any]]) -> list[tuple[str, str]]` | Many upserts, one transaction per chunk; returns `(outcome, node_id)` per request. |
+| `upsert(label: str, key: str, props: Props, vector: Optional[list[float]] = None, model: Optional[str] = None, links: Optional[list[dict[str, Any]]] = None,) -> tuple[str, str]` | Idempotent write by `(label, key)`; `vector`/`model` attach an embedding, `links` create edges in the same call. Each link is `{"type": str, "target_label": str, "target_key": str, "target_key_value": Any, "props": dict?, "stub": bool?}`; with `stub` a missing target is created as `{target_key: value}` and filled by its own upsert later. Returns `(outcome, node_id)`, outcome `"created" / "updated" / "unchanged"`. |
+| `upsert_many(requests: list[dict[str, Any]]) -> list[tuple[str, str]]` | Many upserts, one transaction per chunk of 1 024; each request is `{"label", "key", "props", "vector"?, "model"?, "links"?}` (the arguments of `upsert` as keys); returns `(outcome, node_id)` per request, in order. The GraphRAG [recipe](../GRAPHRAG.md#recipe-end-to-end) ingests with it. |
 | `delete(label: str, key: str, value: Property) -> Optional[str]` | Delete by `(label, key, value)`. |
 | `begin_transaction(isolation: Optional[str] = None) -> "Transaction"` | Explicit transaction with an isolation level. |
 

@@ -164,4 +164,150 @@ with tempfile.TemporaryDirectory() as tmp:
         assert "must be the first node" in str(exc), exc
     g.close()
 
+
+# 6. Recipe: end to end (#230). The four blocks between the `recipe:<name>`
+#    markers are the ones docs/GRAPHRAG.md § "Recipe: end to end" shows, byte
+#    for byte after dedent: scripts/check_graphrag_recipe.py fails when they
+#    diverge, so the doc cannot age. Only `embed`, `path`, `question`, the
+#    corpus and the asserts live outside the markers.
+VOCAB = ["riego", "goteo", "nopal", "tuna", "plaga", "cochinilla", "cosecha", "mercado"]
+
+
+def embed(text: str) -> list[float]:
+    """Stand-in for an embedding model: bag of words over VOCAB, normalized."""
+    words = text.lower().replace("¿", " ").replace("?", " ").replace(",", " ").replace(".", " ").split()
+    v = [float(sum(1 for w in words if w.startswith(t))) for t in VOCAB]
+    n = sum(x * x for x in v) ** 0.5
+    return [x / n for x in v] if n else [1.0 / len(VOCAB) ** 0.5] * len(VOCAB)
+
+
+CORPUS = [
+    {"id": "riego", "chunks": [
+        {"text": "El riego por goteo da al nopal un riego constante sin encharcar.", "entities": ["Riego por goteo", "Nopal"]},
+        {"text": "Un nopal con riego por goteo produce tuna más uniforme.", "entities": ["Riego por goteo", "Nopal", "Tuna"]},
+        {"text": "El goteo se programa de madrugada para que el riego no se evapore.", "entities": ["Riego por goteo"]},
+        {"text": "Sin riego el nopal sobrevive, pero la cosecha de tuna cae.", "entities": ["Nopal", "Cosecha"]},
+    ], "relations": [("Riego por goteo", "Nopal")]},
+    {"id": "plagas", "chunks": [
+        {"text": "La cochinilla es la plaga más común del nopal.", "entities": ["Cochinilla", "Nopal"]},
+        {"text": "Una plaga de cochinilla se nota por el polvo blanco en las pencas.", "entities": ["Cochinilla"]},
+        {"text": "Contra la plaga se poda la penca afectada del nopal.", "entities": ["Nopal"]},
+        {"text": "La cochinilla baja la cosecha de tuna si no se controla.", "entities": ["Cochinilla", "Cosecha", "Tuna"]},
+    ], "relations": [("Cochinilla", "Nopal"), ("Cochinilla", "Cosecha")]},
+    {"id": "mercado", "chunks": [
+        {"text": "La tuna se vende en el mercado por caja de cosecha.", "entities": ["Tuna", "Mercado", "Cosecha"]},
+        {"text": "El mercado paga mejor la tuna roja que la verde.", "entities": ["Tuna", "Mercado"]},
+        {"text": "La cosecha de tuna se lleva al mercado el mismo día.", "entities": ["Cosecha", "Mercado"]},
+        {"text": "El nopal verdura también tiene mercado, por manojo.", "entities": ["Nopal", "Mercado"]},
+    ], "relations": [("Cosecha", "Tuna"), ("Tuna", "Mercado")]},
+]
+
+with tempfile.TemporaryDirectory() as tmp:
+    path = os.path.join(tmp, "kb")
+    question = "¿Cómo riego el nopal?"
+
+    # recipe:indexes:start
+    g = nopaldb.Graph.open(path)
+    g.create_index("Chunk", "text", "fulltext", analyzer={"language": "spanish"})  # BM25 branch of hybrid()
+    g.create_index("Entity", "name", "hash")                                        # `where e.name in [...]` without a scan
+    # Nothing to call for the vector index: HNSW is built on the first search and persisted.
+    # recipe:indexes:end
+
+    # recipe:ingest:start
+    def ingest(doc: dict) -> dict[str, str]:
+        """One document → chunks, entities and relations, in one idempotent batch."""
+        rows = []
+        for i, ch in enumerate(doc["chunks"]):
+            rows.append({
+                "label": "Chunk", "key": "key",
+                "props": {"key": f'{doc["id"]}#{i}', "doc": doc["id"], "text": ch["text"]},
+                "vector": embed(ch["text"]), "model": "m",
+                "links": [{"type": "MENTIONS", "target_label": "Entity", "target_key": "name",
+                           "target_key_value": e, "stub": True} for e in ch["entities"]],
+            })
+        for a, b in doc["relations"]:
+            rows.append({
+                "label": "Entity", "key": "name", "props": {"name": a},
+                "links": [{"type": "RELATED", "target_label": "Entity", "target_key": "name",
+                           "target_key_value": b, "stub": True}],
+            })
+        outcomes = g.upsert_many(rows)                    # [(outcome, node_id), ...], one per row
+        return {row["props"]["key" if row["label"] == "Chunk" else "name"]: nid for row, (_, nid) in zip(rows, outcomes)}
+
+    ids = {}
+    for doc in CORPUS:
+        ids.update(ingest(doc))
+    # recipe:ingest:end
+    first = [g.upsert_many([{"label": "Chunk", "key": "key", "props": {"key": "riego#0", "doc": "riego",
+                                                                       "text": CORPUS[0]["chunks"][0]["text"]},
+                              "vector": embed(CORPUS[0]["chunks"][0]["text"]), "model": "m",
+                              "links": [{"type": "MENTIONS", "target_label": "Entity", "target_key": "name",
+                                         "target_key_value": e, "stub": True} for e in ["Riego por goteo", "Nopal"]]}])]
+    assert first[0][0][0] == "unchanged", first
+    assert g.node_count() == 12 + 6, g.node_count()
+    before = g.node_count()
+    again = {}
+    for doc in CORPUS:
+        again.update(ingest(doc))
+    assert again == ids and g.node_count() == before, "re-running the ingestion writes nothing"
+    assert g.search_hybrid(text="cochinilla", k=3), "upserted chunks are in the full-text index"
+
+    # recipe:retrieve:start
+    q = embed(question)
+    lit = "[" + ", ".join(repr(x) for x in q) + "]"      # the vector goes inside the query (0.6.9)
+    rows = list(g.execute_nql(
+        f"find c.text, e.name, rank(c), vector_score(c), text_score(c), score(c) "
+        f"from (c:Chunk)-[:MENTIONS]->(e:Entity) "
+        f'where hybrid(c, text = "{question}", vector = {lit}, model = "m", k = 4)'))
+    # Cut by `vector_score` (a cosine in [0, 1]) or by `rank`, never by `score`: an RRF
+    # score is at most 2/rrf_k (0.033 by default), so a cosine-style threshold keeps nothing.
+    kept = [r for r in rows if r["rank(c)"] < 3 and (r["vector_score(c)"] or 0.0) >= 0.3]
+
+    # When the caller fixes the universe (an ACL, the document the user selected),
+    # pass it as `candidates`: ranking happens inside it, on both branches.
+    allowed = [nid for key, nid in ids.items() if key.startswith("riego#")]
+    hits = g.search_hybrid(text=question, vector=q, model="m", k=4, candidates=allowed, hydrate=True)
+    # recipe:retrieve:end
+    assert rows and rows[0]["rank(c)"] == 0 and rows[0]["c.text"].startswith("El riego por goteo"), rows[:2]
+    assert all(0.0 <= r["vector_score(c)"] <= 1.0 for r in rows if r["vector_score(c)"] is not None), rows
+    assert any(r["text_score(c)"] is not None for r in rows), "the text branch ranked the riego chunks"
+    assert all(0 < r["score(c)"] <= 2 / 60 + 1e-6 for r in rows), "RRF, not cosine"
+    assert kept and {r["c.text"] for r in kept} <= {r["c.text"] for r in rows}
+    assert hits and {h["node_id"] for h in hits} <= set(allowed), hits
+    assert all(h["node"]["properties"]["doc"] == "riego" for h in hits)
+
+    # recipe:expand:start
+    # (a) Two hops in the same query (0.6.19): chunk → entity → related entity, the chunk's
+    #     score on every row. One row per path; `distinct` collapses them.
+    two = list(g.execute_nql(
+        f"find distinct c.text, f.name, score(c) "
+        f"from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:RELATED]->(f:Entity) "
+        f'where hybrid(c, text = "{question}", vector = {lit}, model = "m", k = 4)'))
+
+    # (b) The neighbourhood as a SET with a budget: each node once, at its minimum depth,
+    #     ranked by Personalized PageRank from the hits, `max_nodes` as the cap.
+    seeds = [h["node_id"] for h in hits]
+    ctx = g.neighborhood(seeds, depth=2, direction="both", labels=["Entity"], max_nodes=20,
+                         rank="ppr", seed_weights={h["node_id"]: h["score"] for h in hits})
+
+    # Context budget: hits first (best first), then the ranked subgraph, until it fills.
+    budget, context = 600, []
+    for piece in [h["node"]["properties"]["text"] for h in hits] + \
+                 [n["properties"]["name"] for n in ctx["nodes"] if n["label"] == "Entity"]:
+        if budget - len(piece) < 0:
+            break
+        budget -= len(piece)
+        context.append(piece)
+    # recipe:expand:end
+    assert {r["f.name"] for r in two} >= {"Nopal"}, two
+    assert all(0 < r["score(c)"] <= 2 / 60 + 1e-6 for r in two)
+    assert "hops: 2" in g.execute_nql(
+        f"explain find c.text, f.name from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:RELATED]->(f:Entity) "
+        f'where hybrid(c, text = "{question}", vector = {lit}, model = "m", k = 4)').explain
+    depths = {n["properties"].get("name"): ctx["depth"][n["id"]] for n in ctx["nodes"] if n["label"] == "Entity"}
+    assert 2 in depths.values() and depths["Nopal"] == 1, depths
+    assert all(n["label"] == "Entity" or n["id"] in seeds for n in ctx["nodes"])
+    assert context and sum(len(p) for p in context) <= 600 and context[0] == hits[0]["node"]["properties"]["text"]
+    g.close()
+
 print("graphrag_sample: OK")

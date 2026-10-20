@@ -31,7 +31,7 @@ Single index for every document in `docs/`, in English with the Spanish pages ma
 ## Search
 
 - [Embeddings & vector search](EMBEDDINGS.md) · [HNSW in NopalDB](HNSW_ALGORITHM.md)
-- [Hybrid search (full-text + vector, RRF)](HYBRID_SEARCH.md) · [GraphRAG retrieval cycle](GRAPHRAG.md) — search, hydrate, expand in one call each
+- [Hybrid search (full-text + vector, RRF)](HYBRID_SEARCH.md) · [GraphRAG retrieval cycle](GRAPHRAG.md) — search, hydrate, expand in one call each; [the recipe end to end](GRAPHRAG.md#recipe-end-to-end), backed by a sample that runs in CI
 - [Indexing system](INDEXING_DOCS.MD) · [Property index (layout v2, ES)](PROPERTY_INDEXING.md) · [Query planner](QUERY_PLANNER_DOCS.MD)
 
 ## Semantic tier
