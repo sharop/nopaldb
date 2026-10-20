@@ -56,8 +56,8 @@ def in_memory() -> None:
 
     try:
         r.assert_disjoint([ids["Cosa"]])
-    except Exception:
-        pass
+    except ValueError as err:
+        assert "at least two" in str(err), err
     else:
         raise AssertionError("one class is not a disjointness")
 

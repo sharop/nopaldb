@@ -70,9 +70,14 @@ fn unsatisfiable_to_py<'py>(py: Python<'py>, cause: &Unsatisfiable) -> PyResult<
             d.set_item("rule", "CR1")?;
             d.set_item("parent", parent.to_string())?;
         }
-        Unsatisfiable::Existential { role, filler } => {
+        Unsatisfiable::Existential { role, filler, rule } => {
             d.set_item("cause", "existential")?;
-            d.set_item("rule", "CR4")?;
+            d.set_item("rule", match rule {
+                CompletionRule::CR1 => "CR1",
+                CompletionRule::CR2 => "CR2",
+                CompletionRule::CR3 => "CR3",
+                CompletionRule::CR4 => "CR4",
+            })?;
             d.set_item("role", role)?;
             d.set_item("filler", filler.to_string())?;
         }
@@ -180,7 +185,8 @@ impl PyELReasoner {
 
     /// ⊥ (``owl:Nothing``) as a UUID string. Built in: no need to register
     /// it. ``assert_subclass(c, ELReasoner.NOTHING)`` declares ``c``
-    /// unsatisfiable; ``is_subclass_of(c, ELReasoner.NOTHING)`` asks it.
+    /// unsatisfiable; :meth:`is_satisfiable` asks it (it classifies first;
+    /// ``is_subclass_of(c, NOTHING)`` only sees what is derived so far).
     #[classattr]
     #[allow(non_snake_case)]
     fn NOTHING() -> String {
@@ -220,9 +226,7 @@ impl PyELReasoner {
     /// label : str
     ///     Human-readable class label (e.g. ``"Animal"``).
     pub fn register_class(&mut self, node_id: &str, label: &str) -> PyResult<()> {
-        let id: NodeId = node_id.parse().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(format!("Invalid UUID: {}", node_id))
-        })?;
+        let id: NodeId = parse_id(node_id)?;
         self.inner.register_class(id, label);
         Ok(())
     }
@@ -242,12 +246,8 @@ impl PyELReasoner {
     /// -------
     /// list[Inference]
     pub fn assert_subclass(&mut self, sub: &str, super_class: &str) -> PyResult<Vec<PyInference>> {
-        let sub_id: NodeId = sub.parse().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(format!("Invalid UUID: {}", sub))
-        })?;
-        let super_id: NodeId = super_class.parse().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(format!("Invalid UUID: {}", super_class))
-        })?;
+        let sub_id: NodeId = parse_id(sub)?;
+        let super_id: NodeId = parse_id(super_class)?;
         let inferences = to_py_result(self.inner.assert_subclass(sub_id, super_id))?;
         Ok(inferences.iter().map(inference_to_py).collect())
     }
@@ -274,15 +274,9 @@ impl PyELReasoner {
         right: &str,
         result: &str,
     ) -> PyResult<Vec<PyInference>> {
-        let l: NodeId = left.parse().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(format!("Invalid UUID: {}", left))
-        })?;
-        let r: NodeId = right.parse().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(format!("Invalid UUID: {}", right))
-        })?;
-        let res: NodeId = result.parse().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(format!("Invalid UUID: {}", result))
-        })?;
+        let l: NodeId = parse_id(left)?;
+        let r: NodeId = parse_id(right)?;
+        let res: NodeId = parse_id(result)?;
         let inferences = to_py_result(self.inner.assert_conjunction(l, r, res))?;
         Ok(inferences.iter().map(inference_to_py).collect())
     }
@@ -309,12 +303,8 @@ impl PyELReasoner {
         role: &str,
         filler: &str,
     ) -> PyResult<Vec<PyInference>> {
-        let sub_id: NodeId = sub.parse().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(format!("Invalid UUID: {}", sub))
-        })?;
-        let filler_id: NodeId = filler.parse().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(format!("Invalid UUID: {}", filler))
-        })?;
+        let sub_id: NodeId = parse_id(sub)?;
+        let filler_id: NodeId = parse_id(filler)?;
         let inferences = to_py_result(self.inner.assert_existential(sub_id, role, filler_id))?;
         Ok(inferences.iter().map(inference_to_py).collect())
     }
@@ -341,12 +331,8 @@ impl PyELReasoner {
         filler: &str,
         result: &str,
     ) -> PyResult<Vec<PyInference>> {
-        let filler_id: NodeId = filler.parse().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(format!("Invalid UUID: {}", filler))
-        })?;
-        let result_id: NodeId = result.parse().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(format!("Invalid UUID: {}", result))
-        })?;
+        let filler_id: NodeId = parse_id(filler)?;
+        let result_id: NodeId = parse_id(result)?;
         let inferences = to_py_result(
             self.inner.assert_existential_domain(role, filler_id, result_id)
         )?;
@@ -369,11 +355,15 @@ impl PyELReasoner {
     /// Raises
     /// ------
     /// ValueError
-    ///     An invalid UUID. Fewer than two classes, a repeated one or
-    ///     ``NOTHING`` among them raise too.
+    ///     An invalid UUID, fewer than two classes, a repeated one, or
+    ///     ``NOTHING`` among them.
     pub fn assert_disjoint(&mut self, classes: Vec<String>) -> PyResult<Vec<PyInference>> {
         let ids: Vec<NodeId> = classes.iter().map(|c| parse_id(c)).collect::<PyResult<_>>()?;
-        let inferences = to_py_result(self.inner.assert_disjoint(&ids))?;
+        // Argument errors are ValueError here; `to_py_result` would make them RuntimeError.
+        let inferences = self
+            .inner
+            .assert_disjoint(&ids)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Ok(inferences.iter().map(inference_to_py).collect())
     }
 

@@ -377,3 +377,31 @@ async fn test_disjoint_with_round_trips_through_export() {
     let report = other.import_turtle(&exported).await.unwrap();
     assert_eq!(report.disjoint_pairs_added, 1);
 }
+
+#[tokio::test]
+async fn test_owl_nothing_edge_cases_keep_the_class_and_warn() {
+    let (graph, _dir) = open_temp_graph().await;
+    let ttl = r#"
+@prefix : <http://cocina.example/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+:Fantasma rdfs:subClassOf owl:Nothing .
+owl:Nothing rdfs:subClassOf :Fantasma .
+:Fantasma owl:disjointWith :Fantasma .
+:Fantasma owl:disjointWith owl:Nothing .
+"#;
+    let report = graph.import_turtle(ttl).await.unwrap();
+    // The class whose only mention is `subClassOf owl:Nothing` still exists,
+    // so the user can assert the axiom in the reasoner.
+    assert_eq!(report.classes_added, 1, "{report:?}");
+    assert_eq!(graph.get_nodes_by_label("Fantasma").await.unwrap().len(), 1);
+    assert!(graph.get_nodes_by_label("Nothing").await.unwrap().is_empty(), "⊥ is never a node");
+    assert_eq!(report.subclass_edges_added, 0);
+    assert_eq!(report.disjoint_pairs_added, 0);
+    // Four statements, four warnings (plus the usual one for a class created
+    // without `a owl:Class`), four skipped: nothing vanishes in silence.
+    assert_eq!(report.warnings.len(), 5, "{:?}", report.warnings);
+    assert_eq!(report.warnings.iter().filter(|w| w.contains("owl:Nothing")).count(), 3, "{:?}", report.warnings);
+    assert!(report.warnings.iter().any(|w| w.contains("consigo misma")), "{:?}", report.warnings);
+    assert_eq!(report.triples_skipped, 4, "{report:?}");
+}
