@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+NQL siembra el multi-hop de GraphRAG en una consulta.
+
+### Added
+- **NQL: `hybrid` / `similar_to` siembran cadenas de dos saltos** (#231).
+  `(a)-[:T1]->(b)-[:T2]->(c)` con `a` buscada: los candidatos de la búsqueda
+  son la fuente del patrón, como en un salto, y `score(a)`, `rank(a)` y los
+  scores crudos viajan con cada fila expandida; `k` acota las semillas y
+  `LIMIT` las filas; el resto del `where` se aplica tras expandir. Es el
+  "chunk → entidad → entidad relacionada" de GraphRAG, que hasta 0.6.18
+  obligaba a salir a Python (`search_hybrid` + `neighborhood`) y perder el
+  score, el `limit` y el EXPLAIN de la consulta. Tres saltos, ramas y
+  cuantificadores siguen rechazados con nombre (`longer chains`,
+  `quantifiers`, `several patterns`). EXPLAIN dice `PATTERN PIPELINE (seed:
+  HYBRID, hops: 2)` y una línea `Seeds: k = N … LIMIT (…) applies to the
+  expanded rows`. De paso, `where a.id = …` también siembra cadenas de
+  cualquier longitud (antes solo un salto). Sin agregaciones en dos saltos,
+  como en todo el camino lineal. Fila `nql/hybrid_two_hops` en el bench
+  `retrieval`: 1.35 ms a 100k chunks (un salto 1.11 ms en la misma corrida);
+  docs en `NQL_REFERENCE` EN/ES, `HYBRID_SEARCH.md` y
+  `GRAPHRAG.md`. La fase 2 de #214 convertirá los predicados de `b`/`c` en
+  conjunto de candidatos; hasta entonces se aplican tras expandir (la
+  semántica "A" de expansión).
+
 ## [0.6.18] - 2026-10-20
 
 SHACL reporta cada valor que falla y comprueba dominio y rango de una

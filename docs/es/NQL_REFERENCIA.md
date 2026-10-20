@@ -311,6 +311,10 @@ where hybrid(n, text = "memoria de grafo", vector = [...], model = "minilm", k =
 find c.texto, e.nombre from (c:Chunk)-[:MENTIONS]->(e:Entity)
 where similar_to(c, vector = [...], model = "minilm", k = 10)
 
+-- … o de dos (chunk → entidad → entidad relacionada), con el score del chunk en cada fila
+find c.texto, f.nombre, score(c) from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:RELATED]->(f:Entity)
+where hybrid(c, text = "riego", vector = [...], model = "minilm", k = 10)
+
 -- Afinado: cada parámetro de HybridQuery es una opción con nombre
 find n.titulo from (n:Articulo)
 where hybrid(n, "memoria de grafo", "q", "minilm", rrf_k = 30, ef_search = 128, overfetch = 8, text_index = "Articulo_cuerpo")
@@ -355,7 +359,7 @@ where similar_to(c, vector = [...], model = "minilm", k = 10)
 ```
 
 `score(var)` exige un `similar_to`/`hybrid` sobre esa misma variable, funciona
-en patrones de un salto (cada fila expandida lleva el score de su nodo
+en patrones de uno y dos saltos (cada fila expandida lleva el score de su nodo
 buscado) y solo es columna del FIND: las filas ya salen mejor-primero, así que
 se rechaza en WHERE, ORDER BY, GROUP BY y HAVING, y junto a agregaciones.
 EXPLAIN nombra su fuente (`Score: score(c) = cosine similarity of similar_to(c) …`).
@@ -383,15 +387,20 @@ from (c:Chunk)
 where hybrid(c, text = "riego por goteo", vector = [...], model = "minilm", k = 10)
 ```
 
-Dónde puede ir la búsqueda: un patrón de un solo nodo, o **un** patrón de un
-salto `(a)-[:T]->(b)` cuyo primer nodo es la variable buscada (los candidatos
-siembran el pipeline; el `LIMIT` acota entonces las filas expandidas, así que
-conviene dar `k`). Varios patrones, cadenas más largas, cuantificadores o
-buscar la variable destino son errores de validación. Antes de 0.6.9 esas
+Dónde puede ir la búsqueda: un patrón de un solo nodo, o **un** patrón lineal
+de uno o dos saltos `(a)-[:T1]->(b)[-[:T2]->(c)]` cuyo primer nodo es la
+variable buscada (los candidatos siembran el pipeline: `k` acota las semillas
+y `LIMIT` las filas expandidas, así que conviene dar `k`; `score(a)` y los
+scores crudos viajan con cada fila expandida; el resto del `where` se aplica
+tras expandir). Dos saltos es el multi-hop de GraphRAG, "chunk → entidad →
+entidad relacionada", en una consulta (0.6.19). Varios patrones, cadenas más
+largas, cuantificadores o buscar una variable destino son errores de
+validación. Antes de 0.6.9 esas
 consultas, y cualquier `similar_to` mal formado, se ignoraban en silencio y
 devolvían todas las filas. `explain` imprime los parámetros efectivos (líneas
-`SimilarTo:` / `Hybrid:`, el vector como `<literal dim=N>`) y la estrategia
-(`VECTOR SEARCH (similar_to)`, `PATTERN PIPELINE (seed: HYBRID)`, …).
+`SimilarTo:` / `Hybrid:`, el vector como `<literal dim=N>`), la estrategia
+(`VECTOR SEARCH (similar_to)`, `PATTERN PIPELINE (seed: HYBRID, hops: 2)`, …)
+y, en un patrón, una línea `Seeds:` con `k`, los saltos y el `LIMIT`.
 Detalle y API Rust/Python: [HYBRID_SEARCH.md](../HYBRID_SEARCH.md), [EMBEDDINGS.md](../EMBEDDINGS.md),
 [GRAPHRAG.md](../GRAPHRAG.md).
 

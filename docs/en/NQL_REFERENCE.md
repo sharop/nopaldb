@@ -381,15 +381,19 @@ from (c:Chunk)
 where hybrid(c, text = "riego por goteo", vector = [...], model = "minilm", k = 10)
 ```
 
-Where the search may live: a single-node pattern, or **one** pattern of a
-single hop `(a)-[:T]->(b)` whose first node is the searched variable (the
-candidates seed the pipeline; `LIMIT` then caps the expanded rows, so give
-`k` explicitly). Several patterns, longer chains, quantifiers or searching
-the target variable are validation errors. Before 0.6.9 such queries, and any
+Where the search may live: a single-node pattern, or **one** linear pattern
+of one or two hops `(a)-[:T1]->(b)[-[:T2]->(c)]` whose first node is the
+searched variable (the candidates seed the pipeline: `k` bounds the seeds and
+`LIMIT` caps the expanded rows, so give `k` explicitly; `score(a)` and the
+raw scores travel with every expanded row; the other `where` predicates apply
+after the expansion). Two hops is the multi-hop of GraphRAG, "chunk → entity →
+related entity", in one query (0.6.19). Several patterns, longer chains,
+quantifiers or searching a target variable are validation errors. Before 0.6.9 such queries, and any
 malformed `similar_to`, were silently ignored and returned every row.
 `explain` prints the effective parameters (`SimilarTo:` / `Hybrid:` lines,
-the vector shown as `<literal dim=N>`) and the strategy (`VECTOR SEARCH
-(similar_to)`, `PATTERN PIPELINE (seed: HYBRID)`, …). Details and the
+the vector shown as `<literal dim=N>`), the strategy (`VECTOR SEARCH
+(similar_to)`, `PATTERN PIPELINE (seed: HYBRID, hops: 2)`, …) and, in a
+pattern, a `Seeds:` line with `k`, the hops and the `LIMIT`. Details and the
 Rust/Python API: [HYBRID_SEARCH.md](../HYBRID_SEARCH.md), [EMBEDDINGS.md](../EMBEDDINGS.md),
 [GRAPHRAG.md](../GRAPHRAG.md).
 

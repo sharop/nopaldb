@@ -1319,10 +1319,30 @@ impl<'a> Executor<'a> {
         );
 
         if execution_mode == ExecutionMode::LinearBindings {
+            // Two hops are seeded through the linear executor (#231): the
+            // candidates replace the label scan and `score(a)` travels with
+            // each expanded row. Anything else that lands here with a search
+            // (longer chains, quantifiers, path functions) is rejected: the
+            // predicate would pass as `true` and the query return everything.
             if let Some(kind) = where_vector_search(&query) {
-                return Err(NopalError::SemanticError(format!(
-                    "{kind}: only a single hop `(a)-[:T]->(b)` without path functions can be expanded from the search"
-                )));
+                let two_plain_hops = pattern.elements.len() == 5
+                    && !pattern
+                        .elements
+                        .iter()
+                        .any(|e| matches!(e, PatternElement::Relationship(r) if r.quantifier.is_some()))
+                    && !self.query_uses_path_metadata(&query)
+                    && !self.query_uses_quoted_path_vm(&query)
+                    && !projections_contain_path_reducer(&query.find.projections)
+                    && !query.filter.as_ref().is_some_and(|f| {
+                        expr_contains_path_reducer(&f.condition)
+                            || expr_contains_path_semantic_filter(&f.condition)
+                            || expr_contains_path_embedding_fn(&f.condition)
+                    });
+                if !two_plain_hops {
+                    return Err(NopalError::SemanticError(format!(
+                        "{kind}: only one or two hops `(a)-[:T1]->(b)-[:T2]->(c)` without quantifiers or path functions can be expanded from the search"
+                    )));
+                }
             }
             let pattern = pattern.clone();
             return self.execute_linear_multihop_pattern_query(query, &pattern).await;
@@ -1807,10 +1827,10 @@ impl<'a> Executor<'a> {
             NopalError::QueryExecutionError("No patterns in FROM clause".into())
         })?;
 
-        let mut joined_bindings = self.execute_pattern_bindings(first_pattern).await?;
+        let mut joined_bindings = self.execute_pattern_bindings(&query, first_pattern).await?;
 
         for pattern in pattern_bindings_iter {
-            let next_bindings = self.execute_pattern_bindings(pattern).await?;
+            let next_bindings = self.execute_pattern_bindings(&query, pattern).await?;
             joined_bindings = self.join_pattern_bindings(&joined_bindings, &next_bindings);
         }
 
@@ -1845,7 +1865,7 @@ impl<'a> Executor<'a> {
         }
 
         self.initialize_path_profile();
-        let bindings = self.execute_linear_pattern_bindings(pattern).await?;
+        let bindings = self.execute_linear_pattern_bindings(&query, pattern).await?;
         self.update_path_profile(|metrics| {
             metrics.bindings_examined = bindings.len();
         });
@@ -2034,6 +2054,18 @@ impl<'a> Executor<'a> {
             }
         }
 
+        // `score(var)` & co. (#174c, #228) resolve by the node's id, as in the
+        // one-hop pipeline: `var.id` is projected only for that and removed.
+        let score_projs = score_projections(query);
+        let mut score_extra_id_keys: Vec<String> = Vec::new();
+        for (_, var, _) in &score_projs {
+            let id_key = format!("{var}.id");
+            if !projection_strings.contains(&id_key) {
+                projection_strings.push(id_key.clone());
+                score_extra_id_keys.push(id_key);
+            }
+        }
+
         // F3: computar rows con path reducers (propagando errores estrictamente).
         let rows_result: Result<Vec<Row>> = binding_states
             .iter()
@@ -2072,6 +2104,13 @@ impl<'a> Executor<'a> {
             })
             .collect();
         let mut rows = rows_result?;
+
+        self.inject_scores(&mut rows, &score_projs);
+        for row in &mut rows {
+            for key in &score_extra_id_keys {
+                row.values.remove(key);
+            }
+        }
 
         let alias_pairs: Vec<(String, String)> = query.find.projections.iter()
             .filter_map(|projection| match projection {
@@ -2119,7 +2158,7 @@ impl<'a> Executor<'a> {
                         } else if is_path_embedding_fn(name) {
                             path_embedding_projection_key(name, args).ok()
                         } else {
-                            None
+                            score_column(name, args)
                         }
                     } else {
                         None
@@ -2181,6 +2220,7 @@ impl<'a> Executor<'a> {
 
     async fn execute_pattern_bindings(
         &self,
+        query: &Query,
         pattern: &Pattern,
     ) -> Result<Vec<LinearPatternBinding>> {
         if pattern.elements.len() == 1 {
@@ -2215,12 +2255,17 @@ impl<'a> Executor<'a> {
 
             Ok(bindings)
         } else {
-            self.execute_linear_pattern_bindings(pattern).await
+            self.execute_linear_pattern_bindings(query, pattern).await
         }
     }
 
+    /// Vinculaciones de un patrón lineal: la fuente son los candidatos de la
+    /// búsqueda vectorial o del `where var.id` del WHERE cuando los hay
+    /// (`seeded_source_stream`, igual que el pipeline de un salto), y el scan
+    /// de la etiqueta si no; luego un salto por relación.
     async fn execute_linear_pattern_bindings(
         &self,
+        query: &Query,
         pattern: &Pattern,
     ) -> Result<Vec<LinearPatternBinding>> {
         #[allow(clippy::manual_is_multiple_of)]
@@ -2240,7 +2285,7 @@ impl<'a> Executor<'a> {
         };
 
         let mut bindings = Vec::new();
-        let mut source_stream = operators::scan_nodes_stream(self.graph, source_pattern.label.as_deref()).await?;
+        let mut source_stream = self.seeded_source_stream(query, source_pattern).await?;
         while let Some(node) = source_stream.next().await? {
             if !self.node_matches_pattern(&node, source_pattern) {
                 continue;
@@ -5396,6 +5441,20 @@ impl<'a> Executor<'a> {
                     explanation.push_str("\nHybrid: ");
                     explanation.push_str(&describe_hybrid(&call, &query));
                 }
+                // In a pattern, `k` bounds the seeds and LIMIT the expanded
+                // rows (#231): say both, they are easy to confuse.
+                #[cfg(feature = "embeddings-index")]
+                if let (Some(kind), Some(var), Some(pattern)) =
+                    (where_vector_search(&query), vector_search_variable(&query), query.from.patterns.first())
+                    && pattern.elements.len() > 1
+                {
+                    let k = effective_k(explicit_search_k(&query), &query);
+                    let limit = query.limit.as_ref().map(|l| l.limit.to_string()).unwrap_or_else(|| "none".to_string());
+                    explanation.push_str(&format!(
+                        "\nSeeds: k = {k} candidates of {var} ({kind}); hops: {}; LIMIT ({limit}) applies to the expanded rows",
+                        pattern.elements.len() / 2
+                    ));
+                }
                 for (column, var, kind) in score_projections(&query) {
                     let has = |f: &str| {
                         query.filter.as_ref().is_some_and(|w| expr_searches_var(&w.condition, f, &var))
@@ -5566,11 +5625,19 @@ impl<'a> Executor<'a> {
                             _ => None,
                         })
                         .is_some();
-                    match where_vector_search(query) {
-                        Some("similar_to") if query.from.patterns.len() == 1 => "PATTERN PIPELINE (seed: SIMILAR_TO)",
-                        Some(_) if query.from.patterns.len() == 1 => "PATTERN PIPELINE (seed: HYBRID)",
-                        _ if seeded && query.from.patterns.len() == 1 => "PATTERN PIPELINE (seed: ID LOOKUP)",
-                        _ => "PATTERN PIPELINE",
+                    let hops = query.from.patterns.first().map(|p| p.elements.len() / 2).unwrap_or(1);
+                    let seed = match where_vector_search(query) {
+                        Some("similar_to") if query.from.patterns.len() == 1 => Some("SIMILAR_TO"),
+                        Some(_) if query.from.patterns.len() == 1 => Some("HYBRID"),
+                        _ if seeded && query.from.patterns.len() == 1 => Some("ID LOOKUP"),
+                        _ => None,
+                    };
+                    // One hop keeps the 0.6.9 wording (integrators parse it);
+                    // two hops say so (#231).
+                    match seed {
+                        Some(seed) if hops > 1 => format!("PATTERN PIPELINE (seed: {seed}, hops: {hops})"),
+                        Some(seed) => format!("PATTERN PIPELINE (seed: {seed})"),
+                        None => "PATTERN PIPELINE".to_string(),
                     }
                 } else {
                     let labeled = query
@@ -5588,6 +5655,7 @@ impl<'a> Executor<'a> {
                         None if labeled.is_some() => "LABEL SCAN",
                         None => "FULL SCAN",
                     }
+                    .to_string()
                 };
                 out.push_str(&format!("Strategy: {strategy}\n  Reason: {reason}\n"));
             }
@@ -6001,6 +6069,20 @@ pub(crate) fn where_vector_search(query: &Query) -> Option<&'static str> {
         }
     }
     walk(&query.filter.as_ref()?.condition)
+}
+
+/// El `k = N` explícito de la búsqueda del WHERE, si lo hay.
+#[cfg(feature = "embeddings-index")]
+fn explicit_search_k(query: &Query) -> Option<usize> {
+    let cond = &query.filter.as_ref()?.condition;
+    if let Some(call) = extract_similar_to_params(cond) {
+        return call.k;
+    }
+    #[cfg(feature = "hybrid")]
+    if let Some(call) = extract_hybrid_params(cond) {
+        return call.k;
+    }
+    None
 }
 
 /// Variable del patrón que busca `similar_to`/`hybrid` (el primer argumento).

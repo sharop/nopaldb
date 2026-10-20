@@ -13,7 +13,8 @@
 //!   50 nodos por BFS y por Personalized PageRank (#176)
 //! - `nql`: `where c.id = "…"`, `where c.id in [10 ids]`, patrón de 1 salto;
 //!   buscar + expandir en una consulta con `similar_to` y con `hybrid` sobre
-//!   el vector literal (0.6.10, #174: `hybrid` ya no recorre la etiqueta)
+//!   el vector literal (0.6.10, #174: `hybrid` ya no recorre la etiqueta);
+//!   `hybrid` sembrando dos saltos con `score(c)` (#231)
 //!
 //! Fixture: `NOPALDB_BENCH_SCALE` chunks (default 100_000) con vectores de
 //! 64 dims y texto, un 20 % de entidades, 3 `MENTIONS` por chunk y 2
@@ -360,12 +361,17 @@ fn bench_retrieval(c: &mut Criterion) {
     let q_hybrid_hop = format!(
         "find c.text, e.name from (c:Chunk)-[:MENTIONS]->(e:Entity) where hybrid(c, text = \"nopal riego\", vector = [{literal}], model = \"{MODEL}\", k = {K})"
     );
+    // #231: the search seeds a two-hop chain (chunk → entity → related entity).
+    let q_hybrid_two_hops = format!(
+        "find c.text, f.name, score(c) from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:RELATED]->(f:Entity) where hybrid(c, text = \"nopal riego\", vector = [{literal}], model = \"{MODEL}\", k = {K})"
+    );
     for (name, q) in [
         ("id_lookup", &q_id),
         ("id_in_10", &q_in),
         ("one_hop_pattern", &q_hop),
         ("similar_to_literal_one_hop", &q_similar_hop),
         ("hybrid_literal_one_hop", &q_hybrid_hop),
+        ("hybrid_two_hops", &q_hybrid_two_hops),
     ] {
         g.bench_with_input(BenchmarkId::new(name, n), &n, |b, _| {
             b.to_async(&rt).iter(|| async { black_box(fx.graph.execute_nql(q).await.expect("nql")) })

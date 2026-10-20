@@ -139,8 +139,10 @@ async fn malformed_calls_are_errors_not_every_row() {
         (r#"find count(x = 1) from (c:Chunk)"#, "only similar_to(...), hybrid(...) and leiden(...) take named options"),
         // Formas de consulta que el executor no sabe sembrar: error, no todo el grafo.
         (r#"find e.name from (c:Chunk)-[:MENTIONS]->(e:Entity) where similar_to(e, vector = [1, 0, 0], model = "minilm")"#, "must be the first node"),
-        (r#"find e.name from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:MENTIONS]->(f:Entity) where similar_to(c, vector = [1, 0, 0], model = "minilm")"#, "single hop"),
+        // Dos saltos sí se siembran (#231); tres no, ni cuantificadores en ningún salto.
+        (r#"find e.name from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:MENTIONS]->(f:Entity)-[:MENTIONS]->(g:Entity) where similar_to(c, vector = [1, 0, 0], model = "minilm")"#, "longer chains"),
         (r#"find e.name from (c:Chunk)-[:MENTIONS]->{1,2}(e:Entity) where similar_to(c, vector = [1, 0, 0], model = "minilm")"#, "quantifiers"),
+        (r#"find e.name from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:MENTIONS]->{1,2}(f:Entity) where similar_to(c, vector = [1, 0, 0], model = "minilm")"#, "quantifiers"),
         (r#"find e.name from (c:Chunk), (e:Entity) where similar_to(c, vector = [1, 0, 0], model = "minilm")"#, "several patterns"),
     ];
     for (nql, needle) in cases {
