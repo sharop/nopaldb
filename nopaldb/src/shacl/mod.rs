@@ -7,7 +7,9 @@
 //! `sh:in`, `sh:hasValue`, `sh:nodeKind`, `sh:class`), con `sh:targetClass`
 //! y `sh:targetNode`. Lo que no implementa lo dice: al cargar shapes desde
 //! Turtle cada término no soportado sale en [`ShapesReport::ignored`] con la
-//! razón, y una violación trae el componente, el path y el valor culpable.
+//! razón, y una violación trae el componente, el path y el valor culpable:
+//! una por cada valor que no cumple (las de cardinalidad y `sh:hasValue`,
+//! una por focus node).
 //!
 //! Feature gate: compilado solo con `--features shacl` (que trae el parser
 //! Turtle del puente RDF y la taxonomía, porque las shapes son Turtle y

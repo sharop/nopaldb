@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+SHACL reporta cada valor que falla, no solo el primero.
+
+### Fixed
+- **SHACL: una violación por cada valor que no cumple** (#236). Las
+  restricciones de valor (`sh:datatype`, los cuatro rangos, `sh:minLength`/
+  `sh:maxLength`, `sh:pattern`, `sh:in`, `sh:nodeKind`, `sh:class`) y los
+  combinadores (`sh:and`, `sh:or`, `sh:xone`, `sh:not`, `sh:node`) se
+  detenían en el primer valor malo de cada nodo y path: con dos hechos de
+  rango incorrecto, el reporte señalaba uno y el otro parecía válido. Ahora
+  dan una violación por valor, cada una con su `value` y sus `nested`, como
+  pide SHACL §4. `sh:minCount`, `sh:maxCount` y `sh:hasValue` juzgan el
+  conjunto y siguen dando una. `conforms` no cambia en ningún caso; quien
+  contaba violaciones verá más, ahora correctas. `evaluate_constraint`
+  devuelve `Vec` y `first_bad` pasa a `bad_values`; docs en `SHACL.md` EN/ES
+  § "The report".
+
 ## [0.6.17] - 2026-10-13
 
 NQL dice de dónde sale cada score y los asistentes de código encuentran los

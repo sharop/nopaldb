@@ -114,6 +114,14 @@ ninguna violación tiene severidad `Violation`. Cada `ConstraintViolation`:
 | `message`, `severity` | Texto legible (el `sh:message` del autor cuando lo hay) y `Violation` / `Warning` / `Info`. |
 | `nested` | En combinadores y `sh:node`: las violaciones de las ramas / de la shape referida. |
 
+**Una violación por cada valor que falla.** Una restricción de valor
+(`sh:datatype`, los rangos, las longitudes, `sh:pattern`, `sh:in`,
+`sh:nodeKind`, `sh:class`) y un combinador o `sh:node` dan una violación por
+cada valor que no conforma, cada una con su `value` (y su `nested`), como pide
+SHACL. `sh:minCount`, `sh:maxCount` y `sh:hasValue` juzgan el conjunto de
+valores y dan como mucho una por focus node y path. Hasta 0.6.17 una
+restricción de valor se detenía en el primer valor que fallaba.
+
 `notes` lista lo que el validador no pudo hacer en absoluto (un `sh:targetNode`
 que no existe). Ambos tipos derivan `Serialize`.
 

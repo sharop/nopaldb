@@ -144,7 +144,10 @@ fn describe_value(value: &PathValue, ctx: &EvalContext) -> PropertyValue {
 ///
 /// `focus_node` es el nodo que se esta validando, `shape_id` identifica el
 /// shape, `path` es el predicado (`None` para constraints de nodo). Cada
-/// violación sale con su componente; el valor culpable cuando lo hay.
+/// violación sale con su componente y, cuando lo hay, con el valor culpable:
+/// una restricción de valor da una violación **por cada valor** que no
+/// cumple (SHACL §4: "for each value node that…"); las de cardinalidad y
+/// `sh:hasValue` juzgan el conjunto y dan como mucho una.
 pub fn evaluate_constraints(
     constraints: &[ConstraintType],
     values: &[PathValue],
@@ -155,7 +158,7 @@ pub fn evaluate_constraints(
 ) -> Vec<ConstraintViolation> {
     let mut violations = Vec::new();
     for constraint in constraints {
-        if let Some(mut v) = evaluate_constraint(constraint, values, focus_node, shape_id, path, ctx) {
+        for mut v in evaluate_constraint(constraint, values, focus_node, shape_id, path, ctx) {
             v.constraint = component(constraint).to_string();
             violations.push(v);
         }
@@ -163,16 +166,15 @@ pub fn evaluate_constraints(
     violations
 }
 
-/// Primer valor que no cumple `ok`, descrito para el reporte.
-fn first_bad<'a>(
+/// Todos los valores que no cumplen `ok`, en orden, descritos para el
+/// reporte. Hasta 0.6.17 era `first_bad` y se quedaba con el primero: un
+/// nodo con dos valores malos reportaba uno y el otro parecía válido (#236).
+fn bad_values<'a>(
     values: &'a [PathValue],
     ctx: &EvalContext,
     mut ok: impl FnMut(&'a PathValue) -> bool,
-) -> Option<PropertyValue> {
-    values.iter().find(|v| !ok(v)).map(|v| match v {
-        PathValue::Literal(l) => l.clone(),
-        PathValue::Node(id) => ctx.describe(*id),
-    })
+) -> Vec<PropertyValue> {
+    values.iter().filter(|v| !ok(v)).map(|v| describe_value(v, ctx)).collect()
 }
 
 fn literal(v: &PathValue) -> Option<&PropertyValue> {
@@ -182,7 +184,10 @@ fn literal(v: &PathValue) -> Option<&PropertyValue> {
     }
 }
 
-/// Evalua un constraint individual. Retorna `Some(violation)` si no conforma.
+/// Evalua un constraint individual: una violación por cada valor que no
+/// conforma (restricciones de valor y combinadores), o como mucho una para
+/// las que juzgan el conjunto de valores (`sh:minCount`, `sh:maxCount`,
+/// `sh:hasValue`). Vacío si conforma.
 fn evaluate_constraint(
     constraint: &ConstraintType,
     values: &[PathValue],
@@ -190,86 +195,117 @@ fn evaluate_constraint(
     shape_id: NodeId,
     path: Option<&str>,
     ctx: &mut EvalContext,
-) -> Option<ConstraintViolation> {
+) -> Vec<ConstraintViolation> {
     let path_str = path.map(|s| s.to_string());
     let fail = |message: String| ConstraintViolation::violation(focus_node, shape_id, path_str.clone(), message);
+    // Una violación por valor culpable, todas con el mismo mensaje.
+    let each = |bad: Vec<PropertyValue>, message: String| -> Vec<ConstraintViolation> {
+        bad.into_iter().map(|b| fail(message.clone()).with_value(b)).collect()
+    };
 
     match constraint {
-        // --- Cardinalidad ---
-        ConstraintType::MinCount(min) => (values.len() < *min).then(|| {
-            fail(format!(
-                "sh:minCount {min}: se encontraron {} valor(es), se requieren al menos {min}",
-                values.len()
-            ))
-        }),
-        ConstraintType::MaxCount(max) => (values.len() > *max).then(|| {
-            fail(format!(
-                "sh:maxCount {max}: se encontraron {} valor(es), maximo permitido {max}",
-                values.len()
-            ))
-        }),
+        // --- Cardinalidad: juzgan el conjunto, una violación como mucho ---
+        ConstraintType::MinCount(min) => (values.len() < *min)
+            .then(|| {
+                fail(format!(
+                    "sh:minCount {min}: se encontraron {} valor(es), se requieren al menos {min}",
+                    values.len()
+                ))
+            })
+            .into_iter()
+            .collect(),
+        ConstraintType::MaxCount(max) => (values.len() > *max)
+            .then(|| {
+                fail(format!(
+                    "sh:maxCount {max}: se encontraron {} valor(es), maximo permitido {max}",
+                    values.len()
+                ))
+            })
+            .into_iter()
+            .collect(),
 
         // --- Tipo de dato: un nodo nunca es un literal ---
-        ConstraintType::Datatype(dtype) => first_bad(values, ctx, |v| literal(v).is_some_and(|l| dtype.matches(l)))
-            .map(|bad| fail(format!("sh:datatype {dtype:?}: el valor no cumple el tipo requerido")).with_value(bad)),
+        ConstraintType::Datatype(dtype) => each(
+            bad_values(values, ctx, |v| literal(v).is_some_and(|l| dtype.matches(l))),
+            format!("sh:datatype {dtype:?}: el valor no cumple el tipo requerido"),
+        ),
 
         // --- Rangos numericos: un no-número no cumple ---
-        ConstraintType::MinInclusive(min) => first_bad(values, ctx, |v| literal(v).is_some_and(|l| numeric_ge(l, *min)))
-            .map(|bad| fail(format!("sh:minInclusive {min}: valor fuera de rango")).with_value(bad)),
-        ConstraintType::MaxInclusive(max) => first_bad(values, ctx, |v| literal(v).is_some_and(|l| numeric_le(l, *max)))
-            .map(|bad| fail(format!("sh:maxInclusive {max}: valor fuera de rango")).with_value(bad)),
-        ConstraintType::MinExclusive(min) => first_bad(values, ctx, |v| literal(v).is_some_and(|l| numeric_gt(l, *min)))
-            .map(|bad| fail(format!("sh:minExclusive {min}: valor fuera de rango")).with_value(bad)),
-        ConstraintType::MaxExclusive(max) => first_bad(values, ctx, |v| literal(v).is_some_and(|l| numeric_lt(l, *max)))
-            .map(|bad| fail(format!("sh:maxExclusive {max}: valor fuera de rango")).with_value(bad)),
+        ConstraintType::MinInclusive(min) => each(
+            bad_values(values, ctx, |v| literal(v).is_some_and(|l| numeric_ge(l, *min))),
+            format!("sh:minInclusive {min}: valor fuera de rango"),
+        ),
+        ConstraintType::MaxInclusive(max) => each(
+            bad_values(values, ctx, |v| literal(v).is_some_and(|l| numeric_le(l, *max))),
+            format!("sh:maxInclusive {max}: valor fuera de rango"),
+        ),
+        ConstraintType::MinExclusive(min) => each(
+            bad_values(values, ctx, |v| literal(v).is_some_and(|l| numeric_gt(l, *min))),
+            format!("sh:minExclusive {min}: valor fuera de rango"),
+        ),
+        ConstraintType::MaxExclusive(max) => each(
+            bad_values(values, ctx, |v| literal(v).is_some_and(|l| numeric_lt(l, *max))),
+            format!("sh:maxExclusive {max}: valor fuera de rango"),
+        ),
 
         // --- Longitud de strings: solo se juzgan las cadenas ---
-        ConstraintType::MinLength(min) => first_bad(values, ctx, |v| match literal(v) {
-            Some(PropertyValue::String(s)) => s.chars().count() >= *min,
-            _ => true,
-        })
-        .map(|bad| fail(format!("sh:minLength {min}: cadena demasiado corta")).with_value(bad)),
-        ConstraintType::MaxLength(max) => first_bad(values, ctx, |v| match literal(v) {
-            Some(PropertyValue::String(s)) => s.chars().count() <= *max,
-            _ => true,
-        })
-        .map(|bad| fail(format!("sh:maxLength {max}: cadena demasiado larga")).with_value(bad)),
+        ConstraintType::MinLength(min) => each(
+            bad_values(values, ctx, |v| match literal(v) {
+                Some(PropertyValue::String(s)) => s.chars().count() >= *min,
+                _ => true,
+            }),
+            format!("sh:minLength {min}: cadena demasiado corta"),
+        ),
+        ConstraintType::MaxLength(max) => each(
+            bad_values(values, ctx, |v| match literal(v) {
+                Some(PropertyValue::String(s)) => s.chars().count() <= *max,
+                _ => true,
+            }),
+            format!("sh:maxLength {max}: cadena demasiado larga"),
+        ),
 
         // --- Patron regex (compilado al construir): un no-string no conforma ---
-        ConstraintType::Pattern(pattern) => {
-            first_bad(values, ctx, |v| matches!(literal(v), Some(PropertyValue::String(s)) if pattern.is_match(s)))
-                .map(|bad| fail(format!("sh:pattern '{}': valor no coincide con el patron", pattern.source())).with_value(bad))
-        }
+        ConstraintType::Pattern(pattern) => each(
+            bad_values(values, ctx, |v| matches!(literal(v), Some(PropertyValue::String(s)) if pattern.is_match(s))),
+            format!("sh:pattern '{}': valor no coincide con el patron", pattern.source()),
+        ),
 
         // --- Enumeracion ---
-        ConstraintType::In(allowed) => first_bad(values, ctx, |v| literal(v).is_some_and(|l| allowed.contains(l)))
-            .map(|bad| fail("sh:in: el valor no esta en la lista de valores permitidos".to_string()).with_value(bad)),
+        ConstraintType::In(allowed) => each(
+            bad_values(values, ctx, |v| literal(v).is_some_and(|l| allowed.contains(l))),
+            "sh:in: el valor no esta en la lista de valores permitidos".to_string(),
+        ),
 
-        // --- Valor exacto: literal, o el `iri` de un valor-nodo ---
+        // --- Valor exacto: literal, o el `iri` de un valor-nodo; juzga el conjunto ---
         ConstraintType::HasValue(expected) => {
             let present = values.iter().any(|v| match v {
                 PathValue::Literal(l) => l == expected,
                 PathValue::Node(id) => &ctx.describe(*id) == expected,
             });
-            (!present).then(|| fail("sh:hasValue: valor requerido no encontrado".to_string()).with_value(expected.clone()))
+            (!present)
+                .then(|| fail("sh:hasValue: valor requerido no encontrado".to_string()).with_value(expected.clone()))
+                .into_iter()
+                .collect()
         }
 
         // --- Kind de NopalDB del nodo (programático): un literal siempre falla ---
-        ConstraintType::NodeKindConstraint(expected_kind) => {
-            let bad = values.iter().find(|v| match v {
-                PathValue::Node(id) => ctx.nodes.get(id).is_none_or(|n| n.kind != *expected_kind),
-                PathValue::Literal(_) => true,
-            })?;
-            let found = match bad {
-                PathValue::Node(id) => ctx.nodes.get(id).map(|n| format!("{:?}", n.kind)).unwrap_or("desconocido".into()),
-                PathValue::Literal(_) => "un literal".to_string(),
-            };
-            let value = match bad {
-                PathValue::Node(id) => ctx.describe(*id),
-                PathValue::Literal(l) => l.clone(),
-            };
-            Some(fail(format!("sh:nodeKind: se esperaba {expected_kind:?}, se encontro {found}")).with_value(value))
-        }
+        ConstraintType::NodeKindConstraint(expected_kind) => values
+            .iter()
+            .filter_map(|v| {
+                let found = match v {
+                    PathValue::Node(id) => match ctx.nodes.get(id) {
+                        Some(n) if n.kind == *expected_kind => return None,
+                        Some(n) => format!("{:?}", n.kind),
+                        None => "desconocido".to_string(),
+                    },
+                    PathValue::Literal(_) => "un literal".to_string(),
+                };
+                Some(
+                    fail(format!("sh:nodeKind: se esperaba {expected_kind:?}, se encontro {found}"))
+                        .with_value(describe_value(v, ctx)),
+                )
+            })
+            .collect(),
 
         // --- sh:nodeKind de SHACL: nodo (IRI/blank) o literal ---
         ConstraintType::NodeKindShacl(kind) => {
@@ -290,12 +326,12 @@ fn evaluate_constraint(
                     (ShaclNodeKind::BlankNodeOrLiteral, PathValue::Literal(_)) => true,
                 }
             };
-            first_bad(values, ctx, ok)
-                .map(|bad| fail(format!("sh:nodeKind {}: el valor no es de ese kind", kind.as_str())).with_value(bad))
+            each(bad_values(values, ctx, ok), format!("sh:nodeKind {}: el valor no es de ese kind", kind.as_str()))
         }
 
-        // --- Lógicas: cada valor contra shapes; la primera que falla se reporta con sus ramas ---
+        // --- Lógicas: cada valor contra shapes; cada valor que falla se reporta con sus ramas ---
         ConstraintType::And(shapes) => {
+            let mut out = Vec::new();
             for value in values {
                 let mut nested = Vec::new();
                 for shape in shapes {
@@ -308,12 +344,13 @@ fn evaluate_constraint(
                     let mut v = fail(format!("sh:and: el valor no conforma con {} de {} shapes", nested.len().min(shapes.len()), shapes.len()))
                         .with_value(describe_value(value, ctx));
                     v.nested = nested;
-                    return Some(v);
+                    out.push(v);
                 }
             }
-            None
+            out
         }
         ConstraintType::Or(shapes) => {
+            let mut out = Vec::new();
             for value in values {
                 let mut nested = Vec::new();
                 let mut any = false;
@@ -329,12 +366,13 @@ fn evaluate_constraint(
                     let mut v = fail(format!("sh:or: el valor no conforma con ninguna de las {} shapes", shapes.len()))
                         .with_value(describe_value(value, ctx));
                     v.nested = nested;
-                    return Some(v);
+                    out.push(v);
                 }
             }
-            None
+            out
         }
         ConstraintType::Xone(shapes) => {
+            let mut out = Vec::new();
             for value in values {
                 let mut nested = Vec::new();
                 let mut count = 0usize;
@@ -350,42 +388,45 @@ fn evaluate_constraint(
                     let mut v = fail(format!("sh:xone: el valor conforma con {count} shapes, se requiere exactamente 1"))
                         .with_value(describe_value(value, ctx));
                     v.nested = nested;
-                    return Some(v);
+                    out.push(v);
                 }
             }
-            None
+            out
         }
         ConstraintType::Not(shape) => {
+            let mut out = Vec::new();
             for value in values {
                 let (ok, _) = conforms(shape, value, ctx);
                 if ok {
-                    return Some(
+                    out.push(
                         fail(format!("sh:not: el valor conforma con la shape `{}` y no debe", shape.name))
                             .with_value(describe_value(value, ctx)),
                     );
                 }
             }
-            None
+            out
         }
         ConstraintType::Node(reference) => {
             let Some(shape) = ctx.shapes.get(reference).cloned() else {
-                return Some(fail(format!("sh:node: la shape `{reference}` no existe en el documento")));
+                // Error del documento, no de un valor: una sola violación.
+                return vec![fail(format!("sh:node: la shape `{reference}` no existe en el documento"))];
             };
+            let mut out = Vec::new();
             for value in values {
                 let (ok, vs) = conforms(&shape, value, ctx);
                 if !ok {
                     let mut v = fail(format!("sh:node: el valor no conforma con la shape `{}`", shape.name))
                         .with_value(describe_value(value, ctx));
                     v.nested = vs;
-                    return Some(v);
+                    out.push(v);
                 }
             }
-            None
+            out
         }
 
         // --- sh:class: cada valor-nodo es instancia de la clase ---
         ConstraintType::Class(class) => {
-            let mut bad: Option<PropertyValue> = None;
+            let mut bad = Vec::new();
             for v in values {
                 let ok = match v {
                     PathValue::Literal(_) => false,
@@ -395,14 +436,10 @@ fn evaluate_constraint(
                     },
                 };
                 if !ok {
-                    bad = Some(match v {
-                        PathValue::Literal(l) => l.clone(),
-                        PathValue::Node(id) => ctx.describe(*id),
-                    });
-                    break;
+                    bad.push(describe_value(v, ctx));
                 }
             }
-            bad.map(|bad| fail(format!("sh:class {class}: el valor no es instancia de la clase")).with_value(bad))
+            each(bad, format!("sh:class {class}: el valor no es instancia de la clase"))
         }
     }
 }
@@ -538,9 +575,11 @@ mod tests {
         let v = evaluate_constraints(&[ConstraintType::Class("http://cocina.example/Ingrediente".into())], &values[..1], node_id(), shape_id(), Some("usa"), &mut ctx);
         assert!(v.is_empty(), "IRI falls back to its local name without a taxonomy");
         let v = evaluate_constraints(&[ConstraintType::Class("Ingrediente".into())], &values, node_id(), shape_id(), Some("usa"), &mut ctx);
-        assert_eq!(v.len(), 1);
+        // One violation per failing value (#236): the blank and the literal, in order.
+        assert_eq!(v.len(), 2);
         assert_eq!(v[0].value, Some(PropertyValue::String("_:abc-b0".into())));
-        assert_eq!(v[0].constraint, "sh:ClassConstraintComponent");
+        assert_eq!(v[1].value, Some(PropertyValue::Int(3)));
+        assert!(v.iter().all(|x| x.constraint == "sh:ClassConstraintComponent"));
 
         // sh:nodeKind
         let v = evaluate_constraints(&[ConstraintType::NodeKindShacl(ShaclNodeKind::Iri)], &values[..1], node_id(), shape_id(), None, &mut ctx);
