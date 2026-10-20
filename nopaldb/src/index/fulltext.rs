@@ -285,6 +285,22 @@ impl Index for FullTextIndex {
         Ok(())
     }
 
+    /// Commit what is pending and **join tantivy's merge threads**, consuming
+    /// the writer: when this returns, no thread of this index writes to its
+    /// directory any more. Dropping the writer would not do it (tantivy's
+    /// `Drop` leaves the merges running, by design); only
+    /// `wait_merging_threads` does. Terminal: a later `insert` finds no
+    /// writer and is dropped, like after `clear` on a closed index; the graph
+    /// that owns this index is closing anyway.
+    fn close(&mut self) -> Result<()> {
+        self.flush()?;
+        if let Some(writer) = self.writer.take() {
+            writer.wait_merging_threads()
+                .map_err(|e| NopalError::index_error(format!("Failed to join merge threads: {}", e)))?;
+        }
+        Ok(())
+    }
+
     fn query(&self, query: &IndexQuery) -> Result<Vec<NodeId>> {
         Ok(self
             .query_scored(query)?
@@ -614,6 +630,45 @@ mod tests {
         // Un flush sin cambios no hace nada (ni commit ni segmento nuevo).
         index.flush().unwrap();
         assert_eq!(index.reader.searcher().segment_readers().len(), segments);
+    }
+
+    /// `close` deja el directorio quieto: tras varios commits tantivy arranca
+    /// merges en hilos propios que escribían segmentos DESPUÉS de que
+    /// `Graph::close` retornara (quien borraba el directorio justo después
+    /// fallaba con "Directory not empty"). `close` los espera; el listado del
+    /// directorio justo después y un rato más tarde es el mismo.
+    #[test]
+    fn close_waits_for_the_merge_threads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap().to_string();
+        let mut index = FullTextIndex::new(Some(path.clone())).unwrap();
+        // Doce commits = doce lotes de segmentos: más que los 8 a partir de
+        // los que la política de merge de tantivy junta segmentos.
+        for round in 0..12u32 {
+            for i in 0..50u32 {
+                let text = format!("nopal riego goteo lote {round} fila {i}");
+                index.insert(PropertyValue::String(text), uuid::Uuid::new_v4()).unwrap();
+            }
+            index.flush().unwrap();
+        }
+        index.close().unwrap();
+        assert!(index.writer.is_none(), "close consume el writer");
+        let listing = || {
+            let mut names: Vec<String> = std::fs::read_dir(&path)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        let right_after = listing();
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        assert_eq!(listing(), right_after, "nada escribe en el índice después de close");
+        // Y lo escrito sigue siendo legible por quien reabra.
+        assert_eq!(index.size(), 600);
+        drop(index);
+        let reopened = FullTextIndex::open_existing(path).unwrap();
+        assert_eq!(reopened.size(), 600);
     }
 
     /// Varias revisiones del mismo nodo DENTRO de un lote dejan un solo

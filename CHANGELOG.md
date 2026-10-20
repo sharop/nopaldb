@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **`close()` retornaba con hilos de merge del índice full-text todavía
+  escribiendo.** `Graph::close` publicaba lo pendiente del índice (commit
+  de tantivy) pero no esperaba los merges que ese commit arranca en hilos
+  propios, así que seguían apareciendo segmentos en el directorio del índice
+  después de "cerrado"; quien borraba o movía el directorio justo después
+  chocaba con ellos (en Python, `TemporaryDirectory` fallaba con "Directory
+  not empty" en 4 de 6 corridas de un sample con varios lotes). Ahora
+  `Index::close` (nuevo en el trait, por defecto = `flush`) consume el writer
+  con `wait_merging_threads` y `IndexManager::close` lo corre sobre todos los
+  índices al cerrar: cuando `close()` retorna nada del índice toca el disco.
+  Test: tras doce commits y `close`, el listado del directorio no cambia.
+
 ## [0.6.19] - 2026-10-20
 
 NQL siembra el multi-hop de GraphRAG en una consulta.

@@ -148,6 +148,21 @@ pub trait Index: Send + Sync {
         Ok(())
     }
 
+    /// Publish buffered writes **and stop the index's background work**, so
+    /// that when this returns nothing of the index touches the disk any more.
+    ///
+    /// [`Index::flush`] is not enough for the full-text index: a tantivy
+    /// commit may start merges on threads of its own, and those threads keep
+    /// writing segment files after the commit (and after the writer is
+    /// dropped). `Graph::close` promised "closed" while they were still at
+    /// it, so a caller that deletes or moves the directory right after
+    /// `close()` raced them (Python's `TemporaryDirectory` cleanup failed with
+    /// "Directory not empty"). In-memory indexes have no background work, so
+    /// the default is `flush`.
+    fn close(&mut self) -> Result<()> {
+        self.flush()
+    }
+
     /// Get index size (number of entries)
     fn size(&self) -> usize;
 
@@ -680,6 +695,19 @@ impl IndexManager {
                 self.pending.store(true, Ordering::Release);
                 return Err(e);
             }
+        }
+        Ok(())
+    }
+
+    /// [`Self::flush`] plus [`Index::close`] on every index: when this returns
+    /// no index writes to disk any more (the full-text merges are joined).
+    /// Terminal: the graph is closing. Runs on every index even when nothing
+    /// is pending, because merges started by an earlier flush may still run.
+    pub async fn close(&self) -> Result<()> {
+        self.pending.store(false, Ordering::Release);
+        let mut indexes = self.indexes.write().await;
+        for index in indexes.values_mut() {
+            index.close()?;
         }
         Ok(())
     }
