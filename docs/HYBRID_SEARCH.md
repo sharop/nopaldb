@@ -368,8 +368,9 @@ node.) `explain find ...` prints the effective parameters, defaults included
 Hybrid: hybrid(n): text="graph memory" ref="current_query" model="e5-large" k=10 rrf_k=30 overfetch=8 ef_search=128 text_index=Chunk_body filter.label=Chunk
 ```
 
-The search can also seed a one-hop pattern — search and expand in one query
-(`EXPLAIN` says `PATTERN PIPELINE (seed: HYBRID)`); see
+The search can also seed a pattern of one or two hops — search and expand in
+one query, `score(c)` on every expanded row (`EXPLAIN` says `PATTERN PIPELINE
+(seed: HYBRID, hops: 2)` and a `Seeds:` line with `k` and the `LIMIT`); see
 [GRAPHRAG.md](GRAPHRAG.md) for the placement rules.
 
 ## Limits & notes (v1)
@@ -383,6 +384,7 @@ The search can also seed a one-hop pattern — search and expand in one query
   visible to the next search.
 - Follow-ups: per-path weights; range/OR filters; property filters from the
   NQL `where` (today only the pattern label reaches the hybrid filter; the
-  other predicates are applied to the top-K afterwards, so they can leave
-  fewer than K rows — the second phase of #214 turns them into a candidate
-  set; from Rust and Python, `candidates` already does that today).
+  other predicates, including those on the expanded nodes of a one- or
+  two-hop pattern, are applied afterwards, so they can leave fewer than K
+  rows — the second phase of #214 turns them into a candidate set; from Rust
+  and Python, `candidates` already does that today).

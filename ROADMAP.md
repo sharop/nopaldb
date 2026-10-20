@@ -179,8 +179,8 @@ acentos ([#74](https://github.com/sharop/nopaldb/issues/74), entregado en
 0.5.13)—. La función `hybrid()` de NQL acepta `rrf_k`, `ef_search`,
 `overfetch` y `text_index` ([#115](https://github.com/sharop/nopaldb/issues/115),
 entregado en 0.5.19), y desde 0.6.9 `similar_to` y `hybrid()` aceptan un vector
-literal y siembran un patrón de un salto, así que buscar y expandir cabe en una
-consulta. Sigue abierto, en
+literal y siembran un patrón de un salto (de dos desde 0.6.19, #231), así que
+buscar y expandir cabe en una consulta. Sigue abierto, en
 [#174](https://github.com/sharop/nopaldb/issues/174) y
 [#176](https://github.com/sharop/nopaldb/issues/176):
 

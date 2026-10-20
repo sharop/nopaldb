@@ -668,12 +668,13 @@ impl SemanticValidator {
     }
 
     /// Dónde puede vivir una búsqueda vectorial: un patrón de un solo nodo, o
-    /// UN patrón de un salto `(a)-[:T]->(b)` sin cuantificador cuya variable
-    /// origen es la buscada (el executor siembra el pipeline con los
-    /// candidatos; "buscar y expandir en una consulta", 0.6.9). Todo lo
-    /// demás — varios patrones, cadenas más largas, la variable destino — se
-    /// rechaza con nombre: antes de 0.6.9 esas consultas devolvían todo el
-    /// grafo en silencio porque el predicado pasaba como `true`.
+    /// UN patrón lineal de uno o dos saltos `(a)-[:T1]->(b)[-[:T2]->(c)]` sin
+    /// cuantificadores cuya variable origen es la buscada (el executor
+    /// siembra el pipeline con los candidatos; "buscar y expandir en una
+    /// consulta", 0.6.9; dos saltos desde 0.6.19, #231). Todo lo demás —
+    /// varios patrones, cadenas más largas, la variable destino — se rechaza
+    /// con nombre: antes de 0.6.9 esas consultas devolvían todo el grafo en
+    /// silencio porque el predicado pasaba como `true`.
     fn validate_vector_search_placement(&self, fname: &str, variable: &str, query: &Query) -> Result<()> {
         if query.from.patterns.len() > 1 {
             return Err(NopalError::SemanticError(format!(
@@ -684,12 +685,16 @@ impl SemanticValidator {
         if !pattern.elements.iter().any(|e| matches!(e, PatternElement::Relationship(_))) {
             return Ok(());
         }
-        if pattern.elements.len() != 3 {
+        if pattern.elements.len() != 3 && pattern.elements.len() != 5 {
             return Err(NopalError::SemanticError(format!(
-                "{fname}: only a single hop `(a)-[:T]->(b)` can be expanded from the search; longer chains are not supported yet"
+                "{fname}: only one or two hops `(a)-[:T1]->(b)-[:T2]->(c)` can be expanded from the search; longer chains are not supported yet"
             )));
         }
-        if matches!(&pattern.elements[1], PatternElement::Relationship(r) if r.quantifier.is_some()) {
+        if pattern
+            .elements
+            .iter()
+            .any(|e| matches!(e, PatternElement::Relationship(r) if r.quantifier.is_some()))
+        {
             return Err(NopalError::SemanticError(format!(
                 "{fname}: relationship quantifiers are not supported together with the search"
             )));

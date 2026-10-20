@@ -62,6 +62,10 @@ context = render(chunks, ctx["nodes"], ctx["edges"])
 find c.text, e.name from (c:Chunk)-[:MENTIONS]->(e:Entity)
 where similar_to(c, vector = [0.12, -0.03, ...], model = "minilm", k = 10)
 
+-- two hops: chunk → entity → related entity, with the chunk's score on each row (0.6.19)
+find c.text, f.name, score(c) from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:RELATED]->(f:Entity)
+where hybrid(c, text = "drip irrigation", vector = [...], model = "minilm", k = 10)
+
 find c.text from (c:Chunk)
 where hybrid(c, text = "drip irrigation", vector = [...], model = "minilm", k = 10)
 
@@ -74,11 +78,16 @@ find e.name from (e:Entity) where e.name in ["ana", "beto"]     -- uses the hash
 `hybrid(var, text = "…", vector = [...], model = "…", k = N)` take the
 question's embedding as a list literal (integers and `1e-05` parse; the
 length must match the model's index). The candidates come out best first and,
-in a one-hop pattern, they **seed the pipeline**: only the top-K chunks are
-expanded (`EXPLAIN` says `PATTERN PIPELINE (seed: SIMILAR_TO)`). Give `k`
-explicitly in a pattern query: there `LIMIT` caps the expanded rows. The
-search must be on the first node of a single one-hop pattern; other shapes
-are validation errors (before 0.6.9 they silently returned the whole graph).
+in a pattern of one or two hops, they **seed the pipeline**: only the top-K
+chunks are expanded (`EXPLAIN` says `PATTERN PIPELINE (seed: SIMILAR_TO,
+hops: 2)` and a `Seeds:` line). Give `k` explicitly in a pattern query: there
+`LIMIT` caps the expanded rows. `score(c)`, `rank(c)` and the raw scores
+travel with every expanded row, so the two-hop context of GraphRAG comes
+with its cut-off in one query (before 0.6.19 it needed `search_hybrid` +
+`neighborhood` from Python); the other `where` predicates apply after the
+expansion. The search must be on the first node of a single linear pattern
+of at most two hops; other shapes are validation errors (before 0.6.9 they
+silently returned the whole graph).
 This is what an agent behind the MCP server uses: one round trip.
 
 `where var.id = "…"` and `where var.id in [...]` resolve by point read: no
@@ -194,6 +203,7 @@ Rust; `python/scripts/graphrag_sample.py` is the functional guard).
 | whole cycle: hybrid k=10 hydrated + 1 hop of the 10 hits | ~9 s | 0.27 ms |
 | **search + expand in ONE NQL query** (`similar_to` with the vector literal, k=10, 1 hop) | not possible | 0.35 ms (0.6.9) |
 | same with `hybrid(text, vector)` in NQL | not possible | 132 ms (0.6.9): the pattern's label reached the hybrid filter as a label scan. Since 0.6.10 the label is checked on each branch's candidates: 0.99 ms at 100k chunks since the full-text branch asks tantivy only for the hits it uses (2.42 ms before; 16.2 ms → 0.89 ms at 10k). The rest is BM25 over every matching chunk: the bench matches ~57k of 100k on purpose |
+| **two hops in ONE NQL query** (`hybrid` k=10, chunk → entity → related entity, `score(c)` on each row) | not possible | 1.35 ms at 100k chunks (0.6.19; one hop 1.11 ms in the same run): the second hop costs ~0.25 ms for ~60 rows |
 
 Fill in the exact numbers for your data with `make bench BENCH=retrieval`.
 
