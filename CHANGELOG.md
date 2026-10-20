@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.18] - unreleased
+## [0.6.18] - 2026-10-20
 
 SHACL reporta cada valor que falla y comprueba dominio y rango de una
 propiedad; el razonador detecta clases insatisfacibles y dice por qué.
