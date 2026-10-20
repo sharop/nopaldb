@@ -216,6 +216,12 @@ where hybrid(c, text = "graph memory", vector = [...], model = "e5-large", k = 1
 
 See [docs/HYBRID_SEARCH.md](docs/HYBRID_SEARCH.md) for RRF details, the filter, and limits.
 
+**GraphRAG, end to end:** indexes → idempotent ingestion of chunks, entities
+and relations in one `upsert_many` → hybrid retrieval that seeds one or two
+hops with the scores on every row → the neighbourhood as a set with a context
+budget. The [recipe in docs/GRAPHRAG.md](docs/GRAPHRAG.md#recipe-end-to-end)
+is the code of `graphrag_sample.py`, which runs in CI, so it does not age.
+
 ---
 
 ### NQL Export (CSV/JSON)

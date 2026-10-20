@@ -118,6 +118,9 @@ check-doc-links:
 	@# Tres READMEs de docs enlazaron meses a dos roadmaps que no existían.
 	@# Un link roto en el índice es lo primero que ve quien evalúa contribuir.
 	@python3 scripts/check_doc_links.py
+	@# La receta de GRAPHRAG.md es el código de graphrag_sample.py (#230): si
+	@# se corrige el sample y no la doc, la doc miente. Mismo check en CI.
+	@python3 scripts/check_graphrag_recipe.py
 
 check-changelog-dates:
 	@# Toda versión con tag debe tener FECHA en el CHANGELOG, no "unreleased".

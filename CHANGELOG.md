@@ -22,6 +22,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   índices al cerrar: cuando `close()` retorna nada del índice toca el disco.
   Test: tras doce commits y `close`, el listado del directorio no cambia.
 
+### Changed
+- **`docs/GRAPHRAG.md`: receta de punta a punta respaldada por
+  `graphrag_sample.py`** (#230). Sección nueva "Recipe: end to end" en
+  cuatro bloques con la API real: índices (`create_index` full-text con
+  analyzer y hash), ingesta idempotente de chunks + entidades + relaciones
+  en una llamada (`upsert_many` con `vector`/`model`/`links` y stubs),
+  recuperación híbrida que siembra el patrón con `rank`/`vector_score`/
+  `text_score`/`score` en cada fila y `candidates=` cuando el universo lo
+  fija el caller, y multi-hop: dos saltos en NQL (0.6.19) o `neighborhood`
+  como conjunto con `rank="ppr"` y presupuesto de contexto. El código de la
+  doc **es** el del sample (`graphrag_sample.py` § recipe, en `PY_SAMPLES`):
+  `scripts/check_graphrag_recipe.py` compara los bloques y falla si divergen
+  (`make check-doc-links` y la CI). El cheat sheet de Python trae la forma
+  exacta de `links` y de las filas de `upsert_many`; el README y el índice
+  de docs enlazan la receta. Verificado tal cual contra la wheel 0.6.19 de
+  PyPI.
+
 ## [0.6.19] - 2026-10-20
 
 NQL siembra el multi-hop de GraphRAG en una consulta.

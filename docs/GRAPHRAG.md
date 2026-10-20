@@ -89,6 +89,8 @@ expansion. The search must be on the first node of a single linear pattern
 of at most two hops; other shapes are validation errors (before 0.6.9 they
 silently returned the whole graph).
 This is what an agent behind the MCP server uses: one round trip.
+The whole flow, from the indexes to the context budget, is the
+[recipe](#recipe-end-to-end) below.
 
 `where var.id = "…"` and `where var.id in [...]` resolve by point read: no
 scan, and a missing id is zero rows (`EXPLAIN` says `ID LOOKUP`). In a
@@ -99,6 +101,157 @@ those nodes instead of scanning the label (`EXPLAIN` says `PATTERN PIPELINE
 says `INDEX SEEK (IN)`. Equality is strict, as with `=`: `1` is not `1.0`.
 A root `AND` seeds the candidates with its indexed side and applies the rest
 as a predicate.
+
+## Recipe: end to end
+
+The pieces above, as the one flow people ask an assistant for (and the one
+it invents when it is not written down): indexes, idempotent ingestion of
+chunks with their entities and relations, hybrid retrieval that seeds the
+pattern, multi-hop, and a context cut. **The code is
+`nopaldb/python/scripts/graphrag_sample.py` § recipe**, which runs in CI
+against the compiled extension; `scripts/check_graphrag_recipe.py` fails when
+these blocks and the sample diverge, so what you read is what runs. The corpus
+is a fictional nopal farm (three documents × four chunks, six entities); in
+the sample `embed` is a bag of words, in yours it is the embedding model.
+`path` is the database directory and `question` the user's question.
+
+### 1. Indexes
+
+<!-- recipe:indexes:start -->
+```python
+g = nopaldb.Graph.open(path)
+g.create_index("Chunk", "text", "fulltext", analyzer={"language": "spanish"})  # BM25 branch of hybrid()
+g.create_index("Entity", "name", "hash")                                        # `where e.name in [...]` without a scan
+# Nothing to call for the vector index: HNSW is built on the first search and persisted.
+```
+<!-- recipe:indexes:end -->
+
+`hybrid()` needs a full-text index on the property it searches (one per
+property; the analyzer stems and folds accents, see
+[INDEXING_DOCS.MD](INDEXING_DOCS.MD)). Create it before ingesting or after:
+every write path feeds it. The hash index is what makes `where e.name in
+[...]` an index seek. There is no call for the vector index: the HNSW index
+is built on the first search over a model and persisted from then on.
+
+### 2. Idempotent ingestion
+
+<!-- recipe:ingest:start -->
+```python
+def ingest(doc: dict) -> dict[str, str]:
+    """One document → chunks, entities and relations, in one idempotent batch."""
+    rows = []
+    for i, ch in enumerate(doc["chunks"]):
+        rows.append({
+            "label": "Chunk", "key": "key",
+            "props": {"key": f'{doc["id"]}#{i}', "doc": doc["id"], "text": ch["text"]},
+            "vector": embed(ch["text"]), "model": "m",
+            "links": [{"type": "MENTIONS", "target_label": "Entity", "target_key": "name",
+                       "target_key_value": e, "stub": True} for e in ch["entities"]],
+        })
+    for a, b in doc["relations"]:
+        rows.append({
+            "label": "Entity", "key": "name", "props": {"name": a},
+            "links": [{"type": "RELATED", "target_label": "Entity", "target_key": "name",
+                       "target_key_value": b, "stub": True}],
+        })
+    outcomes = g.upsert_many(rows)                    # [(outcome, node_id), ...], one per row
+    return {row["props"]["key" if row["label"] == "Chunk" else "name"]: nid for row, (_, nid) in zip(rows, outcomes)}
+
+ids = {}
+for doc in CORPUS:
+    ids.update(ingest(doc))
+```
+<!-- recipe:ingest:end -->
+
+One row per chunk carries its properties, its embedding (`vector` +
+`model`) and its edges (`links`): chunk, entities and relations land in one
+call. An entity that does not exist yet is created as a **stub** by the link
+(`"stub": True`, a node `{name: …}`) and filled by a later upsert under the
+same node id; a relation is an upsert of the source entity with a `RELATED`
+link. `doc#i` is the business key, so re-chunking a document rewrites its
+chunks in place, and re-running the ingestion over unchanged data returns
+`unchanged` for every row and writes nothing. `upsert_many` commits one
+transaction per 1 024 rows. Semantics and limits (links are additive, one
+key per label) in [UPSERT.md](UPSERT.md); the shape of `links` is in the
+[cheat sheet](python/API_CHEATSHEET.md#write).
+
+### 3. Retrieval
+
+<!-- recipe:retrieve:start -->
+```python
+q = embed(question)
+lit = "[" + ", ".join(repr(x) for x in q) + "]"      # the vector goes inside the query (0.6.9)
+rows = list(g.execute_nql(
+    f"find c.text, e.name, rank(c), vector_score(c), text_score(c), score(c) "
+    f"from (c:Chunk)-[:MENTIONS]->(e:Entity) "
+    f'where hybrid(c, text = "{question}", vector = {lit}, model = "m", k = 4)'))
+# Cut by `vector_score` (a cosine in [0, 1]) or by `rank`, never by `score`: an RRF
+# score is at most 2/rrf_k (0.033 by default), so a cosine-style threshold keeps nothing.
+kept = [r for r in rows if r["rank(c)"] < 3 and (r["vector_score(c)"] or 0.0) >= 0.3]
+
+# When the caller fixes the universe (an ACL, the document the user selected),
+# pass it as `candidates`: ranking happens inside it, on both branches.
+allowed = [nid for key, nid in ids.items() if key.startswith("riego#")]
+hits = g.search_hybrid(text=question, vector=q, model="m", k=4, candidates=allowed, hydrate=True)
+```
+<!-- recipe:retrieve:end -->
+
+The search **seeds** the pattern: only the `k` best chunks are expanded, best
+first, and every expanded row carries the chunk's `rank`, raw scores and
+fused `score`. Mind the scales before cutting: the
+[score table](en/NQL_REFERENCE.md#vector-and-hybrid-search-in-where) says
+what each column holds with `similar_to`, with `hybrid` and with both.
+`vector_score`/`text_score` are `null` on a row that only the other branch
+ranked, hence the `or 0.0`. `candidates` is the
+[candidate set](HYBRID_SEARCH.md#candidate-set): both branches rank inside
+it, so a chunk that is far down globally is still found inside the selected
+document; `label`/`props` can only narrow it. From NQL the equivalent today is
+`where c.id in [...]` on a pattern without search; the `where` predicates on
+the expanded nodes apply after the expansion (#214, phase 2).
+
+### 4. Multi-hop and the context budget
+
+<!-- recipe:expand:start -->
+```python
+# (a) Two hops in the same query (0.6.19): chunk → entity → related entity, the chunk's
+#     score on every row. One row per path; `distinct` collapses them.
+two = list(g.execute_nql(
+    f"find distinct c.text, f.name, score(c) "
+    f"from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:RELATED]->(f:Entity) "
+    f'where hybrid(c, text = "{question}", vector = {lit}, model = "m", k = 4)'))
+
+# (b) The neighbourhood as a SET with a budget: each node once, at its minimum depth,
+#     ranked by Personalized PageRank from the hits, `max_nodes` as the cap.
+seeds = [h["node_id"] for h in hits]
+ctx = g.neighborhood(seeds, depth=2, direction="both", labels=["Entity"], max_nodes=20,
+                     rank="ppr", seed_weights={h["node_id"]: h["score"] for h in hits})
+
+# Context budget: hits first (best first), then the ranked subgraph, until it fills.
+budget, context = 600, []
+for piece in [h["node"]["properties"]["text"] for h in hits] + \
+             [n["properties"]["name"] for n in ctx["nodes"] if n["label"] == "Entity"]:
+    if budget - len(piece) < 0:
+        break
+    budget -= len(piece)
+    context.append(piece)
+```
+<!-- recipe:expand:end -->
+
+Two ways to go further than one hop, for two needs. **(a)** is one round
+trip with the scores on the rows: the right one for an agent behind the MCP
+server, and for a cut by `rank`/`vector_score` on the two-hop rows. It
+returns one row per path (`EXPLAIN` says `hops: 2`); three hops or a
+quantifier are validation errors. **(b)** is the neighbourhood as a set:
+each node once at its minimum depth, the seeds first, then by PPR score,
+`max_nodes` as the hard cap (`ctx["truncated"]` says if it hit); the seeds
+are kept even when `labels` filters their label out. The loop at the end is
+the budget: `len` stands for your tokenizer, the order is the ranking, and
+the first thing that does not fit ends it.
+
+See also the [Python cheat sheet](python/API_CHEATSHEET.md) (one line per
+call, the names assistants invent and the real ones),
+[UPSERT.md](UPSERT.md), [HYBRID_SEARCH.md](HYBRID_SEARCH.md) and the
+[NQL reference](en/NQL_REFERENCE.md#vector-and-hybrid-search-in-where).
 
 ## Global search (0.6.11)
 
@@ -278,6 +431,11 @@ projections), use the exact scan instead.
   nothing. Since 0.6.17 `rank(c)`, `text_score(c)` and `vector_score(c)`
   expose the raw pieces (#228): cut by `vector_score` or `rank` with `hybrid`,
   by `score` with `similar_to`. See the NQL reference § score.
+- A seeded pattern is at most two hops (0.6.19, #231); the `where`
+  predicates on the expanded nodes apply after the expansion, so they can
+  leave fewer than `k` rows. The second phase of #214 turns them into a
+  candidate set per variable (what `candidates=` already is from Python).
+  Searching with several patterns in the `FROM` is rejected by name.
 
 See also [HYBRID_SEARCH.md](HYBRID_SEARCH.md), [EMBEDDINGS.md](EMBEDDINGS.md)
 and the Python [API reference](python/API_REFERENCE.md).

@@ -22,6 +22,10 @@ jobs:
       - name: Check doc links
         run: python3 scripts/check_doc_links.py
 
+      # La receta de GRAPHRAG.md debe ser el código de graphrag_sample.py (#230).
+      - name: Check GraphRAG recipe
+        run: python3 scripts/check_graphrag_recipe.py
+
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
 
