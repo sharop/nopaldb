@@ -17,7 +17,10 @@ use oxrdf::{NamedOrBlankNode, Term, Triple};
 use uuid::Uuid;
 
 use crate::error::{NopalError, Result};
-use crate::rdf_owl::importer::{literal_to_property_value, local_name, parse_turtle};
+use crate::rdf_owl::importer::{
+    literal_to_property_value, local_name, parse_turtle, EDGE_INSTANCE_OF, EDGE_SUBCLASS_OF, PROP_RDFS_COMMENT,
+    PROP_RDFS_LABEL,
+};
 use crate::types::PropertyValue;
 use super::report::{Severity, ShapesReport};
 use super::shape::{ConstraintType, DatatypeKind, PathSpec, PropertyShape, Shape, ShaclNodeKind, Target};
@@ -27,6 +30,25 @@ const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 const RDF_FIRST: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#first";
 const RDF_REST: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest";
 const RDF_NIL: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil";
+const RDFS_SUB_CLASS_OF: &str = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
+const RDFS_LABEL: &str = "http://www.w3.org/2000/01/rdf-schema#label";
+const RDFS_COMMENT: &str = "http://www.w3.org/2000/01/rdf-schema#comment";
+
+/// The name a predicate IRI has in the graph: what `import_turtle` wrote
+/// for it. The reserved ones are renamed by the import (`rdf:type` is the
+/// `instanceOf` edge, `rdfs:label` the `rdfs_label` property); everything
+/// else is its local name. Shared by `sh:path` and the predicate targets,
+/// so `sh:targetSubjectsOf rdf:type` means "every typed node" instead of
+/// silently matching nothing.
+pub(crate) fn predicate_name(iri: &str) -> String {
+    match iri {
+        RDF_TYPE => EDGE_INSTANCE_OF.to_string(),
+        RDFS_SUB_CLASS_OF => EDGE_SUBCLASS_OF.to_string(),
+        RDFS_LABEL => PROP_RDFS_LABEL.to_string(),
+        RDFS_COMMENT => PROP_RDFS_COMMENT.to_string(),
+        other => local_name(other),
+    }
+}
 
 /// Términos `sh:*` que este validador todavía no implementa, con el issue
 /// que los cubre o la razón. Todo lo demás desconocido se reporta como tal.
@@ -214,14 +236,13 @@ fn shape_body(doc: &Doc, subject: &str, report: &mut ShapesReport) -> Result<Sha
                 Term::NamedNode(n) => shape.targets.push(Target::NodeIri(n.as_str().to_string())),
                 other => report.ignored.push(format!("{shown}: sh:targetNode espera un IRI, no `{other}`")),
             },
-            // The local name, as `sh:path` resolves a predicate: the importer
-            // names edges and property keys by it.
+            // The graph name of the predicate, as `sh:path` resolves it.
             "targetSubjectsOf" => match obj {
-                Term::NamedNode(n) => shape.targets.push(Target::SubjectsOf(local_name(n.as_str()))),
+                Term::NamedNode(n) => shape.targets.push(Target::SubjectsOf(predicate_name(n.as_str()))),
                 other => report.ignored.push(format!("{shown}: sh:targetSubjectsOf espera un IRI, no `{other}`")),
             },
             "targetObjectsOf" => match obj {
-                Term::NamedNode(n) => shape.targets.push(Target::ObjectsOf(local_name(n.as_str()))),
+                Term::NamedNode(n) => shape.targets.push(Target::ObjectsOf(predicate_name(n.as_str()))),
                 other => report.ignored.push(format!("{shown}: sh:targetObjectsOf espera un IRI, no `{other}`")),
             },
             "severity" => match severity_of(obj) {
@@ -348,14 +369,14 @@ fn property_shape(doc: &Doc, ps_key: &str, owner: &str, report: &mut ShapesRepor
 /// shape se descarta, nunca se valida a medias.
 fn path_spec(doc: &Doc, obj: &Term, where_: &str, report: &mut ShapesReport) -> Option<PathSpec> {
     match obj {
-        Term::NamedNode(n) => Some(PathSpec::Predicate(local_name(n.as_str()))),
+        Term::NamedNode(n) => Some(PathSpec::Predicate(predicate_name(n.as_str()))),
         Term::BlankNode(b) => {
             let key = format!("_:{}", b.as_str());
             if doc.objects(&key, RDF_FIRST).next().is_some() {
                 let mut steps = Vec::new();
                 for member in doc.list(&key) {
                     match member {
-                        Term::NamedNode(n) => steps.push(PathSpec::Predicate(local_name(n.as_str()))),
+                        Term::NamedNode(n) => steps.push(PathSpec::Predicate(predicate_name(n.as_str()))),
                         other => {
                             report.ignored.push(format!(
                                 "{where_}: sh:path con un paso compuesto (`{other}`) dentro de la secuencia no soportado; la property shape se descarta"
