@@ -302,26 +302,40 @@ fn object_of(term: &Term, document_hash: u64) -> Object<'_> {
     }
 }
 
+/// Triples grouped by subject identity, for the passes that walk a document
+/// by subject (RDF lists) instead of by predicate. Built once, so a list of
+/// `n` cells costs `n` lookups and not `n` scans of the document.
+fn by_subject(triples: &[Triple], document_hash: u64) -> HashMap<String, Vec<&Triple>> {
+    let mut index: HashMap<String, Vec<&Triple>> = HashMap::new();
+    for t in triples {
+        index.entry(subject_iri(&t.subject, document_hash)).or_default().push(t);
+    }
+    index
+}
+
+/// First object of `(subject, predicate)` in the index.
+fn object_in<'a>(index: &'a HashMap<String, Vec<&'a Triple>>, subject: &str, pred: &str, document_hash: u64) -> Option<Object<'a>> {
+    index
+        .get(subject)?
+        .iter()
+        .find(|t| t.predicate.as_str() == pred)
+        .map(|t| object_of(&t.object, document_hash))
+}
+
 /// Members of the RDF list starting at `head` (`( a b c )`), in order, with
 /// the list cells it walked. Only resources: a literal member is skipped. A
 /// cycle or a broken list ends the walk.
-fn rdf_list(triples: &[Triple], document_hash: u64, head: &str) -> (Vec<String>, Vec<String>) {
+fn rdf_list(index: &HashMap<String, Vec<&Triple>>, document_hash: u64, head: &str) -> (Vec<String>, Vec<String>) {
     let (mut members, mut cells) = (Vec::new(), Vec::new());
     let mut cur = head.to_string();
     let mut seen = HashSet::new();
     while cur != rdf::NIL.as_str() && seen.insert(cur.clone()) {
-        let next = |pred: NamedNodeRef<'_>| {
-            triples
-                .iter()
-                .find(|t| t.predicate == pred && subject_iri(&t.subject, document_hash) == cur)
-                .map(|t| object_of(&t.object, document_hash))
-        };
-        let Some(first) = next(rdf::FIRST) else { break };
+        let Some(first) = object_in(index, &cur, rdf::FIRST.as_str(), document_hash) else { break };
         cells.push(cur.clone());
         if let Object::Resource(m) = first {
             members.push(m);
         }
-        match next(rdf::REST) {
+        match object_in(index, &cur, rdf::REST.as_str(), document_hash) {
             Some(Object::Resource(rest)) => cur = rest,
             _ => break,
         }
@@ -736,10 +750,20 @@ pub async fn import_turtle(
         }
         let Object::Resource(obj) = object_of(&t.object, hash) else { continue };
         let subj = subject_iri(&t.subject, hash);
-        if obj == OWL_NOTHING_IRI {
-            // ⊥ is not a node; checked before `ensure_class`, which would create one.
+        // ⊥ is not a node: checked before `ensure_class`, which would create one.
+        if subj == OWL_NOTHING_IRI {
             im.report.warnings.push(format!(
-                "`{} rdfs:subClassOf owl:Nothing` declara la clase insatisfacible; no se guarda en el grafo: asértalo en el razonador (`assert_subclass(c, OWL_NOTHING)`)",
+                "`owl:Nothing rdfs:subClassOf {}` no dice nada (⊥ es subclase de toda clase); se ignora",
+                qualified_name(&obj, im.prefixes)
+            ));
+            continue;
+        }
+        if obj == OWL_NOTHING_IRI {
+            // The class itself is kept (it may have no other declaration);
+            // only the axiom is not stored.
+            im.ensure_class(&subj, declared_classes.contains(&subj)).await?;
+            im.report.warnings.push(format!(
+                "`{} rdfs:subClassOf owl:Nothing` declara la clase insatisfacible; la clase se guarda, el axioma no: asértalo en el razonador (`assert_subclass(c, OWL_NOTHING)`)",
                 qualified_name(&subj, im.prefixes)
             ));
             continue;
@@ -767,22 +791,17 @@ pub async fn import_turtle(
             disjoint_pairs.push((subject_iri(&t.subject, hash), obj));
         }
     }
-    for t in triples {
-        if t.predicate != rdf::TYPE || !matches!(object_of(&t.object, hash), Object::Resource(o) if o == OWL_ALL_DISJOINT_CLASSES) {
-            continue;
-        }
-        let subj = subject_iri(&t.subject, hash);
-        let Some(head) = triples.iter().find_map(|m| {
-            (m.predicate.as_str() == OWL_MEMBERS && subject_iri(&m.subject, hash) == subj)
-                .then(|| object_of(&m.object, hash))
-                .and_then(|o| match o {
-                    Object::Resource(h) => Some(h),
-                    Object::Literal(_) => None,
-                })
-        }) else {
+    let all_disjoint: Vec<String> = triples
+        .iter()
+        .filter(|t| t.predicate == rdf::TYPE && matches!(object_of(&t.object, hash), Object::Resource(o) if o == OWL_ALL_DISJOINT_CLASSES))
+        .map(|t| subject_iri(&t.subject, hash))
+        .collect();
+    let index = if all_disjoint.is_empty() { HashMap::new() } else { by_subject(triples, hash) };
+    for subj in all_disjoint {
+        let Some(Object::Resource(head)) = object_in(&index, &subj, OWL_MEMBERS, hash) else {
             continue; // no members: stays skipped
         };
-        let (members, cells) = rdf_list(triples, hash, &head);
+        let (members, cells) = rdf_list(&index, hash, &head);
         for (i, a) in members.iter().enumerate() {
             for b in &members[i + 1..] {
                 disjoint_pairs.push((a.clone(), b.clone()));
@@ -794,6 +813,10 @@ pub async fn import_turtle(
     let mut seen_pairs: HashSet<(String, String)> = HashSet::new();
     for (a, b) in disjoint_pairs {
         if a == b {
+            im.report.warnings.push(format!(
+                "`{} owl:disjointWith` consigo misma no dice nada; se ignora",
+                qualified_name(&a, im.prefixes)
+            ));
             continue;
         }
         if a == OWL_NOTHING_IRI || b == OWL_NOTHING_IRI {
@@ -946,15 +969,16 @@ pub async fn import_turtle(
         } else if im.vocabulary_subjects.contains(&subj) {
             false
         } else if t.predicate.as_str() == OWL_DISJOINT_WITH {
-            matches!(object_of(&t.object, hash), Object::Resource(_))
+            // Stored only as a real pair; ⊥ and self-pairs are warnings.
+            matches!(object_of(&t.object, hash), Object::Resource(o) if o != OWL_NOTHING_IRI && o != subj && subj != OWL_NOTHING_IRI)
         } else if t.predicate == rdf::TYPE {
             match object_of(&t.object, hash) {
                 Object::Resource(obj) => !is_reserved_namespace(&obj) || obj == OWL_CLASS.as_str() || obj == OWL_NAMED_INDIVIDUAL.as_str(),
                 Object::Literal(_) => false,
             }
         } else if t.predicate == rdfs::SUB_CLASS_OF {
-            // `owl:Nothing` as the superclass is reported in `warnings`, not stored.
-            matches!(object_of(&t.object, hash), Object::Resource(o) if o != OWL_NOTHING_IRI)
+            // `owl:Nothing` on either side is reported in `warnings`, not stored.
+            matches!(object_of(&t.object, hash), Object::Resource(o) if o != OWL_NOTHING_IRI && subj != OWL_NOTHING_IRI)
         } else {
             let p = t.predicate.as_str();
             p == rdfs::LABEL.as_str() || p == rdfs::COMMENT.as_str() || !is_reserved_namespace(p)

@@ -138,13 +138,16 @@ pub enum Unsatisfiable {
         /// The class asserted below ⊥.
         parent: NodeId,
     },
-    /// CR4 / CR3: the class is below `∃role.filler` and `filler` is
-    /// unsatisfiable (or `∃role.filler`'s domain is ⊥).
+    /// The class is below `∃role.filler` and either `filler` is
+    /// unsatisfiable (CR4) or `∃role.C ⊑ ⊥` was asserted for a `C` above the
+    /// filler (CR3); `rule` says which.
     Existential {
         /// The role of the restriction.
         role: String,
         /// The filler class.
         filler: NodeId,
+        /// `CR4` or `CR3`.
+        rule: CompletionRule,
     },
 }
 
@@ -544,15 +547,17 @@ impl ELReasoner {
 
     /// Apply CR2 for a single conjunction axiom `left ⊓ right ⊑ result`.
     ///
-    /// For every registered class X such that X ⊑ left AND X ⊑ right
-    /// (asserted or derived so far), derive X ⊑ result.
+    /// For every class X of the hierarchy (registered, or an endpoint of an
+    /// asserted subclass axiom) such that X ⊑ left AND X ⊑ right (asserted
+    /// or derived so far), derive X ⊑ result. A class known only through
+    /// other conjunctions or existentials waits for `classify_all`.
     fn apply_cr2_for_conjunction(
         &mut self,
         left: NodeId,
         right: NodeId,
         result: NodeId,
     ) -> Vec<Inference> {
-        let all_nodes = self.taxonomy.all_class_ids();
+        let all_nodes = self.taxonomy.hierarchy_ids();
         let mut new_inferences: Vec<Inference> = Vec::new();
 
         for &x in &all_nodes {
@@ -808,11 +813,11 @@ impl Completion {
                     if let Some(holders) = c.pred.get(&x).cloned() {
                         for (w, role) in holders {
                             if y == OWL_NOTHING {
-                                c.add(w, OWL_NOTHING, CompletionRule::CR4, || Unsatisfiable::Existential { role: role.clone(), filler: x });
+                                c.add(w, OWL_NOTHING, CompletionRule::CR4, || Unsatisfiable::Existential { role: role.clone(), filler: x, rule: CompletionRule::CR4 });
                             }
                             if let Some(ds) = domains.get(&(role.clone(), y)) {
                                 for &d in ds {
-                                    c.add(w, d, CompletionRule::CR3, || Unsatisfiable::Existential { role: role.clone(), filler: x });
+                                    c.add(w, d, CompletionRule::CR3, || Unsatisfiable::Existential { role: role.clone(), filler: x, rule: CompletionRule::CR3 });
                                 }
                             }
                         }
@@ -823,11 +828,11 @@ impl Completion {
                     fillers.push(b);
                     for f in fillers {
                         if f == OWL_NOTHING {
-                            c.add(x, OWL_NOTHING, CompletionRule::CR4, || Unsatisfiable::Existential { role: role.clone(), filler: b });
+                            c.add(x, OWL_NOTHING, CompletionRule::CR4, || Unsatisfiable::Existential { role: role.clone(), filler: b, rule: CompletionRule::CR4 });
                         }
                         if let Some(ds) = domains.get(&(role.clone(), f)) {
                             for &d in ds {
-                                c.add(x, d, CompletionRule::CR3, || Unsatisfiable::Existential { role: role.clone(), filler: b });
+                                c.add(x, d, CompletionRule::CR3, || Unsatisfiable::Existential { role: role.clone(), filler: b, rule: CompletionRule::CR3 });
                             }
                         }
                     }
@@ -1543,7 +1548,7 @@ mod tests {
         assert!(unsat.contains(&plato) && unsat.contains(&menu), "{unsat:?}");
         assert_eq!(
             r.why_unsatisfiable(plato),
-            Some(Unsatisfiable::Existential { role: "usa".into(), filler: hibrido })
+            Some(Unsatisfiable::Existential { role: "usa".into(), filler: hibrido, rule: CompletionRule::CR4 })
         );
         let rules: HashSet<CompletionRule> = r.derived_inferences().iter().map(|i| i.rule).collect();
         assert!(rules.contains(&CompletionRule::CR2) && rules.contains(&CompletionRule::CR4), "{rules:?}");
@@ -1562,6 +1567,35 @@ mod tests {
         expected.sort();
         assert_eq!(r.unsatisfiable_classes(), expected, "unregistered classes are classified too");
         assert_eq!(r.why_unsatisfiable(c), Some(Unsatisfiable::Asserted));
+    }
+
+    #[test]
+    fn test_domain_into_bottom_is_reported_as_cr3() {
+        // ∃r.B ⊑ ⊥ asserted as a domain: A ⊑ ∃r.B is unsatisfiable by CR3, and
+        // the cause says CR3, the same rule `derived_inferences` reports.
+        let mut r = ELReasoner::new();
+        let (a, b) = (nid(), nid());
+        r.assert_existential(a, "r", b).unwrap();
+        r.assert_existential_domain("r", b, OWL_NOTHING).unwrap();
+        assert_eq!(r.unsatisfiable_classes(), vec![a]);
+        assert_eq!(
+            r.why_unsatisfiable(a),
+            Some(Unsatisfiable::Existential { role: "r".into(), filler: b, rule: CompletionRule::CR3 })
+        );
+        assert_eq!(r.derived.get(&(a, OWL_NOTHING)), Some(&CompletionRule::CR3));
+    }
+
+    #[test]
+    fn test_incremental_disjoint_sees_unregistered_classes() {
+        // x was never registered, only asserted below a and b: the
+        // incremental CR2 of assert_disjoint still derives x ⊑ ⊥.
+        let mut r = ELReasoner::new();
+        let (x, a, b) = (nid(), nid(), nid());
+        r.assert_subclass(x, a).unwrap();
+        r.assert_subclass(x, b).unwrap();
+        let inf = r.assert_disjoint(&[a, b]).unwrap();
+        assert!(inf.iter().any(|i| i.axiom == Axiom::SubClassOf { sub: x, super_class: OWL_NOTHING }), "{inf:?}");
+        assert!(r.is_subclass_of(x, OWL_NOTHING));
     }
 
     #[test]
