@@ -26,7 +26,13 @@ propiedad; el razonador detecta clases insatisfacibles y dice por qué.
   shape con solo uno de ellos ni siquiera se reconocía). `Target` gana las
   variantes `SubjectsOf` y `ObjectsOf` (enum pública sin
   `#[non_exhaustive]`: un `match` exhaustivo externo necesita los brazos
-  nuevos). Docs en `SHACL.md` EN/ES.
+  nuevos). El predicado se resuelve como en `sh:path`, y ambos conocen ahora
+  los términos que el import renombra (`rdf:type` → `instanceOf`,
+  `rdfs:subClassOf` → `subClassOf`, `rdfs:label`/`rdfs:comment` →
+  `rdfs_label`/`rdfs_comment`): `sh:targetSubjectsOf rdf:type` es todo nodo
+  tipado, en vez de casar con nada en silencio. La lectura de nodos y
+  aristas que estos targets y `sh:targetClass` necesitan se hace una vez por
+  validación, no una por shape. Docs en `SHACL.md` EN/ES.
 
 - **ELReasoner: clases disjuntas y ⊥ (`owl:Nothing`)** (#235). ⊥ viene
   incorporada (`OWL_NOTHING`, un id fijo: el UUID v5 de su IRI;

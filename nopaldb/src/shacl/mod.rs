@@ -190,12 +190,13 @@ impl ShaclValidator {
         let mut all_violations = Vec::new();
         let mut notes = Vec::new();
         let mut ctx = self.context(graph);
+        let mut scan = GraphScan::default();
 
         for shape in &self.shapes {
             if shape.deactivated {
                 continue;
             }
-            let focus_nodes = self.resolve_focus_nodes(graph, shape, &mut notes).await?;
+            let focus_nodes = self.resolve_focus_nodes(graph, shape, &mut notes, &mut scan).await?;
             for node_id in focus_nodes {
                 let violations = self.validate_focus_node(graph, shape, node_id, &mut ctx).await?;
                 all_violations.extend(violations);
@@ -227,12 +228,16 @@ impl ShaclValidator {
         Ok(all_violations)
     }
 
-    /// Determina los focus nodes de un shape segun sus targets.
+    /// Determina los focus nodes de un shape segun sus targets. `scan` es la
+    /// lectura completa de nodos y aristas compartida por todas las shapes de
+    /// una validación (`sh:targetClass`, `sh:targetSubjectsOf` y
+    /// `sh:targetObjectsOf` la necesitan; se hace una vez, no una por shape).
     async fn resolve_focus_nodes(
         &self,
         graph: &Graph,
         shape: &Shape,
         notes: &mut Vec<String>,
+        scan: &mut GraphScan,
     ) -> Result<Vec<NodeId>> {
         let mut focus = Vec::new();
 
@@ -245,16 +250,9 @@ impl ShaclValidator {
             if shape.iri.is_some() {
                 return Ok(focus);
             }
-            let all = graph.get_all_nodes().await?;
-            focus.extend(all.iter().map(|n| n.id));
+            focus.extend(scan.nodes(graph).await?.iter().map(|n| n.id));
             return Ok(focus);
         }
-
-        // `sh:targetSubjectsOf` / `sh:targetObjectsOf` read every node and edge
-        // (there is no edges-by-type index; `get_edges_by_label` is the same
-        // scan): loaded once per shape, and only if the shape uses them.
-        let mut all_nodes: Option<Vec<Node>> = None;
-        let mut all_edges: Option<Vec<crate::types::Edge>> = None;
 
         for target in &shape.targets {
             match target {
@@ -275,29 +273,17 @@ impl ShaclValidator {
                     focus.extend(nodes.iter().copied());
                 }
                 Target::Class(class) => {
-                    focus.extend(self.instances_of(graph, class).await?);
+                    focus.extend(self.instances_of(graph, class, scan).await?);
                 }
                 Target::SubjectsOf(predicate) => {
-                    if all_nodes.is_none() {
-                        all_nodes = Some(graph.get_all_nodes().await?);
-                    }
-                    if all_edges.is_none() {
-                        all_edges = Some(graph.get_all_edges().await?);
-                    }
-                    let nodes = all_nodes.as_deref().unwrap_or_default();
-                    let edges = all_edges.as_deref().unwrap_or_default();
                     // Both, as `sh:path`: a property `p` or an edge of type `p`.
-                    focus.extend(nodes.iter().filter(|n| n.properties.contains_key(predicate)).map(|n| n.id));
-                    focus.extend(edges.iter().filter(|e| e.edge_type == *predicate).map(|e| e.source));
+                    focus.extend(scan.nodes(graph).await?.iter().filter(|n| n.properties.contains_key(predicate)).map(|n| n.id));
+                    focus.extend(scan.edges(graph).await?.iter().filter(|e| e.edge_type == *predicate).map(|e| e.source));
                 }
                 Target::ObjectsOf(predicate) => {
-                    if all_edges.is_none() {
-                        all_edges = Some(graph.get_all_edges().await?);
-                    }
                     // Only edge targets: a literal value is a property, never
                     // an edge, and is not a focus node.
-                    let edges = all_edges.as_deref().unwrap_or_default();
-                    focus.extend(edges.iter().filter(|e| e.edge_type == *predicate).map(|e| e.target));
+                    focus.extend(scan.edges(graph).await?.iter().filter(|e| e.edge_type == *predicate).map(|e| e.target));
                 }
             }
         }
@@ -320,7 +306,7 @@ impl ShaclValidator {
     /// Un nodo clase lleva el label de la clase (`:Receta a owl:Class` tiene
     /// label "Receta") pero una clase no es instancia de sí misma: nunca es
     /// focus node de su propio shape.
-    async fn instances_of(&self, graph: &Graph, class: &str) -> Result<Vec<NodeId>> {
+    async fn instances_of(&self, graph: &Graph, class: &str, scan: &mut GraphScan) -> Result<Vec<NodeId>> {
         use crate::rdf_owl::importer::local_name;
         use crate::types::NodeKind;
 
@@ -328,7 +314,7 @@ impl ShaclValidator {
             && let Some(mut tax) = graph.get_taxonomy_sync()
             && let Some(class_id) = tax.resolve_class(class)
         {
-            let all = graph.get_all_nodes().await?;
+            let all = scan.nodes(graph).await?;
             return Ok(all
                 .iter()
                 .filter(|n| n.kind != NodeKind::Class && tax.is_instance_of(n.id, &n.label, class_id))
@@ -503,6 +489,32 @@ impl ShaclValidator {
             }
         }
         Ok(values)
+    }
+}
+
+/// Lectura completa de nodos y aristas de una validación, hecha una sola vez
+/// y solo si algún target la pide. No hay índice de aristas por tipo
+/// (`get_edges_by_label` es el mismo escaneo), así que 50 shapes de dominio
+/// y rango sobre un grafo grande pagaban 50 lecturas del grafo.
+#[derive(Default)]
+struct GraphScan {
+    nodes: Option<Vec<Node>>,
+    edges: Option<Vec<crate::types::Edge>>,
+}
+
+impl GraphScan {
+    async fn nodes(&mut self, graph: &Graph) -> Result<&[Node]> {
+        if self.nodes.is_none() {
+            self.nodes = Some(graph.get_all_nodes().await?);
+        }
+        Ok(self.nodes.as_deref().unwrap_or_default())
+    }
+
+    async fn edges(&mut self, graph: &Graph) -> Result<&[crate::types::Edge]> {
+        if self.edges.is_none() {
+            self.edges = Some(graph.get_all_edges().await?);
+        }
+        Ok(self.edges.as_deref().unwrap_or_default())
     }
 }
 

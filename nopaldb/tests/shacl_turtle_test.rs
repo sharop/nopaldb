@@ -785,3 +785,40 @@ async fn target_class_and_subjects_of_on_one_shape_validate_the_union_once() -> 
     assert_eq!(focus, vec!["atole", "olla", "sopa"]);
     Ok(())
 }
+
+#[tokio::test]
+async fn reserved_predicates_resolve_as_the_import_names_them() -> Result<()> {
+    // `rdf:type` is the `instanceOf` edge and `rdfs:label` the `rdfs_label`
+    // property in the graph; SHACL maps them, in targets and in `sh:path`,
+    // instead of matching nothing in silence.
+    let graph = Graph::in_memory().await?;
+    graph
+        .import_turtle(&format!(
+            "{TARGETS_PREFIXES}@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+:Receta a owl:Class ; rdfs:label \"Receta\" .
+:Ingrediente a owl:Class .
+:sopa a :Receta ; :nombre \"Sopa\" .
+:atole a :Receta .
+:sal a :Ingrediente ; :nombre \"Sal\" .
+:suelto :nombre \"Sin tipo\" .
+"
+        ))
+        .await?;
+    let (report, shapes) = graph
+        .validate_shapes(&format!(
+            "{TARGETS_PREFIXES}@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+:Tipados a sh:NodeShape ; sh:targetSubjectsOf rdf:type ; sh:property [ sh:path :nombre ; sh:minCount 1 ] .
+:Clases a sh:NodeShape ; sh:targetObjectsOf rdf:type ; sh:property [ sh:path rdfs:label ; sh:minCount 1 ] .
+"
+        ))
+        .await?;
+    assert!(shapes.ignored.is_empty(), "{:?}", shapes.ignored);
+    // Every typed node (not :suelto) needs a name: :atole fails. Every class
+    // used as a type needs an rdfs:label: :Ingrediente fails.
+    assert_eq!(
+        shape_and_focus(&graph, &report).await?,
+        vec![("Clases".to_string(), "Ingrediente".to_string()), ("Tipados".to_string(), "atole".to_string())]
+    );
+    Ok(())
+}
