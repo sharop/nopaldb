@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.6.20] - unreleased
+
+`close()` espera los merges del índice full-text, y GraphRAG tiene receta de
+punta a punta respaldada por un sample.
 
 ### Fixed
 - **`close()` retornaba con hilos de merge del índice full-text todavía
