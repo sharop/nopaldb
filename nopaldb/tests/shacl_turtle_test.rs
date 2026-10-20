@@ -648,3 +648,140 @@ async fn cardinality_and_has_value_judge_the_set_and_stay_one_violation() -> Res
     }
     Ok(())
 }
+
+// --- #237: sh:targetSubjectsOf / sh:targetObjectsOf -------------------------
+//
+// The standard way to say "domain" and "range" of a property. Unlike
+// sh:targetClass they see the subjects that do NOT have the expected type,
+// which are the ones that matter, including those with no type at all.
+
+const TARGETS_PREFIXES: &str = r#"@prefix : <http://cocina.example/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+"#;
+
+/// `(shape, focus node local name)` of every violation, sorted.
+async fn shape_and_focus(graph: &Graph, report: &nopaldb::shacl::ValidationReport) -> Result<Vec<(String, String)>> {
+    let mut got = Vec::new();
+    for v in &report.violations {
+        got.push((v.shape_name.clone(), who(graph, v).await?));
+    }
+    got.sort();
+    Ok(got)
+}
+
+const DOMAIN_RANGE_SHAPES: &str = r#"
+:DominioUsa a sh:NodeShape ; sh:targetSubjectsOf :usa ; sh:class :Receta .
+:RangoUsa a sh:NodeShape ; sh:targetObjectsOf :usa ; sh:class :Ingrediente .
+"#;
+
+#[tokio::test]
+async fn target_subjects_and_objects_of_check_domain_and_range() -> Result<()> {
+    let graph = Graph::in_memory().await?;
+    graph
+        .import_turtle(&format!(
+            "{TARGETS_PREFIXES}
+:Receta a owl:Class . :Ingrediente a owl:Class . :Utensilio a owl:Class .
+:sal a :Ingrediente .
+:olla a :Utensilio ; :usa :sal .
+:sopa a :Receta ; :usa :olla .
+"
+        ))
+        .await?;
+    let (report, shapes) = graph.validate_shapes(&format!("{TARGETS_PREFIXES}{DOMAIN_RANGE_SHAPES}")).await?;
+    assert_eq!(shapes.shapes, 2);
+    assert!(shapes.ignored.is_empty(), "{:?}", shapes.ignored);
+    assert!(report.notes.is_empty(), "{:?}", report.notes);
+    // :olla uses something but is not a Receta (domain), and is used but is
+    // not an Ingrediente (range). :sopa and :sal are fine.
+    assert_eq!(
+        shape_and_focus(&graph, &report).await?,
+        vec![("DominioUsa".to_string(), "olla".to_string()), ("RangoUsa".to_string(), "olla".to_string())]
+    );
+    assert!(report.violations.iter().all(|v| v.constraint == "sh:ClassConstraintComponent"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn target_subjects_of_sees_untyped_subjects_and_literal_properties() -> Result<()> {
+    let graph = Graph::in_memory().await?;
+    graph
+        .import_turtle(&format!(
+            "{TARGETS_PREFIXES}
+:Receta a owl:Class . :Ingrediente a owl:Class .
+:sal a :Ingrediente .
+:sopa a :Receta ; :usa :sal ; :tiempoMin 30 .
+:fantasma :usa :sal .
+:suelto :tiempoMin 10 .
+"
+        ))
+        .await?;
+    // An id nobody typed (an invented one, say) is a focus node and fails sh:class.
+    let (report, _) = graph.validate_shapes(&format!("{TARGETS_PREFIXES}{DOMAIN_RANGE_SHAPES}")).await?;
+    assert_eq!(shape_and_focus(&graph, &report).await?, vec![("DominioUsa".to_string(), "fantasma".to_string())]);
+
+    // A literal property makes its node a subject too (`:tiempoMin 30`).
+    let (report, _) = graph
+        .validate_shapes(&format!(
+            "{TARGETS_PREFIXES}:DominioTiempo a sh:NodeShape ; sh:targetSubjectsOf :tiempoMin ; sh:class :Receta .\n"
+        ))
+        .await?;
+    assert_eq!(shape_and_focus(&graph, &report).await?, vec![("DominioTiempo".to_string(), "suelto".to_string())]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn target_objects_of_skips_literal_values() -> Result<()> {
+    let graph = Graph::in_memory().await?;
+    graph
+        .import_turtle(&format!(
+            "{TARGETS_PREFIXES}
+:Ingrediente a owl:Class .
+:sal a :Ingrediente .
+:sopa :lleva :sal , \"sal fina\" ; :nota \"sin picante\" .
+"
+        ))
+        .await?;
+    let (report, shapes) = graph
+        .validate_shapes(&format!(
+            "{TARGETS_PREFIXES}
+:RangoLleva a sh:NodeShape ; sh:targetObjectsOf :lleva ; sh:class :Ingrediente .
+:RangoNota a sh:NodeShape ; sh:targetObjectsOf :nota ; sh:class :Ingrediente .
+"
+        ))
+        .await?;
+    assert!(shapes.ignored.is_empty(), "{:?}", shapes.ignored);
+    // Only :sal is a focus node of :lleva; the literals of :lleva and :nota are not nodes.
+    assert!(report.violations.is_empty(), "{:?}", report.violations);
+    assert!(report.conforms);
+    assert!(report.notes.is_empty(), "{:?}", report.notes);
+    Ok(())
+}
+
+#[tokio::test]
+async fn target_class_and_subjects_of_on_one_shape_validate_the_union_once() -> Result<()> {
+    let graph = Graph::in_memory().await?;
+    graph
+        .import_turtle(&format!(
+            "{TARGETS_PREFIXES}
+:Receta a owl:Class . :Ingrediente a owl:Class . :Utensilio a owl:Class .
+:sal a :Ingrediente .
+:sopa a :Receta ; :usa :sal .
+:atole a :Receta .
+:olla a :Utensilio ; :usa :sal .
+"
+        ))
+        .await?;
+    let (report, _) = graph
+        .validate_shapes(&format!(
+            "{TARGETS_PREFIXES}
+:ConNombre a sh:NodeShape ; sh:targetClass :Receta ; sh:targetSubjectsOf :usa ;
+  sh:property [ sh:path :nombre ; sh:minCount 1 ] .
+"
+        ))
+        .await?;
+    // :sopa is in both sets and is validated once.
+    let focus: Vec<String> = shape_and_focus(&graph, &report).await?.into_iter().map(|(_, f)| f).collect();
+    assert_eq!(focus, vec!["atole", "olla", "sopa"]);
+    Ok(())
+}

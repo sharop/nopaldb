@@ -54,6 +54,19 @@ pub enum Target {
     NodeIri(String),
     /// sh:targetClass — valida todos los nodos cuyo `label` coincide.
     Class(String),
+    /// sh:targetSubjectsOf — todo nodo que sea sujeto del predicado: tiene
+    /// una arista de ese tipo **o** una propiedad con ese nombre (la misma
+    /// regla de "ambos" que `sh:path`). Lleva el local name del predicado,
+    /// que es como el importador nombra aristas y propiedades. Es la forma
+    /// estándar de expresar el **dominio** de una propiedad, y a diferencia
+    /// de `sh:targetClass` ve a los sujetos que no tienen el tipo esperado,
+    /// incluidos los que no tienen ninguno.
+    SubjectsOf(String),
+    /// sh:targetObjectsOf — todo nodo destino de una arista de ese tipo: el
+    /// **rango** de una propiedad. Los literales no son focus nodes (en SHACL
+    /// solo los nodos lo son), así que los valores de una propiedad no
+    /// cuentan.
+    ObjectsOf(String),
 }
 
 /// Tipo de dato esperado en un constraint sh:datatype.

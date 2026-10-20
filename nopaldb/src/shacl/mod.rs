@@ -4,8 +4,9 @@
 //! Implementa un subconjunto de SHACL Core (W3C) sin SPARQL: 14 constraints
 //! sobre paths de un salto (`sh:minCount`, `sh:maxCount`, `sh:datatype`,
 //! los cuatro rangos numéricos, `sh:minLength`/`sh:maxLength`, `sh:pattern`,
-//! `sh:in`, `sh:hasValue`, `sh:nodeKind`, `sh:class`), con `sh:targetClass`
-//! y `sh:targetNode`. Lo que no implementa lo dice: al cargar shapes desde
+//! `sh:in`, `sh:hasValue`, `sh:nodeKind`, `sh:class`), con `sh:targetClass`,
+//! `sh:targetNode`, `sh:targetSubjectsOf` y `sh:targetObjectsOf`. Lo que no
+//! implementa lo dice: al cargar shapes desde
 //! Turtle cada término no soportado sale en [`ShapesReport::ignored`] con la
 //! razón, y una violación trae el componente, el path y el valor culpable:
 //! una por cada valor que no cumple (las de cardinalidad y `sh:hasValue`,
@@ -249,6 +250,12 @@ impl ShaclValidator {
             return Ok(focus);
         }
 
+        // `sh:targetSubjectsOf` / `sh:targetObjectsOf` read every node and edge
+        // (there is no edges-by-type index; `get_edges_by_label` is the same
+        // scan): loaded once per shape, and only if the shape uses them.
+        let mut all_nodes: Option<Vec<Node>> = None;
+        let mut all_edges: Option<Vec<crate::types::Edge>> = None;
+
         for target in &shape.targets {
             match target {
                 Target::Node(id) => {
@@ -269,6 +276,28 @@ impl ShaclValidator {
                 }
                 Target::Class(class) => {
                     focus.extend(self.instances_of(graph, class).await?);
+                }
+                Target::SubjectsOf(predicate) => {
+                    if all_nodes.is_none() {
+                        all_nodes = Some(graph.get_all_nodes().await?);
+                    }
+                    if all_edges.is_none() {
+                        all_edges = Some(graph.get_all_edges().await?);
+                    }
+                    let nodes = all_nodes.as_deref().unwrap_or_default();
+                    let edges = all_edges.as_deref().unwrap_or_default();
+                    // Both, as `sh:path`: a property `p` or an edge of type `p`.
+                    focus.extend(nodes.iter().filter(|n| n.properties.contains_key(predicate)).map(|n| n.id));
+                    focus.extend(edges.iter().filter(|e| e.edge_type == *predicate).map(|e| e.source));
+                }
+                Target::ObjectsOf(predicate) => {
+                    if all_edges.is_none() {
+                        all_edges = Some(graph.get_all_edges().await?);
+                    }
+                    // Only edge targets: a literal value is a property, never
+                    // an edge, and is not a focus node.
+                    let edges = all_edges.as_deref().unwrap_or_default();
+                    focus.extend(edges.iter().filter(|e| e.edge_type == *predicate).map(|e| e.target));
                 }
             }
         }

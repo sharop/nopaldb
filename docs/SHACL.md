@@ -55,9 +55,11 @@ A shapes file, for a fictional cookbook:
 
 | Term | Meaning here |
 |---|---|
-| `sh:NodeShape`, `sh:name` | A shape; the name appears in every violation. Any subject with `sh:targetClass` or `sh:targetNode` is a shape too. A shape with no target validates nothing by itself: it is there to be referenced by `sh:node` or a combinator (as SHACL says; only the programmatic API keeps "no targets = every node"). |
+| `sh:NodeShape`, `sh:name` | A shape; the name appears in every violation. Any subject with a target (`sh:targetClass`, `sh:targetNode`, `sh:targetSubjectsOf`, `sh:targetObjectsOf`) is a shape too. A shape with no target validates nothing by itself: it is there to be referenced by `sh:node` or a combinator (as SHACL says; only the programmatic API keeps "no targets = every node"). |
 | `sh:targetClass :C` | Focus nodes = the instances of `C` **and of its subclasses**, through the graph's class hierarchy, by any of their declared types; `C` may be a label, a `prefix:Local` or a full IRI (the same resolution as `instanceOf` in NQL). The class node itself is never one. Without a hierarchy (a graph built by hand) it is the individuals labelled `C`. |
 | `sh:targetNode <iri>` | The node whose `iri` property is that IRI. An IRI that matches nothing is reported in `report.notes`, not ignored. |
+| `sh:targetSubjectsOf :p` | Every node that is a subject of `p`: it has an edge of type `p` **or** a property `p` (the same "both" rule as `sh:path`). This is how you check the **domain** of a property: unlike `sh:targetClass`, it sees the subjects that do not have the expected type, including those with no type at all. Several targets on one shape validate the union, each node once. The predicate is matched by its local name, as in `sh:path`; the import stores `rdf:type` as `instanceOf` edges (use `sh:targetClass` for types) and `rdfs:label`/`rdfs:comment` as the properties `rdfs_label`/`rdfs_comment`. |
+| `sh:targetObjectsOf :p` | Every node that is the target of an edge of type `p`: the **range** of a property. Literals are not focus nodes (in SHACL only nodes are), so the values of a property `p` do not count. |
 | `sh:property [ sh:path :p ; … ]` | Constraints on the values of `p`: the property `p` of the node (a list counts one value per element) **and** the targets of its edges of type `p`. Turtle does not say which one a predicate became in NopalDB, so both are the path. |
 | `sh:path ( :a :b … )` | A sequence: the values of one hop are the focus of the next, through nodes only (a literal ends its branch); the result is the union of all branches without duplicates. Violations show the path as `a/b`. |
 | `sh:minCount`, `sh:maxCount` | Number of values. |
@@ -90,7 +92,7 @@ Today that covers the other path forms (`sh:inversePath`,
 deserves its own design with the taxonomy), `sh:closed`,
 `sh:qualifiedValueShape`, property comparisons (`sh:equals`, `sh:lessThan`, …),
 `sh:languageIn`/`sh:uniqueLang` (language tags are not kept by the import),
-`sh:flags`, `sh:targetSubjectsOf`/`sh:targetObjectsOf` and SHACL-SPARQL. A
+`sh:flags` and SHACL-SPARQL. A
 property shape without `sh:path`, or with one of those path forms, is dropped
 with a line saying so.
 

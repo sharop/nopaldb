@@ -9,7 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-SHACL reporta cada valor que falla, no solo el primero.
+SHACL reporta cada valor que falla, no solo el primero, y comprueba dominio y
+rango de una propiedad.
+
+### Added
+- **SHACL: `sh:targetSubjectsOf` y `sh:targetObjectsOf`** (#237). La forma
+  estándar de expresar el dominio y el rango de una propiedad ("todo el que
+  tenga `:usa` debe ser `:Receta`"; "todo lo que sea objeto de `:usa` debe
+  ser `:Ingrediente`"). `targetSubjectsOf p` toma los nodos con una arista
+  de tipo `p` o una propiedad `p` (la regla de "ambos" de `sh:path`), así que
+  ve justo a los sujetos que `sh:targetClass` no ve: los que no tienen el
+  tipo esperado, incluidos los que no tienen ninguno. `targetObjectsOf p`
+  toma los destinos de las aristas de tipo `p`; los literales no son focus
+  nodes. Varios targets en una shape validan la unión, cada nodo una vez.
+  Hasta 0.6.17 ambos salían en `ignored` y la shape no validaba nada (una
+  shape con solo uno de ellos ni siquiera se reconocía). `Target` gana las
+  variantes `SubjectsOf` y `ObjectsOf` (enum pública sin
+  `#[non_exhaustive]`: un `match` exhaustivo externo necesita los brazos
+  nuevos). Docs en `SHACL.md` EN/ES.
 
 ### Fixed
 - **SHACL: una violación por cada valor que no cumple** (#236). Las

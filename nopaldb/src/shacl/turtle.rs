@@ -41,7 +41,6 @@ fn unsupported_reason(local: &str) -> Option<&'static str> {
         }
         "languageIn" | "uniqueLang" => "los lang tags no se conservan en el import, así que no hay qué comprobar",
         "flags" => "sh:flags no se aplica al patrón (la regex se compila tal cual)",
-        "targetSubjectsOf" | "targetObjectsOf" => "sh:targetSubjectsOf / sh:targetObjectsOf no están implementados",
         "sparql" | "select" | "ask" => "SHACL-SPARQL está fuera de alcance",
         _ => return None,
     })
@@ -140,8 +139,9 @@ impl Doc {
 ///
 /// Un documento malformado es `Err(RdfParseError)` con línea y columna, como
 /// en `import_turtle`. Una shape es todo sujeto tipado `sh:NodeShape` o con
-/// `sh:targetClass` / `sh:targetNode`; sus `sh:property` (blank nodes o
-/// IRIs) son property shapes.
+/// algún target (`sh:targetClass`, `sh:targetNode`, `sh:targetSubjectsOf`,
+/// `sh:targetObjectsOf`); sus `sh:property` (blank nodes o IRIs) son
+/// property shapes.
 pub fn parse_shapes(source: &str) -> Result<(Vec<Shape>, ShapesReport)> {
     let parsed = parse_turtle(source)?;
     let mut report = ShapesReport { warnings: parsed.warnings.clone(), ..Default::default() };
@@ -155,7 +155,9 @@ pub fn parse_shapes(source: &str) -> Result<(Vec<Shape>, ShapesReport)> {
         if !seen.contains(&s)
             && (doc.has_type(&s, &format!("{SH}NodeShape"))
                 || doc.objects(&s, &format!("{SH}targetClass")).next().is_some()
-                || doc.objects(&s, &format!("{SH}targetNode")).next().is_some())
+                || doc.objects(&s, &format!("{SH}targetNode")).next().is_some()
+                || doc.objects(&s, &format!("{SH}targetSubjectsOf")).next().is_some()
+                || doc.objects(&s, &format!("{SH}targetObjectsOf")).next().is_some())
         {
             seen.insert(s.clone());
             subjects.push(s);
@@ -211,6 +213,16 @@ fn shape_body(doc: &Doc, subject: &str, report: &mut ShapesReport) -> Result<Sha
             "targetNode" => match obj {
                 Term::NamedNode(n) => shape.targets.push(Target::NodeIri(n.as_str().to_string())),
                 other => report.ignored.push(format!("{shown}: sh:targetNode espera un IRI, no `{other}`")),
+            },
+            // The local name, as `sh:path` resolves a predicate: the importer
+            // names edges and property keys by it.
+            "targetSubjectsOf" => match obj {
+                Term::NamedNode(n) => shape.targets.push(Target::SubjectsOf(local_name(n.as_str()))),
+                other => report.ignored.push(format!("{shown}: sh:targetSubjectsOf espera un IRI, no `{other}`")),
+            },
+            "targetObjectsOf" => match obj {
+                Term::NamedNode(n) => shape.targets.push(Target::ObjectsOf(local_name(n.as_str()))),
+                other => report.ignored.push(format!("{shown}: sh:targetObjectsOf espera un IRI, no `{other}`")),
             },
             "severity" => match severity_of(obj) {
                 Some(sev) => shape.severity = sev,
