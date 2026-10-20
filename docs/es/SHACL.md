@@ -55,9 +55,11 @@ Un archivo de shapes, para un recetario ficticio:
 
 | Término | Significado aquí |
 |---|---|
-| `sh:NodeShape`, `sh:name` | Una shape; el nombre aparece en cada violación. Todo sujeto con `sh:targetClass` o `sh:targetNode` también es shape. Una shape sin target no valida nada por sí sola: existe para que `sh:node` o un combinador la refieran (como dice SHACL; solo la API programática conserva "sin targets = todos los nodos"). |
+| `sh:NodeShape`, `sh:name` | Una shape; el nombre aparece en cada violación. Todo sujeto con algún target (`sh:targetClass`, `sh:targetNode`, `sh:targetSubjectsOf`, `sh:targetObjectsOf`) también es shape. Una shape sin target no valida nada por sí sola: existe para que `sh:node` o un combinador la refieran (como dice SHACL; solo la API programática conserva "sin targets = todos los nodos"). |
 | `sh:targetClass :C` | Focus nodes = las instancias de `C` **y de sus subclases**, por la jerarquía de clases del grafo, por cualquiera de sus tipos declarados; `C` puede ser label, `prefijo:Local` o IRI completo (la misma resolución que `instanceOf` en NQL). El nodo clase nunca lo es. Sin jerarquía (grafo a mano) son los individuos con label `C`. |
 | `sh:targetNode <iri>` | El nodo cuya propiedad `iri` es ese IRI. Un IRI que no existe se reporta en `report.notes`, no se ignora. |
+| `sh:targetSubjectsOf :p` | Todo nodo sujeto de `p`: tiene una arista de tipo `p` **o** una propiedad `p` (la misma regla de "ambos" que `sh:path`). Así se comprueba el **dominio** de una propiedad: a diferencia de `sh:targetClass`, ve a los sujetos que no tienen el tipo esperado, incluidos los que no tienen ninguno. Varios targets en una shape validan la unión, cada nodo una vez. El predicado se casa por su local name, como en `sh:path`; el import guarda `rdf:type` como aristas `instanceOf` (para tipos, `sh:targetClass`) y `rdfs:label`/`rdfs:comment` como las propiedades `rdfs_label`/`rdfs_comment`. |
+| `sh:targetObjectsOf :p` | Todo nodo destino de una arista de tipo `p`: el **rango** de una propiedad. Los literales no son focus nodes (en SHACL solo los nodos lo son), así que los valores de una propiedad `p` no cuentan. |
 | `sh:property [ sh:path :p ; … ]` | Constraints sobre los valores de `p`: la propiedad `p` del nodo (una lista cuenta un valor por elemento) **y** los destinos de sus aristas de tipo `p`. Turtle no dice en cuál de las dos aterrizó un predicado en NopalDB, así que el path son ambas. |
 | `sh:path ( :a :b … )` | Una secuencia: los valores de un salto son los focus del siguiente, solo a través de nodos (un literal termina su rama); el resultado es la unión de todas las ramas sin duplicados. Las violaciones muestran el path como `a/b`. |
 | `sh:minCount`, `sh:maxCount` | Número de valores. |
@@ -90,7 +92,7 @@ lo que significa la cardinalidad sobre un cierre y merece su propio diseño con
 la taxonomía), `sh:closed`,
 `sh:qualifiedValueShape`, comparaciones entre propiedades (`sh:equals`,
 `sh:lessThan`, …), `sh:languageIn`/`sh:uniqueLang` (el import no conserva lang
-tags), `sh:flags`, `sh:targetSubjectsOf`/`sh:targetObjectsOf` y SHACL-SPARQL.
+tags), `sh:flags` y SHACL-SPARQL.
 Una property shape sin `sh:path`, o con una de esas formas de path, se
 descarta con una línea que lo dice.
 
