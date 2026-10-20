@@ -114,6 +114,14 @@ no violation has severity `Violation`. Each `ConstraintViolation`:
 | `message`, `severity` | Human text (the author's `sh:message` when given) and `Violation` / `Warning` / `Info`. |
 | `nested` | For combinators and `sh:node`: the violations of the branches / the referenced shape. |
 
+**One violation per failing value.** A value constraint (`sh:datatype`,
+the ranges, the lengths, `sh:pattern`, `sh:in`, `sh:nodeKind`, `sh:class`)
+and a combinator or `sh:node` give one violation for each value that does
+not conform, each with its own `value` (and its own `nested`), as SHACL asks.
+`sh:minCount`, `sh:maxCount` and `sh:hasValue` judge the set of values and
+give at most one per focus node and path. Until 0.6.17 a value constraint
+stopped at the first failing value.
+
 `notes` lists what the validator could not do at all (a `sh:targetNode` that
 matches nothing). Both types derive `Serialize`.
 

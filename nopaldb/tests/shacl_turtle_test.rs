@@ -501,3 +501,150 @@ async fn inverse_path_in_the_fixture_is_ignored_with_reason_and_the_rest_loads()
     assert_eq!(got, vec!["sal".to_string()]);
     Ok(())
 }
+
+// --- #236: one violation per failing value ---------------------------------
+//
+// SHACL §4 asks for a validation result for each value node that does not
+// conform. Until 0.6.17 a value constraint stopped at the first bad value, so
+// a node with two bad values reported one and the other looked valid.
+
+const PER_VALUE_PREFIXES: &str = r#"@prefix : <http://cocina.example/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+"#;
+
+/// `(constraint, value)` of every violation, sorted.
+fn constraint_values(report: &nopaldb::shacl::ValidationReport) -> Vec<(String, Option<PropertyValue>)> {
+    let mut got: Vec<(String, Option<PropertyValue>)> =
+        report.violations.iter().map(|v| (v.constraint.clone(), v.value.clone())).collect();
+    got.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+    got
+}
+
+#[tokio::test]
+async fn every_failing_value_is_one_violation_with_its_value() -> Result<()> {
+    let graph = Graph::in_memory().await?;
+    graph
+        .import_turtle(&format!(
+            "{PER_VALUE_PREFIXES}
+:Receta a owl:Class . :Ingrediente a owl:Class . :Utensilio a owl:Class .
+:sal a :Ingrediente . :olla a :Utensilio . :sarten a :Utensilio .
+:sopa a :Receta ; :usa :olla , :sarten , :sal ; :dificultad \"rara\" , \"mala\" , \"alta\" .
+"
+        ))
+        .await?;
+    let (report, _) = graph
+        .validate_shapes(&format!(
+            "{PER_VALUE_PREFIXES}
+:S a sh:NodeShape ; sh:targetNode :sopa ;
+  sh:property [ sh:path :usa ; sh:class :Ingrediente ] ,
+              [ sh:path :dificultad ; sh:in ( \"baja\" \"media\" \"alta\" ) ] .
+"
+        ))
+        .await?;
+    assert!(!report.conforms);
+    let s = |x: &str| Some(PropertyValue::String(x.into()));
+    assert_eq!(
+        constraint_values(&report),
+        vec![
+            ("sh:ClassConstraintComponent".to_string(), Some(iri("olla"))),
+            ("sh:ClassConstraintComponent".to_string(), Some(iri("sarten"))),
+            ("sh:InConstraintComponent".to_string(), s("mala")),
+            ("sh:InConstraintComponent".to_string(), s("rara")),
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn each_value_constraint_reports_both_bad_values_and_not_the_good_one() -> Result<()> {
+    // One property per constraint: one good value, two bad ones. The integer
+    // lists avoid 0..=255 everywhere: a list of small non-negative integers is
+    // stored as `Bytes` (documented `serde(untagged)` quirk of `PropertyValue`).
+    let graph = Graph::in_memory().await?;
+    graph
+        .import_turtle(&format!(
+            "{PER_VALUE_PREFIXES}
+:Ingrediente a owl:Class . :Utensilio a owl:Class .
+:sal a :Ingrediente . :olla a :Utensilio . :sarten a :Utensilio .
+:x :entero 1 , \"a\" , \"b\" ;
+   :minInc 5 , -1 , -2 ; :maxInc 500 , 1100 , 1200 ;
+   :minExc 5 , 0 , -1 ; :maxExc 500 , 1000 , 1100 ;
+   :corto \"abcd\" , \"a\" , \"b\" ; :largo \"abc\" , \"abcdef\" , \"abcdefg\" ;
+   :patron \"abc\" , \"A1\" , \"B2\" ; :enum \"a\" , \"x\" , \"y\" ;
+   :kind :sal , \"l1\" , \"l2\" ; :clase :sal , :olla , :sarten .
+"
+        ))
+        .await?;
+    let cases = [
+        ("entero", "sh:datatype xsd:integer", "sh:DatatypeConstraintComponent"),
+        ("minInc", "sh:minInclusive 0", "sh:MinInclusiveConstraintComponent"),
+        ("maxInc", "sh:maxInclusive 1000", "sh:MaxInclusiveConstraintComponent"),
+        ("minExc", "sh:minExclusive 0", "sh:MinExclusiveConstraintComponent"),
+        ("maxExc", "sh:maxExclusive 1000", "sh:MaxExclusiveConstraintComponent"),
+        ("corto", "sh:minLength 3", "sh:MinLengthConstraintComponent"),
+        ("largo", "sh:maxLength 3", "sh:MaxLengthConstraintComponent"),
+        ("patron", "sh:pattern \"^[a-z]+$\"", "sh:PatternConstraintComponent"),
+        ("enum", "sh:in ( \"a\" \"b\" )", "sh:InConstraintComponent"),
+        ("kind", "sh:nodeKind sh:IRI", "sh:NodeKindConstraintComponent"),
+        ("clase", "sh:class :Ingrediente", "sh:ClassConstraintComponent"),
+    ];
+    for (path, constraint, component) in cases {
+        let (report, shapes) = graph
+            .validate_shapes(&format!(
+                "{PER_VALUE_PREFIXES}:S a sh:NodeShape ; sh:targetNode :x ; sh:property [ sh:path :{path} ; {constraint} ] .\n"
+            ))
+            .await?;
+        assert!(shapes.ignored.is_empty(), "{path}: {:?}", shapes.ignored);
+        assert_eq!(report.violations.len(), 2, "{path}: {:?}", report.violations);
+        assert!(report.violations.iter().all(|v| v.constraint == component), "{path}");
+        let values: BTreeSet<String> = report.violations.iter().map(|v| format!("{:?}", v.value)).collect();
+        assert_eq!(values.len(), 2, "{path}: each violation names a different value: {values:?}");
+        assert!(!report.conforms, "{path}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn or_reports_each_failing_value_with_its_own_branches() -> Result<()> {
+    let graph = Graph::in_memory().await?;
+    graph.import_turtle(&format!("{PER_VALUE_PREFIXES}:x :mix 1 , \"a\" , \"b\" .\n")).await?;
+    let (report, _) = graph
+        .validate_shapes(&format!(
+            "{PER_VALUE_PREFIXES}:S a sh:NodeShape ; sh:targetNode :x ;
+  sh:property [ sh:path :mix ; sh:or ( [ sh:datatype xsd:integer ] [ sh:datatype xsd:boolean ] ) ] .\n"
+        ))
+        .await?;
+    let s = |x: &str| Some(PropertyValue::String(x.into()));
+    assert_eq!(
+        constraint_values(&report),
+        vec![("sh:OrConstraintComponent".to_string(), s("a")), ("sh:OrConstraintComponent".to_string(), s("b"))]
+    );
+    for v in &report.violations {
+        assert_eq!(v.nested.len(), 2, "both branches explain {:?}", v.value);
+        assert!(v.nested.iter().all(|n| n.constraint == "sh:DatatypeConstraintComponent"));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cardinality_and_has_value_judge_the_set_and_stay_one_violation() -> Result<()> {
+    let graph = Graph::in_memory().await?;
+    graph.import_turtle(&format!("{PER_VALUE_PREFIXES}:x :v \"a\" , \"b\" , \"c\" .\n")).await?;
+    for (constraint, component) in [
+        ("sh:maxCount 1", "sh:MaxCountConstraintComponent"),
+        ("sh:minCount 5", "sh:MinCountConstraintComponent"),
+        ("sh:hasValue \"z\"", "sh:HasValueConstraintComponent"),
+    ] {
+        let (report, _) = graph
+            .validate_shapes(&format!(
+                "{PER_VALUE_PREFIXES}:S a sh:NodeShape ; sh:targetNode :x ; sh:property [ sh:path :v ; {constraint} ] .\n"
+            ))
+            .await?;
+        assert_eq!(report.violations.len(), 1, "{constraint}: {:?}", report.violations);
+        assert_eq!(report.violations[0].constraint, component);
+        assert!(!report.conforms);
+    }
+    Ok(())
+}
