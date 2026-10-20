@@ -15,7 +15,7 @@ g = nopaldb.Graph.open("./data")
 | `in_memory() -> "Graph"` | Ephemeral graph for tests. |
 | `migrate(src: str, dst: str, src_engine: str = "auto", dst_engine: str = "auto", profile: str = "default") -> dict[str, Any]` | Copy a database between engines, verified. |
 | `checkpoint() -> None` | Force the durable checkpoint. |
-| `close() -> None` | Close cleanly (also via `with`). |
+| `close() -> None` | Close cleanly (also via `with`): checkpoint, HNSW dump, full-text commit and its merges joined; nothing writes to the directory after it returns. |
 
 ## Write
 

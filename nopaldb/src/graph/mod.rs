@@ -4589,9 +4589,12 @@ impl Graph {
     pub async fn close(&self) -> Result<()> {
         log::info!("🔒 Closing NopalDB database...");
 
-        // 1. Índices (no-op desde v2: la adyacencia se persiste por operación)
-        self.flush_indices().await?;
-        log::debug!("  ✓ Indices flushed (adjacency is persisted per-operation)");
+        // 1. Índices: la adyacencia se persiste por operación (v2); el
+        // full-text publica lo pendiente Y se esperan sus hilos de merge, que
+        // seguían escribiendo segmentos después de que `close()` retornaba
+        // (quien borraba el directorio justo después chocaba con ellos).
+        self.index_manager.close().await?;
+        log::debug!("  ✓ Indices flushed and closed (full-text merges joined)");
 
         // 2-3. Checkpoint: motor durable y WAL vacío, así el próximo open no
         // reproduce nada. En solo-lectura no hay nada que truncar ni que

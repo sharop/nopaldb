@@ -91,6 +91,13 @@ open will rebuild from the embeddings; `close()` writes the dump.
 `needs_rebuild` true means enough tombstones accumulated that the next search
 pays a rebuild.
 
+**Nothing touches the directory after `close()` returns.** The checkpoint,
+the HNSW dump and the full-text commit happen inside it, and so does joining
+the segment merges tantivy starts in threads of its own after a commit
+(until 0.6.19 those kept writing after "closed": deleting or moving the
+directory right after `close()` failed now and then with "Directory not
+empty"). Move, copy or delete the directory as soon as `close()` is back.
+
 **Disk keeps growing on an update-heavy base.** `gc.last_run` is `None`:
 garbage collection never ran, and every update keeps its previous version.
 Start it (`start_auto_gc` in Rust; from Python, run `gc()` from a Rust side
