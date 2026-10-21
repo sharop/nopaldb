@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.8.1] - unreleased
+
+Limpieza de dependencias y código muerto, sin cambios de API: lo que se
+retirará se marca como deprecado para 0.9. El árbol de dependencias por
+defecto baja de 71 a 40 crates; los tiempos de compilación no cambian de
+forma medible.
 
 ### Removed
 - **Dependencias sin uso o sustituibles.**
