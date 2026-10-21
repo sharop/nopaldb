@@ -5441,6 +5441,18 @@ impl<'a> Executor<'a> {
                     explanation.push_str("\nHybrid: ");
                     explanation.push_str(&describe_hybrid(&call, &query));
                 }
+                // What the WHERE pushed into the search's universe (#214
+                // phase 2): the top-k is computed inside it.
+                #[cfg(feature = "embeddings-index")]
+                if let Some(var) = vector_search_variable(&query) {
+                    let pushed = pushed_predicates(&query, &var);
+                    if !pushed.is_empty() {
+                        explanation.push_str(&format!(
+                            "\nSearch universe: top-k computed inside {}; the whole WHERE still applies to the rows",
+                            pushed.described.join(" and ")
+                        ));
+                    }
+                }
                 // In a pattern, `k` bounds the seeds and LIMIT the expanded
                 // rows (#231): say both, they are easy to confuse.
                 #[cfg(feature = "embeddings-index")]
@@ -5835,12 +5847,23 @@ impl<'a> Executor<'a> {
         let label = pattern_label_for(query, &call.variable);
         let vector = self.resolve_query_vector("similar_to", &call.source, &call.model).await?;
         let ef = call.ef_search.unwrap_or(crate::embeddings::DEFAULT_EF_SEARCH);
-        let hits = match &label {
-            Some(label) => {
+        // La etiqueta del patrón y lo que el WHERE empuja (#214 fase 2) son
+        // el universo: el top-k se calcula dentro de ellos.
+        let pushed = pushed_predicates(query, &call.variable);
+        let node_filter = crate::graph::hybrid::NodeFilter {
+            label: label.clone(),
+            eq: pushed.eq.clone(),
+            any_of: pushed.any_of.clone(),
+        };
+        let hits = match (node_filter.is_empty(), pushed.ids.is_some()) {
+            (false, _) | (_, true) => {
                 let overfetch = call.overfetch.unwrap_or(SIMILAR_TO_LABEL_OVERFETCH);
-                self.graph.knn_in_label(&call.model, &vector, label, k, overfetch, ef).await?.0
+                self.graph
+                    .knn_in_filter(&call.model, &vector, &node_filter, &pushed.candidates(), k, overfetch, ef)
+                    .await?
+                    .0
             }
-            None => {
+            (true, false) => {
                 let index = self.graph.get_or_build_embedding_index(&call.model).await?;
                 let guard = index.read().unwrap_or_else(|e| e.into_inner());
                 guard.search_knn_with_ef(&vector, k, ef)?
@@ -5880,8 +5903,12 @@ impl<'a> Executor<'a> {
     async fn precompute_hybrid(&self, condition: &Expression, query: &Query) -> Result<Option<Vec<(Node, SearchScores)>>> {
         let Some(call) = extract_hybrid_params(condition) else { return Ok(None) };
         let k = effective_k(call.k, query);
-        let filter = pattern_label_for(query, &call.variable)
-            .map(|label| crate::graph::HybridFilter { label: Some(label), props: vec![] });
+        // La etiqueta del patrón y los predicados que el WHERE empuja (#214
+        // fase 2) son el universo de la búsqueda: el top-k se calcula dentro.
+        let pushed = pushed_predicates(query, &call.variable);
+        let label = pattern_label_for(query, &call.variable);
+        let filter = (label.is_some() || !pushed.eq.is_empty())
+            .then(|| crate::graph::HybridFilter { label, props: pushed.eq.clone() });
         let vector = match &call.vector {
             Some((source, model)) => Some((self.resolve_query_vector("hybrid", source, model).await?, model.clone())),
             None => None,
@@ -5895,14 +5922,12 @@ impl<'a> Executor<'a> {
             rrf_k: call.options.rrf_k.unwrap_or(60.0) as f32,
             overfetch: call.options.overfetch.unwrap_or(4),
             filter,
-            // Los predicados del `where` como conjunto de candidatos son la
-            // fase 2 de #214; hoy solo la etiqueta del patrón llega al filtro.
-            candidates: crate::graph::CandidateSet::All,
+            candidates: pushed.candidates(),
         };
         // La versión explicada es el mismo cómputo (`search_hybrid` delega en
         // ella) y trae las piezas crudas que #228 proyecta: BM25 del texto y
         // distancia del vector por hit.
-        let hits = self.graph.search_hybrid_explain(hq).await?.hits;
+        let hits = self.graph.search_hybrid_explain_with(hq, pushed.any_of).await?.hits;
         let ids: Vec<NodeId> = hits.iter().map(|h| h.node_id).collect();
         let nodes = self
             .graph
@@ -6247,6 +6272,156 @@ fn extract_hybrid_params(expr: &Expression) -> Option<HybridCall> {
             extract_hybrid_params(left).or_else(|| extract_hybrid_params(right))
         }
         _ => None,
+    }
+}
+
+/// Lo que el WHERE empuja al universo de la búsqueda (#214 fase 2): los
+/// predicados sobre la variable buscada que se pueden calcular ANTES de
+/// puntuar, para que `k` sea el top-k dentro de ellos y no el top-k de la
+/// etiqueta filtrado después (que podía dejar menos de `k` filas, o cero).
+///
+/// Solo los conjuntos del AND raíz (el validador garantiza que la búsqueda
+/// también lo es) y solo formas que significan lo mismo en el índice de
+/// propiedades y en el evaluador (`compare_values`, igualdad tipada):
+/// `v.p = literal` y `v.p in [literales]` con escalares no nulos, `v.id =`
+/// / `v.id in` (ids), y las props inline del nodo del patrón. Todo lo demás
+/// (rangos, `<>`, `not in`, `null`, listas u objetos como valor, funciones,
+/// otras variables) se queda donde estaba. El WHERE entero se sigue
+/// aplicando después, así que empujar solo cambia QUÉ `k` se puntúan, nunca
+/// admite una fila que no lo cumpla.
+#[cfg(feature = "embeddings-index")]
+#[derive(Debug, Default, Clone)]
+pub(crate) struct PushedPredicates {
+    pub eq: Vec<(String, PropertyValue)>,
+    pub any_of: Vec<(String, Vec<PropertyValue>)>,
+    /// `None` = el WHERE no fija ids; `Some` = intersección de los que fija
+    /// (vacía si ninguno es un UUID: ningún nodo los tiene).
+    pub ids: Option<HashSet<NodeId>>,
+    /// Los predicados empujados tal como se escribieron, para EXPLAIN.
+    pub described: Vec<String>,
+}
+
+#[cfg(feature = "embeddings-index")]
+impl PushedPredicates {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.eq.is_empty() && self.any_of.is_empty() && self.ids.is_none()
+    }
+
+    pub(crate) fn candidates(&self) -> crate::graph::CandidateSet {
+        match &self.ids {
+            Some(ids) => crate::graph::CandidateSet::ids(ids.iter().copied()),
+            None => crate::graph::CandidateSet::All,
+        }
+    }
+}
+
+#[cfg(feature = "embeddings-index")]
+fn pushable_literal(v: &PropertyValue) -> bool {
+    matches!(v, PropertyValue::Bool(_) | PropertyValue::Int(_) | PropertyValue::Float(_) | PropertyValue::String(_))
+}
+
+#[cfg(feature = "embeddings-index")]
+pub(crate) fn pushed_predicates(query: &Query, var: &str) -> PushedPredicates {
+    fn uuid_of(v: &PropertyValue) -> Option<NodeId> {
+        match v {
+            PropertyValue::String(s) => s.parse::<NodeId>().ok(),
+            _ => None,
+        }
+    }
+    fn conjuncts<'e>(expr: &'e Expression, out: &mut Vec<&'e Expression>) {
+        match expr {
+            Expression::BinaryOp { left, op: BinaryOperator::And, right } => {
+                conjuncts(left, out);
+                conjuncts(right, out);
+            }
+            other => out.push(other),
+        }
+    }
+    let mut pushed = PushedPredicates::default();
+    let restrict_ids = |pushed: &mut PushedPredicates, ids: HashSet<NodeId>| {
+        pushed.ids = Some(match pushed.ids.take() {
+            None => ids,
+            Some(cur) => cur.intersection(&ids).copied().collect(),
+        });
+    };
+
+    // Props inline del nodo buscado: `(c:Chunk {kind: "x"})`.
+    for pattern in &query.from.patterns {
+        for element in &pattern.elements {
+            if let PatternElement::Node(n) = element
+                && n.variable.as_deref() == Some(var)
+            {
+                let mut props: Vec<(&String, &PropertyValue)> = n.properties.iter().collect();
+                props.sort_by(|a, b| a.0.cmp(b.0));
+                for (p, v) in props {
+                    if pushable_literal(v) && !matches!(p.as_str(), "" | "id" | "label") {
+                        pushed.eq.push((p.clone(), v.clone()));
+                        pushed.described.push(format!("{var}.{p} = {v:?} (inline)"));
+                    }
+                }
+            }
+        }
+    }
+
+    let Some(filter) = &query.filter else { return pushed };
+    let mut parts = Vec::new();
+    conjuncts(&filter.condition, &mut parts);
+    for part in parts {
+        let Expression::BinaryOp { left, op, right } = part else { continue };
+        let (prop, value) = match (&**left, &**right) {
+            (Expression::Property { variable, property }, Expression::Literal(v))
+            | (Expression::Literal(v), Expression::Property { variable, property })
+                if variable == var && matches!(op, BinaryOperator::Eq) =>
+            {
+                (property, v)
+            }
+            (Expression::Property { variable, property }, Expression::Literal(v))
+                if variable == var && matches!(op, BinaryOperator::In) =>
+            {
+                (property, v)
+            }
+            _ => continue,
+        };
+        match (op, property_kind(prop), value) {
+            (BinaryOperator::Eq, PropKind::Id, v) => {
+                restrict_ids(&mut pushed, uuid_of(v).into_iter().collect());
+                pushed.described.push(format!("{var}.id = {v:?}"));
+            }
+            (BinaryOperator::In, PropKind::Id, PropertyValue::List(vs)) => {
+                restrict_ids(&mut pushed, vs.iter().filter_map(uuid_of).collect());
+                pushed.described.push(format!("{var}.id in [{} values]", vs.len()));
+            }
+            (BinaryOperator::Eq, PropKind::Plain, v) if pushable_literal(v) => {
+                pushed.eq.push((prop.clone(), v.clone()));
+                pushed.described.push(format!("{var}.{prop} = {v:?}"));
+            }
+            (BinaryOperator::In, PropKind::Plain, PropertyValue::List(vs))
+                if !vs.is_empty() && vs.iter().all(pushable_literal) =>
+            {
+                pushed.any_of.push((prop.clone(), vs.clone()));
+                pushed.described.push(format!("{var}.{prop} in [{} values]", vs.len()));
+            }
+            _ => {}
+        }
+    }
+    pushed
+}
+
+/// `v.id`, las pseudo-propiedades que el evaluador resuelve sin mirar
+/// `properties` (`label`, `""`) o una propiedad de verdad.
+#[cfg(feature = "embeddings-index")]
+enum PropKind {
+    Id,
+    Pseudo,
+    Plain,
+}
+
+#[cfg(feature = "embeddings-index")]
+fn property_kind(prop: &str) -> PropKind {
+    match prop {
+        "id" => PropKind::Id,
+        "" | "label" => PropKind::Pseudo,
+        _ => PropKind::Plain,
     }
 }
 

@@ -385,15 +385,44 @@ Where the search may live: a single-node pattern, or **one** linear pattern
 of one or two hops `(a)-[:T1]->(b)[-[:T2]->(c)]` whose first node is the
 searched variable (the candidates seed the pipeline: `k` bounds the seeds and
 `LIMIT` caps the expanded rows, so give `k` explicitly; `score(a)` and the
-raw scores travel with every expanded row; the other `where` predicates apply
-after the expansion). Two hops is the multi-hop of GraphRAG, "chunk → entity →
+raw scores travel with every expanded row; the `where` predicates on the
+other variables apply after the expansion). Two hops is the multi-hop of GraphRAG, "chunk → entity →
 related entity", in one query (0.6.19). Several patterns, longer chains,
 quantifiers or searching a target variable are validation errors. Before 0.6.9 such queries, and any
 malformed `similar_to`, were silently ignored and returned every row.
 `explain` prints the effective parameters (`SimilarTo:` / `Hybrid:` lines,
 the vector shown as `<literal dim=N>`), the strategy (`VECTOR SEARCH
-(similar_to)`, `PATTERN PIPELINE (seed: HYBRID, hops: 2)`, …) and, in a
-pattern, a `Seeds:` line with `k`, the hops and the `LIMIT`. Details and the
+(similar_to)`, `PATTERN PIPELINE (seed: HYBRID, hops: 2)`, …), a `Search
+universe:` line with the predicates pushed into the search and, in a
+pattern, a `Seeds:` line with `k`, the hops and the `LIMIT`.
+
+**The `where` is the universe of the search (0.6.21, #214 phase 2).** The
+predicates on the searched variable that can be computed before ranking are
+pushed into the search, so `k` is the top-k *inside* them:
+
+```nql
+find c.text, score(c) from (c:Chunk)
+where hybrid(c, text = "riego", vector = [...], model = "minilm", k = 10)
+  and c.tenant = "t7" and c.lang in ["es", "pt"]
+```
+
+returns the 10 best chunks of tenant `t7` in Spanish or Portuguese. Until
+0.6.20 it ranked the whole label and dropped the other tenants afterwards, so
+it could return fewer than 10 rows, or none. Pushed: `v.p = literal` and
+`v.p in [literals]` with non-null scalars (string, integer, float, boolean;
+equality is typed, `1` is not `1.0`, as everywhere in NQL), `v.id = "…"` /
+`v.id in [...]`, and the pattern's inline properties `(c:Chunk {kind: "x"})`.
+Everything else — ranges, `<>`, `not in`, `null`, list or object values,
+functions, other variables — still applies to the search's rows, and the whole
+`where` is always re-applied, so pushing never admits a row that fails it.
+`rank(c)` and `score(c)` are computed in that universe, the same as
+`search_hybrid(props=...)` from Python: a row that was already returned can get
+a better rank and a higher RRF `score`, and a threshold on it keeps more rows
+than before (a cosine from `similar_to` does not change). The search must be
+a condition of the top-level `and` of the `where`: under `or`, a
+second search of the same kind, or a search inside another function is a
+validation error (until 0.6.20 `hybrid(...) or c.x = 1` silently returned only
+the search hits). `and` binds tighter than `or`. Details and the
 Rust/Python API: [HYBRID_SEARCH.md](../HYBRID_SEARCH.md), [EMBEDDINGS.md](../EMBEDDINGS.md),
 [GRAPHRAG.md](../GRAPHRAG.md).
 

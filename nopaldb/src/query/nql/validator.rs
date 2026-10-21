@@ -322,6 +322,7 @@ impl SemanticValidator {
             self.validate_pattern_embedding_usage(&filter.condition, EmbeddingExprContext::Where, query)?;
             self.validate_path_embedding_usage(&filter.condition, EmbeddingExprContext::Where, query)?;
             self.validate_vector_search_usage(&filter.condition, query)?;
+            validate_search_is_root_conjunct(&filter.condition)?;
         }
         if let Some(order_by) = &query.order_by {
             for item in &order_by.items {
@@ -1404,6 +1405,71 @@ impl Default for SemanticValidator {
 // ═══════════════════════════════════════════════════════════════
 // TESTS
 // ═══════════════════════════════════════════════════════════════
+
+/// `similar_to`/`hybrid` deciden QUÉ nodos entran a la consulta (el ejecutor
+/// los precomputa y siembra el patrón con ellos), así que solo tienen sentido
+/// como un conjunto del AND raíz del WHERE: `búsqueda and resto`. En
+/// cualquier otra posición el evaluador no tiene con qué calcularlas y antes
+/// de #214 fase 2 pasaban en silencio como `true`: `hybrid(c, …) or c.x = 1`
+/// devolvía solo los hits de la búsqueda (la rama del OR se perdía),
+/// `not hybrid(…)` todo, una segunda `hybrid(…)` no restringía nada. Ahora
+/// son errores con nombre. Un OR que no contiene la búsqueda sigue siendo
+/// válido junto a ella (`hybrid(c, …) and (c.a = 1 or c.b = 2)`, cuando NQL
+/// acepte paréntesis en el WHERE: hoy el AST los rechaza). AND liga más que
+/// OR: `hybrid(…) and c.a = 1 or c.b = 2` es `(hybrid and a) or b`.
+fn validate_search_is_root_conjunct(condition: &Expression) -> Result<()> {
+    fn search_name(name: &str) -> Option<&'static str> {
+        if name.eq_ignore_ascii_case("hybrid") {
+            Some("hybrid")
+        } else if name.eq_ignore_ascii_case("similar_to") {
+            Some("similar_to")
+        } else {
+            None
+        }
+    }
+    fn contains_search(expr: &Expression) -> Option<&'static str> {
+        match expr {
+            Expression::FunctionCall { name, args } => {
+                search_name(name).or_else(|| args.iter().find_map(contains_search))
+            }
+            Expression::BinaryOp { left, right, .. } => contains_search(left).or_else(|| contains_search(right)),
+            Expression::UnaryOp { expr, .. } => contains_search(expr),
+            Expression::NamedArg { value, .. } => contains_search(value),
+            _ => None,
+        }
+    }
+    fn walk(expr: &Expression, seen: &mut Vec<&'static str>) -> Result<()> {
+        match expr {
+            Expression::BinaryOp { left, op: BinaryOperator::And, right } => {
+                walk(left, seen)?;
+                walk(right, seen)
+            }
+            Expression::FunctionCall { name, args } if search_name(name).is_some() => {
+                let fname = search_name(name).unwrap_or_default();
+                if seen.contains(&fname) {
+                    return Err(NopalError::SemanticError(format!(
+                        "{fname}: only one {fname}(...) per query; a second one would not restrict anything"
+                    )));
+                }
+                seen.push(fname);
+                if let Some(inner) = args.iter().find_map(contains_search) {
+                    return Err(NopalError::SemanticError(format!(
+                        "{inner}: cannot be an argument of {fname}(...)"
+                    )));
+                }
+                Ok(())
+            }
+            other => match contains_search(other) {
+                Some(fname) => Err(NopalError::SemanticError(format!(
+                    "{fname}: must be a condition of the WHERE's top-level AND (`{fname}(...) and ...`); \
+                     under OR or NOT, or inside another expression, it cannot be computed"
+                ))),
+                None => Ok(()),
+            },
+        }
+    }
+    walk(condition, &mut Vec::new())
+}
 
 #[cfg(test)]
 mod tests {

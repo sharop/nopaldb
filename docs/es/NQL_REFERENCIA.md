@@ -391,16 +391,45 @@ Dónde puede ir la búsqueda: un patrón de un solo nodo, o **un** patrón linea
 de uno o dos saltos `(a)-[:T1]->(b)[-[:T2]->(c)]` cuyo primer nodo es la
 variable buscada (los candidatos siembran el pipeline: `k` acota las semillas
 y `LIMIT` las filas expandidas, así que conviene dar `k`; `score(a)` y los
-scores crudos viajan con cada fila expandida; el resto del `where` se aplica
-tras expandir). Dos saltos es el multi-hop de GraphRAG, "chunk → entidad →
+scores crudos viajan con cada fila expandida; los predicados del `where`
+sobre las otras variables se aplican tras expandir). Dos saltos es el multi-hop de GraphRAG, "chunk → entidad →
 entidad relacionada", en una consulta (0.6.19). Varios patrones, cadenas más
 largas, cuantificadores o buscar una variable destino son errores de
 validación. Antes de 0.6.9 esas
 consultas, y cualquier `similar_to` mal formado, se ignoraban en silencio y
 devolvían todas las filas. `explain` imprime los parámetros efectivos (líneas
 `SimilarTo:` / `Hybrid:`, el vector como `<literal dim=N>`), la estrategia
-(`VECTOR SEARCH (similar_to)`, `PATTERN PIPELINE (seed: HYBRID, hops: 2)`, …)
-y, en un patrón, una línea `Seeds:` con `k`, los saltos y el `LIMIT`.
+(`VECTOR SEARCH (similar_to)`, `PATTERN PIPELINE (seed: HYBRID, hops: 2)`, …),
+una línea `Search universe:` con los predicados empujados a la búsqueda y, en
+un patrón, una línea `Seeds:` con `k`, los saltos y el `LIMIT`.
+
+**El `where` es el universo de la búsqueda (0.6.21, #214 fase 2).** Los
+predicados sobre la variable buscada que se pueden calcular antes de puntuar
+se empujan a la búsqueda, así que `k` es el top-k *dentro* de ellos:
+
+```nql
+find c.texto, score(c) from (c:Chunk)
+where hybrid(c, text = "riego", vector = [...], model = "minilm", k = 10)
+  and c.tenant = "t7" and c.idioma in ["es", "pt"]
+```
+
+devuelve los 10 mejores chunks del tenant `t7` en español o portugués. Hasta
+0.6.20 puntuaba la etiqueta entera y descartaba los otros tenants después, así
+que podía devolver menos de 10 filas, o ninguna. Se empujan: `v.p = literal` y
+`v.p in [literales]` con escalares no nulos (cadena, entero, flotante,
+booleano; la igualdad es tipada, `1` no es `1.0`, como en todo NQL),
+`v.id = "…"` / `v.id in [...]`, y las propiedades inline del patrón
+`(c:Chunk {tipo: "x"})`. Todo lo demás — rangos, `<>`, `not in`, `null`,
+valores lista u objeto, funciones, otras variables — se sigue aplicando a las
+filas de la búsqueda, y el `where` entero se re-aplica siempre, así que
+empujar nunca admite una fila que no lo cumpla. `rank(c)` y `score(c)` se
+calculan en ese universo, igual que `search_hybrid(props=...)` desde Python:
+una fila que ya salía puede subir de rango y de `score` RRF, y un umbral sobre
+él deja pasar más filas que antes (el coseno de `similar_to` no cambia). La
+búsqueda debe ser una condición del `and` raíz del `where`: bajo `or`,
+una segunda búsqueda del mismo tipo o una búsqueda dentro de otra función son
+errores de validación (hasta 0.6.20 `hybrid(...) or c.x = 1` devolvía en
+silencio solo los hits de la búsqueda). `and` liga más que `or`.
 Detalle y API Rust/Python: [HYBRID_SEARCH.md](../HYBRID_SEARCH.md), [EMBEDDINGS.md](../EMBEDDINGS.md),
 [GRAPHRAG.md](../GRAPHRAG.md).
 
