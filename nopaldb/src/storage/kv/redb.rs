@@ -375,9 +375,9 @@ impl RedbEngine {
             return Err(StorageError::new(
                 StorageErrorKind::InvalidData,
                 format!(
-                    "el directorio {} contiene una base sled; ábrela con engine=sled (o deja el motor en \
-                     Auto, que la detecta) o mígrala con `Storage::copy_database` / `Graph.migrate`",
-                    dir.display()
+                    "{} contains a sled database. {}",
+                    dir.display(),
+                    super::SLED_REMOVED_RECIPE
                 ),
             )
             .into());

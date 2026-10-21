@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Removed
+- **sled, el motor de almacenamiento de 0.5.x** (#141). redb es el único
+  motor: se van la feature `storage-sled`, el adaptador `kv/sled.rs`, la
+  dependencia `sled` 0.34 (congelada desde 2021, con transitivas sin
+  mantenimiento), sled de las wheels de PyPI, los pasos de sled de la CI y
+  del nightly, y los ejemplos `migrate_engine` y `migrate_json_to_bincode`.
+  Una base sled se sigue **reconociendo** por sus archivos (`conf` + `db`):
+  abrirla con cualquier motor, pedir `engine = Sled` / `engine="sled"` o
+  usarla de origen en `nopaldb migrate` da un error con la receta, sin crear
+  una base redb vacía al lado. La receta: migrar una vez con 0.7, la última
+  versión que lee sled (`pip install "nopaldb==0.7.*"` y `Graph.migrate`, o
+  `cargo install nopaldb --version "0.7.*" --features cli` y `nopaldb
+  migrate`). La variante `StorageEngine::Sled` se conserva solo para dar ese
+  error a quien la nombre. El plan de #141 era anunciarlo una versión menor
+  antes; sin señales de uso de sled desde 0.6.0 (ningún reporte ni issue de
+  usuarios) se retira directamente y 0.7 queda como puente de migración.
+  `Graph.migrate` / `nopaldb migrate` siguen como copia verificada entre
+  bases redb (cambio de perfil, copia en frío).
+
+### Fixed
+- **Las descripciones publicadas en PyPI y crates.io describían sled como
+  motor por defecto** y redb como experimental desde 0.6.0. Igual
+  `docs/python/CONFIGURATION.md` y su versión en español, que describían un
+  árbol LSM con compresión (era sled). Corregidas.
+
 ## [0.7.0] - 2026-10-21
 
 El `where` de NQL es el universo de `hybrid` / `similar_to` (#214 fase 2a).

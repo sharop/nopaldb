@@ -98,7 +98,7 @@ Un embedding es una representación numérica del *significado* de un texto. El 
 **¿Qué es HNSW?**
 *(Hierarchical Navigable Small World)* Es un índice especializado para encontrar los vectores más cercanos sin revisar todos. Construye una red jerárquica de "vecinos" con atajos entre niveles, similar a como funciona un mapa de carreteras con autopistas y calles locales. Búsqueda lineal: O(N) comparaciones. HNSW: O(log N) saltos. Sobre 1M de vectores, el speedup es de 1000×.
 
-**Precondición:** el notebook genera embeddings de `e.description` con el modelo `all-MiniLM-L6-v2` (384d), los persiste en la DB con `add_node_embedding`, cierra y reabre el grafo (para que el HNSW se reconstruya desde Sled), y luego ejecuta esta query.
+**Precondición:** el notebook genera embeddings de `e.description` con el modelo `all-MiniLM-L6-v2` (384d), los persiste en la DB con `add_node_embedding`, cierra y reabre el grafo (para que el HNSW se reconstruya desde el almacenamiento), y luego ejecuta esta query.
 
 <!-- source: queries/03_hnsw.nql -->
 ```sql

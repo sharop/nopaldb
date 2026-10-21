@@ -90,8 +90,7 @@ def _generate_via_rust(db_path: Path, ttl_path: Path) -> dict:
     result = subprocess.run(
         [
             "cargo", "run", "--example", "tutorial_acto_3_biomedical",
-            "--no-default-features",
-            "--features", "storage-sled,reasoner,owl-import,algorithms,analytics,hypergraph,ml",
+            "--features", "reasoner,owl-import,algorithms,analytics,hypergraph,ml",
             "--",
             str(db_path),
             str(ttl_path),

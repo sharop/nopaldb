@@ -1,5 +1,8 @@
-// Migración entre motores: round-trip byte-verificado y time-travel intacto.
-// Requiere ambos backends compilados (required-features en Cargo.toml).
+// Copia verificada de una base (`Storage::copy_database`): round-trip
+// byte-verificado, time-travel intacto, índices y HNSW que viajan. Nació
+// para migrar sled → redb; desde 0.8.0 (sled retirado, #141) ambos extremos
+// son redb, y sigue siendo la copia en frío verificada (cambio de perfil,
+// respaldo).
 
 use nopaldb::{
     Graph, MigrationReport, Node, PropertyValue, Result, Storage, StorageEngine, StorageOptions,
@@ -15,7 +18,7 @@ fn opts(engine: StorageEngine) -> StorageOptions {
 /// Base chica pero representativa: nodos con propiedades indexadas, aristas,
 /// historia MVCC (updates + delete) y checkpoint (WAL aplicado al cerrar).
 async fn build_fixture(dir: &std::path::Path) -> Result<(uuid::Uuid, uuid::Uuid)> {
-    let graph = Graph::open_with_options(dir, opts(StorageEngine::Sled)).await?;
+    let graph = Graph::open_with_options(dir, opts(StorageEngine::Redb)).await?;
     let (a, b) = {
         let mut tx = graph.begin_transaction().await?;
         let a = tx
@@ -42,28 +45,28 @@ async fn build_fixture(dir: &std::path::Path) -> Result<(uuid::Uuid, uuid::Uuid)
 }
 
 #[tokio::test]
-async fn round_trip_sled_redb_sled_is_byte_identical() -> Result<()> {
+async fn round_trip_copy_is_byte_identical() -> Result<()> {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let src = tmp.path().join("src_sled");
-    let mid = tmp.path().join("mid_redb");
-    let back = tmp.path().join("back_sled");
+    let src = tmp.path().join("src");
+    let mid = tmp.path().join("mid");
+    let back = tmp.path().join("back");
 
     build_fixture(&src).await?;
 
     let r1: MigrationReport =
-        Storage::copy_database(&src, opts(StorageEngine::Sled), &mid, opts(StorageEngine::Redb))
+        Storage::copy_database(&src, opts(StorageEngine::Redb), &mid, opts(StorageEngine::Redb))
             .await?;
     assert!(r1.verified);
     assert!(r1.total_pairs() > 0);
 
     let r2 =
-        Storage::copy_database(&mid, opts(StorageEngine::Redb), &back, opts(StorageEngine::Sled))
+        Storage::copy_database(&mid, opts(StorageEngine::Redb), &back, opts(StorageEngine::Redb))
             .await?;
     assert!(r2.verified);
 
     // Byte-idéntico de punta a punta: mismos pares y bytes por keyspace en
     // ambos saltos (los checksums internos ya verificaron el contenido).
-    assert_eq!(r1.keyspaces, r2.keyspaces, "sled→redb vs redb→sled difieren");
+    assert_eq!(r1.keyspaces, r2.keyspaces, "la primera copia y la segunda difieren");
     Ok(())
 }
 
@@ -77,7 +80,7 @@ async fn time_travel_survives_migration() -> Result<()> {
 
     // Historia esperada, leída del ORIGEN antes de migrar.
     let expected: Vec<i64> = {
-        let graph = Graph::open_with_options(&src, opts(StorageEngine::Sled)).await?;
+        let graph = Graph::open_with_options(&src, opts(StorageEngine::Redb)).await?;
         let history = graph.history(a).await?;
         history
             .iter()
@@ -89,10 +92,10 @@ async fn time_travel_survives_migration() -> Result<()> {
     };
     assert!(expected.len() >= 3, "el fixture debe tener historia: {expected:?}");
 
-    Storage::copy_database(&src, opts(StorageEngine::Sled), &dst, opts(StorageEngine::Redb))
+    Storage::copy_database(&src, opts(StorageEngine::Redb), &dst, opts(StorageEngine::Redb))
         .await?;
 
-    // La MISMA historia, abriendo el destino con redb.
+    // La MISMA historia, abriendo el destino.
     let graph = Graph::open_with_options(&dst, opts(StorageEngine::Redb)).await?;
     let history = graph.history(a).await?;
     let got: Vec<i64> = history
@@ -126,7 +129,7 @@ async fn refuses_non_empty_destination() -> Result<()> {
         graph.checkpoint().await?;
     }
 
-    let err = Storage::copy_database(&src, opts(StorageEngine::Sled), &dst, opts(StorageEngine::Redb))
+    let err = Storage::copy_database(&src, opts(StorageEngine::Redb), &dst, opts(StorageEngine::Redb))
         .await
         .err()
         .expect("migrar a destino no vacío debe fallar");
@@ -135,8 +138,8 @@ async fn refuses_non_empty_destination() -> Result<()> {
 }
 
 /// #152: what lives outside the KV must travel too. A full-text index with a
-/// non-default analyzer, a hash index and a persisted HNSW dump in a sled
-/// source; after `copy_database` the redb destination lists the same indexes,
+/// non-default analyzer, a hash index and a persisted HNSW dump in the
+/// source; after `copy_database` the destination lists the same indexes,
 /// `describe_index` returns the same analyzer, a hybrid (text + vector) search
 /// returns the same ids, and the HNSW is loaded from the copied dump, not
 /// rebuilt. Before 0.6.3 `list_indexes()` came back empty on the destination.
@@ -165,7 +168,7 @@ async fn user_indexes_analyzer_and_hnsw_travel_with_the_migration() -> Result<()
     const PAD: usize = 1_100;
 
     let (ft_name, hash_name, expected) = {
-        let g = Graph::open_with_options(src_dir.path(), opts(StorageEngine::Sled)).await?;
+        let g = Graph::open_with_options(src_dir.path(), opts(StorageEngine::Redb)).await?;
         for (i, text) in docs.iter().enumerate() {
             let id = g
                 .add_node(Node::new("Doc").with_property("texto", *text).with_property("n", i as i64))
@@ -208,7 +211,7 @@ async fn user_indexes_analyzer_and_hnsw_travel_with_the_migration() -> Result<()
 
     let report = Storage::copy_database(
         src_dir.path(),
-        opts(StorageEngine::Sled),
+        opts(StorageEngine::Redb),
         &dst_path,
         opts(StorageEngine::Redb),
     )
@@ -254,7 +257,7 @@ async fn refuses_a_destination_with_sidecars() -> Result<()> {
     let dst_path = dst.path().join("redb");
     std::fs::create_dir_all(dst_path.join("indexes"))?;
     std::fs::write(dst_path.join("indexes").join("metadata.bin"), b"x")?;
-    let err = Storage::copy_database(src.path(), opts(StorageEngine::Sled), &dst_path, opts(StorageEngine::Redb))
+    let err = Storage::copy_database(src.path(), opts(StorageEngine::Redb), &dst_path, opts(StorageEngine::Redb))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("indexes/"), "{err}");

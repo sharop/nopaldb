@@ -142,12 +142,6 @@ async fn test_rebuild_indices_from_edges_default_engine() -> Result<()> {
     rebuild_indices_from_edges(StorageOptions::default().engine).await
 }
 
-#[cfg(feature = "storage-sled")]
-#[tokio::test]
-async fn test_rebuild_indices_from_edges_sled() -> Result<()> {
-    rebuild_indices_from_edges(StorageEngine::Sled).await
-}
-
 #[cfg(feature = "storage-redb")]
 #[tokio::test]
 async fn test_rebuild_indices_from_edges_redb() -> Result<()> {

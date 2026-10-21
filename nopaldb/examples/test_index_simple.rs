@@ -7,7 +7,7 @@ use std::time::Instant;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Enable logging for nopaldb only (skip sled spam)
+    // Enable logging for nopaldb only
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("nopaldb=debug"))
         .init();
 

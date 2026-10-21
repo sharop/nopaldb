@@ -50,7 +50,7 @@
 //! Correr: `make bench BENCH=retrieval_dims`. Variables:
 //! `NOPALDB_BENCH_DIMS` (default `384,1024`), `NOPALDB_BENCH_SCALES`
 //! (default `10000,100000`), `NOPALDB_BENCH_QUERIES` (default 200),
-//! `NOPALDB_BENCH_ENGINE` (`redb` | `sled`).
+//! `NOPALDB_BENCH_ENGINE` (`redb`).
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::HashSet;
@@ -121,7 +121,6 @@ fn bench_options() -> StorageOptions {
     let mut opts = StorageOptions::default();
     if let Ok(name) = std::env::var("NOPALDB_BENCH_ENGINE") {
         opts.engine = match name.to_ascii_lowercase().as_str() {
-            "sled" => nopaldb::StorageEngine::Sled,
             "redb" => nopaldb::StorageEngine::Redb,
             other => panic!("NOPALDB_BENCH_ENGINE desconocido: {other}"),
         };

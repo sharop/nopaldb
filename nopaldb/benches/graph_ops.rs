@@ -39,13 +39,12 @@ fn rt() -> tokio::runtime::Runtime {
 // Grafo persistente pre-poblado con `n` nodos; retorna también sus ids
 // (`seeded_graph`, más abajo).
 
-/// Motor por env (NOPALDB_BENCH_ENGINE=sled|redb); default = el del build.
+/// Motor por env (NOPALDB_BENCH_ENGINE=redb); default = el del build.
 /// Permite comparar engines con el MISMO bench sin tocar código.
 fn bench_options() -> nopaldb::StorageOptions {
     let mut opts = nopaldb::StorageOptions::default();
     if let Ok(name) = std::env::var("NOPALDB_BENCH_ENGINE") {
         opts.engine = match name.to_ascii_lowercase().as_str() {
-            "sled" => nopaldb::StorageEngine::Sled,
             "redb" => nopaldb::StorageEngine::Redb,
             other => panic!("NOPALDB_BENCH_ENGINE desconocido: {other}"),
         };

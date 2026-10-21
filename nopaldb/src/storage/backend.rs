@@ -14,24 +14,21 @@ pub enum StorageProfile {
 /// `#[non_exhaustive]`: new engines (behind their own feature flags) can be
 /// added without a breaking change.
 ///
-/// Desde 0.6.0 el motor por defecto es redb y `Auto` es lo que usa
-/// `StorageOptions::default()`. `Auto` existe para que una base creada con
-/// sled en 0.5.x se abra con el binario nuevo **sin tocar código**: mira el
-/// directorio y elige el motor que ya está ahí (redb deja `nopal.redb`; sled
-/// deja `conf` y `db`); si el directorio es nuevo, usa el motor por defecto
-/// del build. Un motor explícito sigue siendo explícito: pedir `Redb` sobre
-/// una base sled es un error que dice cómo migrar, no una sorpresa
-/// silenciosa. Se descartó "redb salvo que…" sin variante propia porque
-/// entonces un valor explícito y el default serían indistinguibles al abrir.
+/// redb es el único motor desde 0.8.0 (sled se retiró, #141). `Auto` es lo
+/// que usa `StorageOptions::default()` y resuelve a redb; existía para que
+/// las bases sled de 0.5.x abrieran sin tocar código, y sigue mirando el
+/// directorio para que una base sled falle con la receta de migración
+/// (migrar con NopalDB 0.7) en vez de con un error críptico.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum StorageEngine {
-    /// El motor del directorio si ya contiene una base; si no, el motor por
-    /// defecto del build (redb si está compilado, si no sled).
+    /// redb, salvo que el directorio contenga una base sled de 0.5.x: entonces
+    /// un error con la receta de migración.
     #[default]
     Auto,
-    /// Motor de 0.5.x. Opcional desde 0.6.0 (feature `storage-sled`), para
-    /// leer y migrar bases existentes; disponible al menos hasta 0.7.
+    /// Motor de 0.5.x, **retirado en 0.8.0** (#141). La variante queda para
+    /// que pedirlo dé un error con la receta (migrar con NopalDB 0.7, la
+    /// última versión que lee sled) en vez de no compilar en quien la nombre.
     Sled,
     /// Motor por defecto desde 0.6.0 (feature `storage-redb`).
     Redb,
@@ -84,10 +81,8 @@ pub const DEFAULT_WAL_CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024;
 impl Default for StorageOptions {
     fn default() -> Self {
         Self {
-            // `Auto`: el motor del directorio si ya hay base; si no, el del
-            // build (`kv::default_engine`: redb si está compilado, si no
-            // sled). Así la suite entera corre contra el único motor
-            // compilado sin tocar un test, y una base de 0.5.x abre igual.
+            // `Auto`: redb (`kv::default_engine`); una base sled de 0.5.x da
+            // la receta de migración.
             engine: StorageEngine::Auto,
             profile: StorageProfile::Default,
             direct_write_durability: DirectWriteDurability::default(),
@@ -108,10 +103,9 @@ impl StorageProfile {
     pub fn tuning(self) -> StorageTuning {
         match self {
             StorageProfile::Default => StorageTuning {
-                // Explicit on purpose: this equals sled 0.34's implicit
-                // default, which the profile used to inherit silently via
-                // `None`. Right-sizing it is a separate, deliberate decision;
-                // an engine-agnostic profile must not depend on whatever a
+                // Explicit on purpose (it was sled 0.34's implicit default,
+                // which the profile used to inherit via `None`): an
+                // engine-agnostic profile must not depend on whatever a
                 // particular engine defaults to.
                 cache_capacity_bytes: Some(1024 * 1024 * 1024),
                 flush_every_ms: Some(1000),
@@ -126,12 +120,9 @@ impl StorageProfile {
             StorageProfile::Server => StorageTuning {
                 cache_capacity_bytes: Some(256 * 1024 * 1024),
                 flush_every_ms: Some(500),
-                // false desde 0.5.0: pedirle compresión a sled hacía FALLAR
-                // el open del perfil completo ("the 'compression' feature
-                // must be enabled") — y esa feature es inactivable aquí: su
-                // zstd 0.9 colisiona por `links` con el zstd de parquet.
-                // La compresión vuelve como capacidad por-keyspace de los
-                // motores que la den sin conflicto (p. ej. fjall, LZ4).
+                // false desde 0.5.0 (con sled, pedir compresión hacía FALLAR
+                // el open). La compresión vuelve como capacidad por-keyspace
+                // de un motor que la dé sin conflicto (p. ej. fjall, LZ4).
                 use_compression: false,
             },
         }

@@ -427,7 +427,7 @@ Speedup:      >2000x
 
 ### Conversion Pipeline
 ```
-NopalDB Storage (Sled)
+NopalDB Storage (redb)
          ↓
     Get all nodes
          ↓

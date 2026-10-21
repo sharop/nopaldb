@@ -21,7 +21,7 @@
 │                                  src/index/              │
 │                                  src/embeddings/         │
 ├──────────────────────────────────────────────────────────┤
-│  Storage (redb; sled optional)   src/storage/            │
+│  Storage (redb)                  src/storage/            │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -85,7 +85,7 @@ Abstraccion KV sobre el backend embebido publico:
 | Backend | Feature | Uso recomendado |
 |---------|---------|-----------------|
 | redb | `storage-redb` (default desde 0.6.0) | desarrollo y despliegues embebidos |
-| Sled | `storage-sled` (opcional) | abrir y migrar bases creadas con 0.5.x; ver [MIGRATION_0.6.md](MIGRATION_0.6.md) |
+| Sled | retirado en 0.8.0 (#141) | hasta 0.7 abría y migraba bases de 0.5.x; ver [MIGRATION_0.6.md](MIGRATION_0.6.md) |
 
 El storage expone `insert`, `get`, `delete` y operaciones de scan sobre tres namespaces: nodos, aristas y versiones MVCC.
 

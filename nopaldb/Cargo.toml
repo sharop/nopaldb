@@ -33,8 +33,7 @@ crate-type = ["rlib", "cdylib"]
 # publicó hasta 0.5.9: sin algoritmos, embeddings, reasoner, SHACL ni
 # aislamiento — la mitad del crate invisible. `full` es el tier público más
 # ancho que compila sin Python (`python` necesita pyo3 y un intérprete) y con
-# un solo motor (redb, el default desde 0.6.0; `storage-sled` es opcional
-# para leer y migrar bases anteriores). No `all-features` por eso.
+# un solo motor (redb, el único desde 0.8.0). No `all-features` por eso.
 [package.metadata.docs.rs]
 features = ["full"]
 
@@ -51,12 +50,7 @@ async-recursion = "1.0"
 bytes = "1.0"
 log = "0.4"
 rand = "0.8"
-# SIN la feature "compression" a propósito: arrastra zstd 0.9 (zstd-sys 1.x),
-# que colisiona por `links` con el zstd-sys 2.x de parquet — irresoluble en el
-# mismo lockfile. Consecuencia: el backend sled NUNCA comprime (el perfil
-# Server estuvo roto por pedirlo; ver StorageProfile::tuning).
-sled = { version = "0.34", optional = true }                                    # Embedded storage
-redb = { version = "4.1", optional = true }                                     # Embedded storage (experimental)
+redb = { version = "4.1", optional = true }                                     # Embedded storage
 serde = { version = "1.0", features = ["derive"] }  # Data serialization
 serde_json = "1.0"                                  # Data serialization
 thiserror = "2.0"                # Error handling (highly recommended)
@@ -99,12 +93,11 @@ default = ["storage-redb"]
 embeddings = []
 embeddings-index = ["embeddings", "hnsw_rs"]
 hnsw-simd = ["embeddings-index", "hnsw_rs/simdeez_f"]  # SIMD acceleration (x86_64 only)
-storage-sled = ["dep:sled"]
 storage-redb = ["dep:redb"]
 # Binario `nopaldb` (`nopaldb migrate`, `nopaldb engine`): lleva ambos
 # motores porque su razón de ser es migrar entre ellos. Sin dependencias
 # nuevas: los argumentos se parsean a mano.
-cli = ["storage-sled", "storage-redb"]
+cli = ["storage-redb"]
 python = ["pyo3"]
 analytics = ["arrow", "parquet"]
 ml = ["analytics"]
@@ -211,15 +204,15 @@ required-features = ["cli"]
 
 [[test]]
 name = "engine_autodetect_test"
-required-features = ["storage-sled", "storage-redb"]
+required-features = ["storage-redb"]
 
 [[test]]
 name = "kv_migrate_test"
-required-features = ["storage-sled", "storage-redb"]
+required-features = ["storage-redb"]
 
 [[test]]
 name = "open_lock_same_process_test"
-required-features = ["storage-sled", "storage-redb"]
+required-features = ["storage-redb"]
 
 # Hybrid search tests call `Graph::search_hybrid`, which only exists with the
 # `hybrid` feature; without this gate they fail to compile under `--features
@@ -295,16 +288,6 @@ required-features = ["embeddings-index"]
 name = "hnsw_persistence_test"
 required-features = ["embeddings-index"]
 
-# Migración entre motores KV (sled ↔ redb).
-[[example]]
-name = "migrate_engine"
-required-features = ["storage-sled", "storage-redb"]
-
-# Migración de formato legado: abre la DB vieja con sled directo a propósito.
-[[example]]
-name = "migrate_json_to_bincode"
-required-features = ["storage-sled"]
-
 [[example]]
 name = "gnn_node_classification"
 required-features = []
@@ -342,7 +325,7 @@ path = "examples/debug_index_manager.rs"
 [[example]]
 name = "tutorial_acto_3_biomedical"
 path = "examples/tutorial_acto_3_biomedical.rs"
-required-features = ["storage-sled", "reasoner", "owl-import", "algorithms", "analytics", "hypergraph", "ml"]
+required-features = ["reasoner", "owl-import", "algorithms", "analytics", "hypergraph", "ml"]
 
 [[test]]
 name = "hnsw_reachability_test"

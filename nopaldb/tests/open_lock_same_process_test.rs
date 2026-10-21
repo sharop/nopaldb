@@ -2,7 +2,8 @@
 //
 // #120: reopening a path this process still holds fails immediately and says
 // how to get out (drop the Graph); after the drop it opens; another engine
-// handle on the same path gets the same answer. Both engines.
+// handle on the same path gets the same answer. redb, the only engine since
+// 0.8.0 (sled retired, #141).
 
 use std::time::{Duration, Instant};
 
@@ -13,7 +14,7 @@ fn opts(engine: StorageEngine) -> StorageOptions {
 }
 
 fn engines() -> Vec<StorageEngine> {
-    vec![StorageEngine::Sled, StorageEngine::Redb]
+    vec![StorageEngine::Redb]
 }
 
 #[tokio::test]
@@ -74,16 +75,16 @@ async fn two_handles_on_the_same_path_in_one_process_get_the_same_answer() {
 async fn a_clone_keeps_the_lock_until_every_clone_is_gone() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db");
-    let graph = Graph::open_with_options(&path, opts(StorageEngine::Sled)).await.unwrap();
+    let graph = Graph::open_with_options(&path, opts(StorageEngine::Redb)).await.unwrap();
     let twin = graph.clone();
     drop(graph);
-    let err = match Graph::open_with_options(&path, opts(StorageEngine::Sled)).await {
+    let err = match Graph::open_with_options(&path, opts(StorageEngine::Redb)).await {
         Ok(_) => panic!("the open with a live clone must fail"),
         Err(e) => e.to_string(),
     };
     assert!(err.contains("este proceso"), "a live clone still holds the lock: {err}");
     drop(twin);
-    Graph::open_with_options(&path, opts(StorageEngine::Sled)).await.unwrap();
+    Graph::open_with_options(&path, opts(StorageEngine::Redb)).await.unwrap();
 }
 
 /// 0.6.5: soltar el handle nada más recibir el ack de un commit y reabrir la

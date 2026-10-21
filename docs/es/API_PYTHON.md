@@ -29,13 +29,13 @@ graph = nopaldb.Graph.open("data/mi_grafo.db")
 graph = nopaldb.Graph.open_with_profile("data/mi_grafo.db", "default")
 graph = nopaldb.Graph.open_with_options(
     "data/mi_grafo.db",
-    engine="sled",
+    engine="redb",
     profile="default",
 )
 
 graph = nopaldb.Graph.in_memory()
 graph = nopaldb.Graph.in_memory_with_profile("default")
-graph = nopaldb.Graph.in_memory_with_options(engine="sled", profile="default")
+graph = nopaldb.Graph.in_memory_with_options(engine="redb", profile="default")
 ```
 
 Consultas:

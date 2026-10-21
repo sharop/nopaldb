@@ -8,11 +8,11 @@ Currently, NopalDB aims for a **zero-configuration** experience. It provides san
 
 When you initialize a graph with `Graph.open("path")`, the following configuration is applied automatically:
 
-### 💾 Storage Engine (redb by default; sled optional)
-- **Backend**: Hybrid Log-Structured Merge Tree (LSM).
-- **Caching**: Automatic page cache management. No manual size limit configured yet.
-- **Compression**: Enabled by default (Zstd/Snappy depending on build).
-- **Flushing**: Asynchronous flushing to disk for high throughput.
+### 💾 Storage Engine (redb)
+- **Backend**: redb, an embedded copy-on-write B-tree (the only engine since 0.8.0).
+- **Caching**: redb's page cache, sized by the profile (`default` 1 GiB, `mobile` 16 MiB, `server` 256 MiB).
+- **Compression**: none.
+- **Durability**: every write goes to NopalDB's WAL first; the engine commits in short windows and a checkpoint makes them durable (see [DURABILITY.md](../DURABILITY.md)).
 
 ### 🔄 Concurrency (MVCC)
 - **Isolation Level**: Snapshot Isolation. Readers never block writers, writers never block readers.

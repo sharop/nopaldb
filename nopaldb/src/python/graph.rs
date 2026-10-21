@@ -31,29 +31,15 @@ fn parse_profile(profile: &str) -> PyResult<StorageProfile> {
 /// backends tiene ESTE build. `"auto"` (default desde 0.6.0) elige el motor
 /// del directorio si ya hay una base y, si no, el del build.
 fn parse_engine(engine: &str) -> PyResult<StorageEngine> {
-    let available = {
-        let mut v = vec!["auto"];
-        if cfg!(feature = "storage-redb") {
-            v.push("redb");
-        }
-        if cfg!(feature = "storage-sled") {
-            v.push("sled");
-        }
-        v.join(", ")
-    };
     match engine.to_ascii_lowercase().as_str() {
         "auto" => Ok(StorageEngine::Auto),
-        #[cfg(feature = "storage-redb")]
         "redb" => Ok(StorageEngine::Redb),
-        #[cfg(feature = "storage-sled")]
-        "sled" => Ok(StorageEngine::Sled),
-        #[allow(unreachable_patterns)]
-        known @ ("redb" | "sled") => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "engine '{known}' is not available in this build (compiled without `storage-{known}`). \
-             This build supports: {available}. The wheels published on PyPI ship both engines."
-        ))),
+        // Retirado en 0.8.0 (#141): el error lleva la receta de migración.
+        "sled" => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            crate::storage::kv::SLED_REMOVED_RECIPE,
+        )),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Invalid engine '{engine}'. Use one of: {available}"
+            "Invalid engine '{engine}'. Use one of: auto, redb"
         ))),
     }
 }
@@ -61,7 +47,6 @@ fn parse_engine(engine: &str) -> PyResult<StorageEngine> {
 fn engine_str(name: &str) -> &'static str {
     match name {
         "redb" => "redb",
-        "sled" => "sled",
         _ => "unknown",
     }
 }
@@ -156,10 +141,10 @@ impl PyGraph {
 
     /// Open a graph database with explicit storage options.
     ///
-    /// engine: "auto" (default: the engine of the database already in
-    ///     `path`, or redb for a new one), "redb" or "sled". The wheels on
-    ///     PyPI ship both engines; asking for one this build does not have
-    ///     raises ValueError. Use `storage_engine()` to see which one opened.
+    /// engine: "auto" (default) or "redb", the only engine since 0.8.0.
+    ///     "sled" raises ValueError with the migration recipe, and so does
+    ///     opening a sled database from 0.5.x: migrate it with NopalDB 0.7
+    ///     (`pip install "nopaldb==0.7.*"`, then `Graph.migrate`).
     /// profile: "default" | "mobile" | "server"
     /// on_progress: optional callable receiving a dict
     ///     `{"phase": str, "done": int, "total": int | None}` while the open
@@ -1327,17 +1312,14 @@ impl PyGraph {
         Ok(())
     }
 
-    /// Name of the storage engine this handle opened: "redb" or "sled".
-    ///
-    /// With `engine="auto"` (the default) an existing database keeps the
-    /// engine it was created with, so a 0.5.x database reports "sled" until
-    /// it is migrated with `Graph.migrate`.
+    /// Name of the storage engine this handle opened: "redb" (the only one
+    /// since 0.8.0).
     fn storage_engine(&self) -> PyResult<&'static str> {
         let graph = self.graph()?;
         Ok(engine_str(graph.storage().backend_name()))
     }
 
-    /// Copy a whole database directory to another engine, verifying the copy.
+    /// Copy a whole database directory, verifying the copy.
     ///
     /// Byte-for-byte copy of every keyspace (nodes, MVCC versions, edges,
     /// adjacency, indexes, clocks, embeddings) followed by a re-scan of the
@@ -1346,14 +1328,16 @@ impl PyGraph {
     ///
     /// Preconditions: both directories closed (no open Graph on them); the
     /// source opened and closed cleanly at least once with NopalDB (so its
-    /// WAL is applied); the destination directory empty or absent. Both
-    /// engines must be present in the build (the PyPI wheels have both).
+    /// WAL is applied); the destination directory empty or absent. Since
+    /// 0.8.0 both ends are redb (useful to change the profile or take a
+    /// verified cold copy); a sled database from 0.5.x is migrated with
+    /// NopalDB 0.7, the last version that reads sled.
     ///
     /// Args:
     ///     src (str): source directory.
     ///     dst (str): destination directory (empty or absent).
-    ///     src_engine (str): "auto" (detect from the directory), "sled" or "redb".
-    ///     dst_engine (str): "auto" (the build's default, redb), "sled" or "redb".
+    ///     src_engine (str): "auto" (detect from the directory) or "redb".
+    ///     dst_engine (str): "auto" (redb) or "redb".
     ///     profile (str): tuning profile used to open both.
     ///
     /// Returns:
@@ -1362,7 +1346,7 @@ impl PyGraph {
     ///     must not be used.
     ///
     /// Example:
-    ///     >>> report = nopaldb.Graph.migrate("old_sled.db", "new_redb.db")
+    ///     >>> report = nopaldb.Graph.migrate("kb.db", "kb_copy.db")
     ///     >>> report["verified"]
     ///     True
     ///     >>> [ix["name"] for ix in report["indexes"]]   # user indexes that travelled
@@ -1454,7 +1438,7 @@ impl PyGraph {
 
     /// Close the database
     ///
-    /// Extrae el Arc interno y lo suelta, permitiendo que Sled libere su lock
+    /// Extrae el Arc interno y lo suelta, permitiendo que el motor libere su lock
     /// aunque el objeto Python todavía esté vivo. Llamadas posteriores a cualquier
     /// método devolverán RuntimeError("Graph is closed").
     ///
@@ -1472,7 +1456,7 @@ impl PyGraph {
 
         if let Some(graph) = arc {
             // graph se mueve al bloque — cuando termine, el Arc se suelta aquí.
-            // Si este era el último clone, Sled libera el lock en este punto.
+            // Si este era el último clone, el motor libera el lock en este punto.
             let result = crate::python::runtime::block_on(py, async move { graph.close().await });
             to_py_result(result)
         } else {

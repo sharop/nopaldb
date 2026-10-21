@@ -15,7 +15,7 @@ full
             └─ default
 ```
 
-Tiers are additive: `full` includes `semantic` plus `full-isolation`, `semantic` includes `core`, and `core` includes the default redb storage backend (`storage-sled` is a separate, optional feature that opens and migrates databases created before 0.6.0). These tiers are Rust-only; they do not build the Python wrapper.
+Tiers are additive: `full` includes `semantic` plus `full-isolation`, `semantic` includes `core`, and `core` includes the redb storage backend (the only one since 0.8.0; `storage-sled` was removed, see [MIGRATION_0.6.md](MIGRATION_0.6.md)). These tiers are Rust-only; they do not build the Python wrapper.
 
 ---
 
@@ -23,7 +23,7 @@ Tiers are additive: `full` includes `semantic` plus `full-isolation`, `semantic`
 
 ### `default` — Minimal Graph Storage
 
-The default build enables the redb-backed graph database with MVCC, transactions, WAL, indexing, and NQL basics. Add `storage-sled` to also open databases created with 0.5.x (they are detected automatically) and to migrate them; see [MIGRATION_0.6.md](MIGRATION_0.6.md).
+The default build enables the redb-backed graph database with MVCC, transactions, WAL, indexing, and NQL basics. Databases created with 0.5.x (sled) are recognized and refused with the migration recipe: migrate them with 0.7; see [MIGRATION_0.6.md](MIGRATION_0.6.md).
 
 ```bash
 cargo build -p nopaldb
@@ -124,7 +124,7 @@ cargo clippy -p nopaldb --features full -- -D warnings
 | Feature | Dependencies |
 |---------|--------------|
 | `storage-redb` | `redb` — default backend since 0.6.0 |
-| `storage-sled` | `sled` — optional since 0.6.0: opens and migrates 0.5.x databases; available at least through 0.7. The PyPI wheels ship both |
+| ~~`storage-sled`~~ | removed in 0.8.0 (#141). Optional from 0.6.0 to 0.7 to open and migrate 0.5.x databases; migrate them with 0.7 |
 | `cli` | both engines — builds the `nopaldb` binary (`nopaldb migrate`, `nopaldb engine`); `cargo install nopaldb --features cli` |
 | `analytics` | `arrow`, `parquet` |
 | `ml` | `analytics` |
@@ -174,7 +174,7 @@ full
             └─ default
 ```
 
-Los tiers son aditivos: `full` incluye `semantic` mas `full-isolation` (niveles de aislamiento, lock manager y deteccion de deadlocks — ver [ISOLATION_LEVELS.md](ISOLATION_LEVELS.md)), `semantic` incluye `core`, y `core` incluye el backend redb por defecto (`storage-sled` es una feature aparte, opcional, que abre y migra bases creadas antes de 0.6.0). Estos tiers son solo Rust; no construyen el wrapper Python.
+Los tiers son aditivos: `full` incluye `semantic` mas `full-isolation` (niveles de aislamiento, lock manager y deteccion de deadlocks — ver [ISOLATION_LEVELS.md](ISOLATION_LEVELS.md)), `semantic` incluye `core`, y `core` incluye el backend redb (el único desde 0.8.0; `storage-sled` se retiró, ver [MIGRACION_0.6.md](es/MIGRACION_0.6.md)). Estos tiers son solo Rust; no construyen el wrapper Python.
 
 ### Compilacion rapida por tier
 

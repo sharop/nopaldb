@@ -15,7 +15,7 @@
 //!   se borra el dump y se mide el rebuild desde storage.
 //!
 //! Escala por env `NOPALDB_HNSW_N` (lista separada por comas; default
-//! `10000,100000`); motor por `NOPALDB_BENCH_ENGINE=sled|redb` para
+//! `10000,100000`); motor por `NOPALDB_BENCH_ENGINE=redb` para
 //! `open_first_search`. Vectores sintéticos de dimensión 384 con semilla fija:
 //! los números son comparables entre corridas y entre máquinas del mismo tipo.
 //!
@@ -49,7 +49,6 @@ fn bench_options() -> StorageOptions {
     let mut opts = StorageOptions::default();
     if let Ok(name) = std::env::var("NOPALDB_BENCH_ENGINE") {
         opts.engine = match name.to_ascii_lowercase().as_str() {
-            "sled" => nopaldb::StorageEngine::Sled,
             "redb" => nopaldb::StorageEngine::Redb,
             other => panic!("NOPALDB_BENCH_ENGINE desconocido: {other}"),
         };

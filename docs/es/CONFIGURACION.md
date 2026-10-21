@@ -8,11 +8,11 @@ Actualmente, NopalDB está diseñado para ofrecer una experiencia **"zero-config
 
 Cuando inicializas un grafo con `Graph.open("ruta")`, se aplica automáticamente la siguiente configuración:
 
-### 💾 Motor de Almacenamiento (redb por defecto; sled opcional)
-- **Backend**: Árbol LSM (Hybrid Log-Structured Merge Tree).
-- **Caché**: Gestión automática de caché de páginas. Sin límite manual configurado por ahora.
-- **Compresión**: habilitada por defecto (Zstd/Snappy según la compilación).
-- **Escritura**: Flushing asíncrono a disco para alto rendimiento.
+### 💾 Motor de Almacenamiento (redb)
+- **Backend**: redb, un B-tree embebido copy-on-write (el único motor desde 0.8.0).
+- **Caché**: la caché de páginas de redb, según el perfil (`default` 1 GiB, `mobile` 16 MiB, `server` 256 MiB).
+- **Compresión**: ninguna.
+- **Durabilidad**: cada escritura pasa antes por el WAL de NopalDB; el motor confirma en ventanas cortas y un checkpoint las hace durables (ver [DURABILITY.md](../DURABILITY.md)).
 
 ### 🔄 Concurrencia (MVCC)
 - **Nivel de Aislamiento**: Snapshot Isolation. Los lectores nunca bloquean a los escritores, y viceversa.

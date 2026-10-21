@@ -12,7 +12,7 @@ nopaldb = { version = "0.7", features = ["core"] }
 
 | Tier | What you get |
 |------|--------------|
-| *default* | Property graph + NQL + MVCC + WAL (redb storage; add `storage-sled` to open 0.5.x databases) |
+| *default* | Property graph + NQL + MVCC + WAL (redb storage; 0.5.x sled databases are migrated with 0.7) |
 | `core` | + Arrow/Parquet export, graph algorithms, embeddings + HNSW, full-text search, ML helpers |
 | `semantic` | + OWL-EL reasoner, Turtle import/export, SHACL validation |
 | `full` | + `full-isolation`: isolation levels, per-node lock manager, deadlock detection |

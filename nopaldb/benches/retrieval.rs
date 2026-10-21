@@ -44,7 +44,6 @@ fn bench_options() -> StorageOptions {
     let mut opts = StorageOptions::default();
     if let Ok(name) = std::env::var("NOPALDB_BENCH_ENGINE") {
         opts.engine = match name.to_ascii_lowercase().as_str() {
-            "sled" => nopaldb::StorageEngine::Sled,
             "redb" => nopaldb::StorageEngine::Redb,
             other => panic!("NOPALDB_BENCH_ENGINE desconocido: {other}"),
         };

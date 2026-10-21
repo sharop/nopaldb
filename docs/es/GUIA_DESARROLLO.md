@@ -56,7 +56,7 @@ cd nopaldb && maturin develop --release --features python-full
 NopalDB desacopla la **topología** del grafo del **almacenamiento** físico.
 
 *   **Abstracción**: `Graph` encapsula `Storage` y opera contra una capa de backend desacoplada (`StorageBackend` trait).
-*   **Físico**: Backend por defecto **redb** (embebido); `storage-sled` opcional para bases de 0.5.x.
+*   **Físico**: Backend **redb** (embebido), el único desde 0.8.0; las bases sled de 0.5.x se migran con 0.7.
     *   Clave: `u64` (NodeId) -> Valor: `bincode(Node)`
 *   **Perfiles runtime**: `Default` (predeterminado), `Mobile` (opcional, memoria conservadora), `Server` (cache agresivo).
 *   **Indices**: Mantenemos índices secundarios (ej. búsqueda por propiedad) sincronizados atómicamente con los datos.
@@ -262,7 +262,7 @@ self.save_metadata_internal(&index_name)?;
 nopaldb/src/
 ├── graph/mod.rs          # Punto de entrada público. Graph::open, execute_nql
 ├── types.rs              # Node, Edge, NodeKind, PropertyValue, EdgeTarget
-├── storage/              # KV embebido (redb default, sled opcional) + contrato pluggable
+├── storage/              # KV embebido (redb) + contrato pluggable
 ├── index/                # IndexManager: Hash, B-Tree, Full-Text (Tantivy), Taxonomy
 ├── transaction/          # Transaction + MVCC + Snapshot Isolation
 ├── mvcc/                 # Watermark, versioning, GC horizon
@@ -307,4 +307,4 @@ Para profundizar en los conceptos de NopalDB:
 - [Modelo Volcano — Graefe 1994 (IEEE)](https://ieeexplore.ieee.org/document/273032)
 - [CMU 15-445 Database Systems (gratuito)](https://15445.courses.cs.cmu.edu/)
 - [Rust Object Safety Reference](https://doc.rust-lang.org/reference/items/traits.html#object-safety)
-- [docs.rs/sled — Motor KV embebido](https://docs.rs/sled/latest/sled/)
+- [docs.rs/redb — Motor KV embebido](https://docs.rs/redb/latest/redb/)

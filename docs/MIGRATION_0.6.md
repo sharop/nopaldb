@@ -2,6 +2,29 @@
 
 > Español: [docs/es/MIGRACION_0.6.md](es/MIGRACION_0.6.md).
 
+## 0.8.0: sled was removed
+
+Since 0.8.0 redb is the only engine (#141). A sled database (any database
+created with 0.5.x, or with `engine="sled"` on 0.6–0.7) no longer opens: the
+error says it is a sled database and how to migrate it. Migrate it **once**
+with 0.7, the last version that reads sled, then open the copy with 0.8+:
+
+```bash
+# Python
+pip install "nopaldb==0.7.*"
+python -c "import nopaldb; print(nopaldb.Graph.migrate('old.db', 'new.db')['verified'])"
+pip install -U nopaldb
+
+# Rust / terminal
+cargo install nopaldb --version "0.7.*" --features cli
+nopaldb migrate old.db new.db
+```
+
+The copy is verified (counts and checksums per keyspace) and carries
+time-travel history, user indexes and the HNSW dump. `nopaldb engine <dir>`
+(any version) tells you which engine a directory holds. The rest of this
+page describes 0.6–0.7, when both engines shipped.
+
 Since 0.6.0 new databases are created with **redb**. **sled**, the engine of
 every 0.5.x database, stays available behind the `storage-sled` feature to
 open and migrate those databases, at least through 0.7. Nothing else changes:
@@ -150,6 +173,7 @@ creates a new sled database.
 
 ## Policy
 
-- 0.6 and 0.7 keep `storage-sled` and both engines in the wheels.
-- Its removal will be decided with usage data in 0.8 and announced one minor
-  ahead in the CHANGELOG.
+- 0.6 and 0.7 kept `storage-sled` and both engines in the wheels.
+- 0.8.0 removed it. The plan was to announce the removal one minor ahead;
+  with no sign of sled use since 0.6.0 (no reports, no issues from users),
+  it was removed directly, and 0.7 stays the migration bridge (#141).

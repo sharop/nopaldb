@@ -20,9 +20,8 @@ query service, a reporting job — anything that must not write by accident.
 **It does not give you concurrent access.** It still takes the same exclusive
 lock, so it cannot open a database another process has open; you will get the
 "already open" error. This is not an implementation shortcut we plan to
-remove: neither embedded engine can offer it today. sled has no read-only mode
-at all, and redb's own read-only handle is documented to fail when the file is
-open for writing.
+remove: the embedded engine cannot offer it today. redb's own read-only handle
+is documented to fail when the file is open for writing.
 
 If you want to read without touching the live database, take a backup and open
 the copy. That is the section below.
