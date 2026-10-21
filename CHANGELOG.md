@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.8.0] - unreleased
+## [0.8.0] - 2026-10-21
 
 Se retira sled (#141): redb es el único motor. Sube la versión menor porque
 una base sled de 0.5.x ya no se abre con esta versión; se migra una vez con
