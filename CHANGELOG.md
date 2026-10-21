@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.7.0] - unreleased
+## [0.7.0] - 2026-10-21
 
 El `where` de NQL es el universo de `hybrid` / `similar_to` (#214 fase 2a).
 Sube la versión menor porque cambia lo que devuelven consultas existentes:
