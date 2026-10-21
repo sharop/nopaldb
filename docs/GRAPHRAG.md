@@ -206,7 +206,7 @@ ranked, hence the `or 0.0`. `candidates` is the
 [candidate set](HYBRID_SEARCH.md#candidate-set): both branches rank inside
 it, so a chunk that is far down globally is still found inside the selected
 document; `label`/`props` can only narrow it. From NQL the same universe is
-written in the `where` itself: since 0.6.21 `c.id in [...]`, `c.doc = "…"`
+written in the `where` itself: since 0.7.0 `c.id in [...]`, `c.doc = "…"`
 and the other equalities on the searched variable are pushed into the search
 (#214 phase 2), so `k` is the top-k inside them; the `where` predicates on
 the expanded nodes still apply after the expansion.
@@ -434,7 +434,7 @@ projections), use the exact scan instead.
   expose the raw pieces (#228): cut by `vector_score` or `rank` with `hybrid`,
   by `score` with `similar_to`. See the NQL reference § score.
 - A seeded pattern is at most two hops (0.6.19, #231). The equalities and
-  `in` lists on the searched variable are its universe (0.6.21, #214 phase
+  `in` lists on the searched variable are its universe (0.7.0, #214 phase
   2); the `where` predicates on the expanded nodes apply after the expansion,
   so they can leave fewer than `k` rows (a candidate set per expanded
   variable is the next step of #214). Searching with several patterns in the

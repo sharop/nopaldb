@@ -253,12 +253,12 @@ Notes:
 #### Rust
 ```toml
 [dependencies]
-nopaldb = "0.3"
+nopaldb = "0.7"
 
 # With a specific tier
-nopaldb = { version = "0.4", features = ["core"] }        # analytics + ML + algorithms + full-text
-nopaldb = { version = "0.4", features = ["semantic"] }     # + OWL reasoner + SHACL
-nopaldb = { version = "0.4", features = ["full"] }         # complete feature set (includes full-isolation)
+nopaldb = { version = "0.7", features = ["core"] }        # analytics + ML + algorithms + full-text
+nopaldb = { version = "0.7", features = ["semantic"] }     # + OWL reasoner + SHACL
+nopaldb = { version = "0.7", features = ["full"] }         # complete feature set (includes full-isolation)
 ```
 
 #### Python
@@ -579,12 +579,12 @@ Notas:
 #### Rust
 ```toml
 [dependencies]
-nopaldb = "0.3"
+nopaldb = "0.7"
 
 # Con un tier específico
-nopaldb = { version = "0.4", features = ["core"] }        # analytics + ML + algoritmos + full-text
-nopaldb = { version = "0.4", features = ["semantic"] }     # + reasoner OWL + SHACL
-nopaldb = { version = "0.4", features = ["full"] }         # conjunto completo (incluye full-isolation)
+nopaldb = { version = "0.7", features = ["core"] }        # analytics + ML + algoritmos + full-text
+nopaldb = { version = "0.7", features = ["semantic"] }     # + reasoner OWL + SHACL
+nopaldb = { version = "0.7", features = ["full"] }         # conjunto completo (incluye full-isolation)
 ```
 
 #### Python

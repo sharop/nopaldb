@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.7.0] - unreleased
+
+El `where` de NQL es el universo de `hybrid` / `similar_to` (#214 fase 2a).
+Sube la versión menor porque cambia lo que devuelven consultas existentes:
+con predicados sobre la variable buscada, `k` es ahora el top-k dentro de
+ellos, y `rank`/`score` se calculan en ese universo. Sin cambios de API.
 
 ### Changed
 - **NQL: los predicados del `where` sobre la variable buscada son el universo
