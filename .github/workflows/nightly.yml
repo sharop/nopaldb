@@ -30,19 +30,8 @@ jobs:
           NOPAL_CRASH_ROUNDS: "100"
         run: cargo test -p nopaldb --test crash_mixed_load_test -- --nocapture
 
-      # Los dos pasos de arriba corren sobre el default (redb desde 0.6.0; el
-      # gate del flip fueron cuatro semanas de este job en verde sobre redb).
-      # sled sigue siendo el motor con el que se abren y migran las bases de
-      # 0.5.x, así que mantiene las mismas garantías de crash bajo vigilancia.
-      - name: Crash harness on sled — commit-focused (100 SIGKILL rounds)
-        env:
-          NOPAL_CRASH_ROUNDS: "100"
-        run: cargo test -p nopaldb --no-default-features --features storage-sled --test crash_commit_test -- --nocapture
-
-      - name: Crash harness on sled — mixed load (100 SIGKILL rounds)
-        env:
-          NOPAL_CRASH_ROUNDS: "100"
-        run: cargo test -p nopaldb --no-default-features --features storage-sled --test crash_mixed_load_test -- --nocapture
+      # Los dos pasos de arriba corren sobre redb, el único motor desde 0.8.0
+      # (sled retirado, #141; hasta 0.7 este job corría también sobre sled).
 
   property-hardening:
     runs-on: ubuntu-latest

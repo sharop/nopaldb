@@ -282,8 +282,7 @@ cd tutorials && jupyter notebook notebooks/03_biomedical_owl.ipynb
 
 # Opción B — Ejemplo Rust (mismo resultado):
 cargo run --example tutorial_acto_3_biomedical \
-  --no-default-features \
-  --features storage-sled,reasoner,owl-import,algorithms,analytics,hypergraph,ml \
+  --features reasoner,owl-import,algorithms,analytics,hypergraph,ml \
   -- test_dbs/biomedical_owl.db tutorials/data/biomedical.ttl
 ```
 

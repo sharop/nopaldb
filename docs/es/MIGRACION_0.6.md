@@ -2,6 +2,29 @@
 
 > English: [docs/MIGRATION_0.6.md](../MIGRATION_0.6.md).
 
+## 0.8.0: sled se retiró
+
+Desde 0.8.0 redb es el único motor (#141). Una base sled (toda base creada
+con 0.5.x, o con `engine="sled"` en 0.6–0.7) ya no abre: el error dice que es
+una base sled y cómo migrarla. Mígrala **una vez** con 0.7, la última versión
+que lee sled, y abre la copia con 0.8+:
+
+```bash
+# Python
+pip install "nopaldb==0.7.*"
+python -c "import nopaldb; print(nopaldb.Graph.migrate('vieja.db', 'nueva.db')['verified'])"
+pip install -U nopaldb
+
+# Rust / terminal
+cargo install nopaldb --version "0.7.*" --features cli
+nopaldb migrate vieja.db nueva.db
+```
+
+La copia se verifica (conteos y checksums por keyspace) y lleva el historial
+de time-travel, los índices de usuario y el volcado del HNSW. `nopaldb engine
+<dir>` (cualquier versión) dice qué motor tiene un directorio. El resto de
+esta página describe 0.6–0.7, cuando se distribuían los dos motores.
+
 Desde 0.6.0 las bases nuevas se crean con **redb**. **sled**, el motor de toda
 base 0.5.x, sigue disponible tras la feature `storage-sled` para abrir y
 migrar esas bases, al menos hasta 0.7. Nada más cambia: mismo layout, mismo
@@ -150,6 +173,7 @@ nunca crea una base sled nueva.
 
 ## Política
 
-- 0.6 y 0.7 conservan `storage-sled` y ambos motores en las wheels.
-- Su retirada se decidirá con datos de uso en 0.8 y se anunciará un minor
-  antes en el CHANGELOG.
+- 0.6 y 0.7 conservaron `storage-sled` y ambos motores en las wheels.
+- 0.8.0 lo retiró. El plan era anunciarlo un minor antes; sin señales de uso
+  de sled desde 0.6.0 (ningún reporte ni issue de usuarios) se retiró
+  directamente, y 0.7 queda como puente de migración (#141).

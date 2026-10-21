@@ -11,8 +11,7 @@
 //
 // Uso:
 //   cargo run --example tutorial_acto_3_biomedical \
-//     --no-default-features \
-//     --features storage-sled,reasoner,owl-import,algorithms,analytics,hypergraph,ml \
+//     --features reasoner,owl-import,algorithms,analytics,hypergraph,ml \
 //     -- test_dbs/biomedical.db tutorials/data/biomedical.ttl
 
 use nopaldb::{Graph, PropertyValue};

@@ -29,7 +29,7 @@ Thank you for your interest in contributing to NopalDB! We welcome contributions
 NopalDB organizes features into tiers. Choose the one that matches your work:
 
 ```bash
-cargo build -p nopaldb                        # default (Sled backend only)
+cargo build -p nopaldb                        # default (redb backend)
 cargo build -p nopaldb --features core        # + analytics, ML, algorithms, hypergraph
 cargo build -p nopaldb --features semantic    # + OWL-EL reasoner, Turtle import/export
 cargo build -p nopaldb --features full        # complete public feature set
@@ -101,7 +101,7 @@ nopaldb/src/
 ├── transaction/    Write-buffering, commit/rollback, isolation dispatch
 ├── mvcc/           Multi-version node tracking, version chains
 ├── wal/            Write-Ahead Logging for crash recovery
-├── storage/        Sled-backed KV storage
+├── storage/        KV storage (redb)
 ├── index/          Hash, B-Tree, Full-Text (Tantivy), Taxonomy
 ├── algorithms/     PageRank, centrality, clustering, community, shortest path
 ├── arrow_export/   Zero-copy Arrow IPC for ML pipelines

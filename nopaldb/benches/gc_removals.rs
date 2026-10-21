@@ -3,7 +3,7 @@
 //!
 //! Escala por env: NOPALDB_GC_NODES (default 2000) × NOPALDB_GC_VERSIONS
 //! (default 10). Para la corrida del gate: 10000 × 20. Motor por
-//! NOPALDB_BENCH_ENGINE=sled|redb (default: el default del build).
+//! NOPALDB_BENCH_ENGINE=redb (default: el default del build).
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use nopaldb::{Graph, Node, PropertyValue, StorageOptions};
@@ -19,7 +19,6 @@ pub fn engine_from_env() -> StorageOptions {
     let mut opts = StorageOptions::default();
     if let Ok(name) = std::env::var("NOPALDB_BENCH_ENGINE") {
         opts.engine = match name.to_ascii_lowercase().as_str() {
-            "sled" => nopaldb::StorageEngine::Sled,
             "redb" => nopaldb::StorageEngine::Redb,
             other => panic!("NOPALDB_BENCH_ENGINE desconocido: {other}"),
         };

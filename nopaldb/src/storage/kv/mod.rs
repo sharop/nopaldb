@@ -20,9 +20,6 @@ use std::sync::{Arc, Mutex};
 use crate::error::Result;
 use crate::storage::backend::{StorageOptions, StorageProfile};
 
-#[cfg(feature = "storage-sled")]
-pub(crate) mod sled;
-
 #[cfg(feature = "storage-redb")]
 pub(crate) mod redb;
 
@@ -229,8 +226,6 @@ pub(crate) fn open_engine(
     let engine = resolve_engine(path, options.engine)?;
     let lease = PathLease::acquire(path)?;
     match engine {
-        #[cfg(feature = "storage-sled")]
-        StorageEngine::Sled => Ok(Arc::new(sled::SledEngine::open(path, profile)?.with_lease(lease))),
         #[cfg(feature = "storage-redb")]
         StorageEngine::Redb => Ok(Arc::new(redb::RedbEngine::open(path, profile)?.with_lease(lease))),
         StorageEngine::Auto => unreachable!("resolve_engine nunca devuelve Auto"),
@@ -250,8 +245,6 @@ pub(crate) fn open_in_memory(
         explicit => explicit,
     };
     match engine {
-        #[cfg(feature = "storage-sled")]
-        StorageEngine::Sled => Ok(Arc::new(sled::SledEngine::open_temporary(profile)?)),
         #[cfg(feature = "storage-redb")]
         StorageEngine::Redb => Ok(Arc::new(redb::RedbEngine::open_temporary(profile)?)),
         StorageEngine::Auto => unreachable!("Auto resuelto arriba"),
@@ -260,23 +253,16 @@ pub(crate) fn open_in_memory(
     }
 }
 
-/// El motor por defecto de este build: redb si está compilado, si no sled.
+/// El motor por defecto: redb, el único desde 0.8.0 (#141).
 pub(crate) fn default_engine() -> crate::storage::backend::StorageEngine {
-    use crate::storage::backend::StorageEngine;
-    #[cfg(feature = "storage-redb")]
-    {
-        StorageEngine::Redb
-    }
-    #[cfg(not(feature = "storage-redb"))]
-    {
-        StorageEngine::Sled
-    }
+    crate::storage::backend::StorageEngine::Redb
 }
 
 /// Qué motor dejó la base que ya hay en `dir`, por sus archivos: redb crea
 /// `nopal.redb`; sled crea `conf` y `db`. `None` si no hay base (directorio
-/// nuevo o vacío). No depende de qué motores estén compilados: es la única
-/// forma de decir "esto es una base sled" en un build sin sled.
+/// nuevo o vacío). sled ya no se compila (retirado en 0.8.0, #141): se sigue
+/// reconociendo solo para que abrir una base de 0.5.x falle con la receta de
+/// migración y no con un error críptico de redb.
 pub fn detect_engine(dir: &Path) -> Option<crate::storage::backend::StorageEngine> {
     use crate::storage::backend::StorageEngine;
     if dir.join(REDB_DB_FILE).exists() {
@@ -303,6 +289,7 @@ pub(crate) fn resolve_engine(
     use crate::storage::backend::StorageEngine;
     let engine = match requested {
         StorageEngine::Auto => match detect_engine(dir) {
+            Some(StorageEngine::Sled) => return Err(engine_not_compiled(StorageEngine::Sled, Some(dir))),
             Some(found) => {
                 if found != default_engine() {
                     log::warn!(
@@ -329,7 +316,8 @@ pub(crate) fn resolve_engine(
 fn engine_compiled(engine: crate::storage::backend::StorageEngine) -> bool {
     use crate::storage::backend::StorageEngine;
     match engine {
-        StorageEngine::Sled => cfg!(feature = "storage-sled"),
+        // Retirado en 0.8.0 (#141): nunca está compilado.
+        StorageEngine::Sled => false,
         StorageEngine::Redb => cfg!(feature = "storage-redb"),
         StorageEngine::Auto => true,
     }
@@ -352,14 +340,13 @@ fn engine_not_compiled(
     dir: Option<&Path>,
 ) -> crate::error::NopalError {
     use crate::storage::backend::StorageEngine;
+    if engine == StorageEngine::Sled {
+        return sled_removed(dir);
+    }
     // Nombrar la feature EXACTA, no el comodín `storage-*`: quien recibe este
     // error está a una línea de Cargo.toml de arreglarlo, y adivinar el
     // nombre es trabajo innecesario.
-    let feature = match engine {
-        StorageEngine::Sled => "storage-sled",
-        StorageEngine::Redb => "storage-redb",
-        StorageEngine::Auto => "storage-redb",
-    };
+    let feature = "storage-redb";
     let existing = dir
         .filter(|d| detect_engine(d) == Some(engine))
         .map(|d| {
@@ -382,6 +369,30 @@ fn engine_not_compiled(
     .into()
 }
 
+/// sled se retiró en 0.8.0 (#141). Pedirlo, o abrir con `Auto` un
+/// directorio que contiene una base sled, da este error con la receta: la
+/// última versión que lee sled es la 0.7, y su wheel la copia a redb.
+pub(crate) const SLED_REMOVED_RECIPE: &str = "sled support was removed in NopalDB 0.8.0. Migrate the \
+     database to redb with NopalDB 0.7, the last version that reads sled: \
+     `pip install \"nopaldb==0.7.*\"` and `nopaldb.Graph.migrate(src, dst)`, or \
+     `cargo install nopaldb --version \"0.7.*\" --features cli` and \
+     `nopaldb migrate <src> <dst>`; then open the copy with this version. See \
+     docs/MIGRATION_0.6.md.";
+
+fn sled_removed(dir: Option<&Path>) -> crate::error::NopalError {
+    let what = match dir {
+        Some(d) if detect_engine(d) == Some(crate::storage::backend::StorageEngine::Sled) => {
+            format!("{} contains a sled database. ", d.display())
+        }
+        _ => String::new(),
+    };
+    crate::error::StorageError::new(
+        crate::error::StorageErrorKind::Unsupported,
+        format!("{what}{SLED_REMOVED_RECIPE}"),
+    )
+    .into()
+}
+
 #[cfg(test)]
 mod engine_availability_tests {
     use super::*;
@@ -395,8 +406,25 @@ mod engine_availability_tests {
         assert!(msg.contains("storage-redb"), "debe nombrar la feature: {msg}");
         assert!(!msg.contains("storage-*"), "sin comodines: {msg}");
 
+        // sled (retirado en 0.8.0) no tiene feature que nombrar: la receta
+        // dice con qué versión migrar.
         let msg = format!("{}", engine_not_compiled(StorageEngine::Sled, None));
-        assert!(msg.contains("storage-sled"), "debe nombrar la feature: {msg}");
+        assert!(msg.contains("0.7") && msg.contains("Graph.migrate"), "receta de migración: {msg}");
+    }
+
+    /// Una base sled (sus archivos) abierta con `Auto` o pidiendo sled: el
+    /// error dice que es sled y cómo migrarla, en vez de un fallo de redb.
+    #[test]
+    fn a_sled_directory_fails_with_the_migration_recipe() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("conf"), b"").unwrap();
+        std::fs::write(dir.path().join("db"), b"").unwrap();
+        for requested in [StorageEngine::Auto, StorageEngine::Sled] {
+            let err = resolve_engine(dir.path(), requested).expect_err("sled ya no abre");
+            let msg = format!("{err}");
+            assert!(msg.contains("contains a sled database"), "{msg}");
+            assert!(msg.contains("nopaldb==0.7"), "{msg}");
+        }
     }
 
     /// El engine que SÍ está compilado abre; el dispatch no cae al error.
@@ -409,20 +437,11 @@ mod engine_availability_tests {
         );
     }
 
-    /// Un engine cuyo backend NO se compiló falla con el error accionable en
-    /// vez de con un panic. Solo se puede afirmar cuando falta exactamente
-    /// uno de los dos.
-    #[cfg(any(
-        all(feature = "storage-sled", not(feature = "storage-redb")),
-        all(feature = "storage-redb", not(feature = "storage-sled"))
-    ))]
+    /// Pedir sled (retirado) falla con el error accionable en vez de con un
+    /// panic.
     #[test]
     fn missing_backend_is_an_error_not_a_panic() {
-        let (missing, feature) = if cfg!(feature = "storage-redb") {
-            (StorageEngine::Sled, "storage-sled")
-        } else {
-            (StorageEngine::Redb, "storage-redb")
-        };
+        let (missing, feature) = (StorageEngine::Sled, "nopaldb==0.7");
         let opts = crate::storage::backend::StorageOptions {
             engine: missing,
             profile: crate::storage::backend::StorageProfile::Default,

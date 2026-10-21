@@ -79,7 +79,7 @@ class GraphStats(TypedDict):
     edges_per_type: dict[str, int]
 
 class StorageStats(TypedDict):
-    engine: str            # "redb" | "sled"
+    engine: str            # "redb" (the only engine since 0.8.0)
     profile: str           # "default" | "mobile" | "server"
     data_dir: str | None   # None in memory
     read_only: bool
@@ -166,9 +166,9 @@ class Graph:
     def open(path: str) -> "Graph": ...
     @staticmethod
     def open_with_profile(path: str, profile: str = "default") -> "Graph": ...
-    # `engine` is "auto" (default: the engine of the database already at
-    # `path`, redb for a new one), "redb" or "sled". Availability depends on how
-    # the package was BUILT: the wheels on PyPI ship both engines since 0.6.0.
+    # `engine` is "auto" (default) or "redb", the only engine since 0.8.0.
+    # "sled", or opening a sled database from 0.5.x, raises with the migration
+    # recipe (migrate with nopaldb 0.7: `pip install "nopaldb==0.7.*"`).
     # `on_progress` receives the phases of this open (WAL replay, rebuilds)
     # and stays registered for later long operations (see set_progress_callback).
     @staticmethod

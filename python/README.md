@@ -99,7 +99,7 @@ graph = nopaldb.Graph.in_memory()
 graph = nopaldb.Graph.open_with_profile("./data.db", profile="mobile")
 
 # Explicit backend + profile
-graph = nopaldb.Graph.open_with_options("./data.db", engine="sled", profile="default")
+graph = nopaldb.Graph.open_with_options("./data.db", engine="redb", profile="default")
 ```
 
 **Methods:**
@@ -545,7 +545,7 @@ graph = nopaldb.Graph.in_memory()
 graph = nopaldb.Graph.open_with_profile("./datos.db", profile="mobile")
 
 # Backend + perfil explícitos
-graph = nopaldb.Graph.open_with_options("./datos.db", engine="sled", profile="default")
+graph = nopaldb.Graph.open_with_options("./datos.db", engine="redb", profile="default")
 ```
 
 **Métodos:**

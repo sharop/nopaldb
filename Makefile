@@ -19,7 +19,7 @@ WORKSPACE_VERSION := $(shell awk '/^\[workspace.package\]/{flag=1;next}/^\[/{fla
 
 help:
 	@echo "Targets:"
-	@echo "  make test               - tests default (sled only)"
+	@echo "  make test               - tests default (redb)"
 	@echo "  make test-core          - tests tier core"
 	@echo "  make test-semantic      - tests tier semantic"
 	@echo "  make test-full          - tests full public feature set"

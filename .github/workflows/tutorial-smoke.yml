@@ -21,7 +21,7 @@ permissions:
 jobs:
   # Compila las combinaciones de features que el smoke de tutoriales no cubre.
   # El build default (un motor, sin algorithms) se rompió en el pasado sin que
-  # CI lo viera; desde 0.6.0 el default es redb y sled es el motor opcional.
+  # CI lo viera; desde 0.8.0 redb es el único motor (sled retirado, #141).
   feature-matrix-check:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -34,9 +34,6 @@ jobs:
 
       - name: Check default features (redb)
         run: cargo check -p nopaldb
-
-      - name: Check sled as the only backend
-        run: cargo check -p nopaldb --no-default-features --features storage-sled
 
       - name: Check the CLI binary
         run: cargo check -p nopaldb --features cli --bins
@@ -86,8 +83,7 @@ jobs:
             --features core \
             -- test_dbs/synthetic_offshore.db
           cargo run -p nopaldb --example tutorial_acto_3_biomedical \
-            --no-default-features \
-            --features storage-sled,reasoner,owl-import,algorithms,analytics,hypergraph,ml \
+            --features reasoner,owl-import,algorithms,analytics,hypergraph,ml \
             -- test_dbs/biomedical.db tutorials/data/biomedical.ttl
           cargo run -p nopaldb --example tutorial_acto_4_fraud_finalboss \
             --features core \

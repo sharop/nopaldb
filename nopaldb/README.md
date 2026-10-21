@@ -15,7 +15,7 @@ time-travel, a built-in query language (NQL), and Apache Arrow analytics.
 
 - **ACID + MVCC** — snapshot isolation and time-travel queries over a versioned store.
 - **NQL** — a Cypher-like query language for pattern matching and traversal.
-- **Embedded** — runs in-process, no separate server. Sled-backed storage by default.
+- **Embedded** — runs in-process, no separate server. redb storage (sled was removed in 0.8.0; migrate 0.5.x databases with 0.7).
 - **Analytics** — zero-copy export to Apache Arrow / Parquet (`analytics` feature).
 - **Optional tiers** — vector embeddings + HNSW, full-text search, graph algorithms,
   ML tensors, OWL reasoning and SHACL validation, all behind feature flags.
@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
 
 | Feature | Enables |
 |---|---|
-| `storage-sled` *(default)* | Sled-backed embedded storage |
+| `storage-redb` *(default)* | redb embedded storage (the only engine since 0.8.0) |
 | `analytics` | Apache Arrow / Parquet export |
 | `ml` | ML tensors (implies `analytics`) |
 | `algorithms` | Graph algorithms (community detection, centrality, …) |

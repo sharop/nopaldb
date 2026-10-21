@@ -141,7 +141,7 @@ El **Modelo Volcano** (también llamado *Iterator Model* o *Pipeline Model*) es 
               ↑ next()
           SCAN (itera storage)
               ↑ next()
-          [ Sled / Disco ]
+          [ redb / Disco ]
 ```
 
 **Ventaja de memoria**: En cualquier momento dado, **solo 1 fila** (o pocas, si hay buffering) está "en vuelo" entre operadores.
@@ -344,7 +344,7 @@ cargo test --test streaming_executor
 
 ## Parte 4 — Storage Pluggable y Perfil Mobile (Opcional)
 
-NopalDB mantiene su identidad de base **embebida**: el backend por defecto es `redb` desde 0.6.0 (`sled` se conserva como motor opcional para abrir y migrar bases anteriores).
+NopalDB mantiene su identidad de base **embebida**: el backend es `redb`, el único motor desde 0.8.0 (`sled` se retiró; las bases de 0.5.x se migran con 0.7).
 
 Cambios estructurales relevantes:
 
@@ -401,8 +401,8 @@ Implicación práctica:
 9. **SQLite Documentation — Indexes**
    - 🔗 [sqlite.org/queryplanner.html](https://www.sqlite.org/queryplanner.html) — Cómo SQLite maneja índices; el approach de NopalDB es similar en filosofía.
 
-10. **Sled Documentation**
-    - 🔗 [docs.rs/sled](https://docs.rs/sled/latest/sled/) — Motor KV embebido usado por el storage principal; metadata de índices se guarda en `metadata.bin`.
+10. **redb Documentation**
+    - 🔗 [docs.rs/redb](https://docs.rs/redb/latest/redb/) — Motor KV embebido usado por el storage principal; metadata de índices se guarda en `metadata.bin`.
 
 ### Bases de Datos de Grafos
 

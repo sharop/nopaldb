@@ -19,7 +19,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 const ENV_DB_DIR: &str = "NOPAL_CRASH_DB_DIR";
-/// Motor del harness: `sled` (default) o `redb`.
+/// Motor del harness: `redb` (el único desde 0.8.0).
 const ENV_ENGINE: &str = "NOPAL_CRASH_ENGINE";
 /// Archivo (junto a la base) donde el hijo anota cada escritura DIRECTA dos
 /// veces: la INTENCIÓN antes de pedirla (`n?:<uuid>`, `e?:<uuid>`,
@@ -32,13 +32,11 @@ const ENV_ENGINE: &str = "NOPAL_CRASH_ENGINE";
 /// confirmado antes del kill está tras reabrir.
 const ACKED_FILE: &str = "direct_acked.log";
 
-/// Motor: `NOPAL_CRASH_ENGINE=sled|redb`; sin la variable, el default del
-/// build (sled si está compilado; redb si es el único backend, que es como
-/// lo corre el paso redb de CI).
+/// Motor: `NOPAL_CRASH_ENGINE=redb`; sin la variable, el default (redb, el
+/// único motor desde 0.8.0).
 fn engine() -> StorageEngine {
     match std::env::var(ENV_ENGINE).as_deref() {
         Ok("redb") => StorageEngine::Redb,
-        Ok("sled") => StorageEngine::Sled,
         // `Auto`: el motor del directorio si ya hay base, si no el del build.
         _ => StorageOptions::default().engine,
     }

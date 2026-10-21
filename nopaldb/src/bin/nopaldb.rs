@@ -1,13 +1,15 @@
 //! `nopaldb`: herramientas de línea de comandos.
 //!
 //! ```text
-//! nopaldb migrate <src_dir> <dst_dir> [--from auto|sled|redb] [--to auto|sled|redb] [--profile default|mobile|server]
+//! nopaldb migrate <src_dir> <dst_dir> [--from auto|redb] [--to auto|redb] [--profile default|mobile|server]
 //! nopaldb engine <dir>
 //! nopaldb stats <dir>
 //! ```
 //!
 //! Nace para la migración entre motores (#140): quien instala el crate o la
 //! wheel no tenía una orden de terminal para pasar una base de sled a redb.
+//! Desde 0.8.0 (sled retirado, #141) `migrate` es una copia verificada entre
+//! bases redb; una base sled se migra con la CLI de 0.7.
 //! `stats` (#158) es la herramienta de "¿qué le espera al próximo open?" sin
 //! escribir código. Los argumentos se parsean a mano a propósito: tres
 //! subcomandos no justifican una dependencia de CLI. Códigos de salida: 0
@@ -21,12 +23,12 @@ use nopaldb::{Graph, Progress, Storage, StorageEngine, StorageOptions, StoragePr
 
 const USAGE: &str = "\
 uso:
-  nopaldb migrate <src_dir> <dst_dir> [--from auto|sled|redb] [--to auto|sled|redb] [--profile default|mobile|server]
-      Copia una base a otro motor, byte a byte, y verifica el destino (conteos y checksums).
-      --from auto (default) detecta el motor del origen; --to auto (default) es redb.
+  nopaldb migrate <src_dir> <dst_dir> [--from auto|redb] [--to auto|redb] [--profile default|mobile|server]
+      Copia una base byte a byte y verifica el destino (conteos y checksums).
+      El motor es redb en ambos extremos; una base sled (0.5.x) se migra con la CLI de 0.7.
       El origen debe estar cerrado (abierto y cerrado al menos una vez con NopalDB); el destino, vacío.
   nopaldb engine <dir>
-      Dice qué motor tiene una base: redb, sled, o ninguno.
+      Dice qué motor tiene una base: redb, sled (retirado en 0.8.0: migrar con 0.7), o ninguno.
   nopaldb stats <dir>
       Abre la base en solo lectura y muestra su estado: grafo, WAL y checkpoints, qué reprodujo
       este open y cuánto tardó cada fase, índices de usuario (tamaño, analizador), HNSW y GC.

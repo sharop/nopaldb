@@ -1,21 +1,22 @@
-//! Migración entre motores de almacenamiento, con verificación: la única
-//! implementación detrás del binario `nopaldb migrate`, del ejemplo
-//! `migrate_engine` y (vía `Storage::copy_database`) de `Graph.migrate` en
-//! Python. Ver `docs/MIGRATION_0.6.md`.
+//! Copia verificada de una base: la única implementación detrás del binario
+//! `nopaldb migrate` y (vía `Storage::copy_database`) de `Graph.migrate` en
+//! Python. Nació para pasar de sled a redb; desde 0.8.0 (sled retirado,
+//! #141) ambos extremos son redb. Ver `docs/MIGRATION_0.6.md`.
 
 use std::path::Path;
 
 use crate::error::{NopalError, Result};
 use crate::storage::{MigrationReport, Storage, StorageEngine, StorageOptions, StorageProfile};
 
-/// Parsea `auto | sled | redb` (sin distinguir mayúsculas).
+/// Parsea `auto | redb` (sin distinguir mayúsculas). `sled` se acepta solo
+/// para que abrir falle con la receta de migración (retirado en 0.8.0).
 pub fn parse_engine(s: &str) -> Result<StorageEngine> {
     match s.to_ascii_lowercase().as_str() {
         "auto" => Ok(StorageEngine::Auto),
         "sled" => Ok(StorageEngine::Sled),
         "redb" => Ok(StorageEngine::Redb),
         other => Err(NopalError::custom(format!(
-            "motor desconocido: {other} (usa auto, sled o redb)"
+            "motor desconocido: {other} (usa auto o redb)"
         ))),
     }
 }

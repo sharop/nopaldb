@@ -21,9 +21,9 @@ classifiers = [
 ]
 
 [tool.maturin]
-# Ambos motores: redb (default desde 0.6.0) y sled, para que `Graph.open`
-# abra bases creadas con 0.5.x y exista `Graph.migrate`.
-features = ["python-full", "storage-sled"]
+# Solo redb desde 0.8.0 (sled retirado, #141). Una base sled de 0.5.x se
+# migra con la wheel 0.7: `pip install "nopaldb==0.7.*"` y `Graph.migrate`.
+features = ["python-full"]
 python-source = "python"
 module-name = "nopaldb.nopaldb"
 python-packages = ["nopaldb"]

@@ -32,7 +32,7 @@ This repository contains the **engine** (Rust library + Python wrapper), license
 
 #### Core Database
 - ✅ **Property Graph Model** - Nodes, edges, and properties
-- ✅ **Persistent Storage** - redb backend (sled kept to open and migrate 0.5.x databases, see [docs/MIGRATION_0.6.md](docs/MIGRATION_0.6.md))
+- ✅ **Persistent Storage** - redb backend (sled was removed in 0.8.0; migrate 0.5.x databases with 0.7, see [docs/MIGRATION_0.6.md](docs/MIGRATION_0.6.md))
 - ✅ **ACID Transactions** - Full transaction support
 - ✅ **MVCC** - Multi-Version Concurrency Control with snapshot isolation
 - ✅ **Isolation Levels** - `ReadCommitted` (default), `RepeatableRead`, `Serializable` with per-node locking and deadlock detection, via the `full-isolation` feature ([guide](docs/ISOLATION_LEVELS.md), [deadlock detection](docs/DEADLOCK_DETECTION.md))
@@ -443,7 +443,7 @@ Built with:
 - 🦀 **Rust** - Systems programming language
 - 🐍 **Python** - ML/Data science integration
 - 🏹 **Apache Arrow** - Columnar data format
-- 🗄️ **redb** - Embedded database (sled optional for 0.5.x databases)
+- 🗄️ **redb** - Embedded database (the only engine since 0.8.0)
 - ⚡ **Tokio** - Async runtime
 
 ---
@@ -472,7 +472,7 @@ Este repositorio contiene el **motor** (librería Rust + wrapper Python), con li
 
 #### Base de Datos Principal
 - ✅ **Modelo de Grafo de Propiedades** - Nodos, aristas y propiedades
-- ✅ **Almacenamiento Persistente** - Backend redb (sled se conserva para abrir y migrar bases de 0.5.x, ver [docs/es/MIGRACION_0.6.md](docs/es/MIGRACION_0.6.md))
+- ✅ **Almacenamiento Persistente** - Backend redb (sled se retiró en 0.8.0; las bases de 0.5.x se migran con 0.7, ver [docs/es/MIGRACION_0.6.md](docs/es/MIGRACION_0.6.md))
 - ✅ **Transacciones ACID** - Soporte completo de transacciones
 - ✅ **MVCC** - Control de Concurrencia Multi-Versión con aislamiento snapshot
 - ✅ **Niveles de Aislamiento** - `ReadCommitted` (default), `RepeatableRead`, `Serializable` con locking por nodo y detección de deadlocks, vía la feature `full-isolation` ([guía](docs/ISOLATION_LEVELS.md), [detección de deadlocks](docs/DEADLOCK_DETECTION.md))

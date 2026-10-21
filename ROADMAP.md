@@ -24,8 +24,9 @@ convert it with verification. The switch was gated on evidence: four weeks of
 nightly crash harness on redb without incidents, a verified round trip of a
 million-pair database, and the benchmark set at or above sled (reads,
 transactional commits, bulk ingest, GC), with the two remaining trade-offs
-measured and documented in [DURABILITY.md](docs/DURABILITY.md). The prebuilt
-Python wheels ship both engines. Migration guide: [MIGRATION_0.6.md](docs/MIGRATION_0.6.md).
+measured and documented in [DURABILITY.md](docs/DURABILITY.md). Done in
+0.8.0: sled was removed (#141); redb is the only engine, and 0.5.x databases
+are migrated once with 0.7. Migration guide: [MIGRATION_0.6.md](docs/MIGRATION_0.6.md).
 
 ### 2. Semantic cycle: a faithful Turtle bridge, then declarative SHACL
 
@@ -138,7 +139,8 @@ semanas de harness de crash nightly sobre redb sin incidentes, un round trip
 verificado de una base de un millón de pares y el set de benchmarks igual o
 mejor que sled (lecturas, commits transaccionales, ingesta, GC), con los dos
 trade-offs restantes medidos y documentados en [DURABILITY.md](docs/DURABILITY.md).
-Las wheels de Python traen ambos motores. Guía: [MIGRACION_0.6.md](docs/es/MIGRACION_0.6.md).
+Hecho en 0.8.0: sled se retiró (#141); redb es el único motor y las bases de
+0.5.x se migran una vez con 0.7. Guía: [MIGRACION_0.6.md](docs/es/MIGRACION_0.6.md).
 
 ### 2. Ciclo semántico: puente Turtle fiel y luego SHACL declarativo
 

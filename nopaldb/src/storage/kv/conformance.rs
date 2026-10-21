@@ -14,18 +14,10 @@ use crate::storage::backend::StorageProfile;
 
 /// Engines efímeros a conformar. Un backend nuevo agrega su línea aquí.
 fn engines() -> Vec<(&'static str, Arc<dyn KvEngine>)> {
-    let mut v: Vec<(&'static str, Arc<dyn KvEngine>)> = Vec::new();
-    #[cfg(feature = "storage-sled")]
-    v.push((
-        "sled",
-        Arc::new(super::sled::SledEngine::open_temporary(StorageProfile::Default).unwrap()),
-    ));
-    #[cfg(feature = "storage-redb")]
-    v.push((
+    vec![(
         "redb",
-        Arc::new(super::redb::RedbEngine::open_temporary(StorageProfile::Default).unwrap()),
-    ));
-    v
+        Arc::new(super::redb::RedbEngine::open_temporary(StorageProfile::Default).unwrap()) as Arc<dyn KvEngine>,
+    )]
 }
 
 fn ks(engine: &Arc<dyn KvEngine>) -> Arc<dyn KvKeyspace> {
@@ -337,23 +329,6 @@ fn keyspaces_independientes_y_clear_local() {
     }
 }
 
-#[cfg(feature = "storage-sled")]
-#[test]
-fn persistencia_tras_reabrir_sled() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("conf_reopen");
-    {
-        let engine = super::sled::SledEngine::open(&path, StorageProfile::Default).unwrap();
-        engine.keyspace("p").unwrap().insert(b"k", b"v").unwrap();
-        engine.flush().unwrap();
-    }
-    let engine = super::sled::SledEngine::open(&path, StorageProfile::Default).unwrap();
-    assert_eq!(
-        engine.keyspace("p").unwrap().get(b"k").unwrap().as_deref(),
-        Some(b"v".as_slice())
-    );
-}
-
 #[cfg(feature = "storage-redb")]
 #[test]
 fn persistencia_tras_reabrir_redb() {
@@ -371,42 +346,34 @@ fn persistencia_tras_reabrir_redb() {
     );
 }
 
-#[cfg(all(feature = "storage-sled", feature = "storage-redb"))]
+#[cfg(feature = "storage-redb")]
 #[test]
-fn sentinel_de_engine_bloquea_la_apertura_cruzada() {
-    // Abrir con el motor equivocado debe fallar con error explícito, no
-    // crear una base vacía junto a la existente (ningún lock del OS cubre
-    // el cruce: cada motor lockea archivos distintos).
+fn una_base_sled_no_se_abre_con_redb_y_dice_como_migrar() {
+    // sled se retiró en 0.8.0 (#141). Un directorio con una base sled de
+    // 0.5.x (sus archivos `conf` y `db`) no debe abrirse ni dejar un
+    // `nopal.redb` vacío al lado: el error dice con qué versión migrar.
     let dir = tempfile::tempdir().unwrap();
-
-    let sled_path = dir.path().join("base_sled");
-    drop(super::sled::SledEngine::open(&sled_path, StorageProfile::Default).unwrap());
-    let err = super::redb::RedbEngine::open(&sled_path, StorageProfile::Default)
+    std::fs::write(dir.path().join("conf"), b"").unwrap();
+    std::fs::write(dir.path().join("db"), b"").unwrap();
+    let err = super::redb::RedbEngine::open(dir.path(), StorageProfile::Default)
         .err()
-        .expect("redb sobre dir sled debe fallar");
-    assert!(err.to_string().contains("base sled"), "{err}");
-
-    let redb_path = dir.path().join("base_redb");
-    drop(super::redb::RedbEngine::open(&redb_path, StorageProfile::Default).unwrap());
-    let err = super::sled::SledEngine::open(&redb_path, StorageProfile::Default)
-        .err()
-        .expect("sled sobre dir redb debe fallar");
-    assert!(err.to_string().contains("base redb"), "{err}");
+        .expect("redb sobre una base sled debe fallar");
+    assert!(err.to_string().contains("contains a sled database"), "{err}");
+    assert!(err.to_string().contains("nopaldb==0.7"), "{err}");
+    assert!(!dir.path().join("nopal.redb").exists(), "no se crea una base al lado");
 }
 
-#[cfg(feature = "storage-sled")]
+#[cfg(feature = "storage-redb")]
 #[test]
 fn los_tres_perfiles_abren() {
-    // Regresión del bug 0.4.x: el perfil Server pedía compresión a un sled
-    // sin la feature `compression` (inactivable por conflicto de links con
-    // el zstd de parquet) y Graph::open FALLABA. El knob ahora se ignora
-    // con warning; abrir jamás debe fallar por tuning.
+    // Regresión del bug 0.4.x (el perfil Server pedía compresión y
+    // Graph::open FALLABA): abrir jamás debe fallar por tuning.
     for profile in [
         StorageProfile::Default,
         StorageProfile::Mobile,
         StorageProfile::Server,
     ] {
-        let engine = super::sled::SledEngine::open_temporary(profile)
+        let engine = super::redb::RedbEngine::open_temporary(profile)
             .unwrap_or_else(|e| panic!("el perfil {profile:?} no abre: {e}"));
         engine.keyspace("smoke").unwrap().insert(b"k", b"v").unwrap();
     }

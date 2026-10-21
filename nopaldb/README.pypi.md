@@ -25,25 +25,20 @@ Windows, for CPython 3.10+ (abi3: one wheel per platform covers all versions).
 
 ### What the wheel contains
 
-These wheels are built with the **`sled` storage backend only**. That is what
-`Graph.open(...)` uses, and it is the backend the project supports for
-production use.
+The wheels use **redb**, the only storage engine since 0.8.0, with every
+optional tier compiled in (reasoner, OWL import, SHACL, embeddings + HNSW,
+full-text, algorithms, analytics). `Graph.open(...)` creates or opens a redb
+database.
 
-The engine is selectable in the API — `Graph.open_with_options(path,
-engine=...)` — but `engine="redb"` raises `ValueError` on a wheel from PyPI,
-because that backend is not compiled in. redb is **experimental**: it exists
-behind a Cargo feature, is not enabled by default, and is still being
-qualified against the crash-recovery suite. To try it you must build from
-source:
+**Databases created with 0.5.x (sled engine).** sled was removed in 0.8.0.
+Opening such a database raises an error that says so. Migrate it once with
+0.7, the last version that reads sled, then open the copy with 0.8+:
 
 ```bash
-pip install maturin
-git clone https://github.com/sharop/nopaldb && cd nopaldb
-maturin build --release --features python-full,storage-redb -m nopaldb/Cargo.toml
+pip install "nopaldb==0.7.*"
+python -c "import nopaldb; print(nopaldb.Graph.migrate('old.db', 'new.db')['verified'])"
+pip install -U nopaldb
 ```
-
-Treat such a build as an experiment, not as a supported configuration. The
-wheels on PyPI will ship redb once it clears its qualification gate.
 
 ## Quickstart
 

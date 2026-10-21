@@ -6,7 +6,7 @@ Single index for every document in `docs/`, in English with the Spanish pages ma
 
 - [Feature Tiers & Compilation Guide](FEATURE_TIERS.md) — how to build by role (EN/ES)
 - [Adoption Guide](ADOPTION.md) — fastest path in for Rust and Python; operational model
-- [Migrating to 0.6](MIGRATION_0.6.md) · [ES](es/MIGRACION_0.6.md) — redb is the default engine; sled databases still open; how to migrate
+- [Migrating to 0.6](MIGRATION_0.6.md) · [ES](es/MIGRACION_0.6.md) — redb is the engine; sled was removed in 0.8.0; how to migrate a 0.5.x database
 - [Durability Guarantees](DURABILITY.md) — what survives a crash, per write type and engine
 - [Backup & read-only](BACKUP_AND_READ_ONLY.md)
 - [Operating](OPERATIONS.md) — what `get_stats()` / `nopaldb stats` say for each symptom (slow open, slow ingestion, growing WAL, empty full-text results) and the progress event

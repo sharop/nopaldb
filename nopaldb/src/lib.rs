@@ -39,7 +39,7 @@
 //!
 //! | Tier | What you get |
 //! |------|--------------|
-//! | *default* | Property graph + NQL + MVCC + WAL (redb storage; `storage-sled` opens and migrates 0.5.x databases) |
+//! | *default* | Property graph + NQL + MVCC + WAL (redb storage; sled was removed in 0.8.0, migrate 0.5.x databases with 0.7) |
 //! | `core` | + Arrow/Parquet export, graph algorithms, embeddings + HNSW, full-text search, ML helpers |
 //! | `semantic` | + OWL-EL reasoner, Turtle import/export, SHACL validation |
 //! | `full` | + `full-isolation`: isolation levels, per-node lock manager, deadlock detection |
@@ -56,13 +56,10 @@
 //! - Operational rules (one process per directory, durability, isolation,
 //!   bulk loading) are in `docs/ADOPTION.md` in the repository.
 
-// El storage necesita exactamente un motor KV compilado. Sin esto, un build
-// sin backend produce cientos de errores crípticos en storage/ en vez de uno
-// accionable. (Cuando exista más de un backend, esto pasa a `not(any(...))`.)
-#[cfg(not(any(feature = "storage-sled", feature = "storage-redb")))]
-compile_error!(
-    "NopalDB requires a storage backend: enable `storage-redb` (default) or `storage-sled`."
-);
+// El storage necesita su motor KV compilado. Sin esto, un build sin backend
+// produce cientos de errores crípticos en storage/ en vez de uno accionable.
+#[cfg(not(feature = "storage-redb"))]
+compile_error!("NopalDB requires its storage backend: enable `storage-redb` (default).");
 
 pub mod error;
 pub mod types;

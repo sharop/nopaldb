@@ -44,19 +44,13 @@ graph = nopaldb.Graph.open_with_options("data/my_graph.db", engine="redb", profi
 - `engine` (str): storage backend — see the table below
 - `profile` (str): `"default"` | `"mobile"` | `"server"`
 
-**Backends and availability (0.6.0):**
-
-| `engine` | In the PyPI wheel? | Meaning |
-|---|---|---|
-| `"auto"` (default) | — | the engine of the database already at `path`; redb for a new directory. What `Graph.open` uses |
-| `"redb"` | yes | the default engine since 0.6.0 |
-| `"sled"` | yes | the 0.5.x engine; kept to open and migrate existing databases (at least through 0.7) |
-
-A database created with 0.5.x opens unchanged: `"auto"` sees the sled files
-and uses sled (a warning suggests migrating). Asking explicitly for the other
-engine on an existing database raises an error that says how to migrate;
-asking for a backend this build does not contain raises `ValueError` naming
-what is available. `graph.storage_engine()` returns `"redb"` or `"sled"`.
+**Engines (0.8.0):** `"auto"` (default, what `Graph.open` uses) and `"redb"`
+are the same thing: redb is the only engine. sled was removed in 0.8.0 (#141):
+`engine="sled"` raises `ValueError`, and opening a database created with 0.5.x
+raises an error that says it is a sled database and how to migrate it (with
+0.7: `pip install "nopaldb==0.7.*"`, then `Graph.migrate`). See
+[MIGRATION_0.6.md](../MIGRATION_0.6.md). `graph.storage_engine()` returns
+`"redb"`.
 
 **Returns:** Graph instance
 
@@ -64,16 +58,15 @@ what is available. `graph.storage_engine()` returns `"redb"` or `"sled"`.
 
 ##### `Graph.migrate(src: str, dst: str, src_engine: str = "auto", dst_engine: str = "auto", profile: str = "default") -> dict`
 
-Copy a **closed** database directory to another engine, byte for byte, and
-verify the copy (counts and checksums per keyspace, re-scanned on the
+Copy a **closed** database directory, byte for byte, and verify the copy (counts and checksums per keyspace, re-scanned on the
 destination; size and checksum per file for `indexes/` and `hnsw/`).
 Time-travel, embeddings, clocks, user indexes with their analyzers and the
 HNSW dump travel with it (indexes and HNSW since 0.6.3).
 
 ```python
-report = nopaldb.Graph.migrate("data/old_sled.db", "data/new_redb.db")
+report = nopaldb.Graph.migrate("data/kb.db", "data/kb_copy.db")
 assert report["verified"]
-graph = nopaldb.Graph.open("data/new_redb.db")   # storage_engine() == "redb"
+graph = nopaldb.Graph.open("data/kb_copy.db")
 ```
 
 Preconditions: no open `Graph` on either directory; the source was opened and
@@ -160,7 +153,7 @@ never inferred.
 
 ##### `Graph.storage_engine() -> str`
 
-`"redb"` or `"sled"`: the engine this handle actually opened.
+`"redb"`: the engine this handle opened (the only one since 0.8.0).
 
 ---
 

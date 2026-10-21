@@ -37,7 +37,7 @@ Transactions always fsync per applier batch regardless of this option. A batch t
 
 Before 0.5.23 direct writes did not touch the WAL at all: an acknowledged direct write less than one flush interval before a crash was lost, and with redb even data already in the OS cache was discarded (non-durable commits are rolled back on reopen). The crash harness now asserts, on every reopen, that every direct write acknowledged before the kill is present (and every acknowledged delete is gone).
 
-Platform note (macOS/APFS): a plain `write()` to the WAL waits for any `F_FULLFSYNC` in flight on the same volume. sled fsyncs its own log on every buffer write outside Linux, so with sled the default mode costs ~4 ms per direct write on a Mac (redb: ~40 µs; measured on the same machine, and reproduced with redb plus an artificial fsync storm). On Linux sled uses `sync_file_range` and the two do not interfere.
+Platform note (macOS/APFS): a plain `write()` to the WAL waits for any `F_FULLFSYNC` in flight on the same volume, so another process fsyncing hard on the same disk slows direct writes (redb: ~40 µs per direct write on a Mac; with an artificial fsync storm, p90 4 ms). Until 0.7 the sled engine caused exactly that storm itself on macOS.
 
 Two details of the redo:
 
@@ -54,7 +54,7 @@ The WAL is the redo log: everything in it is replayed on the next `open`, so it 
 | `close()` | always, on a writable graph; the next open replays nothing |
 | `Graph::checkpoint()` / `graph.checkpoint()` | on demand, e.g. right after a large load so the next open is instant |
 
-What a checkpoint does, in this order and under the write gate (so no batch is between "written to the WAL" and "applied to the engine" while it runs): persist the logical clocks, ask the engine for a **durable** checkpoint (redb: commit the write window with `Durability::Immediate`; sled: `flush`), then empty the WAL and leave a single fsynced `Checkpoint` record. The rule that never bends: **a WAL record is dropped only after the engine has made its effect durable.** Before 0.6.4 `checkpoint()` truncated without the engine flush, so a power loss right after a checkpoint could lose committed writes; and nothing called it in production anyway, so the WAL grew without limit.
+What a checkpoint does, in this order and under the write gate (so no batch is between "written to the WAL" and "applied to the engine" while it runs): persist the logical clocks, ask the engine for a **durable** checkpoint (redb: commit the write window with `Durability::Immediate`), then empty the WAL and leave a single fsynced `Checkpoint` record. The rule that never bends: **a WAL record is dropped only after the engine has made its effect durable.** Before 0.6.4 `checkpoint()` truncated without the engine flush, so a power loss right after a checkpoint could lose committed writes; and nothing called it in production anyway, so the WAL grew without limit.
 
 Two consequences worth knowing:
 
@@ -83,6 +83,6 @@ Recovering an interrupted load is always the same action: `Graph.open()` the dir
 ## Scope
 
 - Durability is at the `fsync` level; disks or VMs that lie about `fsync` weaken every layer equally.
-- Creating a **new** database is a one-time cost dominated by fsyncs: with redb about 60 ms on a Mac (the engine fsyncs when it creates the file and again when the handle is dropped), with sled about 20 ms. It is paid once per database directory, never per write; the `bulk_load/1k_nodes_fresh_db` bench includes it on purpose and `bulk_load/1k_nodes_open_db` excludes it.
-- The storage engine's own commits are not the durability boundary: NopalDB applies them without fsync (redb batches several operations into one commit window of a few milliseconds; sled buffers in its page cache) and relies on the WAL plus the engine checkpoint. The WAL is what survives until a checkpoint makes the engine state durable, and only then is it truncated.
+- Creating a **new** database is a one-time cost dominated by fsyncs: with redb about 60 ms on a Mac (the engine fsyncs when it creates the file and again when the handle is dropped). It is paid once per database directory, never per write; the `bulk_load/1k_nodes_fresh_db` bench includes it on purpose and `bulk_load/1k_nodes_open_db` excludes it.
+- The storage engine's own commits are not the durability boundary: NopalDB applies them without fsync (redb batches several operations into one commit window of a few milliseconds) and relies on the WAL plus the engine checkpoint. The WAL is what survives until a checkpoint makes the engine state durable, and only then is it truncated.
 - One process per data directory (see the Operational Model in the README); the on-disk state is only defined when the owning process is the single writer.
