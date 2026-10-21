@@ -1038,36 +1038,15 @@ impl SemanticValidator {
         Ok(())
     }
 
-    /// Validate ORDER BY columns are in SELECT (strict mode)
+    /// Validate ORDER BY columns are in SELECT (strict mode). Not enforced:
+    /// it needs `Expression: Eq + Hash` to compare the ORDER BY items with the
+    /// projections, so strict mode adds no check here yet.
     fn validate_order_by_in_select(
         &self,
         _order_by: &OrderByClause,
         _find: &FindClause,
     ) -> Result<()> {
-        // TODO: Re-enable after Expression implements Eq + Hash
-        // For now, skip this validation
         Ok(())
-
-        /*
-        // Extract expressions from SELECT
-        let select_exprs: HashSet<_> = find.projections.iter()
-            .filter_map(|proj| match proj {
-                Projection::Expression { expr, .. } => Some(expr),
-                _ => None,
-            })
-            .collect();
-
-        // Check each ORDER BY expression
-        for item in &order_by.items {
-            if !select_exprs.contains(&item.expression) {
-                return Err(NopalError::semantic(
-                    "ORDER BY expression must appear in SELECT clause (strict mode)"
-                ));
-            }
-        }
-
-        Ok(())
-        */
     }
 
     /// Check for query warnings

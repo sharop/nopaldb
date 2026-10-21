@@ -929,7 +929,6 @@ impl HnswIndex {
     }
 
     /// Acceso interno al grafo HNSW (para persistencia).
-    #[allow(dead_code)] // se usará en persistence.rs
     pub(crate) fn inner(&self) -> &Hnsw<'static, f32, DistCosine> {
         &self.inner
     }
@@ -1008,19 +1007,11 @@ impl HnswIndex {
     }
 
     /// Acceso al mapeo DataId → NodeId (para persistencia).
-    #[allow(dead_code)] // se usará en persistence.rs
     pub(crate) fn id_map(&self) -> &HashMap<usize, NodeId> {
         &self.id_map
     }
 
-    /// Acceso al mapeo inverso (para persistencia).
-    #[allow(dead_code)] // se usará en persistence.rs
-    pub(crate) fn reverse_map(&self) -> &HashMap<NodeId, usize> {
-        &self.reverse_map
-    }
-
     /// Retorna el siguiente DataId disponible (para restaurar estado post-load).
-    #[allow(dead_code)] // se usará en persistence.rs
     pub(crate) fn next_data_id(&self) -> usize {
         self.next_data_id
     }
@@ -1212,7 +1203,7 @@ mod tests {
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         (0..n)
             .map(|_| {
-                let v: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0f32..1.0)).collect();
+                let v: Vec<f32> = (0..dim).map(|_| rng.random_range(-1.0f32..1.0)).collect();
                 (Uuid::new_v4(), v)
             })
             .collect()

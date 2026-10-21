@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Removed
+- **Dependencias sin uso o sustituibles.**
+  - Sin uso: `bytes`, `lazy_static` y `rayon` (la paralelización está dentro
+    de hnsw_rs).
+  - Sustituidas por std: `futures`, que solo aportaba el alias `BoxFuture`,
+    y `async-recursion`, que se cambia por `Box::pin`.
+  - Pasan a dev-dependencies: `anyhow` (solo la usan tests) y `rand`, ahora
+    0.9 en lugar de la 0.8 duplicada; el easter egg elige con un UUID v4.
+  - `bytemuck` solo se compila con `ml`.
+  - Tokio pierde la feature `fs`: los tres usos (`import_owl_file`,
+    `export_owl_file`, `validate_shapes_file`) pasan a `std::fs` dentro de
+    `spawn_blocking`.
+  - Dev-dependencies sin uso: `tokio-test`, `num_cpus`.
+  - El bloque `[workspace.dependencies]` raíz, que nadie heredaba.
+- **Features de terceros que no se usaban.** arrow sin sus lectores CSV y
+  JSON (queda IPC). parquet lee y escribe Snappy, zstd y gzip; deja de leer
+  archivos comprimidos con brotli o lz4, que `import_parquet` rechaza con un
+  error del lector.
+- **Código muerto.**
+  - Los constructores de claves v1 que la migración de layout nunca usó.
+  - Campos sin lectura en `Transaction` y `WalManager`.
+  - `src/main.rs` ("Hello, world" que Cargo no compilaba).
+  - El paquete huérfano `python/nopaldb/` de la raíz.
+  - Los ejemplos de depuración `debug_index_manager`, `test_index_simple` y
+    `test_index_usage`, y `ml_demo_pyg.py`, que usaba una API inexistente.
+  - Las ramas de selección de motor que ya no podían ejecutarse con redb
+    como único motor. La receta de migración de sled se conserva.
+
+### Fixed
+- **`--features embeddings` sin `embeddings-index` no compilaba**: una
+  reexportación de `embeddings::index` no tenía gate. La CI ahora compila esa
+  combinación y los ejemplos.
+- **La guía de migración de 0.6** mandaba a `cargo install nopaldb --features
+  cli`, que hoy instala una versión que no lee sled. Ahora fija `0.7.*`.
+- `docs/FEATURE_TIERS.md` describía `hypergraph` como hiperaristas
+  funcionales; es un tipo experimental aún no conectado a las aristas.
+
+### Deprecated
+Se retiran en 0.9:
+- `Graph::update_node_with_tx`: no hace nada.
+- `Graph::delete_node_with_tx` y `Graph::add_node_with_label_and_props`:
+  ignoran la transacción y escriben directo.
+- `mvcc::VersionManager`: placeholder vacío.
+
 ## [0.8.0] - 2026-10-21
 
 Se retira sled (#141): redb es el único motor. Sube la versión menor porque

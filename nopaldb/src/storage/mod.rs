@@ -13,8 +13,8 @@ pub use kv::migrate::{IndexSummary, MigrationReport, SidecarReport};
 
 /// Nombre meta con la cota superior persistida del reloj lógico de
 /// timestamps. Vive en el keyspace `catalog` (clave `m|next_timestamp`,
-/// F5.4); en bases v1 era `meta:next_timestamp` en el tree default
-/// (`keys::LEGACY_META_NEXT_TIMESTAMP`, solo migración F5.5).
+/// F5.4); en bases v1 era `meta:next_timestamp` en el tree default (solo
+/// lo lee la migración F5.5).
 pub const META_NEXT_TIMESTAMP: &str = "next_timestamp";
 
 /// Versión del formato del índice de propiedades en disco. Ausente = formato
@@ -2810,14 +2810,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_storage_profile_mobile_on_in_memory() {
-        // Agnóstico al motor: usa el engine default del build (sled si está
-        // compilado; redb si es el único backend) — el perfil es lo probado.
+        // Motor por defecto (redb); lo probado es el perfil.
         let options = StorageOptions {
             profile: StorageProfile::Mobile,
             ..StorageOptions::default()
         };
         let storage = Storage::in_memory_with_options(options).await.unwrap();
-        assert!(matches!(storage.backend_name(), "sled" | "redb"));
+        assert_eq!(storage.backend_name(), "redb");
         assert_eq!(storage.profile(), StorageProfile::Mobile);
         assert_eq!(storage.profile().tuning().cache_capacity_bytes, Some(16 * 1024 * 1024));
     }
@@ -3106,6 +3105,6 @@ mod tests {
 
     // Note: The 4 contention tests (test_try_node_embedding_exists_sync_reports_busy_*,
     // test_load_*_sync_reports_busy_under_contention) were removed as part of the
-    // P0 RwLock removal. Sled is thread-safe internally and no longer needs an
+    // P0 RwLock removal. The KV engine is thread-safe internally and needs no
     // external RwLock, so contention-based "busy" errors no longer occur.
 }

@@ -32,12 +32,21 @@ jobs:
       - name: Check default features
         run: cargo check -p nopaldb
 
+      # `embeddings` sin `embeddings-index` no compiló durante meses porque
+      # ningún paso probaba esa combinación.
+      - name: Check embeddings without the HNSW index
+        run: cargo check -p nopaldb --features embeddings
+
+      # Los ejemplos no los compilaba nadie y dos dejaron de compilar.
+      - name: Examples compile-check
+        run: cargo check -p nopaldb --features full --examples
+
       # `cargo bench --no-run` no sirve aquí: el perfil release lleva
       # `panic = "abort"` y el harness de los benches exige `unwind`, así que
       # las dependencias compiladas para release chocan ("requires panic
-      # strategy abort"). `cargo check --benches` compila los tres benches en
+      # strategy abort"). `cargo check --benches` compila los benches en
       # perfil dev, que es lo que este paso necesita: que no se rompan.
-      - name: Benches compile-check (hnsw_ops, gc_removals, graph_ops)
+      - name: Benches compile-check
         run: cargo check -p nopaldb --features core --benches
 
       - name: Clippy (semantic)
@@ -83,7 +92,7 @@ jobs:
         run: cargo test -p nopaldb --features core --test sack_traversal_test
 
       - name: Test PropertyValue conversion API
-        run: cargo test -p nopaldb --features core --test property_value_conversion_test --test export_test
+        run: cargo test -p nopaldb --features core --test property_value_conversion_test --test export_test --test parquet_codecs_test
 
       - name: Test EXPLAIN honesty (plan == execution)
         run: cargo test -p nopaldb --features core --test nql_explain_honesty_test

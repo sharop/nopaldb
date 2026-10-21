@@ -147,7 +147,6 @@ async fn has_suspicious_circular_transfers(
     detect_cycle_with_length(graph, start_account, &mut visited, &mut path).await
 }
 
-#[async_recursion::async_recursion]
 async fn detect_cycle_with_length(
     graph: &Graph,
     current: uuid::Uuid,
@@ -174,7 +173,8 @@ async fn detect_cycle_with_length(
 
     for edge in edges {
         if edge.edge_type == "TRANSFER" {
-            if detect_cycle_with_length(graph, edge.target, visited, path).await? {
+            // Recursión async: el future recursivo va en caja.
+            if Box::pin(detect_cycle_with_length(graph, edge.target, visited, path)).await? {
                 return Ok(true);
             }
         }

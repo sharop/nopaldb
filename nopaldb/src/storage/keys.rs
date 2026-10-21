@@ -27,13 +27,6 @@ use crate::types::{EdgeId, NodeId};
 /// migración de layout (F5.5) para copiar/limpiar bases v1; los nodos de
 /// runtime viven en `entities` con claves de `v2` desde F5.4.
 pub(crate) const NODE_PREFIX: &str = "node:";
-/// Prefijo común de los índices de adyacencia (`idx:out:` / `idx:in:`).
-/// LEGACY sin consumidores desde F5.3 (la adyacencia vive en el keyspace
-/// `adjacency` con claves de `v2`). La migración F5.5 NO lo usa a propósito:
-/// el borrado del legacy va por los prefijos exactos `idx:out:`/`idx:in:`
-/// — el prefijo genérico pisaría `idx:prop:` (la sub-migración prop-idx).
-#[allow(dead_code)]
-pub(crate) const ADJ_PREFIX: &[u8] = b"idx:";
 /// Prefijo del índice por timestamp. LEGACY: la migración F5.5 lo borra sin
 /// copiarlo (el índice ts v2 se reconstruye desde `history`, des-blobeado).
 pub(crate) const TS_PREFIX: &str = "ts:";
@@ -58,12 +51,6 @@ pub(crate) const ADJ_IN_PREFIX: &str = "idx:in:";
 /// a `catalog` (nombres sin prefijo) y luego lo borra — salvo la marca de
 /// diagnóstico `LEGACY_META_LAYOUT_MIGRATED`.
 pub(crate) const LEGACY_META_PREFIX: &str = "meta:";
-#[allow(dead_code)]
-pub(crate) const LEGACY_META_NEXT_TIMESTAMP: &str = "meta:next_timestamp";
-#[allow(dead_code)]
-pub(crate) const LEGACY_META_NEXT_TX_ID: &str = "meta:next_tx_id";
-#[allow(dead_code)]
-pub(crate) const LEGACY_META_PROP_IDX_FORMAT: &str = "meta:prop_idx_format";
 
 /// Marca de diagnóstico que la migración F5.5 deja EN el tree default
 /// (valor: u64 BE = 2). Los binarios ≤0.5.2 la ignoran (solo leen los tres
@@ -72,58 +59,6 @@ pub(crate) const LEGACY_META_PROP_IDX_FORMAT: &str = "meta:prop_idx_format";
 /// agravado del diseño F5 (invariante 8). Es la ÚNICA clave del default que
 /// la limpieza del legacy conserva.
 pub(crate) const LEGACY_META_LAYOUT_MIGRATED: &str = "meta:layout_migrated_to";
-
-// ─── Constructores (keyspace default) ────────────────────────────────────────
-// LEGACY todos desde F5.4: los reutilizará la migración de layout (F5.5);
-// ningún path de runtime los llama ya.
-
-/// Registro base de un nodo: `node:{uuid}`. LEGACY (F5.5).
-#[allow(dead_code)]
-pub(crate) fn node_key(id: NodeId) -> String {
-    format!("{NODE_PREFIX}{id}")
-}
-
-/// Versión MVCC de un nodo: `node:{uuid}:v{n}` (n en decimal, sin padding).
-/// LEGACY (F5.5).
-#[allow(dead_code)]
-pub(crate) fn node_version_key(id: NodeId, version: u64) -> String {
-    format!("{NODE_PREFIX}{id}:v{version}")
-}
-
-/// Puntero a la versión current de un nodo: `node:{uuid}:current`.
-/// LEGACY (F5.5).
-#[allow(dead_code)]
-pub(crate) fn node_current_key(id: NodeId) -> String {
-    format!("{NODE_PREFIX}{id}:current")
-}
-
-/// Lista de versiones de un nodo: `node:{uuid}:versions`. LEGACY (F5.5).
-#[allow(dead_code)]
-pub(crate) fn node_versions_key(id: NodeId) -> String {
-    format!("{NODE_PREFIX}{id}:versions")
-}
-
-/// Índice por timestamp: `ts:{n}` (n en decimal, sin padding — el orden
-/// lexicográfico NO es el numérico; los consumidores parsean, no ordenan).
-/// LEGACY (F5.5): el v2 des-blobea a `v2::ts_index_key` en `indexes`.
-#[allow(dead_code)]
-pub(crate) fn ts_key(ts: u64) -> String {
-    format!("{TS_PREFIX}{ts}")
-}
-
-/// Adyacencia saliente de un nodo: `idx:out:{uuid}`. LEGACY sin
-/// consumidores desde F5.3; lo usará la migración de layout (F5.5).
-#[allow(dead_code)]
-pub(crate) fn adjacency_out_key(id: NodeId) -> String {
-    format!("{ADJ_OUT_PREFIX}{id}")
-}
-
-/// Adyacencia entrante de un nodo: `idx:in:{uuid}`. LEGACY sin
-/// consumidores desde F5.3; lo usará la migración de layout (F5.5).
-#[allow(dead_code)]
-pub(crate) fn adjacency_in_key(id: NodeId) -> String {
-    format!("{ADJ_IN_PREFIX}{id}")
-}
 
 // ─── Constructores (keyspace versioned_edges) ────────────────────────────────
 

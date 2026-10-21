@@ -329,7 +329,6 @@ fn keyspaces_independientes_y_clear_local() {
     }
 }
 
-#[cfg(feature = "storage-redb")]
 #[test]
 fn persistencia_tras_reabrir_redb() {
     let dir = tempfile::tempdir().unwrap();
@@ -346,7 +345,6 @@ fn persistencia_tras_reabrir_redb() {
     );
 }
 
-#[cfg(feature = "storage-redb")]
 #[test]
 fn una_base_sled_no_se_abre_con_redb_y_dice_como_migrar() {
     // sled se retiró en 0.8.0 (#141). Un directorio con una base sled de
@@ -363,7 +361,6 @@ fn una_base_sled_no_se_abre_con_redb_y_dice_como_migrar() {
     assert!(!dir.path().join("nopal.redb").exists(), "no se crea una base al lado");
 }
 
-#[cfg(feature = "storage-redb")]
 #[test]
 fn los_tres_perfiles_abren() {
     // Regresión del bug 0.4.x (el perfil Server pedía compresión y

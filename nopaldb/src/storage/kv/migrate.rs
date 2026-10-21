@@ -1,4 +1,5 @@
-// Copia verificada de una base entre motores KV (sled ↔ redb).
+// Copia verificada de una base KV (redb → redb desde 0.8.0; nació para
+// migrar sled → redb).
 //
 // Los índices, versiones MVCC y metadata son BYTES para esta capa: la copia
 // es keyspace por keyspace, par por par, sin interpretar nada — por eso el

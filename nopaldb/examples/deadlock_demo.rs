@@ -2,7 +2,9 @@
 
 
 #[cfg(feature = "full-isolation")]
-use nopaldb::IsolationLevel;
+use nopaldb::{Graph, IsolationLevel, Node, PropertyValue};
+#[cfg(feature = "full-isolation")]
+use std::sync::Arc;
 
 
 #[tokio::main]

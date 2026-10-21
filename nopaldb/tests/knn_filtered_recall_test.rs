@@ -39,7 +39,7 @@ fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
 fn seeded_vectors(n: usize, dim: usize, rng: &mut StdRng) -> Vec<(NodeId, Vec<f32>)> {
     (0..n)
         .map(|_| {
-            let v: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0f32..1.0)).collect();
+            let v: Vec<f32> = (0..dim).map(|_| rng.random_range(-1.0f32..1.0)).collect();
             (NodeId::new_v4(), v)
         })
         .collect()
@@ -81,7 +81,7 @@ fn legacy_overfetch_then_filter(
 fn large_index(n: usize, dim: usize, seed: u64) -> (HnswIndex, Vec<(NodeId, Vec<f32>)>, Vec<f32>) {
     let mut rng = StdRng::seed_from_u64(seed);
     let vectors = seeded_vectors(n, dim, &mut rng);
-    let query: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0f32..1.0)).collect();
+    let query: Vec<f32> = (0..dim).map(|_| rng.random_range(-1.0f32..1.0)).collect();
     let index = HnswIndex::build_batch(vectors.clone(), "m", dim).unwrap();
     assert!(index.len() > EXACT_SEARCH_THRESHOLD, "el test necesita el camino HNSW");
     (index, vectors, query)
@@ -169,7 +169,7 @@ fn recall_across_selectivities_beats_the_old_overfetch() {
             // Muestra dispersa (no un prefijo) para no favorecer ninguna región.
             let allowed: HashSet<NodeId> = vectors
                 .iter()
-                .filter(|_| rng.gen_bool(allowed_size as f64 / n as f64))
+                .filter(|_| rng.random_bool(allowed_size as f64 / n as f64))
                 .map(|(id, _)| *id)
                 .collect();
             if allowed.is_empty() {
@@ -248,7 +248,7 @@ fn below_threshold_still_exact_and_deterministic() {
     let dim = 8;
     let mut rng = StdRng::seed_from_u64(5);
     let vectors = seeded_vectors(200, dim, &mut rng);
-    let query: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0f32..1.0)).collect();
+    let query: Vec<f32> = (0..dim).map(|_| rng.random_range(-1.0f32..1.0)).collect();
     let allowed: HashSet<NodeId> = vectors.iter().skip(100).map(|(id, _)| *id).collect();
 
     let index = HnswIndex::build_batch(vectors.clone(), "m", dim).unwrap();

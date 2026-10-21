@@ -114,19 +114,16 @@ El binario `nopaldb` (feature `cli`, con ambos motores) envuelve la misma
 función:
 
 ```bash
-cargo install nopaldb --features cli
+cargo install nopaldb --version "0.7.*" --features cli   # 0.7: la última que lee sled
 nopaldb engine data/plantas.db                       # sled | redb | ninguno
 nopaldb migrate data/plantas.db data/plantas_redb.db  # --from auto --to redb por defecto
 ```
 
 Imprime una línea por keyspace (pares y bytes), los totales y el resultado
 de la verificación. Códigos de salida: 0 verificado; 1 uso o argumentos
-inválidos; 2 la copia falló o el destino no estaba vacío. Sin instalar nada,
-el ejemplo del repositorio hace lo mismo:
-
-```bash
-cargo run --example migrate_engine --features storage-sled -- data/plantas.db auto data/plantas_redb.db redb
-```
+inválidos; 2 la copia falló o el destino no estaba vacío. En 0.6–0.7 el
+ejemplo del repositorio `migrate_engine` hacía lo mismo sin instalar nada;
+se retiró en 0.8.0 junto con sled.
 
 ### Volver atrás
 

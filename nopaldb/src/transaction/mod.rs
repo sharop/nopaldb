@@ -135,10 +135,6 @@ pub struct Transaction {
     // Referencia al grafo
     graph: Arc<Graph>,
 
-    // Locks adquiridos (para liberar en drop)
-    #[allow(dead_code)]
-    locks: Vec<NodeId>,
-
     // ============ CAMPOS CONDICIONALES (solo con full-isolation) ============
 
     /// Nivel de isolation de esta transacción
@@ -147,12 +143,10 @@ pub struct Transaction {
 
     /// Timestamp del snapshot (para Repeatable Read)
     #[cfg(feature = "full-isolation")]
-    #[allow(dead_code)]
     snapshot_timestamp: Timestamp,
 
     /// Nodos leídos (para Serializable - conflict detection)
     #[cfg(feature = "full-isolation")]
-    #[allow(dead_code)]
     read_set: Arc<RwLock<HashSet<NodeId>>>,
 
     /// Nodos escritos (para Serializable - conflict detection)
@@ -180,7 +174,6 @@ impl Transaction {
             deleted_nodes: HashSet::new(),
             deleted_edges: HashSet::new(),
             graph,
-            locks: Vec::new(),
 
             #[cfg(feature = "full-isolation")]
             isolation_level: IsolationLevel::default(),

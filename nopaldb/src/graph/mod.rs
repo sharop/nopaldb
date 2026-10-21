@@ -1963,6 +1963,9 @@ impl Graph {
         #[cfg(feature = "embeddings")]
         {
             let purged = self.storage.delete_node_embeddings(id).await?;
+            // Sin índice HNSW no hay caché que limpiar.
+            #[cfg(not(feature = "embeddings-index"))]
+            let _ = purged;
             #[cfg(feature = "embeddings-index")]
             if purged > 0 {
                 // Retirar el punto de cada índice en caché (tombstone): la
@@ -2175,7 +2178,9 @@ impl Graph {
         Ok(())
     }
 
-    /// Add node with label and properties (within transaction)
+    /// Add node with label and properties. Despite taking a transaction, it
+    /// writes directly to the graph: the transaction is ignored.
+    #[deprecated(since = "0.8.1", note = "ignores the transaction and writes directly; use `tx.add_node(Node::new(label)...)` or `Graph::add_node`. Will be removed in 0.9.")]
     pub async fn add_node_with_label_and_props(
         &self,
         label: String,
@@ -2194,7 +2199,9 @@ impl Graph {
         Ok(node)
     }
 
-    /// Delete node (within transaction)
+    /// Delete node. Despite taking a transaction, it deletes directly: the
+    /// transaction is ignored.
+    #[deprecated(since = "0.8.1", note = "ignores the transaction and deletes directly; use `tx.delete_node(id)` or `Graph::delete_node`. Will be removed in 0.9.")]
     pub async fn delete_node_with_tx(
         &self,
         id: NodeId,
@@ -2204,7 +2211,9 @@ impl Graph {
         self.delete_node(id).await
     }
 
-    /// Update node (within transaction)
+    /// Does nothing: it was never implemented and returns `Ok(())` without
+    /// writing.
+    #[deprecated(since = "0.8.1", note = "does nothing (never implemented); use `tx.add_node(node)` with the same id, which writes a new version on commit. Will be removed in 0.9.")]
     pub async fn update_node_with_tx(
         &self,
         _node: Node,
@@ -2462,7 +2471,7 @@ impl Graph {
     }
 
     /// Construye un `HnswIndex` HNSW en RAM para todos los nodos que tienen
-    /// un embedding del modelo `model` persistido en Sled.
+    /// un embedding del modelo `model` persistido.
     ///
     /// Usa `build_batch` con parallel_insert para construcción eficiente.
     /// Retorna error si no hay embeddings para ese modelo.
@@ -2841,58 +2850,61 @@ impl Graph {
         })
     }
 
-    /// Helper recursivo para DFS
-    #[async_recursion::async_recursion]
-    async fn dfs_recursive(
-        &self,
+    /// Helper recursivo para DFS. La recursión async necesita un future en
+    /// caja: se escribe a mano (`Pin<Box<dyn Future + Send>>`) en vez de con
+    /// la macro `async_recursion`, que generaba exactamente esto.
+    fn dfs_recursive<'a>(
+        &'a self,
         current_id: NodeId,
         depth: usize,
-        config: &TraversalConfig,
-        visited: &mut HashSet<NodeId>,
-        result: &mut Vec<NodeId>,
-        truncated: &mut bool,
-    ) -> Result<()> {
-        if let Some(max_depth) = config.max_depth
-            && depth > max_depth {
-            *truncated = true;
-            return Ok(());
-        }
-
-        if let Some(max_nodes) = config.max_nodes
-            && result.len() >= max_nodes {
-            *truncated = true;
-            return Ok(());
-        }
-
-        if !visited.insert(current_id) {
-            return Ok(());
-        }
-
-        let current_node = self.get_node(current_id).await?;
-
-        if let Some(ref filter) = config.filter
-            && !filter(&current_node) {
-            return Ok(());
-        }
-
-        result.push(current_id);
-
-        let neighbors = self.neighbors(current_id, config.direction).await?;
-
-        for neighbor_id in neighbors {
-            if !visited.contains(&neighbor_id) {
-                self.dfs_recursive(
-                    neighbor_id,
-                    depth + 1,
-                    config,
-                    visited,
-                    result,
-                    truncated,
-                ).await?;
+        config: &'a TraversalConfig,
+        visited: &'a mut HashSet<NodeId>,
+        result: &'a mut Vec<NodeId>,
+        truncated: &'a mut bool,
+    ) -> crate::query::nql::executor::operators::BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if let Some(max_depth) = config.max_depth
+                && depth > max_depth {
+                *truncated = true;
+                return Ok(());
             }
-        }
 
-        Ok(())
+            if let Some(max_nodes) = config.max_nodes
+                && result.len() >= max_nodes {
+                *truncated = true;
+                return Ok(());
+            }
+
+            if !visited.insert(current_id) {
+                return Ok(());
+            }
+
+            let current_node = self.get_node(current_id).await?;
+
+            if let Some(ref filter) = config.filter
+                && !filter(&current_node) {
+                return Ok(());
+            }
+
+            result.push(current_id);
+
+            let neighbors = self.neighbors(current_id, config.direction).await?;
+
+            for neighbor_id in neighbors {
+                if !visited.contains(&neighbor_id) {
+                    self.dfs_recursive(
+                        neighbor_id,
+                        depth + 1,
+                        config,
+                        visited,
+                        result,
+                        truncated,
+                    ).await?;
+                }
+            }
+
+            Ok(())
+        })
     }
 
     /// Encuentra el camino más corto entre dos nodos (Dijkstra)
@@ -3552,7 +3564,7 @@ impl Graph {
         &self,
         path: impl AsRef<std::path::Path>,
     ) -> Result<(crate::shacl::ValidationReport, crate::shacl::ShapesReport)> {
-        let source = tokio::fs::read_to_string(path).await.map_err(NopalError::IoError)?;
+        let source = read_text_file(path.as_ref()).await?;
         self.validate_shapes(&source).await
     }
 
@@ -3623,9 +3635,7 @@ impl Graph {
         &self,
         path: impl AsRef<std::path::Path>,
     ) -> Result<crate::rdf_owl::importer::ImportReport> {
-        let source = tokio::fs::read_to_string(path)
-            .await
-            .map_err(NopalError::IoError)?;
+        let source = read_text_file(path.as_ref()).await?;
         self.import_turtle(&source).await
     }
 
@@ -3654,8 +3664,10 @@ impl Graph {
         path: impl AsRef<std::path::Path>,
     ) -> Result<crate::rdf_owl::exporter::ExportReport> {
         let export = self.export_turtle().await?;
-        tokio::fs::write(path, export.turtle)
+        let path = path.as_ref().to_path_buf();
+        tokio::task::spawn_blocking(move || std::fs::write(path, export.turtle))
             .await
+            .map_err(|e| NopalError::Custom(format!("file write task failed: {e}")))?
             .map_err(NopalError::IoError)?;
         Ok(export.report)
     }
@@ -5055,4 +5067,16 @@ mod tests {
         tx.commit().await.unwrap();
         assert!(!graph.index_manager.has_pending(), "commit transaccional: publicado antes del ack");
     }
+}
+
+/// Reads a whole text file off the async runtime. `std::fs` inside
+/// `spawn_blocking` is what `tokio::fs` does internally; writing it here saves
+/// the `fs` feature of tokio for three call sites.
+#[cfg(feature = "owl-import")]
+async fn read_text_file(path: &std::path::Path) -> Result<String> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || std::fs::read_to_string(path))
+        .await
+        .map_err(|e| NopalError::Custom(format!("file read task failed: {e}")))?
+        .map_err(NopalError::IoError)
 }

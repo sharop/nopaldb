@@ -32,14 +32,14 @@ cargo test  -p nopaldb --lib
 
 ### `core` — Analytics & Algorithms
 
-Everything in `default` plus Arrow/Parquet export, ML data helpers, graph algorithms, hypergraph support, embeddings, and full-text indexing.
+Everything in `default` plus Arrow/Parquet export, ML data helpers, graph algorithms, the experimental `EdgeTarget` type, embeddings, and full-text indexing.
 
 | Feature | What it enables |
 |---------|-----------------|
 | `analytics` | Apache Arrow + Parquet columnar export |
 | `ml` | ML integrations and Arrow tensor helpers |
 | `algorithms` | PageRank, centrality, clustering, community detection, shortest path |
-| `hypergraph` | Hyperedges via `EdgeTarget` |
+| `hypergraph` | Experimental: defines the `EdgeTarget` type (hyperedges, n-ary roles), not yet wired into edges (`Edge.target` is still one node) |
 | `embeddings` / `embeddings-index` | Semantic embeddings and HNSW indexing |
 | `fulltext` | Tantivy-backed full-text indexes |
 | `full-isolation` | Isolation levels, lock manager and deadlock detection (in the `full` tier) |

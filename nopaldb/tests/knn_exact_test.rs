@@ -31,7 +31,7 @@ fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
 fn seeded_vectors(n: usize, dim: usize, rng: &mut StdRng) -> Vec<(NodeId, Vec<f32>)> {
     (0..n)
         .map(|_| {
-            let v: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0f32..1.0)).collect();
+            let v: Vec<f32> = (0..dim).map(|_| rng.random_range(-1.0f32..1.0)).collect();
             (NodeId::new_v4(), v)
         })
         .collect()
@@ -49,7 +49,7 @@ fn exact_matches_brute_force_reference() {
         let index = HnswIndex::build_batch(vectors.clone(), "m", dim).unwrap();
 
         for q in 0..5 {
-            let query: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0f32..1.0)).collect();
+            let query: Vec<f32> = (0..dim).map(|_| rng.random_range(-1.0f32..1.0)).collect();
             let got = index.search_knn(&query, k).unwrap();
 
             let mut expected: Vec<(NodeId, f32)> = vectors
@@ -79,7 +79,7 @@ fn exact_search_is_deterministic() {
     let dim = 8;
     let mut rng = StdRng::seed_from_u64(2024);
     let vectors = seeded_vectors(100, dim, &mut rng);
-    let query: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0f32..1.0)).collect();
+    let query: Vec<f32> = (0..dim).map(|_| rng.random_range(-1.0f32..1.0)).collect();
 
     let index = HnswIndex::build_batch(vectors.clone(), "m", dim).unwrap();
     let first = index.search_knn(&query, 10).unwrap();
@@ -130,7 +130,7 @@ fn exact_filtered_search_sees_all_points() {
     let dim = 8;
     let mut rng = StdRng::seed_from_u64(11);
     let vectors = seeded_vectors(200, dim, &mut rng);
-    let query: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0f32..1.0)).collect();
+    let query: Vec<f32> = (0..dim).map(|_| rng.random_range(-1.0f32..1.0)).collect();
 
     // Permitir solo los 5 vectores MÁS LEJANOS según la referencia: un
     // over-fetch de k*4 no los alcanzaría, el scan exacto sí.

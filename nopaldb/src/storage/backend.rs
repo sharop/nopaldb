@@ -81,7 +81,7 @@ pub const DEFAULT_WAL_CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024;
 impl Default for StorageOptions {
     fn default() -> Self {
         Self {
-            // `Auto`: redb (`kv::default_engine`); una base sled de 0.5.x da
+            // `Auto`: redb (`kv::resolve_engine`); una base sled de 0.5.x da
             // la receta de migración.
             engine: StorageEngine::Auto,
             profile: StorageProfile::Default,
