@@ -20,6 +20,8 @@ use crate::error::NopalError;
 #[cfg(feature = "hybrid")]
 use crate::index::{IndexQuery, IndexType};
 use crate::types::{NodeId, PropertyValue};
+#[cfg(feature = "embeddings-index")]
+use crate::types::Node;
 
 use super::candidate_set::CandidateSet;
 use super::Graph;
@@ -44,6 +46,72 @@ impl HybridFilter {
     pub fn is_empty(&self) -> bool {
         self.label.is_none() && self.props.is_empty()
     }
+}
+
+/// What a node must satisfy to belong to a search's universe: the
+/// `{label, props}` filter plus `prop ∈ [values]` lists (what NQL pushes from
+/// `c.p in [...]`, #214 phase 2). Crate-internal on purpose: [`HybridFilter`]
+/// has public fields, and growing it would break every caller that builds it
+/// with a struct literal.
+///
+/// It is checked on hydrated nodes with the same equality the NQL evaluator
+/// uses (`PropertyValue`'s `PartialEq`, typed: `Int(1)` is not
+/// `Float(1.0)`), so a universe built here never disagrees with the `where`
+/// that produced it. The property index only *proposes* members; a member
+/// is confirmed here whenever the node is read anyway.
+#[cfg(feature = "embeddings-index")]
+#[derive(Debug, Clone, Default)]
+pub(crate) struct NodeFilter {
+    pub label: Option<String>,
+    pub eq: Vec<(String, PropertyValue)>,
+    pub any_of: Vec<(String, Vec<PropertyValue>)>,
+}
+
+#[cfg(feature = "embeddings-index")]
+impl NodeFilter {
+    pub(crate) fn new(filter: Option<&HybridFilter>, any_of: Vec<(String, Vec<PropertyValue>)>) -> Self {
+        let (label, eq) = match filter {
+            Some(f) => (f.label.clone(), f.props.clone()),
+            None => (None, Vec::new()),
+        };
+        NodeFilter { label, eq, any_of }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.label.is_none() && !self.has_props()
+    }
+
+    /// Anything beyond the label. A label-only filter keeps the exact
+    /// behaviour it had before #214 phase 2 (same paths, same costs).
+    pub(crate) fn has_props(&self) -> bool {
+        !self.eq.is_empty() || !self.any_of.is_empty()
+    }
+
+    pub(crate) fn matches(&self, node: &Node) -> bool {
+        self.label.as_deref().is_none_or(|l| l == node.label)
+            && self.eq.iter().all(|(p, v)| node.properties.get(p) == Some(v))
+            && self
+                .any_of
+                .iter()
+                .all(|(p, vs)| node.properties.get(p).is_some_and(|x| vs.contains(x)))
+    }
+}
+
+/// Whether the storage property index can answer `prop = value`: it keys
+/// scalars only, and property names that fit in a `u16` length
+/// (`encode_property_index_key`). Anything else must never seed a set from
+/// the index — the lookup comes back empty and every member would be lost.
+#[cfg(feature = "embeddings-index")]
+fn indexable(prop: &str, value: &PropertyValue) -> bool {
+    u16::try_from(prop.len()).is_ok()
+        && matches!(
+            value,
+            PropertyValue::Null
+                | PropertyValue::Bool(_)
+                | PropertyValue::Int(_)
+                | PropertyValue::Float(_)
+                | PropertyValue::String(_)
+        )
 }
 
 /// A hybrid search request. At least one of `text` / `vector` must be set.
@@ -117,10 +185,13 @@ pub enum VectorPath {
     /// Approximate: a short result may mean "found no more", not "there are
     /// no more".
     HnswFiltered,
-    /// Label-only filter: unfiltered KNN, label checked on the hydrated
-    /// candidates in distance order, fetch escalated until enough of them
-    /// carry the label. No label scan. Approximate like `HnswFiltered`; a
-    /// short result means the whole index was walked.
+    /// Filter checked on the candidates: unfiltered KNN, the filter checked
+    /// on the hydrated candidates in distance order, fetch escalated until
+    /// enough of them pass. No set built. Approximate like `HnswFiltered`; a
+    /// short result means the whole index was walked. The name is from when
+    /// only a label-only filter took this path; since #214 phase 2 a filter
+    /// with properties takes it too while it is broad enough (the name stays:
+    /// callers read it as a string).
     LabelChecked,
 }
 
@@ -156,17 +227,20 @@ impl VectorPath {
 pub enum TextPath {
     /// No filter: global top-N by BM25.
     Global,
-    /// Label-only filter: global top-N, label checked on the hits in rank
-    /// order, fetch escalated ×4; enough hits carried the label before the
-    /// cap. The ranks are the ones the allowed set would give.
+    /// Filter checked on the hits: global top-N, the filter checked on the
+    /// hits in rank order, fetch escalated ×4; enough hits passed before the
+    /// cap. The ranks are the ones the allowed set would give. Named when
+    /// only a label-only filter took this path; since #214 phase 2 a broad
+    /// property filter takes it too (see [`VectorPath::LabelChecked`]).
     GlobalLabelChecked,
     /// Allowed set of at most [`TEXT_EXACT_THRESHOLD`] nodes: tantivy scored
     /// only the allowed nodes (`query_scored_in`), no global query at all.
     /// Complete by construction, cost proportional to the set and
     /// independent of how many documents match the text.
     TermSetOverAllowed,
-    /// Large allowed set, or a label too rare among the matches: the global
-    /// escalation reached its cap still short, so the allowed set was
+    /// Large allowed set, or a filter too rare among the matches: the global
+    /// escalation reached its cap still short (or, for a filter with
+    /// properties, its pass rate said it would), so the allowed set was
     /// scored in chunks of [`TEXT_EXACT_THRESHOLD`] and merged. Complete;
     /// the expensive case, paid only when the cheap one failed.
     GlobalThenTermSet,
@@ -342,6 +416,18 @@ impl Graph {
     /// coseno — más la configuración efectiva y el underfill por rama.
     #[cfg(feature = "hybrid")]
     pub async fn search_hybrid_explain(&self, q: HybridQuery) -> Result<HybridExplain> {
+        self.search_hybrid_explain_with(q, Vec::new()).await
+    }
+
+    /// [`Self::search_hybrid_explain`] with `prop ∈ [values]` lists added to
+    /// the filter: what NQL pushes from `c.p in [...]` (#214 phase 2). Kept
+    /// crate-internal so [`HybridFilter`] does not grow a public field.
+    #[cfg(feature = "hybrid")]
+    pub(crate) async fn search_hybrid_explain_with(
+        &self,
+        q: HybridQuery,
+        any_of: Vec<(String, Vec<PropertyValue>)>,
+    ) -> Result<HybridExplain> {
         if q.text.is_none() && q.vector.is_none() {
             return Err(NopalError::Custom(
                 "search_hybrid: provide at least one of `text` or `vector`".into(),
@@ -349,27 +435,44 @@ impl Graph {
         }
         let candidates = q.k.saturating_mul(q.overfetch).max(q.k);
 
-        // 1. A label-only filter is checked on each path's candidates as they
-        //    are read, in rank order. The ranks come out as they would from
-        //    the allowed set (each path is restricted before the fusion, so
-        //    the top-k stays computed inside the label, #115) without the
-        //    label scan that building the set costs: 132 ms per query at
-        //    100k nodes, for 40 candidates. Filtering after the fusion
-        //    instead would rank the label's nodes against foreign ones and
-        //    could return fewer than k. Any other filter goes through the
-        //    allowed-set (None = no restriction).
-        //    With a caller set there is a set already (#214): the label is
-        //    confirmed on its members, so the shortcut does not apply.
-        let label_only = q
-            .filter
-            .as_ref()
-            .filter(|f| f.props.is_empty() && q.candidates.is_all())
-            .and_then(|f| f.label.clone());
-        let mut allowed = match label_only {
-            Some(_) => None,
-            None => self.hybrid_allowed_set(&q.candidates, q.filter.as_ref()).await?,
+        let filter = NodeFilter::new(q.filter.as_ref(), any_of);
+
+        // 1. A filter is checked on each path's candidates as they are read,
+        //    in rank order. The ranks come out as they would from the allowed
+        //    set (each path is restricted before the fusion, so the top-k
+        //    stays computed inside the filter, #115) without building the set
+        //    first. Filtering after the fusion instead would rank the
+        //    filter's nodes against foreign ones and could return fewer than
+        //    k. With a caller set there is a set already (#214): the filter
+        //    is confirmed on its members, so the shortcut does not apply.
+        //
+        //    Until #214 phase 2 only a label-only filter took this path and
+        //    any property filter built the set up front. That is cheap for a
+        //    selective filter and very expensive for a broad one: the set
+        //    reads every matching index entry and hydrates every member to
+        //    confirm the label — 327 ms at 100k chunks for a property 90 % of
+        //    them carry, against 1.6 ms for the label alone. Now a property
+        //    filter starts here too, and the pass rate of what the first
+        //    rounds read predicts whether the cap would run out: when it
+        //    would, the set is built right away instead of escalating to the
+        //    cap first (`predict`). A label-only filter keeps the exact
+        //    behaviour it had (no prediction, same paths, same costs).
+        //
+        //    One exception, checked first and cheaply: a property with at
+        //    most `SEED_PROBE_LIMIT` members (a bounded read of the property
+        //    index, at most that many keys) builds the set right away, as
+        //    every property filter did until 0.6.20 — for a small set that is
+        //    the cheapest path and the exact one, and no candidate has to be
+        //    read to find that out.
+        let small = if q.candidates.is_all() && filter.has_props() {
+            self.small_seed(&filter).await?
+        } else {
+            None
         };
-        let has_filter = q.filter.as_ref().is_some_and(|f| !f.is_empty());
+        let checked = q.candidates.is_all() && !filter.is_empty() && small.is_none();
+        let predict = checked && filter.has_props();
+        let mut allowed = if checked { None } else { self.allowed_set(&q.candidates, &filter, small).await? };
+        let has_filter = !filter.is_empty();
         let candidate_source = match (q.candidates.is_all(), has_filter) {
             (true, false) => CandidateSource::Unrestricted,
             (true, true) => CandidateSource::Filter,
@@ -407,7 +510,13 @@ impl Graph {
             // corpus grande sería la parte cara de la consulta, y para un
             // corpus chico el ahorro es de décimas de milisegundo.
             let cap = crate::index::fulltext::QUERY_DEFAULT_LIMIT.max(candidates);
-            let mut limit = candidates.clamp(1, cap);
+            // Con propiedades (#214 fase 2) la primera ronda pide el doble:
+            // cada consulta a tantivy puntúa todos los documentos que tienen
+            // el término, pida 40 u 80, así que una segunda ronda cuesta
+            // tanto como la primera, y leer el doble de ids casi nada. Un
+            // filtro de hasta el 50 % se resuelve así en una sola ronda.
+            let first = if predict { candidates.saturating_mul(2) } else { candidates };
+            let mut limit = first.clamp(1, cap);
             let small_set = allowed.as_ref().filter(|s| s.len() <= TEXT_EXACT_THRESHOLD);
             let (kept, path) = if let Some(set) = small_set {
                 (
@@ -420,26 +529,31 @@ impl Graph {
                     // Menos de lo pedido = el índice no tiene más coincidencias.
                     let no_more = scored.len() < limit;
                     let at_cap = limit >= cap;
-                    let scored = match &label_only {
-                        Some(label) => self.keep_label_in_rank_order(scored, label, candidates).await?,
-                        None => scored,
+                    let examined = scored.len();
+                    let scored = if checked {
+                        self.keep_matching_in_rank_order(scored, &filter, candidates).await?
+                    } else {
+                        scored
                     };
                     let kept: Vec<(NodeId, Option<f32>)> = scored
                         .into_iter()
                         .filter(|(id, _)| allowed.as_ref().is_none_or(|s| s.contains(id)))
                         .take(candidates)
                         .collect();
-                    let filtered = allowed.is_some() || label_only.is_some();
+                    let filtered = allowed.is_some() || checked;
                     if kept.len() >= candidates || no_more || !filtered {
-                        let path = if label_only.is_some() { TextPath::GlobalLabelChecked } else { TextPath::Global };
+                        let path = if checked { TextPath::GlobalLabelChecked } else { TextPath::Global };
                         break (kept, path);
                     }
-                    if at_cap {
-                        // Con filtro de solo etiqueta el conjunto se construye
-                        // ahora (índice `label_idx`, #207); la rama vectorial lo
+                    // A ese ritmo de aciertos, ¿alcanzaría el tope? Si no,
+                    // escalar hasta él es tiempo perdido: el conjunto ya.
+                    let hopeless = predict && fetch_needed(kept.len(), examined, candidates) > cap;
+                    if at_cap || hopeless {
+                        // El conjunto se construye ahora (con solo etiqueta,
+                        // índice `label_idx`, #207); la rama vectorial lo
                         // reutiliza.
                         if allowed.is_none() {
-                            allowed = self.hybrid_allowed_set(&q.candidates, q.filter.as_ref()).await?;
+                            allowed = self.allowed_set(&q.candidates, &filter, None).await?;
                         }
                         let set = allowed.as_ref().expect("filtro ⇒ conjunto permitido");
                         break (
@@ -447,7 +561,7 @@ impl Graph {
                             TextPath::GlobalThenTermSet,
                         );
                     }
-                    limit = limit.saturating_mul(4).min(cap);
+                    limit = next_fetch(limit, kept.len(), examined, candidates, predict).min(cap);
                 }
             };
             for (id, score) in kept {
@@ -476,21 +590,31 @@ impl Graph {
         if let Some((vector, model)) = &q.vector {
             let index = self.get_or_build_embedding_index(model).await?;
             let ef = q.ef_search.unwrap_or(DEFAULT_EF_SEARCH);
-            let label_checked = match &label_only {
-                Some(label) => {
-                    self.vector_path_label_checked(&index, vector, label, candidates, candidates, ef)
-                        .await?
-                }
-                None => None,
+            // Con propiedades y el conjunto ya construido por la rama de texto
+            // (el filtro resultó selectivo), el conjunto es lo correcto: es
+            // exacto si es chico. Se midió comprobar la pertenencia en el
+            // conjunto sobre un HNSW sin filtro cuando el conjunto es grande:
+            // con 2 000 miembros de 100k, 45 ms contra 24 ms del recorrido
+            // filtrado (pedir 2 000 vecinos es lo caro). Con solo etiqueta,
+            // como siempre: se prueba la comprobación aunque el texto haya
+            // construido el conjunto. Con propiedades la primera ronda pide el
+            // doble (una búsqueda de 80 cuesta menos que dos de 40 y 57).
+            let try_checked = checked && !(predict && allowed.is_some());
+            let first_fetch = if predict { candidates.saturating_mul(2) } else { candidates };
+            let checked_hits = if try_checked {
+                self.vector_path_checked(&index, vector, &filter, candidates, first_fetch, ef, predict)
+                    .await?
+            } else {
+                None
             };
-            let (hits, path) = match label_checked {
+            let (hits, path) = match checked_hits {
                 Some(hits) => (hits, VectorPath::LabelChecked),
                 None => {
-                    // Sin filtro, filtro con propiedades, o una etiqueta tan
-                    // escasa entre los vecinos que la escalada llegó al tope:
-                    // el conjunto permitido (con su scan) es lo correcto.
-                    if label_only.is_some() && allowed.is_none() {
-                        allowed = self.hybrid_allowed_set(&q.candidates, q.filter.as_ref()).await?;
+                    // Sin filtro, conjunto del caller, o un filtro tan escaso
+                    // entre los vecinos que la escalada llegó (o llegaría) al
+                    // tope: el conjunto permitido es lo correcto.
+                    if checked && allowed.is_none() {
+                        allowed = self.allowed_set(&q.candidates, &filter, None).await?;
                     }
                     self.vector_path(&index, vector, allowed.as_ref(), candidates, ef)
                         .await?
@@ -680,29 +804,39 @@ impl Graph {
         Ok((outcome.hits, path))
     }
 
-    /// Vector path for a label-only filter, without building the allowed set.
+    /// Vector path for a filter checked on the candidates, without building
+    /// the allowed set.
     ///
     /// Asks the index for `first_fetch` neighbours (at least `candidates`),
-    /// reads them by id and keeps the first `candidates` with the label, in
-    /// distance order. If fewer carry the label, the fetch grows ×4 and the
-    /// search repeats; labels
-    /// already read are remembered. Stops when there are enough, when the
-    /// fetch covers the whole index (then a short result is real), or at
-    /// [`LABEL_CHECK_MAX_FETCH`], where it returns `None` and the caller falls
-    /// back to the allowed set: a label that rare among the neighbours is
-    /// cheaper to enumerate than to find by walking.
+    /// reads them by id and keeps the first `candidates` that pass `filter`,
+    /// in distance order. If fewer pass, the fetch grows ×4 and the search
+    /// repeats; nodes already read are remembered. Stops when there are
+    /// enough, when the fetch covers the whole index (then a short result is
+    /// real), or at [`LABEL_CHECK_MAX_FETCH`], where it returns `None` and the
+    /// caller falls back to the allowed set: a filter that rare among the
+    /// neighbours is cheaper to enumerate than to find by walking.
+    ///
+    /// With `predict` (a filter with properties, #214 phase 2) it also
+    /// returns `None` early, from the pass rate of what it has read: when
+    /// reaching `candidates` would take a fetch above
+    /// [`PREDICT_MAX_VECTOR_FETCH`], and when the set
+    /// the rate implies is small enough to rank exactly
+    /// ([`EXACT_SEARCH_THRESHOLD`]) — the set path is then both cheaper and
+    /// exact, which is what a property filter got before this path existed.
     #[cfg(feature = "embeddings-index")]
-    pub(crate) async fn vector_path_label_checked(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn vector_path_checked(
         &self,
         index: &super::SharedHnswIndex,
         vector: &[f32],
-        label: &str,
+        filter: &NodeFilter,
         candidates: usize,
         first_fetch: usize,
         ef: usize,
+        predict: bool,
     ) -> Result<Option<Vec<(NodeId, f32)>>> {
         let index_len = index.read().unwrap_or_else(|e| e.into_inner()).len();
-        let mut has_label: HashMap<NodeId, bool> = HashMap::new();
+        let mut passes: HashMap<NodeId, bool> = HashMap::new();
         let mut fetch = first_fetch.max(candidates).max(1).min(LABEL_CHECK_MAX_FETCH.max(candidates));
         loop {
             let hits = index
@@ -712,14 +846,15 @@ impl Graph {
             let unknown: Vec<NodeId> = hits
                 .iter()
                 .map(|(id, _)| *id)
-                .filter(|id| !has_label.contains_key(id))
+                .filter(|id| !passes.contains_key(id))
                 .collect();
             for (id, node) in unknown.iter().zip(self.get_nodes(&unknown).await?) {
-                has_label.insert(*id, node.is_some_and(|n| n.label == label));
+                passes.insert(*id, node.is_some_and(|n| filter.matches(&n)));
             }
+            let examined = hits.len();
             let kept: Vec<(NodeId, f32)> = hits
                 .into_iter()
-                .filter(|(id, _)| has_label.get(id).copied().unwrap_or(false))
+                .filter(|(id, _)| passes.get(id).copied().unwrap_or(false))
                 .take(candidates)
                 .collect();
             if kept.len() >= candidates || fetch >= index_len {
@@ -728,19 +863,28 @@ impl Graph {
             if fetch >= LABEL_CHECK_MAX_FETCH {
                 return Ok(None);
             }
-            fetch = fetch.saturating_mul(4).min(LABEL_CHECK_MAX_FETCH);
+            if predict {
+                let needed = fetch_needed(kept.len(), examined, candidates);
+                let implied_set = (kept.len() as f64 / examined.max(1) as f64) * index_len as f64;
+                let small_enough_to_be_exact =
+                    !kept.is_empty() && index_len > EXACT_SEARCH_THRESHOLD && implied_set <= EXACT_SEARCH_THRESHOLD as f64;
+                if needed > PREDICT_MAX_VECTOR_FETCH || small_enough_to_be_exact {
+                    return Ok(None);
+                }
+            }
+            fetch = next_fetch(fetch, kept.len(), examined, candidates, predict).min(LABEL_CHECK_MAX_FETCH);
         }
     }
 
-    /// The first `want` entries of a ranked list whose node has `label`, in
-    /// the same order. Reads the nodes by id in blocks and stops as soon as
-    /// it has enough, so a long full-text match list costs only the prefix
-    /// it needs.
+    /// The first `want` entries of a ranked list whose node passes `filter`,
+    /// in the same order. Reads the nodes by id in blocks and stops as soon
+    /// as it has enough, so a long full-text match list costs only the
+    /// prefix it needs.
     #[cfg(feature = "hybrid")]
-    async fn keep_label_in_rank_order<T>(
+    async fn keep_matching_in_rank_order<T>(
         &self,
         ranked: Vec<(NodeId, T)>,
-        label: &str,
+        filter: &NodeFilter,
         want: usize,
     ) -> Result<Vec<(NodeId, T)>> {
         let block = want.max(16);
@@ -751,7 +895,7 @@ impl Graph {
             let ids: Vec<NodeId> = chunk.iter().map(|(id, _)| *id).collect();
             let nodes = self.get_nodes(&ids).await?;
             for (entry, node) in chunk.into_iter().zip(nodes) {
-                if kept.len() < want && node.is_some_and(|n| n.label == label) {
+                if kept.len() < want && node.is_some_and(|n| filter.matches(&n)) {
                     kept.push(entry);
                 }
             }
@@ -759,106 +903,184 @@ impl Graph {
         Ok(kept)
     }
 
-    /// The `k` nearest nodes of `label` for `vector`, best first, and how the
-    /// vector path resolved them. What NQL `similar_to` runs when its pattern
-    /// has a label (#174b).
+    /// The `k` nearest nodes for `vector` inside `ids ∩ filter`, best first,
+    /// and how the vector path resolved them. What NQL `similar_to` runs
+    /// when its pattern has a label or its `where` pushes predicates (#174b,
+    /// #214 phase 2).
     ///
-    /// Same two steps as the vector branch of a label-only hybrid search:
-    /// the label is checked on the neighbours, asking for `k × overfetch`
-    /// first and escalating ×4; if the label is too rare among the nearest
-    /// neighbours for that to fill `k`, the allowed set of the label is
-    /// built and searched (exact when it is small). So a label with `k`
-    /// embedded nodes returns `k` of them — before, `similar_to` asked for a
-    /// fixed `4·k` and returned fewer when other labels crowded the result.
+    /// Same steps as the vector branch of a filtered hybrid search: with no
+    /// caller set, the filter is checked on the neighbours, asking for
+    /// `k × overfetch` first and escalating ×4; if the filter is too rare
+    /// among the nearest neighbours for that to fill `k` (or, with
+    /// properties, predicted to be), the allowed set is built and searched
+    /// (exact when it is small). So a filter with `k` embedded members
+    /// returns `k` of them.
     #[cfg(feature = "embeddings-index")]
-    pub(crate) async fn knn_in_label(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn knn_in_filter(
         &self,
         model: &str,
         vector: &[f32],
-        label: &str,
+        filter: &NodeFilter,
+        ids: &CandidateSet,
         k: usize,
         overfetch: usize,
         ef: usize,
     ) -> Result<(Vec<(NodeId, f32)>, VectorPath)> {
         let index = self.get_or_build_embedding_index(model).await?;
-        let first_fetch = k.saturating_mul(overfetch.max(1));
-        if let Some(hits) = self.vector_path_label_checked(&index, vector, label, k, first_fetch, ef).await? {
-            return Ok((hits, VectorPath::LabelChecked));
+        let small = if ids.is_all() && filter.has_props() { self.small_seed(filter).await? } else { None };
+        if small.is_none() && ids.is_all() && !filter.is_empty() {
+            let first_fetch = k.saturating_mul(overfetch.max(1));
+            if let Some(hits) = self
+                .vector_path_checked(&index, vector, filter, k, first_fetch, ef, filter.has_props())
+                .await?
+            {
+                return Ok((hits, VectorPath::LabelChecked));
+            }
         }
-        let filter = HybridFilter { label: Some(label.to_string()), props: Vec::new() };
-        let allowed = self.hybrid_allowed_set(&CandidateSet::All, Some(&filter)).await?;
+        let allowed = self.allowed_set(ids, filter, small).await?;
         self.vector_path(&index, vector, allowed.as_ref(), k, ef).await
     }
 
     /// Build the allowed NodeId set from the caller's candidate set and a
-    /// label/property filter. `None` means no restriction (`All` with an
-    /// empty or absent filter). An empty set means nothing matches.
+    /// filter. `None` means no restriction (`All` with an empty filter). An
+    /// empty set means nothing matches.
     ///
-    /// With properties, the set starts from the property index (one lookup
-    /// per equality, ids only) and the label is then *confirmed* on those
-    /// candidates by reading them. Starting from the label instead meant
-    /// reading and deserializing every node of the label to get its ids:
-    /// 190 ms for a label of 100k nodes, for a filter that leaves 20 (#213).
-    /// Label alone still reads the label (the only source there is).
+    /// Each property the storage index can answer is looked up there (one
+    /// lookup per equality, a union per `in` list; ids only) and intersected;
+    /// starting from the label instead meant reading and deserializing every
+    /// node of the label to get its ids: 190 ms for a label of 100k nodes,
+    /// for a filter that leaves 20 (#213). When the members have to be read
+    /// anyway — to confirm the label, or to check a value the index cannot
+    /// key (a list, an object) — the whole filter is checked on them with
+    /// the evaluator's equality, so a stale index entry never lets a
+    /// non-matching node in. Without a label and with indexable values only
+    /// nothing is read (as before #214 phase 2). With no indexable property
+    /// the members come from the label (or, without one, from every node:
+    /// the only correct source left). Until #214 phase 2 an unindexable
+    /// value silently produced an empty set.
     ///
-    /// A caller set (#214) is the *seed* of that same pipeline: the property
-    /// lookups intersect into it and the label is confirmed on what survives,
-    /// so the filter can only keep or shrink it (never widen, invariant 2 of
-    /// [`CandidateSet`]) and the equality semantics are the index's, not a
-    /// second implementation over hydrated nodes. Without a filter the ids
-    /// are taken as given, unread: an id that does not exist never scores.
+    /// A caller set (#214) is the *seed* of that same pipeline, so the
+    /// filter can only keep or shrink it (never widen, invariant 2 of
+    /// [`CandidateSet`]). Without a filter the ids are taken as given,
+    /// unread: an id that does not exist never scores.
     #[cfg(feature = "embeddings-index")]
-    async fn hybrid_allowed_set(
+    async fn allowed_set(
         &self,
         candidates: &CandidateSet,
-        filter: Option<&HybridFilter>,
+        filter: &NodeFilter,
+        small: Option<Vec<NodeId>>,
     ) -> Result<Option<HashSet<NodeId>>> {
         let seed: Option<HashSet<NodeId>> = match candidates {
             CandidateSet::All => None,
             CandidateSet::Ids(ids) => Some(ids.to_hash_set()),
         };
-        let Some(filter) = filter.filter(|f| !f.is_empty()) else { return Ok(seed) };
-        if seed.as_ref().is_some_and(|s| s.is_empty()) {
+        if filter.is_empty() || seed.as_ref().is_some_and(|s| s.is_empty()) {
             return Ok(seed);
         }
-        let mut set: Option<HashSet<NodeId>> = seed;
+        // A small member list from the planner's probe: it is the set, and
+        // whatever else the filter asks is checked on those few members
+        // instead of reading the other properties' (possibly huge) lists.
+        if let (None, Some(members)) = (&seed, small) {
+            let predicates = filter.eq.len() + filter.any_of.len();
+            if filter.label.is_none() && predicates == 1 {
+                return Ok(Some(members.into_iter().collect()));
+            }
+            return Ok(Some(self.confirm(members, filter).await?));
+        }
+        let mut set = seed;
+        let mut must_read = filter.label.is_some();
 
-        for (prop, val) in &filter.props {
-            let by_prop: HashSet<NodeId> = self
-                .get_all_nodes_by_property(prop, val)
-                .await?
-                .into_iter()
-                .collect();
+        for (prop, val) in &filter.eq {
+            if !indexable(prop, val) {
+                must_read = true;
+                continue;
+            }
+            let by_prop: HashSet<NodeId> = self.get_all_nodes_by_property(prop, val).await?.into_iter().collect();
+            set = Some(intersect(set, by_prop));
+            if set.as_ref().is_some_and(|s| s.is_empty()) {
+                return Ok(set);
+            }
+        }
+        for (prop, values) in &filter.any_of {
+            if !values.iter().all(|v| indexable(prop, v)) {
+                must_read = true;
+                continue;
+            }
+            let mut by_prop: HashSet<NodeId> = HashSet::new();
+            for v in values {
+                by_prop.extend(self.get_all_nodes_by_property(prop, v).await?);
+            }
             set = Some(intersect(set, by_prop));
             if set.as_ref().is_some_and(|s| s.is_empty()) {
                 return Ok(set);
             }
         }
 
-        if let Some(label) = &filter.label {
-            set = Some(match set {
-                Some(candidates) => {
-                    let ids: Vec<NodeId> = candidates.into_iter().collect();
-                    let mut confirmed = HashSet::with_capacity(ids.len());
-                    for chunk in ids.chunks(1024) {
-                        let nodes = self.get_nodes(chunk).await?;
-                        for (id, node) in chunk.iter().zip(nodes) {
-                            if node.is_some_and(|n| n.label == *label) {
-                                confirmed.insert(*id);
-                            }
-                        }
-                    }
-                    confirmed
+        Ok(Some(match set {
+            Some(members) if must_read => self.confirm(members.into_iter().collect(), filter).await?,
+            Some(members) => members,
+            None => {
+                let nodes = match &filter.label {
+                    Some(label) => self.get_nodes_by_label(label).await?,
+                    None => self.get_all_nodes().await?,
+                };
+                nodes.into_iter().filter(|n| filter.matches(n)).map(|n| n.id).collect()
+            }
+        }))
+    }
+
+    /// The members that pass `filter`, read in blocks.
+    #[cfg(feature = "embeddings-index")]
+    async fn confirm(&self, ids: Vec<NodeId>, filter: &NodeFilter) -> Result<HashSet<NodeId>> {
+        let mut confirmed = HashSet::with_capacity(ids.len());
+        for chunk in ids.chunks(1024) {
+            for (id, node) in chunk.iter().zip(self.get_nodes(chunk).await?) {
+                if node.is_some_and(|n| filter.matches(&n)) {
+                    confirmed.insert(*id);
                 }
-                None => self
-                    .get_nodes_by_label(label)
-                    .await?
-                    .into_iter()
-                    .map(|n| n.id)
-                    .collect(),
-            });
+            }
         }
-        Ok(set)
+        Ok(confirmed)
+    }
+
+    /// The members of the most selective indexable predicate of `filter`,
+    /// if one has at most [`SEED_PROBE_LIMIT`] of them; `None` otherwise.
+    /// Bounded: each predicate reads at most the current best size + 1
+    /// keys of the property index, so a broad filter costs at most
+    /// `SEED_PROBE_LIMIT + 1` keys per predicate and a selective one only
+    /// its own members.
+    #[cfg(feature = "embeddings-index")]
+    async fn small_seed(&self, filter: &NodeFilter) -> Result<Option<Vec<NodeId>>> {
+        let mut best: Option<Vec<NodeId>> = None;
+        let bound = |best: &Option<Vec<NodeId>>| best.as_ref().map_or(SEED_PROBE_LIMIT, |b| b.len());
+        for (prop, value) in &filter.eq {
+            if !indexable(prop, value) {
+                continue;
+            }
+            if let Some(ids) = self.storage.get_nodes_by_property_up_to(prop, value, bound(&best)).await?
+                && best.as_ref().is_none_or(|b| ids.len() < b.len())
+            {
+                best = Some(ids);
+            }
+        }
+        'lists: for (prop, values) in &filter.any_of {
+            if !values.iter().all(|v| indexable(prop, v)) {
+                continue;
+            }
+            let limit = bound(&best);
+            let mut ids: Vec<NodeId> = Vec::new();
+            for value in values {
+                match self.storage.get_nodes_by_property_up_to(prop, value, limit - ids.len()).await? {
+                    Some(more) => ids.extend(more),
+                    None => continue 'lists,
+                }
+            }
+            if best.as_ref().is_none_or(|b| ids.len() < b.len()) {
+                best = Some(ids);
+            }
+        }
+        Ok(best)
     }
 
     /// Resolve the full-text index to query: the caller-provided name, or the
@@ -912,6 +1134,51 @@ const LABEL_CHECK_MAX_FETCH: usize = crate::embeddings::MAX_FILTERED_EF_SEARCH;
 /// and cheaper.
 #[cfg(feature = "hybrid")]
 pub const TEXT_EXACT_THRESHOLD: usize = 512;
+
+/// Largest member list of a property predicate that builds the allowed set
+/// without trying the checked path first (#214 phase 2). The same size as
+/// [`TEXT_EXACT_THRESHOLD`]: a set up to here is scored by the text branch
+/// as one term set, and is far below the vector branch's exact threshold,
+/// so it is both the cheapest and an exact path. The probe that decides it
+/// reads at most this many keys of the property index.
+#[cfg(feature = "embeddings-index")]
+const SEED_PROBE_LIMIT: usize = 512;
+
+/// With properties, the largest fetch the checked vector path accepts before
+/// handing over to the allowed set. Measured at 100k vectors (64 dims, k =
+/// 10): asking the HNSW index for ~2 000 neighbours and checking them cost
+/// 45 ms, the filtered walk over the same 2 000-member set 24 ms; at ~500
+/// neighbours the checked path wins (5 ms against 13 ms for a 10 % filter).
+#[cfg(feature = "embeddings-index")]
+const PREDICT_MAX_VECTOR_FETCH: usize = 1024;
+
+/// How many ranked candidates a checked path would have to read to keep
+/// `want`, at the pass rate of the `examined` it has read (`kept` passed).
+/// With nothing kept, the rate is unknown until a sample of 128: below that
+/// it answers 0 (keep escalating); from there on, `usize::MAX` (hopeless).
+#[cfg(feature = "embeddings-index")]
+fn fetch_needed(kept: usize, examined: usize, want: usize) -> usize {
+    match kept {
+        0 if examined < 128 => 0,
+        0 => usize::MAX,
+        _ => examined.saturating_mul(want).div_ceil(kept),
+    }
+}
+
+/// The next fetch of a checked path. ×4 without `predict` (the label-only
+/// escalation, unchanged since 0.6.10). With `predict` (#214 phase 2), what
+/// the pass rate says is needed plus 25 %, never less than one more: a 90 %
+/// filter that kept 36 of 40 asks for 57 next, not 160 — on an HNSW walk and
+/// on tantivy, the size of the fetch is the cost.
+#[cfg(feature = "embeddings-index")]
+fn next_fetch(fetch: usize, kept: usize, examined: usize, want: usize, predict: bool) -> usize {
+    let x4 = fetch.saturating_mul(4);
+    if !predict || kept == 0 {
+        return x4;
+    }
+    let needed = fetch_needed(kept, examined, want);
+    needed.saturating_add(needed / 4).clamp(fetch + 1, x4)
+}
 
 /// Intersect an optional running set with a new set.
 #[cfg(feature = "embeddings-index")]
@@ -1164,6 +1431,24 @@ mod tests {
     /// La bandera resume la tabla de caminos: los dos caminos exactos lo son
     /// siempre, el recorrido HNSW nunca, y KNN plano (con o sin comprobación
     /// de etiqueta) solo mientras el índice lee exacto.
+    #[test]
+    fn fetch_prediction_follows_the_pass_rate() {
+        // Nothing kept: keep escalating until a sample of 128, then hopeless.
+        assert_eq!(fetch_needed(0, 40, 40), 0);
+        assert_eq!(fetch_needed(0, 160, 40), usize::MAX);
+        // 36 of 40 pass: 45 are needed for 40.
+        assert_eq!(fetch_needed(36, 40, 40), 45);
+        // 1 % pass rate: 4 000 for 40.
+        assert_eq!(fetch_needed(4, 400, 40), 4000);
+        // Label-only (no prediction) keeps the ×4 escalation of 0.6.10.
+        assert_eq!(next_fetch(40, 36, 40, 40, false), 160);
+        // With properties: what is needed plus 25 %, within (fetch, ×4].
+        assert_eq!(next_fetch(40, 36, 40, 40, true), 56);
+        assert_eq!(next_fetch(40, 39, 40, 40, true), 52);
+        assert_eq!(next_fetch(40, 1, 40, 40, true), 160);
+        assert_eq!(next_fetch(40, 0, 40, 40, true), 160);
+    }
+
     #[test]
     fn vector_exact_follows_the_path_and_the_index_size() {
         for index_exact in [true, false] {

@@ -47,28 +47,64 @@ for h in hits:
 
 ## Filter
 
-`filter = {label?, props: [equalities]}` (AND). With properties it is applied
-as a precomputed allowed-set (label index ∩ property-index lookups) that both
-paths intersect. Until 0.6.11 the label part was a scan of every node (#207). v1 supports label + equality; ranges/OR are a follow-up.
+`filter = {label?, props: [equalities]}` (AND). v1 supports label + equality;
+ranges/OR are a follow-up. A value the property index cannot key (a list, an
+object) is checked on the nodes (until 0.6.20 it silently matched nothing).
 
-**A label-only filter does not scan the label (0.6.10).** Each path checks the
-label on its own candidates as it reads them, in rank order, and keeps the
-first `k × overfetch` that carry it. The ranks are the ones the allowed-set
-would give, because each path is still restricted *before* the fusion, so the
-top-k is computed inside the label. Building the set instead meant reading every
-node of the label on every query: 132 ms at 100k chunks for 40 candidates.
+**A filter is checked on the candidates before any set is built** (label-only
+since 0.6.10; with properties since 0.6.21, #214 phase 2). Each path checks the
+filter on its own candidates as it reads them, in rank order, and keeps the
+first `k × overfetch` that pass. The ranks are the ones the allowed-set would
+give, because each path is still restricted *before* the fusion, so the top-k
+is computed inside the filter. Building the set instead means reading every
+member: 132 ms at 100k chunks for a label, 327 ms for a property 90 % of the
+chunks carry — for 40 candidates.
+
+With properties the path watches its own pass rate. A **broad** filter (most
+candidates pass) stays on it and costs about what the label alone costs. A
+**selective** one builds the allowed set as soon as the rate of the first
+rounds says the cap would run out before `k × overfetch` pass, or that the set
+is small enough to rank exactly (≤ 1024): property-index lookups intersected,
+the members read once to confirm the label and the whole filter. Until 0.6.20
+every property filter built the set up front, which is right for a selective
+filter and ×200 too slow for a broad one. A property with at most 512 members
+skips the checked path altogether: a bounded read of the property index (at
+most 512 keys, ~0.04 ms) finds it, and the set is built at once, exactly as
+before. A label-only filter keeps its 0.6.10 behaviour exactly. The path
+names keep the `label_` prefix from when only a label took this path
+(callers read them as strings).
+
+Measured at 100k chunks (64 dims, `k = 10`, text + vector, release; medians
+of 15, ±50 % between runs in the costly rows), `search_hybrid(label, props)`:
+
+| property carried by | 0.6.20 | 0.6.21 |
+|---:|---:|---:|
+| 90 % | 767 ms | 2.3 ms |
+| 50 % | 256 ms | 3.9 ms |
+| 10 % | 66 ms | 13–22 ms |
+| 2 % | 44 ms | 40 ms |
+| 1 % | 13.6 ms | 14 ms |
+| 0.5 % | 3.9 ms | 4.0 ms |
+| 0.02 % | 0.27 ms | 0.27 ms |
+
+The label alone costs 1.7 ms and no filter 1.4 ms, both unchanged. The band
+around 1–5 % is the expensive one on both versions: the set is too big for
+the exact vector branch (1024) and the filtered HNSW walk pays for its
+selectivity (see [Cost](#cost)).
 
 - **Text path** (`text_path = "global_label_checked"`): a full-text index
   already belongs to one label, so with the index of the filter's label the
   check only confirms.
 - **Vector path** (`vector_path = "label_checked"`): it asks the index for
-  `k × overfetch` neighbours. When fewer of them carry the label, it asks again
-  with 4× as many, up to 4096. If the label is still that rare among the
-  neighbours, it falls back to the allowed set with its scan and the exact
-  branch below, so the result is never short because of the shortcut.
+  `k × overfetch` neighbours. When fewer of them pass, it asks again with 4×
+  as many, up to 4096. If the filter is still that rare among the neighbours
+  (or, with properties, predicted to be), it falls back to the allowed set and
+  the exact branch below, so the result is never short because of the
+  shortcut.
 
-NQL `hybrid()` always passes the pattern's label as a filter, so it takes this
-path too.
+NQL `hybrid()` always passes the pattern's label as a filter, and since 0.6.21
+the equalities and `in` lists of the `where` on the searched variable (see
+[NQL `hybrid()`](#nql-hybrid)), so it takes this path too.
 
 **Nothing outside the allowed-set is ever returned**, at any selectivity. That
 is a hard guarantee, independent of how either path resolved the query.
@@ -165,10 +201,10 @@ matches the text is a candidate, whatever the selectivity. `text_path` in
 | Situation | `text_path` | Recall |
 |---|---|---|
 | no filter | `global`: top `k × overfetch` by BM25 | the top-N *is* the answer |
-| label-only filter | `global_label_checked`: global top-N, label checked in rank order, fetch escalated ×4 | complete (the index belongs to the label) |
+| label-only filter, or a broad property filter | `global_label_checked`: global top-N, filter checked in rank order, fetch escalated ×4 | complete |
 | property filter, allowed-set ≤ 512 | `term_set_over_allowed`: tantivy scores **only the allowed ids** (a term set over the stored `node_id`, AND-ed with the text); no global query | complete |
 | property filter, larger allowed-set, enough allowed documents inside the global top-N (escalating ×4 to 1000) | `global` | complete |
-| property filter, larger allowed-set, escalation reaches 1000 still short | `global_then_term_set`: the allowed-set scored in chunks of 512 and merged | complete |
+| property filter, larger allowed-set, escalation reaches 1000 still short (or its pass rate says it would) | `global_then_term_set`: the allowed-set scored in chunks of 512 and merged | complete |
 
 The question the branch answers is always *top-k of the text within the
 allowed-set*; the global top-N is only an opportunistic way to compute it,
@@ -368,6 +404,18 @@ node.) `explain find ...` prints the effective parameters, defaults included
 Hybrid: hybrid(n): text="graph memory" ref="current_query" model="e5-large" k=10 rrf_k=30 overfetch=8 ef_search=128 text_index=Chunk_body filter.label=Chunk
 ```
 
+**The `where` is the universe (0.6.21, #214 phase 2).** The equalities and
+`in` lists on the searched variable (`c.tenant = "t7"`, `c.lang in ["es",
+"pt"]`, `c.id in [...]`, the pattern's inline properties) go into the filter,
+so `k` is the top-k inside them, with the same planner as above; the rest of
+the `where` applies to the rows and the whole `where` is re-applied, so a
+pushed predicate never admits a row that fails it. `rank(n)` and `score(n)`
+are computed in that universe (as `search_hybrid(props=...)` does). The search
+must be a condition of the top-level `and`: under `or` it is a validation
+error (until 0.6.20 the `or` branch was silently lost). EXPLAIN prints the
+pushed predicates on a `Search universe:` line. Full rules in the
+[NQL reference](en/NQL_REFERENCE.md#vector-and-hybrid-search-in-where).
+
 The search can also seed a pattern of one or two hops — search and expand in
 one query, `score(c)` on every expanded row (`EXPLAIN` says `PATTERN PIPELINE
 (seed: HYBRID, hops: 2)` and a `Seeds:` line with `k` and the `LIMIT`); see
@@ -382,9 +430,9 @@ one query, `score(c)` on every expanded row (`EXPLAIN` says `PATTERN PIPELINE
 - `search_hybrid` sees **committed** state; a freshly added embedding is
   inserted into the cached HNSW index by `add_node_embedding` (0.5.19) and is
   visible to the next search.
-- Follow-ups: per-path weights; range/OR filters; property filters from the
-  NQL `where` (today only the pattern label reaches the hybrid filter; the
-  other predicates, including those on the expanded nodes of a one- or
-  two-hop pattern, are applied afterwards, so they can leave fewer than K
-  rows — the second phase of #214 turns them into a candidate set; from Rust
-  and Python, `candidates` already does that today).
+- Follow-ups: per-path weights; range/OR filters. In NQL, the predicates on
+  the *expanded* nodes of a one- or two-hop pattern still apply after the
+  expansion, so they can leave fewer than K rows (a candidate set per
+  expanded variable is the next step of #214); ranges and other non-equality
+  predicates on the searched variable apply to its rows, with the same
+  effect.

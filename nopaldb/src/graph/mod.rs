@@ -6,7 +6,7 @@ pub mod stats;
 pub mod neighborhood;
 pub mod communities;
 // Bajo `embeddings-index` y no solo `hybrid`: la ruta vectorial con filtro
-// de etiqueta (`knn_in_label`) la usa también `similar_to` (#174b). Lo que
+// de etiqueta (`knn_in_filter`) la usa también `similar_to` (#174b). Lo que
 // necesita full-text sigue con su propio `cfg(feature = "hybrid")`.
 #[cfg(feature = "embeddings-index")]
 pub mod hybrid;

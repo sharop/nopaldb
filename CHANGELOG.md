@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **NQL: los predicados del `where` sobre la variable buscada son el universo
+  de `hybrid` / `similar_to`** (#214 fase 2). `where hybrid(c, …, k = 10) and
+  c.tenant = "t7"` devuelve ahora los 10 mejores del tenant; hasta 0.6.20
+  puntuaba la etiqueta entera y descartaba los demás tenants después, así que
+  podía devolver menos de `k` filas o ninguna (medido a 100k chunks: 0 filas
+  para un tenant del 1 %). Se empujan `v.p = literal` y `v.p in [literales]`
+  con escalares no nulos, `v.id = …` / `v.id in [...]` y las props inline del
+  patrón; también en patrones de uno y dos saltos, sobre la semilla. El resto
+  del `where` (rangos, `<>`, `null`, listas, funciones, otras variables) se
+  sigue aplicando a las filas, y el `where` entero se re-aplica siempre:
+  empujar nunca admite una fila que no lo cumpla. **Cambia lo que devuelve
+  una consulta existente con esos predicados**: más filas (hasta `k`), y
+  `rank(c)` / `score(c)` calculados en el universo reducido, igual que
+  `search_hybrid(props=...)` en Python; quien corta por umbral de `score(c)`
+  con `hybrid` verá más filas (el coseno de `similar_to` no cambia). EXPLAIN
+  gana la línea `Search universe:` con los predicados empujados. **Coste:**
+  la consulta paga lo que cuesta la respuesta completa, lo mismo que
+  `search_hybrid(props=...)`: a 100k chunks, de 0.3 ms (predicado del
+  0.02 %) a ~2–4 ms (predicados amplios) y ~12–45 ms en la franja del 1–10 %,
+  contra ~1.7 ms de la respuesta incompleta de antes. Sin predicados
+  empujables no cambia nada.
+- **Planificador de filtros de `search_hybrid` con propiedades: comprobado
+  primero.** Un filtro con propiedades se comprueba sobre los candidatos de
+  cada rama en orden de rango, como ya se hacía con la etiqueta sola, y la
+  tasa de aciertos de las primeras rondas decide si construir el conjunto
+  (filtro selectivo: índice de propiedades, exacto si es chico) o seguir así
+  (filtro amplio). Una propiedad con a lo sumo 512 miembros lo sabe por una
+  lectura acotada del índice (~0.04 ms) y construye el conjunto de inmediato,
+  como antes. Hasta 0.6.20 todo filtro con propiedades construía el
+  conjunto, leyendo e hidratando cada miembro. Medido a 100k chunks, k = 10:
+  propiedad del 90 % 767 → 2.3 ms, 50 % 256 → 3.9 ms, 10 % 66 → 13–22 ms;
+  del 2 % al 0.02 % sin cambio (40, 14, 4, 0.27 ms). Un filtro de solo
+  etiqueta no cambia. Los nombres de camino (`label_checked`,
+  `global_label_checked`) se conservan y ahora cubren también ese caso.
+
+### Fixed
+- **NQL: una búsqueda bajo `or` perdía la otra rama en silencio.**
+  `where hybrid(c, …) or c.tenant = "B"` devolvía solo los hits de la
+  búsqueda. Ahora la búsqueda tiene que ser una condición del `and` raíz;
+  bajo `or`, una segunda búsqueda del mismo tipo (que no restringía nada) o
+  una búsqueda dentro de otra función son errores con nombre.
+- **`search_hybrid(props=...)` con un valor lista u objeto devolvía 0
+  resultados**: el índice de propiedades no indexa esos valores y su lookup
+  vacío vaciaba el conjunto. Ahora esos valores se comprueban sobre los nodos.
+- **NQL `update … set`: orden seguro del índice de propiedades.** Retiraba la
+  entrada vieja antes de escribir el nodo y tragaba los errores; un fallo a
+  medias dejaba el nodo sin entrada, invisible para los filtros por
+  propiedad. Ahora añade la nueva, escribe el nodo y retira la vieja, con los
+  errores propagados: lo peor que deja un corte es una entrada de más, que
+  se descarta al confirmar sobre el nodo.
+
 ## [0.6.20] - 2026-10-20
 
 `close()` espera los merges del índice full-text, y GraphRAG tiene receta de

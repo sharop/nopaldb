@@ -460,8 +460,10 @@ streaming; since 0.6.9 the vector can be written in the query instead —
 `similar_to(n, vector = [0.1, -0.2, …], model = "minilm", k = 10)` — and the
 search can seed a one-hop pattern (`(c:Chunk)-[:MENTIONS]->(e)`). `k = N`, else
 `LIMIT`, controls how many neighbours to retrieve (default: 10); they are
-taken inside the pattern's label and returned closest first. Other WHERE
-predicates are applied as post-filters on that result set. Full rules in the
+taken inside the pattern's label and returned closest first. Since 0.6.21 the
+equalities and `in` lists on the searched variable are part of that universe
+too (`where similar_to(c, …) and c.tenant = "t7"` returns the `k` nearest of
+the tenant); the other WHERE predicates apply to the result set. Full rules in the
 [NQL reference](en/NQL_REFERENCE.md#vector-and-hybrid-search-in-where).
 
 ### Other NQL embedding functions

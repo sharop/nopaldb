@@ -407,33 +407,46 @@ impl<'a> WriteExecutor<'a> {
 
         for mut node in nodes {
             let mut changed = false;
+            // Valores que el índice de propiedades gana y pierde con este SET.
+            let mut added: Vec<(String, PropertyValue)> = Vec::new();
+            let mut retired: Vec<(String, PropertyValue)> = Vec::new();
             for assignment in assignments {
                 if !node_vars.iter().any(|var| *var == assignment.variable) {
                     continue;
                 }
                 let new_value = self.evaluate_assignment_value(&assignment.value);
                 if let Some(val) = new_value {
-                    // Remove old value from property index
-                    if let Some(old_val) = node.properties.get(&assignment.property) {
-                        let _ = self.graph.storage_remove_property_index(
-                            &assignment.property, old_val, node.id
-                        ).await;
+                    let old = node.properties.insert(assignment.property.clone(), val.clone());
+                    if old.as_ref() != Some(&val) {
+                        if let Some(old) = old {
+                            retired.push((assignment.property.clone(), old));
+                        }
+                        added.push((assignment.property.clone(), val));
                     }
-
-                    node.properties.insert(assignment.property.clone(), val.clone());
-
-                    // Add new value to property index
-                    let _ = self.graph.storage_add_property_index(
-                        &assignment.property, &val, node.id
-                    ).await;
-
                     properties_changed += 1;
                     changed = true;
                 }
             }
 
             if changed {
+                // Orden seguro (#214 fase 2): entrada nueva → nodo → retirar
+                // la vieja, con los errores propagados. Un fallo o un corte a
+                // medias deja a lo sumo una entrada de MÁS (inocua: quien usa
+                // el índice confirma sobre el nodo), nunca un nodo sin la suya.
+                // Antes se retiraba primero y los errores se tragaban con
+                // `let _`: un corte dejaba el nodo invisible para los filtros
+                // por propiedad de `search_hybrid` y del WHERE de NQL.
+                for (prop, val) in &added {
+                    if node.properties.get(prop) == Some(val) {
+                        self.graph.storage_add_property_index(prop, val, node.id).await?;
+                    }
+                }
                 self.graph.storage_insert_node(&node).await?;
+                for (prop, val) in &retired {
+                    if node.properties.get(prop) != Some(val) {
+                        self.graph.storage_remove_property_index(prop, val, node.id).await?;
+                    }
+                }
                 nodes_updated += 1;
             }
         }

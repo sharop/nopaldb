@@ -205,9 +205,11 @@ what each column holds with `similar_to`, with `hybrid` and with both.
 ranked, hence the `or 0.0`. `candidates` is the
 [candidate set](HYBRID_SEARCH.md#candidate-set): both branches rank inside
 it, so a chunk that is far down globally is still found inside the selected
-document; `label`/`props` can only narrow it. From NQL the equivalent today is
-`where c.id in [...]` on a pattern without search; the `where` predicates on
-the expanded nodes apply after the expansion (#214, phase 2).
+document; `label`/`props` can only narrow it. From NQL the same universe is
+written in the `where` itself: since 0.6.21 `c.id in [...]`, `c.doc = "…"`
+and the other equalities on the searched variable are pushed into the search
+(#214 phase 2), so `k` is the top-k inside them; the `where` predicates on
+the expanded nodes still apply after the expansion.
 
 ### 4. Multi-hop and the context budget
 
@@ -431,11 +433,12 @@ projections), use the exact scan instead.
   nothing. Since 0.6.17 `rank(c)`, `text_score(c)` and `vector_score(c)`
   expose the raw pieces (#228): cut by `vector_score` or `rank` with `hybrid`,
   by `score` with `similar_to`. See the NQL reference § score.
-- A seeded pattern is at most two hops (0.6.19, #231); the `where`
-  predicates on the expanded nodes apply after the expansion, so they can
-  leave fewer than `k` rows. The second phase of #214 turns them into a
-  candidate set per variable (what `candidates=` already is from Python).
-  Searching with several patterns in the `FROM` is rejected by name.
+- A seeded pattern is at most two hops (0.6.19, #231). The equalities and
+  `in` lists on the searched variable are its universe (0.6.21, #214 phase
+  2); the `where` predicates on the expanded nodes apply after the expansion,
+  so they can leave fewer than `k` rows (a candidate set per expanded
+  variable is the next step of #214). Searching with several patterns in the
+  `FROM` is rejected by name.
 
 See also [HYBRID_SEARCH.md](HYBRID_SEARCH.md), [EMBEDDINGS.md](EMBEDDINGS.md)
 and the Python [API reference](python/API_REFERENCE.md).

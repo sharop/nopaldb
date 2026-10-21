@@ -1110,6 +1110,35 @@ impl Storage {
         Ok(nodes)
     }
 
+    /// [`Self::get_nodes_by_property`] que deja de leer al pasar de `limit`:
+    /// `Some(ids)` si hay a lo sumo `limit`, `None` si hay más. Es la sonda
+    /// del planificador de filtros (#214 fase 2): saber si un predicado es
+    /// selectivo cuesta como mucho `limit + 1` claves, no la lista entera.
+    pub async fn get_nodes_by_property_up_to(
+        &self,
+        property: &str,
+        value: &PropertyValue,
+        limit: usize,
+    ) -> Result<Option<Vec<NodeId>>> {
+        let Some(prefix) = encode_property_index_key(property, value) else {
+            return Ok(Some(Vec::new()));
+        };
+        let mut nodes = Vec::new();
+        for item in self.prop_idx_ks.scan_prefix(&prefix) {
+            let (key, _) = item?;
+            if key.len() != prefix.len() + 16 {
+                continue;
+            }
+            if nodes.len() == limit {
+                return Ok(None);
+            }
+            let id = NodeId::from_slice(&key[prefix.len()..])
+                .map_err(|_| malformed_key(PROP_IDX_TREE, &key))?;
+            nodes.push(id);
+        }
+        Ok(Some(nodes))
+    }
+
     // ─── Índice de etiquetas (#207) ────────────────────────────────────────
 
     /// `true` si las lecturas por etiqueta pueden usar el índice.
