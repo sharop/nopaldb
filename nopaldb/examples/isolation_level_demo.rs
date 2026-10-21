@@ -1,6 +1,6 @@
 
 #[cfg(feature = "full-isolation")]
-use nopaldb::IsolationLevel;
+use nopaldb::{Graph, IsolationLevel, Node, PropertyValue};
 
 #[tokio::main]
 async fn main() -> nopaldb::Result<()> {

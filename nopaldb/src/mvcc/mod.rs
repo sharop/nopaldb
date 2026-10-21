@@ -237,17 +237,21 @@ impl GCConfig {
     }
 }
 
-/// Version Manager - maneja versiones de nodos y garbage collection
+/// Placeholder vacío: sus métodos devuelven `None` / vacío. Las versiones
+/// las sirven `Graph::get_node_at` y `Graph::history`.
+#[deprecated(since = "0.8.1", note = "empty placeholder that returns nothing; use `Graph::get_node_at` and `Graph::history`. Will be removed in 0.9.")]
 pub struct VersionManager {
     // Placeholder para futuras extensiones
 }
 
+#[allow(deprecated)]
 impl Default for VersionManager {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[allow(deprecated)]
 impl VersionManager {
     pub fn new() -> Self {
         Self {}

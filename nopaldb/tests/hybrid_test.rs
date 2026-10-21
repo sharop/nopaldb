@@ -227,7 +227,7 @@ async fn small_allowed_set_over_large_index_is_exact() {
     let mut vectors: Vec<(nopaldb::types::NodeId, Vec<f32>, bool)> = Vec::with_capacity(n);
     for i in 0..n {
         let gold = i % 40 == 0;
-        let v: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0f32..1.0)).collect();
+        let v: Vec<f32> = (0..dim).map(|_| rng.random_range(-1.0f32..1.0)).collect();
         let node = Node::new("Frag")
             .with_property("tier", s(if gold { "gold" } else { "plain" }));
         let id = graph.add_node(node).await.unwrap();
@@ -243,7 +243,7 @@ async fn small_allowed_set_over_large_index_is_exact() {
 
     for query_seed in 0..5 {
         let mut qrng = StdRng::seed_from_u64(700 + query_seed);
-        let query: Vec<f32> = (0..dim).map(|_| qrng.gen_range(-1.0f32..1.0)).collect();
+        let query: Vec<f32> = (0..dim).map(|_| qrng.random_range(-1.0f32..1.0)).collect();
 
         let k = 10;
         let mut q = HybridQuery::new();

@@ -41,12 +41,12 @@ async fn generate_dungeon(
     graph: &Graph,
     num_rooms: usize
 ) -> nopaldb::Result<uuid::Uuid> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut rooms = Vec::new();
 
     // Create rooms
     for i in 0..num_rooms {
-        let room_type = match rng.gen_range(0..100) {
+        let room_type = match rng.random_range(0..100) {
             0..=60 => "Normal",
             61..=80 => "Monster",
             81..=95 => "Loot",
@@ -56,7 +56,7 @@ async fn generate_dungeon(
         let room = graph.add_node(Node::new("Room")
             .with_property("id", PropertyValue::Int(i as i64))
             .with_property("type", PropertyValue::String(room_type.into()))
-            .with_property("danger", PropertyValue::Int(rng.gen_range(1..10)))
+            .with_property("danger", PropertyValue::Int(rng.random_range(1..10)))
         ).await?;
 
         rooms.push(room);
@@ -68,7 +68,7 @@ async fn generate_dungeon(
         graph.add_edge(Edge::new(rooms[i], rooms[i + 1], "CORRIDOR")).await?;
 
         // Random extra connections
-        if rng.gen_bool(0.3) && i + 2 < num_rooms {
+        if rng.random_bool(0.3) && i + 2 < num_rooms {
             graph.add_edge(Edge::new(rooms[i], rooms[i + 2], "CORRIDOR")).await?;
         }
     }

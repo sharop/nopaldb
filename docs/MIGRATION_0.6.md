@@ -114,19 +114,16 @@ The `nopaldb` binary (feature `cli`, both engines built in) wraps the same
 function:
 
 ```bash
-cargo install nopaldb --features cli
+cargo install nopaldb --version "0.7.*" --features cli   # 0.7: the last version that reads sled
 nopaldb engine data/plantas.db                       # sled | redb | ninguno
 nopaldb migrate data/plantas.db data/plantas_redb.db  # --from auto --to redb by default
 ```
 
 It prints one line per keyspace (pairs and bytes), the totals and the
 verification result. Exit codes: 0 verified; 1 usage or invalid arguments;
-2 the copy failed or the destination was not empty. Without installing, the
-repository example does the same:
-
-```bash
-cargo run --example migrate_engine --features storage-sled -- data/plantas.db auto data/plantas_redb.db redb
-```
+2 the copy failed or the destination was not empty. In 0.6–0.7 the
+repository example `migrate_engine` did the same without installing; it was
+removed in 0.8.0 together with sled.
 
 ### Going back
 

@@ -7,9 +7,6 @@ use crate::graph::GraphView;
 use crate::types::NodeId;
 use std::collections::HashMap;
 
-//#[cfg(feature = "parallel")]
-//use rayon::prelude::*;
-
 /// PageRank configuration
 #[derive(Debug, Clone)]
 pub struct PageRankConfig {

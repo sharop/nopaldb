@@ -189,7 +189,6 @@ impl LockManager {
     }
 
     /// Configura el timeout
-    #[allow(dead_code)]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.lock_timeout = timeout;
         self

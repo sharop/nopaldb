@@ -7,7 +7,9 @@ use crate::types::{Node, Edge, PropertyValue};
 use crate::graph::Graph;
 use crate::query::nql::parser::ast::{Expression, BinaryOperator};
 use crate::query::nql::executor::result::Row;
-use futures::future::BoxFuture;
+/// A boxed, `Send` future: what each operator's `next` returns. Spelled out
+/// here instead of taking `futures` as a dependency just for this alias.
+pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 // ================================================================================================
 // STREAMING TRAITS (Phase 2.5 — Volcano Model)

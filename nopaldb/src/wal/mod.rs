@@ -2,7 +2,7 @@
 //
 // Write-Ahead Log (WAL) implementation for durability
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::fs::{File, OpenOptions};
 use std::io::{Write, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -92,10 +92,6 @@ pub struct RecoveryInfo {
 
 /// WAL Manager - handles log writing and recovery
 pub struct WalManager {
-    /// Path to WAL file
-    #[allow(dead_code)]
-    wal_path: PathBuf,
-
     /// WAL file handle
     file: Arc<Mutex<File>>,
 
@@ -144,7 +140,6 @@ impl WalManager {
         log::info!("WAL opened at {:?}, size: {} bytes", wal_path, position);
 
         Ok(Self {
-            wal_path,
             file: Arc::new(Mutex::new(file)),
             position: Arc::new(Mutex::new(position)),
             last_checkpoint: Arc::new(Mutex::new(position)),

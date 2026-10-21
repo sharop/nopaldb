@@ -20,7 +20,6 @@ use std::sync::{Arc, Mutex};
 use crate::error::Result;
 use crate::storage::backend::{StorageOptions, StorageProfile};
 
-#[cfg(feature = "storage-redb")]
 pub(crate) mod redb;
 
 pub(crate) mod migrate;
@@ -222,16 +221,9 @@ pub(crate) fn open_engine(
     profile: StorageProfile,
     options: &StorageOptions,
 ) -> Result<Arc<dyn KvEngine>> {
-    use crate::storage::backend::StorageEngine;
-    let engine = resolve_engine(path, options.engine)?;
+    resolve_engine(path, options.engine)?;
     let lease = PathLease::acquire(path)?;
-    match engine {
-        #[cfg(feature = "storage-redb")]
-        StorageEngine::Redb => Ok(Arc::new(redb::RedbEngine::open(path, profile)?.with_lease(lease))),
-        StorageEngine::Auto => unreachable!("resolve_engine nunca devuelve Auto"),
-        #[allow(unreachable_patterns)]
-        other => Err(engine_not_compiled(other, Some(path))),
-    }
+    Ok(Arc::new(redb::RedbEngine::open(path, profile)?.with_lease(lease)))
 }
 
 /// Abre un motor efímero en memoria (tests, `Graph::in_memory`).
@@ -240,22 +232,10 @@ pub(crate) fn open_in_memory(
     options: &StorageOptions,
 ) -> Result<Arc<dyn KvEngine>> {
     use crate::storage::backend::StorageEngine;
-    let engine = match options.engine {
-        StorageEngine::Auto => default_engine(),
-        explicit => explicit,
-    };
-    match engine {
-        #[cfg(feature = "storage-redb")]
-        StorageEngine::Redb => Ok(Arc::new(redb::RedbEngine::open_temporary(profile)?)),
-        StorageEngine::Auto => unreachable!("Auto resuelto arriba"),
-        #[allow(unreachable_patterns)]
-        other => Err(engine_not_compiled(other, None)),
+    if options.engine == StorageEngine::Sled {
+        return Err(sled_removed(None));
     }
-}
-
-/// El motor por defecto: redb, el único desde 0.8.0 (#141).
-pub(crate) fn default_engine() -> crate::storage::backend::StorageEngine {
-    crate::storage::backend::StorageEngine::Redb
+    Ok(Arc::new(redb::RedbEngine::open_temporary(profile)?))
 }
 
 /// Qué motor dejó la base que ya hay en `dir`, por sus archivos: redb crea
@@ -274,99 +254,23 @@ pub fn detect_engine(dir: &Path) -> Option<crate::storage::backend::StorageEngin
     }
 }
 
-/// Archivo de la base redb (espejo de `redb::DB_FILE`; aquí para que la
-/// detección no dependa de la feature).
+/// Archivo de la base redb (espejo de `redb::DB_FILE`).
 const REDB_DB_FILE: &str = "nopal.redb";
 
-/// `Auto` → el motor del directorio si ya hay base, si no el del build. Un
-/// motor explícito se respeta tal cual (los engines rechazan el directorio
-/// ajeno con su propio mensaje). Si el resuelto no está compilado, el error
-/// dice la feature y cómo migrar.
+/// El motor con que se abre `dir`: siempre redb. Pedir sled, o `Auto` sobre
+/// un directorio con una base sled de 0.5.x, da el error con la receta de
+/// migración (antes de crear nada en el directorio).
 pub(crate) fn resolve_engine(
     dir: &Path,
     requested: crate::storage::backend::StorageEngine,
 ) -> Result<crate::storage::backend::StorageEngine> {
     use crate::storage::backend::StorageEngine;
-    let engine = match requested {
-        StorageEngine::Auto => match detect_engine(dir) {
-            Some(StorageEngine::Sled) => return Err(engine_not_compiled(StorageEngine::Sled, Some(dir))),
-            Some(found) => {
-                if found != default_engine() {
-                    log::warn!(
-                        "la base en {} es una base {}; se abre con ese motor. Para pasarla al motor \
-                         por defecto ({}), migra con `Storage::copy_database`, el ejemplo \
-                         `migrate_engine` o `Graph.migrate` en Python (ver docs/MIGRATION_0.6.md).",
-                        dir.display(),
-                        engine_label(found),
-                        engine_label(default_engine())
-                    );
-                }
-                found
-            }
-            None => default_engine(),
-        },
-        explicit => explicit,
-    };
-    if !engine_compiled(engine) {
-        return Err(engine_not_compiled(engine, Some(dir)));
+    let sled_dir = detect_engine(dir) == Some(StorageEngine::Sled);
+    match requested {
+        StorageEngine::Sled => Err(sled_removed(Some(dir))),
+        StorageEngine::Auto if sled_dir => Err(sled_removed(Some(dir))),
+        _ => Ok(StorageEngine::Redb),
     }
-    Ok(engine)
-}
-
-fn engine_compiled(engine: crate::storage::backend::StorageEngine) -> bool {
-    use crate::storage::backend::StorageEngine;
-    match engine {
-        // Retirado en 0.8.0 (#141): nunca está compilado.
-        StorageEngine::Sled => false,
-        StorageEngine::Redb => cfg!(feature = "storage-redb"),
-        StorageEngine::Auto => true,
-    }
-}
-
-fn engine_label(engine: crate::storage::backend::StorageEngine) -> &'static str {
-    use crate::storage::backend::StorageEngine;
-    match engine {
-        StorageEngine::Sled => "sled",
-        StorageEngine::Redb => "redb",
-        StorageEngine::Auto => "auto",
-    }
-}
-
-/// Error claro (no panic) cuando piden un engine cuyo backend no se compiló:
-/// el enum es público y non_exhaustive — el valor puede llegar por API. Con
-/// `dir`, además dice que la base existente es de ese motor y cómo migrarla.
-fn engine_not_compiled(
-    engine: crate::storage::backend::StorageEngine,
-    dir: Option<&Path>,
-) -> crate::error::NopalError {
-    use crate::storage::backend::StorageEngine;
-    if engine == StorageEngine::Sled {
-        return sled_removed(dir);
-    }
-    // Nombrar la feature EXACTA, no el comodín `storage-*`: quien recibe este
-    // error está a una línea de Cargo.toml de arreglarlo, y adivinar el
-    // nombre es trabajo innecesario.
-    let feature = "storage-redb";
-    let existing = dir
-        .filter(|d| detect_engine(d) == Some(engine))
-        .map(|d| {
-            format!(
-                " La base en {} es una base {}: compila con esa feature para abrirla, o mígrala al motor \
-                 por defecto con `Storage::copy_database` (Rust), `cargo run --example migrate_engine` o \
-                 `Graph.migrate` (Python); ver docs/MIGRATION_0.6.md.",
-                d.display(),
-                engine_label(engine)
-            )
-        })
-        .unwrap_or_default();
-    crate::error::StorageError::new(
-        crate::error::StorageErrorKind::Unsupported,
-        format!(
-            "storage engine {engine:?} was not compiled into this build; \
-             rebuild with the `{feature}` Cargo feature enabled.{existing}"
-        ),
-    )
-    .into()
 }
 
 /// sled se retiró en 0.8.0 (#141). Pedirlo, o abrir con `Auto` un
@@ -398,17 +302,11 @@ mod engine_availability_tests {
     use super::*;
     use crate::storage::backend::StorageEngine;
 
-    /// El error nombra la feature EXACTA que falta, no un comodín: quien lo
-    /// recibe está a una línea de Cargo.toml de arreglarlo.
+    /// sled (retirado en 0.8.0) no tiene feature que nombrar: la receta dice
+    /// con qué versión migrar.
     #[test]
-    fn not_compiled_error_names_the_exact_feature() {
-        let msg = format!("{}", engine_not_compiled(StorageEngine::Redb, None));
-        assert!(msg.contains("storage-redb"), "debe nombrar la feature: {msg}");
-        assert!(!msg.contains("storage-*"), "sin comodines: {msg}");
-
-        // sled (retirado en 0.8.0) no tiene feature que nombrar: la receta
-        // dice con qué versión migrar.
-        let msg = format!("{}", engine_not_compiled(StorageEngine::Sled, None));
+    fn sled_error_gives_the_migration_recipe() {
+        let msg = format!("{}", sled_removed(None));
         assert!(msg.contains("0.7") && msg.contains("Graph.migrate"), "receta de migración: {msg}");
     }
 

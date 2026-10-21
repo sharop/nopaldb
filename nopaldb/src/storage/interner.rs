@@ -182,7 +182,7 @@ mod tests {
     use crate::storage::kv::KvEngine;
 
     fn engine() -> Arc<dyn KvEngine> {
-        // El motor por defecto del build (redb si está; si no, sled).
+        // El motor por defecto (redb).
         crate::storage::kv::open_in_memory(
             StorageProfile::Default,
             &crate::storage::backend::StorageOptions::default(),

@@ -180,7 +180,7 @@ pub struct GraphSection {
 /// Con qué se abrió.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageSection {
-    /// `"redb"` o `"sled"`.
+    /// `"redb"`, el único motor desde 0.8.0.
     pub engine: &'static str,
     /// `"default"`, `"mobile"` o `"server"`.
     pub profile: &'static str,

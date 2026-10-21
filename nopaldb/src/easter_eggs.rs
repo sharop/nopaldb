@@ -36,10 +36,14 @@ pub fn konami_code() {
 }
 
 
+/// Picks one element at random. A v4 UUID is already random (uuid draws it
+/// from the OS), so an easter egg does not need `rand` for this.
+fn pick<T>(items: &[T]) -> &T {
+    &items[(uuid::Uuid::new_v4().as_u128() % items.len() as u128) as usize]
+}
+
 /// Random motivational message
 pub fn motivational_message() -> &'static str {
-    use rand::seq::SliceRandom;
-    let mut rng = rand::thread_rng();
 
     let messages = [
         "🌵 ¡Tus grafos están floreciendo hermosamente!",
@@ -60,14 +64,12 @@ pub fn motivational_message() -> &'static str {
         "⚡ Velocidad de rayo en cada transacción!",
     ];
 
-    messages.choose(&mut rng).unwrap_or(&messages[0])
+    pick(&messages)
 }
 
 
 /// Fun facts about NopalDB
 pub fn fun_facts() {
-    use rand::seq::SliceRandom;
-    let mut rng = rand::thread_rng();
 
     let facts = [
         "🌵 El nopal es resiliente, ¡como esta base de datos!",
@@ -90,7 +92,7 @@ pub fn fun_facts() {
         "🌵 Como el nopal: puntiaguda pero confiable!",
     ];
 
-    let fact = facts.choose(&mut rng).unwrap_or(&facts[0]);
+    let fact = pick(&facts);
     println!("\n💡 Dato curioso: {}\n", fact);
 }
 
@@ -105,7 +107,7 @@ pub fn show_credits() {
 
     Tecnologías:
       • Rust 🦀 (Porque somos valientes)
-      • Sled (Magia de almacenamiento)
+      • redb (Magia de almacenamiento)
       • Tokio (Superpoderes asíncronos)
       • Serde (Hechicería de serialización)
 

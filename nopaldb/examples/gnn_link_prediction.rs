@@ -161,7 +161,7 @@ async fn random_walks(
     walk_length: usize,
 ) -> nopaldb::Result<Vec<Vec<uuid::Uuid>>> {
     let mut walks = Vec::new();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     for _ in 0..num_walks {
         let mut walk = vec![start];
@@ -179,11 +179,11 @@ async fn random_walks(
                 }
 
                 // Pick random incoming edge
-                let idx = rng.gen_range(0..incoming.len());
+                let idx = rng.random_range(0..incoming.len());
                 current = incoming[idx].source;
             } else {
                 // Pick random outgoing neighbor
-                let idx = rng.gen_range(0..edges.len());
+                let idx = rng.random_range(0..edges.len());
                 current = edges[idx].target;
             }
 
@@ -203,7 +203,7 @@ fn learn_embeddings_from_walks(
 ) -> HashMap<uuid::Uuid, Vec<f64>> {
     let embedding_dim = 4;
     let mut embeddings = HashMap::new();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Initialize randomly
     for (idx, &node_id) in nodes.iter().enumerate() {
@@ -250,7 +250,7 @@ fn learn_embeddings_from_walks(
 
                     // Negative samples
                     for _ in 0..neg_samples {
-                        let neg_idx = rng.gen_range(0..nodes.len());
+                        let neg_idx = rng.random_range(0..nodes.len());
                         let neg_node = nodes[neg_idx];
 
                         let neg_emb = embeddings.get(&neg_node).unwrap();
