@@ -8,7 +8,7 @@ Este tutorial te enseña a usar Arrow en NopalDB en menos de 5 minutos.
 ```toml
 # Cargo.toml
 [dependencies]
-nopaldb = { version = "0.1", features = ["analytics"] }
+nopaldb = { version = "0.7", features = ["analytics"] }
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -284,11 +284,11 @@ println!("📸 Snapshot saved: {}", filename);
 ```toml
 # ❌ INCORRECTO
 [dependencies]
-nopaldb = "0.1"
+nopaldb = "0.7"
 
 # ✅ CORRECTO
 [dependencies]
-nopaldb = { version = "0.1", features = ["analytics"] }
+nopaldb = { version = "0.7", features = ["analytics"] }
 ```
 
 ### Error 2: Grafo vacío

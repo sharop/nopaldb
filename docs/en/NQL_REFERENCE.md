@@ -396,7 +396,7 @@ the vector shown as `<literal dim=N>`), the strategy (`VECTOR SEARCH
 universe:` line with the predicates pushed into the search and, in a
 pattern, a `Seeds:` line with `k`, the hops and the `LIMIT`.
 
-**The `where` is the universe of the search (0.6.21, #214 phase 2).** The
+**The `where` is the universe of the search (0.7.0, #214 phase 2).** The
 predicates on the searched variable that can be computed before ranking are
 pushed into the search, so `k` is the top-k *inside* them:
 

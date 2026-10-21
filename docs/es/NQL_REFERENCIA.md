@@ -403,7 +403,7 @@ devolvían todas las filas. `explain` imprime los parámetros efectivos (líneas
 una línea `Search universe:` con los predicados empujados a la búsqueda y, en
 un patrón, una línea `Seeds:` con `k`, los saltos y el `LIMIT`.
 
-**El `where` es el universo de la búsqueda (0.6.21, #214 fase 2).** Los
+**El `where` es el universo de la búsqueda (0.7.0, #214 fase 2).** Los
 predicados sobre la variable buscada que se pueden calcular antes de puntuar
 se empujan a la búsqueda, así que `k` es el top-k *dentro* de ellos:
 

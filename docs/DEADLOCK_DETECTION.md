@@ -86,7 +86,7 @@ tx1.commit().await?;  // ← Despierta a Tx2
 Deadlock detection requiere la feature **`full-isolation`**:
 ```toml
 [dependencies]
-nopaldb = { version = "0.1", features = ["full-isolation"] }
+nopaldb = { version = "0.7", features = ["full-isolation"] }
 ```
 
 ### Timeout

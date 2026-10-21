@@ -185,15 +185,15 @@ NopalDB usa feature flags para mantener el binario pequeño:
 ```toml
 # Mínimo (SIN Arrow): grafo + NQL + MVCC + WAL con redb
 [dependencies]
-nopaldb = "0.6"
+nopaldb = "0.7"
 
 # Con Arrow/Parquet (tier core: + algoritmos, embeddings, full-text)
 [dependencies]
-nopaldb = { version = "0.6", features = ["core"] }
+nopaldb = { version = "0.7", features = ["core"] }
 
 # Todo (semantic + full-isolation)
 [dependencies]
-nopaldb = { version = "0.6", features = ["full"] }
+nopaldb = { version = "0.7", features = ["full"] }
 ```
 
 ## 🚀 Próximos Pasos

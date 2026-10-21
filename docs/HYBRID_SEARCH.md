@@ -52,7 +52,7 @@ ranges/OR are a follow-up. A value the property index cannot key (a list, an
 object) is checked on the nodes (until 0.6.20 it silently matched nothing).
 
 **A filter is checked on the candidates before any set is built** (label-only
-since 0.6.10; with properties since 0.6.21, #214 phase 2). Each path checks the
+since 0.6.10; with properties since 0.7.0, #214 phase 2). Each path checks the
 filter on its own candidates as it reads them, in rank order, and keeps the
 first `k × overfetch` that pass. The ranks are the ones the allowed-set would
 give, because each path is still restricted *before* the fusion, so the top-k
@@ -77,7 +77,7 @@ names keep the `label_` prefix from when only a label took this path
 Measured at 100k chunks (64 dims, `k = 10`, text + vector, release; medians
 of 15, ±50 % between runs in the costly rows), `search_hybrid(label, props)`:
 
-| property carried by | 0.6.20 | 0.6.21 |
+| property carried by | 0.6.20 | 0.7.0 |
 |---:|---:|---:|
 | 90 % | 767 ms | 2.3 ms |
 | 50 % | 256 ms | 3.9 ms |
@@ -102,7 +102,7 @@ selectivity (see [Cost](#cost)).
   the exact branch below, so the result is never short because of the
   shortcut.
 
-NQL `hybrid()` always passes the pattern's label as a filter, and since 0.6.21
+NQL `hybrid()` always passes the pattern's label as a filter, and since 0.7.0
 the equalities and `in` lists of the `where` on the searched variable (see
 [NQL `hybrid()`](#nql-hybrid)), so it takes this path too.
 
@@ -404,7 +404,7 @@ node.) `explain find ...` prints the effective parameters, defaults included
 Hybrid: hybrid(n): text="graph memory" ref="current_query" model="e5-large" k=10 rrf_k=30 overfetch=8 ef_search=128 text_index=Chunk_body filter.label=Chunk
 ```
 
-**The `where` is the universe (0.6.21, #214 phase 2).** The equalities and
+**The `where` is the universe (0.7.0, #214 phase 2).** The equalities and
 `in` lists on the searched variable (`c.tenant = "t7"`, `c.lang in ["es",
 "pt"]`, `c.id in [...]`, the pattern's inline properties) go into the filter,
 so `k` is the top-k inside them, with the same planner as above; the rest of
