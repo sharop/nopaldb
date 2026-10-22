@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.8.1] - unreleased
+## [0.8.1] - 2026-10-22
 
 Limpieza de dependencias y código muerto, sin cambios de API: lo que se
 retirará se marca como deprecado para 0.9. El árbol de dependencias por
