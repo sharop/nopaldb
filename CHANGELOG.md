@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **La búsqueda híbrida puntúa exacto conjuntos permitidos más grandes**
+  (#254). El corte entre el camino exacto (coseno sobre los vectores
+  permitidos, recall = 1) y el recorrido HNSW filtrado era 1024 fijo,
+  medido en 0.5.5, cuando el exacto leía cada vector del storage. Desde
+  0.6.16 los lee del índice en memoria, y el corte pasa a crecer con el
+  índice: `100 × ∛N`, nunca menos de 1024 (2 714 a 20k vectores, 4 642 a
+  100k, 10 000 a 1M).
+  - Se eligió midiendo los dos caminos a 3k–1M vectores y 64, 384 y 1024
+    dims (`benches/exact_threshold.rs`). El corte medido crece más despacio
+    que √N, y `100 × ∛N` queda por debajo en todos los casos: donde se elige
+    el exacto, también es el más barato.
+  - `search_hybrid(label, props)` sobre 100k chunks con una propiedad del 2 %
+    pasa de 34–36 ms a 8,4–9,4 ms, y su rama vectorial ahora es exacta
+    (`vector_path = "exact_over_allowed"`, `vector_exact = True`). Ninguna
+    otra selectividad cambia (`benches/hybrid_props_band.rs`).
+  - `EXACT_SEARCH_THRESHOLD` sigue en 1024. Decide cuándo el índice entero
+    se lee por scan lineal y cuándo se persiste su volcado, y eso no cambia.
+  - El top-k exacto (`rank_exact`) selecciona antes de ordenar, en lugar de
+    ordenar todo el conjunto. Da el mismo resultado.
+
 ## [0.8.1] - 2026-10-22
 
 Limpieza de dependencias y código muerto, sin cambios de API: lo que se
