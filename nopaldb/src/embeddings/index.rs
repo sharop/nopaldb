@@ -60,6 +60,37 @@ pub const DEFAULT_EF_SEARCH: usize = 30;
 /// `insert`. El grafo se construye siempre; solo cambia el camino de LECTURA.
 pub const EXACT_SEARCH_THRESHOLD: usize = 1024;
 
+/// Factor de [`exact_over_allowed_limit`]: el corte es `100 × ∛N`.
+pub const EXACT_OVER_ALLOWED_FACTOR: f64 = 100.0;
+
+/// Hasta cuántos ids permitidos la búsqueda híbrida puntúa exacto el
+/// conjunto (coseno sobre sus vectores, recall = 1) en vez de recorrer el
+/// grafo HNSW con el filtro, en un índice de `index_len` puntos (#254).
+///
+/// Los dos caminos escalan distinto. El exacto es lineal en el tamaño del
+/// conjunto (~0.3 µs por id a 64 dims, ~1.7 µs a 1024). El recorrido
+/// filtrado se encarece cuanto más selectivo es el filtro, es decir, cuanto
+/// menor es la fracción del índice que deja pasar: a 100k puntos cuesta
+/// 18 ms con el 1 % y 2 ms con el 10 %. Por eso el punto de corte crece con
+/// el índice. Medido (`benches/exact_threshold.rs`, 40 candidatos, ef = 30):
+/// a 20k puntos el exacto gana hasta ~4–7k ids; a 100k, hasta ~6–9k; a 1M,
+/// hasta ~12k (384 dims) y ~17k (64 dims). Crece más despacio que √N, y
+/// `100 × ∛N` (2 714, 4 642 y 10 000 en esos tamaños) queda por debajo del
+/// corte medido en todos, con margen; las dimensiones altas son las que lo
+/// acotan.
+///
+/// Nunca baja de [`EXACT_SEARCH_THRESHOLD`], el corte fijo de antes de 0.8.2:
+/// en índices chicos el conjunto es casi todo el índice, el recorrido
+/// filtrado sale barato y no hay nada que ganar.
+///
+/// Se descartó subir `EXACT_SEARCH_THRESHOLD`: esa constante decide también
+/// cuándo el índice entero se lee por scan lineal, guarda una copia de los
+/// vectores y no persiste su volcado. Este corte es solo del conjunto.
+pub fn exact_over_allowed_limit(index_len: usize) -> usize {
+    let scaled = (EXACT_OVER_ALLOWED_FACTOR * (index_len as f64).cbrt()) as usize;
+    EXACT_SEARCH_THRESHOLD.max(scaled)
+}
+
 /// Debajo de este tamaño, `build_batch` inserta en serie para que la
 /// construcción del grafo HNSW sea determinista (independiente del número de
 /// threads de rayon). Por encima, la inserción paralela sí rinde.
@@ -156,12 +187,27 @@ where
     I: IntoIterator<Item = (NodeId, &'a [f32])>,
 {
     let dist = DistCosine {};
-    let mut scored: Vec<(NodeId, f32)> = candidates
+    let scored: Vec<(NodeId, f32)> = candidates
         .into_iter()
         .map(|(node_id, vec)| (node_id, dist.eval(query, vec)))
         .collect();
-    scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-    scored.truncate(k);
+    top_k(scored, k)
+}
+
+/// Los `k` primeros de `scored` por (distancia, NodeId), ordenados. Selecciona
+/// antes de ordenar: con miles de candidatos y `k` de decenas, ordenar todo
+/// era la mayor parte del coste que no es calcular distancias. El orden total
+/// (distancia, luego id) hace que el resultado sea el mismo que ordenando todo.
+fn top_k(mut scored: Vec<(NodeId, f32)>, k: usize) -> Vec<(NodeId, f32)> {
+    let order = |a: &(NodeId, f32), b: &(NodeId, f32)| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0));
+    if k == 0 {
+        return Vec::new();
+    }
+    if scored.len() > k {
+        scored.select_nth_unstable_by(k - 1, order);
+        scored.truncate(k);
+    }
+    scored.sort_unstable_by(order);
     scored
 }
 

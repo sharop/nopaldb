@@ -33,7 +33,7 @@ use crate::embeddings::index::DEFAULT_EF_SEARCH;
 /// Exact-path pieces shared with the embeddings index: the same cosine
 /// distance and tie-break, so both branches of `vector_path` rank identically.
 #[cfg(feature = "embeddings-index")]
-use crate::embeddings::{rank_exact, FilteredSearchPath, EXACT_SEARCH_THRESHOLD};
+use crate::embeddings::{exact_over_allowed_limit, rank_exact, FilteredSearchPath, EXACT_SEARCH_THRESHOLD};
 
 /// Equality-conjunction filter over a node's label and properties.
 #[derive(Debug, Clone, Default)]
@@ -172,8 +172,9 @@ impl Default for HybridQuery {
 pub enum VectorPath {
     /// No filter: plain KNN over the whole index.
     Unfiltered,
-    /// Small allowed set over a large index: exact cosine over just those
-    /// vectors, read from storage. Recall = 1 by construction.
+    /// Allowed set small for its index ([`exact_over_allowed_limit`]): exact
+    /// cosine over just those vectors, read from the index. Recall = 1 by
+    /// construction.
     ExactOverAllowed,
     /// Filter over an index that is itself under `EXACT_SEARCH_THRESHOLD`:
     /// the index scans every point exactly and applies the predicate, no
@@ -736,7 +737,10 @@ impl Graph {
     /// a selective predicate over a large index can walk a long way for a
     /// handful of allowed hits. When the allowed set is small enough to score
     /// directly, an exact scan over just those vectors is both *exact* and
-    /// cheaper: at most `EXACT_SEARCH_THRESHOLD` point reads, no graph walk.
+    /// cheaper: no graph walk. "Small enough" grows with the index
+    /// ([`exact_over_allowed_limit`], `100 × ∛N`, never under 1024): the walk
+    /// gets costlier as the allowed fraction shrinks, the scan only with the
+    /// set's size (#254).
     ///
     /// Only the caller knows the allowed cardinality — the index sees an opaque
     /// closure — so the decision lives here, not in `HnswIndex`.
@@ -780,7 +784,7 @@ impl Graph {
         };
 
         let index_len = index.read().unwrap_or_else(|e| e.into_inner()).len();
-        if set.len() <= EXACT_SEARCH_THRESHOLD && index_len > EXACT_SEARCH_THRESHOLD {
+        if set.len() <= exact_over_allowed_limit(index_len) && index_len > EXACT_SEARCH_THRESHOLD {
             // Los vectores salen del índice, bajo el read lock y sin `await`
             // dentro; se puntúan con el lock ya liberado. Todo vector
             // indexado tiene la dimensión del índice (`insert` lo valida),
@@ -821,7 +825,7 @@ impl Graph {
     /// reaching `candidates` would take a fetch above
     /// [`PREDICT_MAX_VECTOR_FETCH`], and when the set
     /// the rate implies is small enough to rank exactly
-    /// ([`EXACT_SEARCH_THRESHOLD`]) — the set path is then both cheaper and
+    /// ([`exact_over_allowed_limit`]) — the set path is then both cheaper and
     /// exact, which is what a property filter got before this path existed.
     #[cfg(feature = "embeddings-index")]
     #[allow(clippy::too_many_arguments)]
@@ -867,7 +871,7 @@ impl Graph {
                 let needed = fetch_needed(kept.len(), examined, candidates);
                 let implied_set = (kept.len() as f64 / examined.max(1) as f64) * index_len as f64;
                 let small_enough_to_be_exact =
-                    !kept.is_empty() && index_len > EXACT_SEARCH_THRESHOLD && implied_set <= EXACT_SEARCH_THRESHOLD as f64;
+                    !kept.is_empty() && index_len > EXACT_SEARCH_THRESHOLD && implied_set <= exact_over_allowed_limit(index_len) as f64;
                 if needed > PREDICT_MAX_VECTOR_FETCH || small_enough_to_be_exact {
                     return Ok(None);
                 }
@@ -1301,6 +1305,70 @@ mod tests {
             .unwrap();
         assert_eq!(path, VectorPath::Unfiltered);
         assert_eq!(hits.len(), 5);
+    }
+
+    /// El corte del camino exacto crece con el índice (#254): `100 × ∛N`,
+    /// nunca menos de 1024. Antes era 1024 fijo.
+    #[test]
+    fn exact_over_allowed_limit_grows_with_the_index() {
+        use crate::embeddings::exact_over_allowed_limit;
+        assert_eq!(exact_over_allowed_limit(0), EXACT_SEARCH_THRESHOLD);
+        assert_eq!(exact_over_allowed_limit(1_000), EXACT_SEARCH_THRESHOLD, "índice chico: el corte de siempre");
+        assert!((4_600..=4_650).contains(&exact_over_allowed_limit(100_000)));
+        assert!((9_990..=10_000).contains(&exact_over_allowed_limit(1_000_000)));
+        let mut last = 0;
+        for n in [1_000, 10_000, 100_000, 1_000_000, 10_000_000] {
+            let limit = exact_over_allowed_limit(n);
+            assert!(limit >= last, "monótono");
+            last = limit;
+        }
+    }
+
+    /// Un conjunto de más de 1024 permitidos, chico para su índice, ya no
+    /// recorre el grafo: se puntúa exacto (antes de #254 iba por
+    /// `HnswFiltered`, aproximado y más caro).
+    #[tokio::test]
+    async fn allowed_set_over_1024_small_for_its_index_ranks_exactly() {
+        use crate::embeddings::exact_over_allowed_limit;
+        let dir = tempfile::tempdir().unwrap();
+        let graph = Graph::open(dir.path()).await.unwrap();
+
+        let dim = 8;
+        let n = 4_000;
+        let vecs = vectors(n, dim, 2540);
+        let mut items = Vec::with_capacity(n);
+        let mut allowed_ids: Vec<(NodeId, Vec<f32>)> = Vec::new();
+        for (i, v) in vecs.iter().enumerate() {
+            let id = graph.add_node(Node::new("Frag")).await.unwrap();
+            items.push((id, v.clone()));
+            if i % 8 < 3 {
+                allowed_ids.push((id, v.clone()));
+            }
+        }
+        graph.add_node_embeddings("m", items).await.unwrap();
+
+        let shared = graph.get_or_build_embedding_index("m").await.unwrap();
+        let index = &shared;
+        let limit = exact_over_allowed_limit(index.read().unwrap().len());
+        assert!(
+            allowed_ids.len() > EXACT_SEARCH_THRESHOLD && allowed_ids.len() <= limit,
+            "{} permitidos: por encima de 1024 y bajo el corte {limit}",
+            allowed_ids.len()
+        );
+
+        let allowed: HashSet<NodeId> = allowed_ids.iter().map(|(id, _)| *id).collect();
+        let query = &vecs[11];
+        let k = 10;
+        let (hits, path) = graph.vector_path(index, query, Some(&allowed), k, 30).await.unwrap();
+        assert_eq!(path, VectorPath::ExactOverAllowed);
+
+        let mut expected: Vec<(NodeId, f32)> =
+            allowed_ids.iter().map(|(id, v)| (*id, cosine_ref(query, v))).collect();
+        expected.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        expected.truncate(k);
+        let got: Vec<NodeId> = hits.iter().map(|(id, _)| *id).collect();
+        let want: Vec<NodeId> = expected.iter().map(|(id, _)| *id).collect();
+        assert_eq!(got, want, "exacto: el mismo top-k que la fuerza bruta");
     }
 
     /// Un conjunto permitido GRANDE no se materializa: va por el grafo con el

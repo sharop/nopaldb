@@ -155,6 +155,16 @@ name = "retrieval_dims"
 harness = false
 required-features = ["embeddings-index"]
 
+[[bench]]
+name = "exact_threshold"
+harness = false
+required-features = ["embeddings-index"]
+
+[[bench]]
+name = "hybrid_props_band"
+harness = false
+required-features = ["hybrid"]
+
 [[test]]
 name = "owl_import_integration_test"
 required-features = ["owl-import"]

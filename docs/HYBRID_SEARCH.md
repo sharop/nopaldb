@@ -64,7 +64,7 @@ With properties the path watches its own pass rate. A **broad** filter (most
 candidates pass) stays on it and costs about what the label alone costs. A
 **selective** one builds the allowed set as soon as the rate of the first
 rounds says the cap would run out before `k × overfetch` pass, or that the set
-is small enough to rank exactly (≤ 1024): property-index lookups intersected,
+is small enough to rank exactly (see [Cost](#cost)): property-index lookups intersected,
 the members read once to confirm the label and the whole filter. Until 0.6.20
 every property filter built the set up front, which is right for a selective
 filter and ×200 too slow for a broad one. A property with at most 512 members
@@ -88,9 +88,12 @@ of 15, ±50 % between runs in the costly rows), `search_hybrid(label, props)`:
 | 0.02 % | 0.27 ms | 0.27 ms |
 
 The label alone costs 1.7 ms and no filter 1.4 ms, both unchanged. The band
-around 1–5 % is the expensive one on both versions: the set is too big for
+around 1–5 % is the expensive one on both versions: the set was too big for
 the exact vector branch (1024) and the filtered HNSW walk pays for its
-selectivity (see [Cost](#cost)).
+selectivity (see [Cost](#cost)). Since 0.8.2 the exact branch's cutoff grows
+with the index (4,642 at 100k), and the 2 % row drops to ~9 ms. The 5 % row
+does not move: its set is above the cutoff, and most of its cost is building
+the set, not ranking it.
 
 - **Text path** (`text_path = "global_label_checked"`): a full-text index
   already belongs to one label, so with the index of the filter's label the
@@ -265,7 +268,7 @@ index size:
 | Situation | Branch | Recall |
 |---|---|---|
 | index ≤ 1024 vectors | exact scan over every point, then filter | exact |
-| allowed-set ≤ 1024 within a larger index | exact cosine over just the allowed vectors | exact |
+| allowed-set ≤ `100 × ∛N` (at least 1024) within a larger index of N vectors | exact cosine over just the allowed vectors | exact |
 | larger allowed-set | HNSW walk with the predicate applied natively during traversal, escalating `ef_search` until `k` allowed hits are collected (capped) | approximate |
 
 The middle row is the important one: with a selective filter, scoring the
@@ -281,23 +284,43 @@ always the same as "no more exist".
 
 A filtered HNSW walk gets *more* expensive as the filter gets *more*
 selective: fewer allowed points means the traversal explores further before its
-result heap fills. Measured on a 100k-vector index (dim 32, `k=10`,
-`ef_search=30`, release build), recall was 10/10 at every selectivity below:
+result heap fills. The exact branch costs the opposite way: it reads and scores
+every allowed vector, so it grows with the size of the set and does not care
+how the set compares to the index. Measured with `benches/exact_threshold.rs`
+on a 100k-vector index (clustered data, a random allowed set, 40 candidates =
+`k × overfetch`, `ef_search = 30`, release; median of 40 queries):
 
-| allowed-set | share of index | per query |
-|---:|---:|---:|
-| 105 | 0.1% | 74 ms |
-| 988 | 1% | 14 ms |
-| 1,109 | 1.1% | 15 ms |
-| 9,927 | 10% | 2.2 ms |
-| 100,000 | 100% | 0.5 ms |
+| dims | allowed-set | share | exact | filtered walk | walk recall |
+|---:|---:|---:|---:|---:|---:|
+| 64 | 1,000 | 1 % | 0.37 ms | 18 ms | 0.998 |
+| 64 | 5,000 | 5 % | 1.4 ms | 3.6 ms | 0.999 |
+| 64 | 10,000 | 10 % | 1.9 ms | 1.9 ms | 0.998 |
+| 64 | 50,000 | 50 % | 13 ms | 0.77 ms | 0.994 |
+| 384 | 1,000 | 1 % | 0.99 ms | 33 ms | 0.994 |
+| 384 | 5,000 | 5 % | 4.5 ms | 6.8 ms | 0.999 |
+| 384 | 10,000 | 10 % | 9.1 ms | 3.7 ms | 0.999 |
+| 1024 | 1,000 | 1 % | 1.7 ms | 56 ms | 0.991 |
+| 1024 | 5,000 | 5 % | 8.5 ms | 12 ms | 0.999 |
+| 1024 | 10,000 | 10 % | 17 ms | 6.8 ms | 0.999 |
 
-This is why the exact branch exists, and why its cutoff sits where it does:
-below ~1024 allowed nodes, reading those vectors and scoring them directly
-costs about the same as the walk — and is exact instead of approximate. Above
-it the walk is the cheaper option. Queries whose allowed-set lands just over
-the cutoff on a very large index are the costliest case; partitioning the index
-by the filtering property is the answer there.
+So the crossover is not a fixed size: it moves with the index. Measured, the
+exact branch stays cheaper up to ~4–7k allowed nodes on a 20k index, ~6–9k on
+100k, and ~12k (384 dims) to ~17k (64 dims) on 1M; higher dimensions bring it
+down. The planner uses **`100 × ∛N`** allowed nodes for an index of N vectors,
+never less than 1024: 2,714 at 20k, 4,642 at 100k, 10,000 at 1M. It sits
+under every measured crossover, so wherever the exact branch is chosen it is
+also the cheaper one, and it is exact.
+
+> **Changed in 0.8.2 (#254).** The cutoff was a fixed 1024, measured in 0.5.5
+> when the exact branch read every vector from storage (~30 µs each). Since
+> 0.6.16 it reads them from the in-memory index (#224), so it can afford far
+> larger sets. On 100k chunks, `search_hybrid(label, props)` with a property
+> carried by 2 % of them went from 34–36 ms to 8.4–9.4 ms (and became exact);
+> no other selectivity moved (`benches/hybrid_props_band.rs`).
+
+Queries whose allowed-set lands just over the cutoff on a very large index are
+still the costliest case; partitioning the index by the filtering property is
+the answer there.
 
 > **Changed in 0.5.5.** Before, the vector path fetched `k × 4` *global*
 > neighbours and filtered them afterwards. With a selective filter the allowed

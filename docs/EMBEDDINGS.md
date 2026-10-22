@@ -529,7 +529,8 @@ What the numbers say:
   escalates `ef_search` while the filter starves it; that is why a 1 % filter
   is the most expensive row here. Graph-level searches do not take this path
   for very selective filters: the planner ranks the allowed set exactly when it
-  is small (≤ 1024 candidates), see `HYBRID_SEARCH.md`.
+  is small for the index (`100 × ∛N`, at least 1024: 4,642 at 100k), see
+  `HYBRID_SEARCH.md`.
 
 ---
 
