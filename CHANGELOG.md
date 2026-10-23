@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.8.4] - unreleased
+## [0.8.4] - 2026-10-23
 
 Arreglos de patrones NQL y poda al expandir (#214 fase 2b, #271). **DELETE
 y UPDATE con patrón podían borrar o actualizar aristas que el patrón no
