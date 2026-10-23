@@ -244,25 +244,33 @@ pub async fn scan_nodes_stream<'a>(
 }
 
 /// Legacy materialized pattern matcher used by WriteExecutor.
-pub async fn execute_pattern(
+/// Coincidencias de un patrón de un salto `(a)-[r]->(b)` para DELETE y
+/// UPDATE con patrón: la dirección, el tipo y las propiedades inline del
+/// nodo origen, de la arista y del destino. Hasta 0.8.3 se usaban solo las
+/// etiquetas y el tipo, así que `delete (c)<-[:T]-(e)` borraba las aristas
+/// `c -> e` y `delete (c)-[:T {w: 1}]->(e)` también las de `w = 2`.
+pub async fn execute_one_hop_pattern(
     graph: &Graph,
-    source_label: Option<&str>,
-    rel_type: Option<&str>,
-    target_label: Option<&str>,
+    source: &crate::query::nql::parser::ast::NodePattern,
+    rel: &crate::query::nql::parser::ast::RelationshipPattern,
+    target: &crate::query::nql::parser::ast::NodePattern,
 ) -> Result<Vec<PatternMatch>> {
-    // Implement via streaming for consistency
-    let source_stream = Box::new(ScanNodesStream::new(Arc::new(graph.clone()), source_label.map(|s| s.to_string()), 512));
+    let source_stream = Box::new(ScanNodesStream::new(Arc::new(graph.clone()), source.label.clone(), 512));
     let mut traversal = TraverseStream::new(
         graph,
         source_stream,
-        rel_type.map(|s| s.to_string()),
-        target_label.map(|s| s.to_string()),
-        HashMap::new(),
-    );
-    
+        rel.rel_type.clone(),
+        target.label.clone(),
+        target.properties.clone(),
+    )
+    .with_edge_properties(rel.properties.clone())
+    .with_direction(rel.direction.clone());
+
     let mut matches = Vec::new();
     while let Some(m) = traversal.next().await? {
-        matches.push(m);
+        if source.properties.iter().all(|(k, v)| m.source.properties.get(k) == Some(v)) {
+            matches.push(m);
+        }
     }
     Ok(matches)
 }
@@ -284,6 +292,10 @@ pub struct TraverseStream<'a> {
     /// Filtros inline sobre propiedades de la arista, e.g. `-[r:TRANS {amount: 1000}]->`.
     /// Empty map significa sin filtro adicional.
     edge_properties: HashMap<String, PropertyValue>,
+    /// Sentido de la flecha del patrón. Hasta 0.8.3 se ignoraba: siempre se
+    /// recorrían las aristas salientes hacia `edge.target`, así que
+    /// `(e)<-[:T]-(c)` no devolvía nada y `(c)<-[:T]-(e)` devolvía filas.
+    direction: crate::query::nql::parser::ast::Direction,
     current_source: Option<Node>,
     edge_iter: Option<std::vec::IntoIter<Edge>>,
 }
@@ -303,6 +315,7 @@ impl<'a> TraverseStream<'a> {
             target_label,
             target_properties,
             edge_properties: HashMap::new(),
+            direction: crate::query::nql::parser::ast::Direction::Outgoing,
             current_source: None,
             edge_iter: None,
         }
@@ -311,6 +324,12 @@ impl<'a> TraverseStream<'a> {
     /// Configura filtros inline sobre propiedades de arista.
     pub fn with_edge_properties(mut self, props: HashMap<String, PropertyValue>) -> Self {
         self.edge_properties = props;
+        self
+    }
+
+    /// Sentido de la flecha: `->` (por defecto), `<-` o `<->`.
+    pub fn with_direction(mut self, direction: crate::query::nql::parser::ast::Direction) -> Self {
+        self.direction = direction;
         self
     }
 }
@@ -329,7 +348,16 @@ impl<'a> PatternMatchStream for TraverseStream<'a> {
                     {
                         continue;
                     }
-                    if let Ok(target) = self.graph.get_node(edge.target).await {
+                    use crate::query::nql::parser::ast::Direction;
+                    let source_id = self.current_source.as_ref().map(|n| n.id);
+                    let other = match self.direction {
+                        Direction::Outgoing => edge.target,
+                        Direction::Incoming => edge.source,
+                        Direction::Bidirectional => {
+                            if Some(edge.source) == source_id { edge.target } else { edge.source }
+                        }
+                    };
+                    if let Ok(target) = self.graph.get_node(other).await {
                         if let Some(tl) = &self.target_label && target.label != *tl { continue; }
                         // Filtrar por propiedades inline del nodo destino, e.g. (b {active: true})
                         if !self.target_properties.is_empty()
@@ -351,7 +379,17 @@ impl<'a> PatternMatchStream for TraverseStream<'a> {
                     continue;
                 }
                 if let Some(source) = self.source_stream.next().await? {
-                    let edges = self.graph.get_outgoing_edges(source.id).await?;
+                    use crate::query::nql::parser::ast::Direction;
+                    // Mismas aristas que el camino lineal (`get_edges_for_direction`).
+                    let edges = match self.direction {
+                        Direction::Outgoing => self.graph.get_outgoing_edges(source.id).await?,
+                        Direction::Incoming => self.graph.get_incoming_edges(source.id).await?,
+                        Direction::Bidirectional => {
+                            let mut both = self.graph.get_outgoing_edges(source.id).await?;
+                            both.extend(self.graph.get_incoming_edges(source.id).await?);
+                            both
+                        }
+                    };
                     self.current_source = Some(source);
                     self.edge_iter = Some(edges.into_iter());
                 } else {

@@ -210,7 +210,8 @@ async fn k_bounds_the_seeds_and_limit_the_expanded_rows() {
     assert_eq!(result.rows().len(), 2, "{:?}", result.rows());
     assert!(result.rows().iter().all(|r| r.get("c.name") == Some(&s("c0"))));
 
-    // The WHERE predicates on b / c apply after the expansion (semantics A).
+    // The WHERE predicates on b / c are expansion constraints: they prune
+    // rows, and never change which seeds the search picks (k = seeds).
     // One row per path, as in any pattern query: c1 reaches nopal through
     // riego and through agua, so it has two rows; `distinct` collapses them.
     let q = r#"find c.name, f.name from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:RELATED]->(f:Entity) where similar_to(c, vector = [1, 0, 0], model = "m", k = 2) and f.name = "nopal""#;

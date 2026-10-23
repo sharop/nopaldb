@@ -847,9 +847,11 @@ impl<'a> Executor<'a> {
 
         // Step 4: Collect to result (public API compatibility).
         // Optimization: if there is no ORDER BY, apply LIMIT/OFFSET while streaming
-        // to avoid materializing all rows in memory.
+        // to avoid materializing all rows in memory. Not with DISTINCT: the
+        // limit counts distinct rows (until 0.8.3 it could stop on duplicates).
+        let limit_after = query.order_by.is_some() || query.find.distinct;
         let mut rows = Vec::new();
-        if query.order_by.is_none() {
+        if !limit_after {
             let (offset, take_limit) = if let Some(limit) = &query.limit {
                 (limit.offset.unwrap_or(0), limit.limit)
             } else {
@@ -976,8 +978,8 @@ impl<'a> Executor<'a> {
         }
 
         // Step 6: Apply LIMIT/OFFSET on projected result
-        // (only needed here when ORDER BY is present)
-        if query.order_by.is_some() && let Some(limit) = &query.limit {
+        // (only needed here when ORDER BY or DISTINCT is present)
+        if limit_after && let Some(limit) = &query.limit {
             let offset = limit.offset.unwrap_or(0);
             result.rows = result.rows.into_iter()
                 .skip(offset)
@@ -1387,7 +1389,8 @@ impl<'a> Executor<'a> {
                 target_pattern.label.clone(),
                 target_pattern.properties.clone(),
             )
-            .with_edge_properties(rel_pattern.properties.clone()),
+            .with_edge_properties(rel_pattern.properties.clone())
+            .with_direction(rel_pattern.direction.clone()),
         );
 
         // 3. Resolve pattern variables (with fallback inference for parser edge cases).
@@ -1560,8 +1563,12 @@ impl<'a> Executor<'a> {
 
         // 6. Collect result rows
         // Optimization: if there is no ORDER BY, apply LIMIT/OFFSET while streaming.
+        // Not with DISTINCT: the limit counts distinct rows, so it applies
+        // after deduplicating (until 0.8.3 `find distinct … limit 3` could
+        // stop after three duplicates and return one row).
+        let limit_after = query.order_by.is_some() || query.find.distinct;
         let mut rows = Vec::new();
-        if query.order_by.is_none() {
+        if !limit_after {
             let (offset, take_limit) = if let Some(limit) = &query.limit {
                 (limit.offset.unwrap_or(0), limit.limit)
             } else {
@@ -1703,7 +1710,7 @@ impl<'a> Executor<'a> {
             self.apply_order_by(&mut result, order_by);
         }
 
-        if query.order_by.is_some() && let Some(limit) = &query.limit {
+        if limit_after && let Some(limit) = &query.limit {
             let offset = limit.offset.unwrap_or(0);
             result.rows = result.rows.into_iter()
                 .skip(offset)
@@ -1877,27 +1884,7 @@ impl<'a> Executor<'a> {
         bindings: Vec<LinearPatternBinding>,
         query: &Query,
     ) -> Result<QueryResult> {
-        let has_path_reducer_in_filter = query
-            .filter
-            .as_ref()
-            .is_some_and(|f| expr_contains_path_reducer(&f.condition));
-        let has_path_eval_in_filter = query
-            .filter
-            .as_ref()
-            .is_some_and(|f| expr_contains_path_eval(&f.condition));
-        // F4-C: path.result in filter also needs VM path
-        let has_path_result_in_filter = query
-            .filter
-            .as_ref()
-            .is_some_and(|f| expr_uses_path_property_exec(&f.condition, "result"));
-        let has_path_semantic_filter_in_filter = query
-            .filter
-            .as_ref()
-            .is_some_and(|f| expr_contains_path_semantic_filter(&f.condition));
-        let has_path_embedding_in_filter = query
-            .filter
-            .as_ref()
-            .is_some_and(|f| expr_contains_path_embedding_fn(&f.condition));
+        let filter_needs_vm = query.filter.as_ref().is_some_and(|f| filter_uses_path_vm(&f.condition));
         let uses_path_vm = self.query_uses_quoted_path_vm(query);
 
         let mut binding_states: Vec<(LinearPatternBinding, Option<PathVmState>)> = Vec::new();
@@ -1916,11 +1903,7 @@ impl<'a> Executor<'a> {
             };
 
             let keep = if let Some(filter) = &query.filter {
-                if has_path_reducer_in_filter
-                    || has_path_eval_in_filter
-                    || has_path_result_in_filter
-                    || has_path_semantic_filter_in_filter
-                    || has_path_embedding_in_filter
+                if filter_needs_vm
                 {
                     self.evaluate_linear_pattern_condition_with_vm(
                         &binding,
@@ -2284,6 +2267,17 @@ impl<'a> Executor<'a> {
             }
         };
 
+        // Los predicados del WHERE sobre una sola variable se aplican al
+        // expandir (#214 fase 2b): un nodo que no los cumple no se expande
+        // más. El WHERE entero se re-aplica al final, así que las filas son
+        // las mismas; solo se leen menos aristas y nodos.
+        let filters = if self.query_uses_quoted_path_vm(query) {
+            ExpansionFilters::default()
+        } else {
+            ExpansionFilters::of(query)
+        };
+        let mut node_cache: HashMap<NodeId, Option<Node>> = HashMap::new();
+
         let mut bindings = Vec::new();
         let mut source_stream = self.seeded_source_stream(query, source_pattern).await?;
         while let Some(node) = source_stream.next().await? {
@@ -2296,12 +2290,18 @@ impl<'a> Executor<'a> {
                 node_vars.insert(var.clone(), node.clone());
             }
 
-            bindings.push(LinearPatternBinding {
+            let binding = LinearPatternBinding {
                 nodes: vec![node],
                 edges: Vec::new(),
                 node_vars,
                 edge_vars: HashMap::new(),
-            });
+            };
+            if let Some(var) = &source_pattern.variable
+                && !self.binding_passes(&binding, filters.of_var(var))
+            {
+                continue;
+            }
+            bindings.push(binding);
         }
 
         for hop_idx in (1..pattern.elements.len()).step_by(2) {
@@ -2324,12 +2324,20 @@ impl<'a> Executor<'a> {
 
             // Dispatch: fixed hop vs. quantified BFS (F1)
             bindings = match &rel_pattern.quantifier {
-                None => self.expand_linear_hop(bindings, rel_pattern, target_pattern).await?,
+                None => {
+                    self.expand_linear_hop(bindings, rel_pattern, target_pattern, &filters, &mut node_cache).await?
+                }
                 Some(q) => self.expand_quantified_hop(bindings, rel_pattern, q, target_pattern).await?,
             };
         }
 
         Ok(bindings)
+    }
+
+    /// Si `binding` cumple todos los predicados de expansión de una variable,
+    /// con el mismo evaluador que el WHERE final de este camino.
+    fn binding_passes(&self, binding: &LinearPatternBinding, filters: &[Expression]) -> bool {
+        filters.iter().all(|f| self.evaluate_linear_pattern_condition(binding, f))
     }
 
     /// Expande exactamente un hop en el patrón lineal.
@@ -2339,8 +2347,12 @@ impl<'a> Executor<'a> {
         bindings: Vec<LinearPatternBinding>,
         rel: &RelationshipPattern,
         target: &NodePattern,
+        filters: &ExpansionFilters,
+        node_cache: &mut HashMap<NodeId, Option<Node>>,
     ) -> Result<Vec<LinearPatternBinding>> {
         let mut next_bindings = Vec::new();
+        let target_filters = target.variable.as_deref().map(|v| filters.of_var(v)).unwrap_or(&[]);
+        let target_ids = target.variable.as_deref().and_then(|v| filters.ids_of(v));
 
         for binding in bindings {
             let current_node = binding.nodes.last().ok_or_else(|| {
@@ -2353,6 +2365,12 @@ impl<'a> Executor<'a> {
                     && edge.edge_type != *rel_type {
                         continue;
                     }
+                // Propiedades inline de la arista, `-[:T {w: 1}]->`. Hasta
+                // 0.8.3 este salto no las miraba (un salto y los
+                // cuantificadores sí).
+                if rel.properties.iter().any(|(k, v)| edge.properties.get(k) != Some(v)) {
+                    continue;
+                }
 
                 let next_node_id = match rel.direction {
                     Direction::Outgoing => edge.target,
@@ -2362,9 +2380,16 @@ impl<'a> Executor<'a> {
                     }
                 };
 
-                let next_node = match self.graph.get_node(next_node_id).await {
-                    Ok(node) => node,
-                    Err(_) => continue,
+                // `x.id = …` / `x.id in […]` se comprueba sin leer el nodo.
+                if target_ids.is_some_and(|ids| !ids.contains(&next_node_id)) {
+                    continue;
+                }
+                // Un nodo alcanzado desde varias semillas o caminos se lee una vez.
+                if let std::collections::hash_map::Entry::Vacant(slot) = node_cache.entry(next_node_id) {
+                    slot.insert(self.graph.get_node(next_node_id).await.ok());
+                }
+                let Some(next_node) = node_cache.get(&next_node_id).cloned().flatten() else {
+                    continue;
                 };
 
                 if !self.node_matches_pattern(&next_node, target) {
@@ -2382,6 +2407,9 @@ impl<'a> Executor<'a> {
                     next_binding.node_vars.insert(var.clone(), next_node);
                 }
 
+                if !self.binding_passes(&next_binding, target_filters) {
+                    continue;
+                }
                 next_bindings.push(next_binding);
             }
         }
@@ -5467,6 +5495,33 @@ impl<'a> Executor<'a> {
                         pattern.elements.len() / 2
                     ));
                 }
+                // Predicates applied while expanding a multi-hop pattern
+                // (#214 phase 2b): they prune, the rows do not change.
+                if let Some(pattern) = query.from.patterns.first()
+                    && pattern.elements.len() > 3
+                    && !self.query_uses_quoted_path_vm(&query)
+                {
+                    let filters = ExpansionFilters::of(&query);
+                    let parts: Vec<String> = pattern
+                        .elements
+                        .iter()
+                        .filter_map(|e| match e {
+                            PatternElement::Node(n) => n.variable.as_deref(),
+                            _ => None,
+                        })
+                        .filter(|v| !filters.of_var(v).is_empty())
+                        .map(|v| {
+                            let conds: Vec<String> = filters.of_var(v).iter().map(describe_comparison).collect();
+                            format!("{v}: {}", conds.join(" and "))
+                        })
+                        .collect();
+                    if !parts.is_empty() {
+                        explanation.push_str(&format!(
+                            "\nExpansion filters: {}; applied while expanding, the rows do not change",
+                            parts.join("; ")
+                        ));
+                    }
+                }
                 for (column, var, kind) in score_projections(&query) {
                     let has = |f: &str| {
                         query.filter.as_ref().is_some_and(|w| expr_searches_var(&w.condition, f, &var))
@@ -6504,6 +6559,165 @@ fn describe_hybrid(call: &HybridCall, query: &Query) -> String {
             .map(|l| format!("{l} (checked on each branch's candidates, no label scan)"))
             .unwrap_or_else(|| "none".to_string()),
     )
+}
+
+
+/// Si el WHERE necesita el evaluador de la VM de caminos (funciones de
+/// camino, `path.result`, reducers, filtros semánticos o embeddings de
+/// camino) en vez de `evaluate_linear_pattern_condition`.
+fn filter_uses_path_vm(condition: &Expression) -> bool {
+    expr_contains_path_reducer(condition)
+        || expr_contains_path_eval(condition)
+        || expr_uses_path_property_exec(condition, "result")
+        || expr_contains_path_semantic_filter(condition)
+        || expr_contains_path_embedding_fn(condition)
+}
+
+/// Predicados del AND raíz del WHERE que se pueden aplicar al expandir un
+/// patrón lineal, por variable (#214 fase 2b).
+///
+/// Solo entra un conjunto que habla de una sola variable y está hecho de
+/// comparaciones entre sus propiedades y literales, unidas por `and`/`or`:
+/// nada de funciones (que el evaluador lineal da por verdaderas), unarios ni
+/// `path`, y nada que cruce variables (`e.x = f.y`), que solo se puede
+/// evaluar con la fila completa. Como el WHERE entero se vuelve a aplicar a
+/// cada fila, aplicar estos antes solo evita expandir lo que se descartaría:
+/// las filas no cambian.
+#[derive(Default)]
+struct ExpansionFilters {
+    by_var: HashMap<String, Vec<Expression>>,
+    ids: HashMap<String, HashSet<NodeId>>,
+}
+
+impl ExpansionFilters {
+    fn of(query: &Query) -> Self {
+        let mut out = Self::default();
+        let Some(filter) = &query.filter else { return out };
+        // Con funciones de camino el WHERE final usa el evaluador de la VM;
+        // podar con el lineal podría no coincidir con él.
+        if filter_uses_path_vm(&filter.condition) {
+            return out;
+        }
+        let mut parts = Vec::new();
+        root_conjuncts(&filter.condition, &mut parts);
+        for part in parts {
+            let Some(var) = single_var_comparison(part) else { continue };
+            if let Some(ids) = id_restriction(part, &var) {
+                let entry = out.ids.entry(var.clone()).or_insert_with(|| ids.clone());
+                entry.retain(|id| ids.contains(id));
+            }
+            out.by_var.entry(var).or_default().push(part.clone());
+        }
+        out
+    }
+
+    fn of_var(&self, var: &str) -> &[Expression] {
+        self.by_var.get(var).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    fn ids_of(&self, var: &str) -> Option<&HashSet<NodeId>> {
+        self.ids.get(var)
+    }
+}
+
+fn root_conjuncts<'e>(expr: &'e Expression, out: &mut Vec<&'e Expression>) {
+    match expr {
+        Expression::BinaryOp { left, op: BinaryOperator::And, right } => {
+            root_conjuncts(left, out);
+            root_conjuncts(right, out);
+        }
+        other => out.push(other),
+    }
+}
+
+/// La variable de un predicado hecho solo de comparaciones `v.p op literal`
+/// (o `literal op v.p`) unidas por `and`/`or`, todas sobre la misma `v`.
+fn single_var_comparison(expr: &Expression) -> Option<String> {
+    match expr {
+        Expression::BinaryOp { left, op: BinaryOperator::And | BinaryOperator::Or, right } => {
+            let l = single_var_comparison(left)?;
+            let r = single_var_comparison(right)?;
+            (l == r).then_some(l)
+        }
+        Expression::BinaryOp {
+            left,
+            op:
+                BinaryOperator::Eq
+                | BinaryOperator::NotEq
+                | BinaryOperator::Lt
+                | BinaryOperator::Gt
+                | BinaryOperator::LtEq
+                | BinaryOperator::GtEq
+                | BinaryOperator::In
+                | BinaryOperator::NotIn,
+            right,
+        } => {
+            match (left.as_ref(), right.as_ref()) {
+                (Expression::Property { variable, .. }, Expression::Literal(_))
+                | (Expression::Literal(_), Expression::Property { variable, .. })
+                    if variable != "path" =>
+                {
+                    Some(variable.clone())
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Texto de un predicado de expansión para EXPLAIN (solo la forma que
+/// admite `single_var_comparison`).
+fn describe_comparison(expr: &Expression) -> String {
+    match expr {
+        Expression::BinaryOp { left, op: BinaryOperator::And, right } => {
+            format!("{} and {}", describe_comparison(left), describe_comparison(right))
+        }
+        Expression::BinaryOp { left, op: BinaryOperator::Or, right } => {
+            format!("({} or {})", describe_comparison(left), describe_comparison(right))
+        }
+        Expression::BinaryOp { left, op, right } => {
+            let side = |e: &Expression| match e {
+                Expression::Property { variable, property } => format!("{variable}.{property}"),
+                Expression::Literal(PropertyValue::String(s)) => format!("{s:?}"),
+                Expression::Literal(v) => format!("{v}"),
+                other => format!("{other:?}"),
+            };
+            let symbol = match op {
+                BinaryOperator::Eq => "=",
+                BinaryOperator::NotEq => "!=",
+                BinaryOperator::Lt => "<",
+                BinaryOperator::Gt => ">",
+                BinaryOperator::LtEq => "<=",
+                BinaryOperator::GtEq => ">=",
+                BinaryOperator::In => "in",
+                BinaryOperator::NotIn => "not in",
+                _ => "?",
+            };
+            format!("{} {symbol} {}", side(left), side(right))
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+/// Los ids que admite `v.id = "uuid"` o `v.id in ["uuid", …]`.
+fn id_restriction(expr: &Expression, var: &str) -> Option<HashSet<NodeId>> {
+    let Expression::BinaryOp { left, op, right } = expr else { return None };
+    let Expression::Property { variable, property } = left.as_ref() else { return None };
+    if variable != var || property != "id" {
+        return None;
+    }
+    let parse = |v: &PropertyValue| match v {
+        PropertyValue::String(s) => s.parse::<NodeId>().ok(),
+        _ => None,
+    };
+    match (op, right.as_ref()) {
+        (BinaryOperator::Eq, Expression::Literal(v)) => Some(parse(v).into_iter().collect()),
+        (BinaryOperator::In, Expression::Literal(PropertyValue::List(items))) => {
+            Some(items.iter().filter_map(parse).collect())
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

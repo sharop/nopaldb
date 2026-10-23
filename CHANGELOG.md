@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **NQL: DELETE y UPDATE con patrón escribían de más.** Usaban solo las
+  etiquetas y el tipo de la arista. Ignoraban la dirección, las propiedades
+  inline del nodo origen, del destino y de la arista, y cualquier salto
+  después del primero.
+  - `delete (c:Chunk)<-[:MENTIONS]-(e:Entity)`, sin ninguna arista en ese
+    sentido, **borraba las aristas `c -> e`**.
+  - `delete …-[:MENTIONS {w: 1}]->…` borraba también las de `w = 2`.
+  - Un patrón de dos saltos se truncaba al primero.
+
+  Ahora se respeta el patrón completo, y un patrón de más de un salto o con
+  cuantificador da error.
+- **NQL: un patrón de un salto ignoraba la dirección.**
+  `(e:Entity)<-[:MENTIONS]-(c:Chunk)` no devolvía nada y
+  `(c:Chunk)<-[:MENTIONS]-(e:Entity)` devolvía filas. Ahora `<-` y `<->`
+  recorren las aristas entrantes, o ambas, como ya hacían los patrones de
+  varios saltos.
+- **NQL: un patrón de dos o más saltos ignoraba las propiedades inline de la
+  arista.** `-[:MENTIONS {w: 1}]->` encontraba también `w = 2`. Un salto y los
+  cuantificadores ya las comprobaban.
+- **NQL: `distinct` con `limit` sin `order by` podía devolver menos filas.**
+  El límite se aplicaba al leer, antes de quitar duplicados:
+  `find distinct r.region … limit 3` daba 1 fila. Pasaba en consultas de un
+  nodo y de un salto. Ahora el límite cuenta filas distintas.
+
+### Changed
+- **NQL: los predicados sobre los nodos expandidos se aplican al expandir**
+  (#214 fase 2b). En un patrón de varios saltos, un predicado del `where`
+  que habla de una sola variable descarta ese nodo antes de expandirlo:
+  - solo comparaciones con literales, unidas por `and`/`or`;
+  - `e.kind = "lugar"`, `f.x < 3 or f.x = 9`;
+  - `e.id = …` / `e.id in […]` se comprueba sin leer el nodo.
+
+  Cada nodo alcanzado desde varias semillas o caminos se lee una vez. **Las
+  filas no cambian:** el `where` completo se sigue aplicando a cada fila, y
+  `k` sigue contando semillas. EXPLAIN lo muestra en la línea
+  `Expansion filters`. Una suite de propiedades
+  (`nql_pattern_properties_test`) lo comprueba sobre grafos al azar:
+  - la simetría de la dirección;
+  - dos saltos con predicados frente a fuerza bruta;
+  - la partición del `where`;
+  - DELETE con patrón frente a FIND.
+
 ## [0.8.3] - 2026-10-23
 
 Arreglos de NQL (#255): los números negativos perdían el signo en `where`,
