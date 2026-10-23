@@ -364,6 +364,15 @@ fn bench_retrieval(c: &mut Criterion) {
     let q_hybrid_two_hops = format!(
         "find c.text, f.name, score(c) from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:RELATED]->(f:Entity) where hybrid(c, text = \"nopal riego\", vector = [{literal}], model = \"{MODEL}\", k = {K})"
     );
+    // #214 fase 2b: predicados sobre los nodos expandidos. Se aplican al
+    // expandir (poda) y cada nodo alcanzado se lee una vez; las filas no
+    // cambian.
+    let q_hybrid_two_hops_filtered = format!(
+        "find c.text, f.name, score(c) from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:RELATED]->(f:Entity) where hybrid(c, text = \"nopal riego\", vector = [{literal}], model = \"{MODEL}\", k = 100) and e.kind = \"lugar\" and f.kind = \"org\""
+    );
+    let q_ids_two_hops_filtered = format!(
+        "find c.text, f.name from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:RELATED]->(f:Entity) where c.id in [{id_list}] and e.kind = \"lugar\""
+    );
     for (name, q) in [
         ("id_lookup", &q_id),
         ("id_in_10", &q_in),
@@ -371,6 +380,8 @@ fn bench_retrieval(c: &mut Criterion) {
         ("similar_to_literal_one_hop", &q_similar_hop),
         ("hybrid_literal_one_hop", &q_hybrid_hop),
         ("hybrid_two_hops", &q_hybrid_two_hops),
+        ("hybrid_k100_two_hops_filtered", &q_hybrid_two_hops_filtered),
+        ("ids_two_hops_filtered", &q_ids_two_hops_filtered),
     ] {
         g.bench_with_input(BenchmarkId::new(name, n), &n, |b, _| {
             b.to_async(&rt).iter(|| async { black_box(fx.graph.execute_nql(q).await.expect("nql")) })

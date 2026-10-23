@@ -233,16 +233,10 @@ impl<'a> WriteExecutor<'a> {
         delete: &DeleteStmt,
         tx: &mut Transaction,
     ) -> Result<DeleteResult> {
-        let (source_label, rel_type, target_label, source_var, target_var) =
+        let (source, rel, target, source_var, target_var) =
             self.extract_pattern_parts(&delete.pattern)?;
 
-        // Use the pattern matching engine
-        let matches = operators::execute_pattern(
-            self.graph,
-            source_label.as_deref(),
-            rel_type.as_deref(),
-            target_label.as_deref(),
-        ).await?;
+        let matches = operators::execute_one_hop_pattern(self.graph, source, rel, target).await?;
 
         // Apply WHERE filter
         let filtered: Vec<_> = if let Some(filter) = &delete.filter {
@@ -329,15 +323,10 @@ impl<'a> WriteExecutor<'a> {
 
     /// UPDATE with relationship pattern (P0-B)
     async fn execute_update_pattern(&self, update: &UpdateStmt) -> Result<UpdateResult> {
-        let (source_label, rel_type, target_label, source_var, target_var) =
+        let (source, rel, target, source_var, target_var) =
             self.extract_pattern_parts(&update.pattern)?;
 
-        let matches = operators::execute_pattern(
-            self.graph,
-            source_label.as_deref(),
-            rel_type.as_deref(),
-            target_label.as_deref(),
-        ).await?;
+        let matches = operators::execute_one_hop_pattern(self.graph, source, rel, target).await?;
 
         let filtered: Vec<_> = if let Some(filter) = &update.filter {
             matches.into_iter()
@@ -484,43 +473,39 @@ impl<'a> WriteExecutor<'a> {
 
     /// Extract source label, rel type, target label, and variable names from a pattern
     #[allow(clippy::type_complexity)]
-    fn extract_pattern_parts(&self, pattern: &Pattern) -> Result<(
-        Option<String>,  // source label
-        Option<String>,  // rel type
-        Option<String>,  // target label
-        String,          // source var
-        String,          // target var
+    /// Las tres partes de un patrón de escritura `(a)-[r]->(b)` y sus
+    /// variables. DELETE y UPDATE con patrón solo saben de un salto: un
+    /// patrón más largo o con cuantificador es un error, no un patrón
+    /// truncado a su primer salto en silencio (hasta 0.8.3).
+    fn extract_pattern_parts<'p>(&self, pattern: &'p Pattern) -> Result<(
+        &'p NodePattern,
+        &'p RelationshipPattern,
+        &'p NodePattern,
+        String, // source var
+        String, // target var
     )> {
-        if pattern.elements.len() < 3 {
+        let (source, rel, target) = match pattern.elements.as_slice() {
+            [PatternElement::Node(a), PatternElement::Relationship(r), PatternElement::Node(b)] => (a, r, b),
+            elements if elements.len() > 3 => {
+                return Err(NopalError::query_error(
+                    "DELETE / UPDATE with a pattern support a single hop `(a)-[:T]->(b)`; \
+                     longer patterns are not supported yet",
+                ))
+            }
+            _ => {
+                return Err(NopalError::query_error(
+                    "Relationship pattern requires: node, relationship, node",
+                ))
+            }
+        };
+        if rel.quantifier.is_some() {
             return Err(NopalError::query_error(
-                "Relationship pattern requires at least: node -> rel -> node"
+                "DELETE / UPDATE with a pattern do not support relationship quantifiers",
             ));
         }
-
-        let source_label = match &pattern.elements[0] {
-            PatternElement::Node(n) => n.label.clone(),
-            _ => return Err(NopalError::query_error("Pattern must start with node")),
-        };
-        let source_var = match &pattern.elements[0] {
-            PatternElement::Node(n) => n.variable.clone().unwrap_or_else(|| "_source".into()),
-            _ => "_source".into(),
-        };
-
-        let rel_type = match &pattern.elements[1] {
-            PatternElement::Relationship(r) => r.rel_type.clone(),
-            _ => return Err(NopalError::query_error("Expected relationship after node")),
-        };
-
-        let target_label = match &pattern.elements[2] {
-            PatternElement::Node(n) => n.label.clone(),
-            _ => return Err(NopalError::query_error("Expected node after relationship")),
-        };
-        let target_var = match &pattern.elements[2] {
-            PatternElement::Node(n) => n.variable.clone().unwrap_or_else(|| "_target".into()),
-            _ => "_target".into(),
-        };
-
-        Ok((source_label, rel_type, target_label, source_var, target_var))
+        let source_var = source.variable.clone().unwrap_or_else(|| "_source".into());
+        let target_var = target.variable.clone().unwrap_or_else(|| "_target".into());
+        Ok((source, rel, target, source_var, target_var))
     }
 
     /// Evaluate condition on a pattern match with variable scoping
