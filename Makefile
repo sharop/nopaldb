@@ -121,6 +121,9 @@ check-doc-links:
 	@# La receta de GRAPHRAG.md es el código de graphrag_sample.py (#230): si
 	@# se corrige el sample y no la doc, la doc miente. Mismo check en CI.
 	@python3 scripts/check_graphrag_recipe.py
+	@# Cada contrato de docs/NQL_SEMANTICS.md cita los tests que lo comprueban:
+	@# si uno se renombra o se borra, el contrato pierde su comprobación.
+	@python3 scripts/check_semantics_tests.py
 
 check-changelog-dates:
 	@# Toda versión con tag debe tener FECHA en el CHANGELOG, no "unreleased".

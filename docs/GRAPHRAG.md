@@ -435,9 +435,11 @@ projections), use the exact scan instead.
   by `score` with `similar_to`. See the NQL reference § score.
 - A seeded pattern is at most two hops (0.6.19, #231). The equalities and
   `in` lists on the searched variable are its universe (0.7.0, #214 phase
-  2); the `where` predicates on the expanded nodes apply after the expansion,
-  so they can leave fewer than `k` rows (a candidate set per expanded
-  variable is the next step of #214). Searching with several patterns in the
+  2). The `where` predicates on the expanded nodes are expansion
+  constraints: they never change which seeds the search picks (`k` counts
+  seeds), so they can leave fewer than `k` rows, and since 0.8.4 they prune
+  while expanding ([NQL semantics](NQL_SEMANTICS.md)). Searching with several
+  patterns in the
   `FROM` is rejected by name.
 
 See also [HYBRID_SEARCH.md](HYBRID_SEARCH.md), [EMBEDDINGS.md](EMBEDDINGS.md)

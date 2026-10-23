@@ -2,6 +2,8 @@
 
 **NQL (NopalDB Query Language)** es un lenguaje de consultas para grafos intuitivo y poderoso, diseñado tanto para desarrolladores como para **científicos de datos, analistas y sociólogos**. Su sintaxis inspirada en Cypher optimiza la búsqueda de patrones y conexiones complejas en tus datos.
 
+> Qué **significa** una consulta (filas por camino, qué filas ordena una búsqueda, orden de evaluación, qué es exacto) está en [Semántica de NQL](SEMANTICA_NQL.md). Esta página es la sintaxis.
+
 ---
 
 ## Tabla de Contenidos

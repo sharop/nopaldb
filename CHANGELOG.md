@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Contratos de NQL** (`docs/NQL_SEMANTICS.md` y `docs/es/SEMANTICA_NQL.md`):
+  qué significa una consulta, independientemente de cómo se ejecute:
+  - las filas son vinculaciones, una por camino (multiconjunto);
+  - una búsqueda calcula su top-k dentro de un universo. Las restricciones de
+    semilla lo definen; las de expansión filtran filas y nunca cambian las
+    semillas;
+  - el orden de evaluación, con `limit` después de `distinct`;
+  - un patrón significa lo mismo en lectura y en escritura;
+  - las propiedades que toda optimización preserva: seguridad del filtro,
+    invariancia del empuje y de la poda, exactitud cuando se promete,
+    simetría de la dirección y nada en silencio;
+  - el comportamiento actual de las comparaciones (propiedad ausente,
+    `null`, `3` frente a `3.0`).
+
+  Cada contrato cita los tests que lo comprueban, y
+  `scripts/check_semantics_tests.py` (en CI y en `make check-doc-links`)
+  falla si alguno de esos tests desaparece.
+
 ## [0.8.4] - 2026-10-23
 
 Arreglos de patrones NQL y poda al expandir (#214 fase 2b, #271). **DELETE

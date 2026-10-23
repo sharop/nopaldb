@@ -26,6 +26,10 @@ jobs:
       - name: Check GraphRAG recipe
         run: python3 scripts/check_graphrag_recipe.py
 
+      # Los contratos de NQL (docs/NQL_SEMANTICS.md) citan sus tests.
+      - name: Check NQL semantics test citations
+        run: python3 scripts/check_semantics_tests.py
+
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
 
