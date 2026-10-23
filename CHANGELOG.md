@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.8.2] - unreleased
+
+La búsqueda híbrida con filtro puntúa exacto conjuntos más grandes (#254):
+el corte crece con el índice. Sin cambios de API; la única función nueva
+es `embeddings::exact_over_allowed_limit`.
 
 ### Changed
 - **La búsqueda híbrida puntúa exacto conjuntos permitidos más grandes**
