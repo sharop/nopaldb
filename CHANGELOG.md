@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.8.3] - unreleased
+
+Arreglos de NQL (#255): los números negativos perdían el signo en `where`,
+`set` y `delete`, los paréntesis no funcionaban, y la aritmética y la
+negación se ignoraban en silencio. **Si escribiste valores negativos con
+`set`, revisa los datos: se guardó el valor positivo.**
 
 ### Fixed
 - **NQL: un número negativo perdía el signo** en `where`, `set` y
