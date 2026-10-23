@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.8.3] - unreleased
+## [0.8.3] - 2026-10-23
 
 Arreglos de NQL (#255): los números negativos perdían el signo en `where`,
 `set` y `delete`, los paréntesis no funcionaban, y la aritmética y la
