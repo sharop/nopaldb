@@ -14,6 +14,7 @@ Single index for every document in `docs/`, in English with the Spanish pages ma
 ## Query language (NQL)
 
 - [NQL Reference (EN)](en/NQL_REFERENCE.md) · [Referencia NQL (ES)](es/NQL_REFERENCIA.md)
+- [NQL semantics: what a query means (EN)](NQL_SEMANTICS.md) · [Semántica de NQL (ES)](es/SEMANTICA_NQL.md): rows per path, the search universe, order of evaluation, and what every optimization preserves
 - [NQL Tutorial (EN)](en/NQL_TUTORIAL.md) · [Tutorial NQL (ES)](es/NQL_TUTORIAL.md)
 - [Hands-on CRUD (ES)](NQL_WRITE_CRUD_HANDS_ON.md)
 - [Guided tutorial, four acts (ES)](tutorial/README.md) — run in CI on every push

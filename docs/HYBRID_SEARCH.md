@@ -191,9 +191,9 @@ in memory, and the embeddings keyspace is cached like the others. What is
 left with a filter is the property lookup and the label confirmation on the
 set.
 
-The NQL `where`, Leiden communities and `neighborhood` results as candidate
-sets, and a cost-based choice between the paths, are the second phase of
-#214.
+The NQL `where` restricts the universe since 0.7.0 (see [NQL
+`hybrid()`](#nql-hybrid)). Leiden communities and `neighborhood` results as
+candidate sets are the next part of #214 phase 2b.
 
 ### How the text path applies the filter
 
@@ -454,8 +454,9 @@ one query, `score(c)` on every expanded row (`EXPLAIN` says `PATTERN PIPELINE
   inserted into the cached HNSW index by `add_node_embedding` (0.5.19) and is
   visible to the next search.
 - Follow-ups: per-path weights; range/OR filters. In NQL, the predicates on
-  the *expanded* nodes of a one- or two-hop pattern still apply after the
-  expansion, so they can leave fewer than K rows (a candidate set per
-  expanded variable is the next step of #214); ranges and other non-equality
-  predicates on the searched variable apply to its rows, with the same
-  effect.
+  the *expanded* nodes of a one- or two-hop pattern are expansion
+  constraints. They never change which seeds the search picks, so they can
+  leave fewer than K rows. Since 0.8.4 they prune while expanding, with the
+  same rows. Ranges and other non-equality predicates on the searched
+  variable apply to its rows, with the same effect. See [NQL
+  semantics](NQL_SEMANTICS.md#2-search-the-universe-seed-constraints-and-expansion-constraints).
