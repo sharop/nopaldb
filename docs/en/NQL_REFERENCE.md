@@ -105,8 +105,17 @@ from (p:Customer)
 Refine your search with logical conditions.
 
 ### Operators
-- **Comparison**: `=`, `!=`, `<`, `>`, `<=`, `>=`
-- **Logical**: `and`, `or`, `not`
+- **Comparison**: `=`, `!=`, `<`, `>`, `<=`, `>=`, `in [..]`, `not in [..]`
+- **Logical**: `and`, `or`. `and` binds tighter than `or`: `a and b or c` is
+  `(a and b) or c`. Parentheses group: `a and (b or c)`.
+- **Literals**: strings, booleans, integers and floats, negative ones
+  included (`-5`, `-2.5`), and lists (`[1, -2]`).
+
+Not supported yet in expressions: arithmetic (`+ - * / %`), negation (`!`,
+`not`) and unary minus on anything but a number. They are a parse error that
+names them, never a silently different condition. Until 0.8.2 they were
+dropped: `x * 2 = 6` ran as `x = 6`, and `-5` lost its sign. To exclude, use
+`!=` or `not in`.
 
 ### Examples
 ```nql
@@ -117,7 +126,10 @@ where c.total_purchases > 50000
 where (p.city = "NYC" or p.city = "SF") and p.age < 30
 
 -- Exclusion
-where not p.status = "Inactive"
+where p.status != "Inactive"
+
+-- Below zero
+where m.temp < -1
 ```
 
 ---

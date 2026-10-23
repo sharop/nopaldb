@@ -105,8 +105,17 @@ from (p:Cliente)
 Refina tu búsqueda con condiciones lógicas.
 
 ### Operadores
-- **Comparación**: `=`, `!=`, `<`, `>`, `<=`, `>=`
-- **Lógico**: `and`, `or`, `not`
+- **Comparación**: `=`, `!=`, `<`, `>`, `<=`, `>=`, `in [..]`, `not in [..]`
+- **Lógico**: `and`, `or`. `and` liga más que `or`: `a and b or c` es
+  `(a and b) or c`. Los paréntesis agrupan: `a and (b or c)`.
+- **Literales**: cadenas, booleanos, enteros y decimales, también negativos
+  (`-5`, `-2.5`), y listas (`[1, -2]`).
+
+Todavía no se soportan en expresiones: aritmética (`+ - * / %`), negación
+(`!`, `not`) y el menos unario sobre algo que no sea un número. Dan un error
+de parseo que los nombra, nunca una condición distinta en silencio. Hasta
+0.8.2 se descartaban: `x * 2 = 6` se ejecutaba como `x = 6`, y `-5` perdía
+el signo. Para excluir, usa `!=` o `not in`.
 
 ### Ejemplos
 ```nql
@@ -117,7 +126,10 @@ where c.compras_totales > 50000
 where (p.ciudad = "CDMX" or p.ciudad = "GDL") and p.edad < 30
 
 -- Exclusión
-where not p.estado = "Inactivo"
+where p.estado != "Inactivo"
+
+-- Bajo cero
+where m.temp < -1
 ```
 
 ---
