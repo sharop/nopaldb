@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.8.2] - unreleased
+## [0.8.2] - 2026-10-23
 
 La búsqueda híbrida con filtro puntúa exacto conjuntos más grandes (#254):
 el corte crece con el índice. Sin cambios de API; la única función nueva
