@@ -1111,31 +1111,62 @@ impl AstBuilder {
         }
     }
 
+    // Aritmética y negación en expresiones generales: la gramática las
+    // acepta y el AST tiene los nodos, pero los evaluadores de condiciones,
+    // proyecciones, HAVING, ORDER BY y escrituras no los evalúan (casi todos
+    // caen en `_ => true` o `_ => None`). Hasta 0.8.2 estos constructores se
+    // quedaban con el primer operando y tiraban el operador, así que
+    // `r.p * 2 = 6` se evaluaba como `r.p = 6` sin aviso, y `-5` perdía el
+    // signo (`set x = -7` escribía 7). Ahora un número negativo se pliega en
+    // su literal y todo lo demás es un error con nombre: mejor que un
+    // resultado plausible pero mal calculado.
+
     fn build_primary_from_additive(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
-        for inner in pair.into_inner() {
-            if inner.as_rule() == Rule::multiplicative_expression {
-                return self.build_primary_from_multiplicative(inner);
-            }
+        let text = pair.as_str().trim().to_string();
+        let mut operands = pair.into_inner().filter(|p| p.as_rule() == Rule::multiplicative_expression);
+        let first = operands.next().ok_or_else(|| NopalError::QueryParseError("Invalid expression".into()))?;
+        if operands.next().is_some() {
+            return Err(unsupported_in_expression("arithmetic (`+`, `-`)", &text));
         }
-        Err(NopalError::QueryParseError("Invalid expression".into()))
+        self.build_primary_from_multiplicative(first)
     }
 
     fn build_primary_from_multiplicative(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
-        for inner in pair.into_inner() {
-            if inner.as_rule() == Rule::unary_expression {
-                return self.build_primary_from_unary(inner);
-            }
+        let text = pair.as_str().trim().to_string();
+        let mut operands = pair.into_inner().filter(|p| p.as_rule() == Rule::unary_expression);
+        let first = operands.next().ok_or_else(|| NopalError::QueryParseError("Invalid expression".into()))?;
+        if operands.next().is_some() {
+            return Err(unsupported_in_expression("arithmetic (`*`, `/`, `%`)", &text));
         }
-        Err(NopalError::QueryParseError("Invalid expression".into()))
+        self.build_primary_from_unary(first)
     }
 
     fn build_primary_from_unary(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
+        let text = pair.as_str().trim().to_string();
+        // `!` es un literal sin nombre en la gramática: no aparece en el árbol.
+        if text.starts_with('!') {
+            return Err(unsupported_in_expression("negation (`!`)", &text));
+        }
+        let mut negate = false;
+        let mut primary = None;
         for inner in pair.into_inner() {
-            if inner.as_rule() == Rule::primary_expression {
-                return self.build_primary_expression(inner);
+            match inner.as_rule() {
+                Rule::neg_op => negate = true,
+                Rule::primary_expression => primary = Some(self.build_primary_expression(inner)?),
+                _ => {}
             }
         }
-        Err(NopalError::QueryParseError("Invalid expression".into()))
+        let primary = primary.ok_or_else(|| NopalError::QueryParseError("Invalid expression".into()))?;
+        if !negate {
+            return Ok(primary);
+        }
+        // `-5`: el `neg_op` gana a la regla `number`, así que el signo llega
+        // aquí y se pliega en el literal, como en listas y mapas.
+        match primary {
+            Expression::Literal(PropertyValue::Int(n)) => Ok(Expression::Literal(PropertyValue::Int(-n))),
+            Expression::Literal(PropertyValue::Float(f)) => Ok(Expression::Literal(PropertyValue::Float(-f))),
+            _ => Err(unsupported_in_expression("unary minus on a non-literal", &text)),
+        }
     }
 
     fn build_primary_expression(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
@@ -1149,6 +1180,11 @@ impl AstBuilder {
                 }
                 Rule::function_call => {
                     return self.build_function_call(inner);
+                }
+                // `( expression )`: el agrupamiento queda en la forma del
+                // árbol (And/Or anidados), sin nodo propio (#255).
+                Rule::expression => {
+                    return self.build_expression(inner);
                 }
                 _ => {}
             }
@@ -1221,6 +1257,13 @@ impl AstBuilder {
     }
 
     fn build_function_call(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
+        // `not (…)` no es un operador en la gramática: se leía como una
+        // función `not` que ningún evaluador conoce, y dejaba pasar todas las
+        // filas. Error con nombre, como `!` (#255).
+        let text = pair.as_str().trim();
+        if text.split('(').next().is_some_and(|n| n.trim().eq_ignore_ascii_case("not")) {
+            return Err(unsupported_in_expression("negation (`not`)", text));
+        }
         let mut name = None;
         let mut args = Vec::new();
 
@@ -1527,6 +1570,14 @@ fn build_quantifier(pair: pest::iterators::Pair<Rule>) -> Quantifier {
         (true, [n]) => Quantifier { min: *n, max: None },
         _ => Quantifier { min: 1, max: Some(1) },
     }
+}
+
+/// Error de parseo para lo que la gramática acepta pero NQL todavía no
+/// evalúa en expresiones generales (ver `build_primary_from_additive`).
+fn unsupported_in_expression(what: &str, text: &str) -> NopalError {
+    NopalError::QueryParseError(format!(
+        "{what} is not supported in NQL expressions yet: `{text}`"
+    ))
 }
 
 #[cfg(test)]

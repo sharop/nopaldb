@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **NQL: un número negativo perdía el signo** en `where`, `set` y
+  `delete`, desde la primera versión pública. El `-` se leía como menos
+  unario y el constructor del AST lo descartaba. Ejemplos:
+  - `where m.temp = -5` encontraba los nodos con `temp = 5`.
+  - `where m.temp < -1` encontraba también los que tienen 0.
+  - `update … set m.temp = -7` **escribía 7**.
+  - `delete … where x = -5` borraba los nodos con `x = 5`.
+
+  Las listas (`in [-5]`) y los mapas de propiedades no estaban afectados.
+  **Quien haya escrito valores negativos con `set` tiene guardado el valor
+  positivo.** Ahora `-5` y `-2.5` son literales con signo en todas partes.
+- **NQL: paréntesis en las expresiones** (#255). `where a and (b or c)`
+  fallaba con `Invalid primary expression`; ahora agrupa. `and` sigue ligando
+  más que `or`.
+- **NQL: operadores que se ignoraban en silencio dan error.** La gramática
+  aceptaba `+ - * / %`, `!` y `-expresión`, pero el constructor se quedaba
+  con el primer operando: `where r.p * 2 = 6` se ejecutaba como `r.p = 6`, y
+  `find r.p * 2` devolvía `r.p`. `not (…)` se leía como una función
+  desconocida que dejaba pasar todas las filas, aunque la referencia lo
+  documentaba como operador. Ahora todos dan un error de parseo que los
+  nombra; la referencia ya no promete `not`. `!hybrid(…)` también da error:
+  antes se aceptaba como una búsqueda positiva.
+
 ## [0.8.2] - 2026-10-23
 
 La búsqueda híbrida con filtro puntúa exacto conjuntos más grandes (#254):
