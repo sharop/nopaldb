@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.9.0] - unreleased
+
+Cierra la fase 2b de #214: buscar dentro de una comunidad o una vecindad,
+desde Rust, Python y NQL (`in_community`). La semántica de patrones queda
+uniforme (0.8.4) y los contratos de NQL, escritos (0.8.5). Sube la versión
+menor por dos cambios de API: `ExpandOptions` gana el campo `within`, que
+solo rompe una construcción sin `..Default::default()`, y se retira lo
+deprecado en 0.8.1.
 
 ### Removed
 - **Lo deprecado en 0.8.1 y 0.6.11, como se anunció:**
