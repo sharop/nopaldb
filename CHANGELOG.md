@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.9.1] - unreleased
+## [0.9.1] - 2026-10-24
 
 La exportación Arrow con propiedades deja de perder o inventar datos (#282):
 subgrafo inducido por etiqueta, columnas en orden estable, JSON en lugar de
