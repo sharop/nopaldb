@@ -111,6 +111,33 @@ println!("   File size: {} bytes", metadata.len());
 //    File size: 2048 bytes
 ```
 
+**Qué lleva y qué no.** `export_parquet` escribe **metadatos**: una fila por
+nodo con `id`, `label` y `property_count`. No incluye propiedades, aristas,
+historia ni embeddings, así que no es un respaldo ni un intercambio completo
+del grafo; para eso ver [BACKUP_AND_READ_ONLY.md](../BACKUP_AND_READ_ONLY.md).
+Para analítica con las propiedades, usa `to_arrow_with_label(Some("Person"))`.
+
+`import_parquet` lee ese formato y crea nodos sin propiedades
+(`id` + `label`):
+
+```rust
+let otro = Graph::open("./otra_base").await?;
+otro.import_parquet("snapshot.parquet").await?;   // Result<()>
+```
+
+Valida el archivo entero **antes de escribir** y escribe en una sola
+transacción: entra todo o nada. Da error, sin escribir, en estos casos:
+
+- una columna distinta de `id`, `label` o `property_count`, porque se
+  perdería;
+- `id` o `label` con nulos o que no sean texto;
+- un `id` que no sea UUID o que se repita;
+- un `id` que ya exista en el grafo, porque importarlo encima borraría sus
+  propiedades.
+
+Lee todos los lotes del archivo, no solo el primero, que es lo que hacía
+hasta 0.8.4.
+
 ## ⏰ MVCC: Export Historia
 ```rust
 // Crear nodo con versiones

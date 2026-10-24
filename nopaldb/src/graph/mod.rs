@@ -4139,7 +4139,11 @@ impl Graph {
     }
 
     #[cfg(feature = "analytics")]
-    /// Export graph to Parquet file
+    /// Export the nodes' **metadata** to a Parquet file: one row per node with
+    /// `id`, `label` and `property_count`. No properties, edges, history or
+    /// embeddings, so it is not a backup or a full graph export; for
+    /// analytics with properties use [`Self::to_arrow_with_label`]. Read it
+    /// back with [`Self::import_parquet`].
     ///
     /// Parquet provides:
     /// - Efficient compression (SNAPPY)
@@ -4168,48 +4172,118 @@ impl Graph {
     }
 
     #[cfg(feature = "analytics")]
-    /// Import graph from Parquet file
+    /// Import the nodes of a metadata Parquet file, as written by
+    /// [`Self::export_parquet`]: one row per node, with columns `id` (UUID
+    /// text), `label` and, optionally, `property_count`.
+    ///
+    /// **Metadata only.** That export carries no properties, edges, history or
+    /// embeddings, so neither does this import: it creates bare nodes with
+    /// their id and label (`NodeKind::Individual`). It is not a backup or a
+    /// graph roundtrip; see `docs/BACKUP_AND_READ_ONLY.md` for those.
+    ///
+    /// The whole file is validated **before anything is written**, and the
+    /// nodes are written in one transaction, so it imports every row or none:
+    /// - only the columns `id`, `label` and `property_count` are accepted;
+    ///   any other column is an error, since it would be silently dropped;
+    /// - `id` and `label` must be text without nulls; every `id` must be a
+    ///   UUID, and none may repeat;
+    /// - no `id` may already exist in the graph: importing a bare node over
+    ///   it would erase its properties.
+    ///
+    /// A file without rows imports nothing and succeeds. Until 0.8.4 it read
+    /// only the first batch of the file, wrote row by row
+    /// outside a transaction (a bad row left the previous ones written), and
+    /// overwrote existing nodes with an empty one.
     pub async fn import_parquet(
         &self,
         path: impl AsRef<std::path::Path>,
     ) -> Result<()> {
+        use arrow::array::{Array, StringArray};
+
         let batch = crate::arrow_export::read_parquet(&path)?;
+        let invalid = |msg: String| NopalError::Custom(format!("import_parquet: {msg}"));
 
-        // Reconstruct nodes from Arrow columns: id, label, property_count
-        let id_col = batch.column_by_name("id")
-            .ok_or_else(|| NopalError::Custom("Parquet missing 'id' column".into()))?;
-        let label_col = batch.column_by_name("label")
-            .ok_or_else(|| NopalError::Custom("Parquet missing 'label' column".into()))?;
-
-        let ids = id_col.as_any().downcast_ref::<arrow::array::StringArray>()
-            .ok_or_else(|| NopalError::Custom("'id' column is not String type".into()))?;
-        let labels = label_col.as_any().downcast_ref::<arrow::array::StringArray>()
-            .ok_or_else(|| NopalError::Custom("'label' column is not String type".into()))?;
-
-        // Bajo el write gate y por el observador del esquema, como toda
-        // escritura (hasta 0.6.6 escribía al motor sin más).
-        let _gate = self.write_gate.lock().await;
-        let mut imported = 0usize;
-        for i in 0..batch.num_rows() {
-            if let (Some(id_str), Some(label)) = (ids.value(i).into(), labels.value(i).into()) {
-                let id: NodeId = id_str.parse()
-                    .map_err(|_| NopalError::Custom(format!("Invalid UUID in parquet row {}: {}", i, id_str)))?;
-                let node = Node {
-                    id,
-                    label: label.to_string(),
-                    properties: std::collections::HashMap::new(),
-                    kind: crate::types::NodeKind::Individual,
-                };
-                self.observe_node_upsert(&node).await?;
-                self.storage.insert_node(&node).await?;
-                imported += 1;
+        const ACCEPTED: [&str; 3] = ["id", "label", "property_count"];
+        let extra: Vec<String> = batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .filter(|n| !ACCEPTED.contains(&n.as_str()))
+            .collect();
+        if !extra.is_empty() {
+            return Err(invalid(format!(
+                "unsupported columns {extra:?}: only `id`, `label` and `property_count` (the \
+                 metadata export) are imported, and other columns would be lost"
+            )));
+        }
+        let text_column = |name: &str| -> Result<&StringArray> {
+            let col = batch
+                .column_by_name(name)
+                .ok_or_else(|| invalid(format!("missing column `{name}`")))?;
+            let col = col
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| invalid(format!("column `{name}` must be text (Utf8)")))?;
+            if col.null_count() > 0 {
+                return Err(invalid(format!("column `{name}` has {} null values", col.null_count())));
             }
+            Ok(col)
+        };
+        let ids = text_column("id")?;
+        let labels = text_column("label")?;
+
+        let mut nodes = Vec::with_capacity(batch.num_rows());
+        let mut seen = HashSet::with_capacity(batch.num_rows());
+        for i in 0..batch.num_rows() {
+            let raw = ids.value(i);
+            let id: NodeId = raw
+                .parse()
+                .map_err(|_| invalid(format!("row {i}: `{raw}` is not a UUID")))?;
+            if !seen.insert(id) {
+                return Err(invalid(format!("row {i}: id {id} appears more than once")));
+            }
+            nodes.push(Node {
+                id,
+                label: labels.value(i).to_string(),
+                properties: std::collections::HashMap::new(),
+                kind: crate::types::NodeKind::Individual,
+            });
         }
 
-        log::info!("Imported {} nodes from parquet (properties not included in basic format — use export_parquet with label for full roundtrip)", imported);
+        let existing: Vec<NodeId> = {
+            let mut out = Vec::new();
+            for node in &nodes {
+                if self.storage.get_node(node.id).await.is_ok() {
+                    out.push(node.id);
+                }
+            }
+            out
+        };
+        if !existing.is_empty() {
+            let shown: Vec<String> = existing.iter().take(5).map(|id| id.to_string()).collect();
+            return Err(invalid(format!(
+                "{} ids already exist in the graph ({}{}); importing would replace those nodes \
+                 with bare ones and erase their properties",
+                existing.len(),
+                shown.join(", "),
+                if existing.len() > 5 { ", …" } else { "" }
+            )));
+        }
+
+        // Todo o nada: una transacción (WAL, historia MVCC, índices y
+        // esquema como cualquier escritura).
+        let imported = nodes.len();
+        if imported > 0 {
+            let mut tx = self.begin_transaction().await?;
+            for node in nodes {
+                tx.add_node(node).await?;
+            }
+            tx.commit().await?;
+        }
+        log::info!("Imported {imported} nodes (id and label only) from Parquet: {:?}", path.as_ref());
         Ok(())
     }
-
 
     #[cfg(feature = "analytics")]
     /// Export nodes to Arrow with properties
