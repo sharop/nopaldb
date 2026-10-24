@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.8.5] - unreleased
+## [0.8.5] - 2026-10-24
 
 `import_parquet` deja de perder filas y de pisar nodos existentes (#275), y
 se publican los contratos de semántica de NQL (#274). Sin cambios de API.
