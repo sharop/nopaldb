@@ -5,7 +5,6 @@
 
 use serde::{Serialize, Deserialize};
 use crate::types::{Node, Edge, NodeId, EdgeId};
-use crate::error::Result;
 
 /// Nodo versionado con metadata MVCC
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -234,46 +233,6 @@ impl GCConfig {
     pub fn keep_at_least(mut self, n: usize) -> Self {
         self.min_versions_to_keep = n;
         self
-    }
-}
-
-/// Placeholder vacío: sus métodos devuelven `None` / vacío. Las versiones
-/// las sirven `Graph::get_node_at` y `Graph::history`.
-#[deprecated(since = "0.8.1", note = "empty placeholder that returns nothing; use `Graph::get_node_at` and `Graph::history`. Will be removed in 0.9.")]
-pub struct VersionManager {
-    // Placeholder para futuras extensiones
-}
-
-#[allow(deprecated)]
-impl Default for VersionManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[allow(deprecated)]
-impl VersionManager {
-    pub fn new() -> Self {
-        Self {}
-    }
-
-    /// Obtiene la versión de un nodo en un timestamp específico
-    pub async fn get_version_at(
-        &self,
-        _node_id: NodeId,
-        _timestamp: u64,
-    ) -> Result<Option<VersionedNode>> {
-        // La lógica real está en Storage::get_node_at_timestamp
-        Ok(None)
-    }
-
-    /// Obtiene el historial completo de un nodo
-    pub async fn get_history(
-        &self,
-        _node_id: NodeId,
-    ) -> Result<Vec<VersionedNode>> {
-        // La lógica real está en Storage::get_node_history
-        Ok(Vec::new())
     }
 }
 

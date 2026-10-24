@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.9.0] - unreleased
+
+Cierra la fase 2b de #214: buscar dentro de una comunidad o una vecindad,
+desde Rust, Python y NQL (`in_community`). La semántica de patrones queda
+uniforme (0.8.4) y los contratos de NQL, escritos (0.8.5). Sube la versión
+menor por dos cambios de API: `ExpandOptions` gana el campo `within`, que
+solo rompe una construcción sin `..Default::default()`, y se retira lo
+deprecado en 0.8.1.
+
+### Removed
+- **Lo deprecado en 0.8.1 y 0.6.11, como se anunció:**
+  - `Graph::update_node_with_tx` no hacía nada. Se reemplaza por
+    `tx.add_node(node)` con el mismo id, que escribe una versión nueva al
+    commitear.
+  - `Graph::delete_node_with_tx` y `Graph::add_node_with_label_and_props`
+    ignoraban la transacción y escribían directo. Se reemplazan por
+    `tx.delete_node(id)` / `tx.add_node(...)` o por `Graph::delete_node` /
+    `Graph::add_node`.
+  - `mvcc::VersionManager` era un placeholder vacío. Se reemplaza por
+    `Graph::get_node_at` y `Graph::history`.
+  - `HnswIndex::repaired()` devolvía siempre 0 desde 0.6.11. Se reemplaza
+    por `HnswIndex::orphans()`.
 
 ### Added
 - **Buscar dentro de una comunidad o de una vecindad** (#214 fase 2b).

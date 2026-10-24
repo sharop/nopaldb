@@ -7,7 +7,7 @@ that are easy to miss. Everything here reflects what actually ships today.
 
 ```toml
 [dependencies]
-nopaldb = { version = "0.8", features = ["core"] }
+nopaldb = { version = "0.9", features = ["core"] }
 ```
 
 | Tier | What you get |

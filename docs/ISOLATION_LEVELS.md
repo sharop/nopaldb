@@ -160,7 +160,7 @@ Tx2: Apareció un registro "fantasma"
 ```toml
 # Cargo.toml
 [dependencies]
-nopaldb = { version = "0.8", features = ["full-isolation"] }
+nopaldb = { version = "0.9", features = ["full-isolation"] }
 ```
 
 ### Uso
