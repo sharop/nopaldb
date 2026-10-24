@@ -583,7 +583,12 @@ pub fn write_parquet(
     Ok(())
 }
 
-/// Lee RecordBatch desde archivo Parquet
+/// Lee un archivo Parquet entero como un solo `RecordBatch`.
+///
+/// Lee **todos** los lotes y los concatena. Hasta 0.8.4 devolvía solo el
+/// primero, así que un archivo de más de un lote (1 024 filas, el tamaño de
+/// lote del lector) perdía el resto en silencio. Un archivo sin filas
+/// devuelve un lote vacío con su esquema.
 pub fn read_parquet(
     path: impl AsRef<std::path::Path>,
 ) -> Result<RecordBatch> {
@@ -596,15 +601,22 @@ pub fn read_parquet(
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| NopalError::Custom(format!("Parquet reader error: {}", e)))?;
 
-    let mut reader = builder.build()
+    let schema = builder.schema().clone();
+    let reader = builder.build()
         .map_err(|e| NopalError::Custom(format!("Parquet build error: {}", e)))?;
 
-    // Read first batch (assuming single batch for simplicity)
-    let batch = reader.next()
-        .ok_or_else(|| NopalError::Custom("No data in Parquet file".into()))?
+    let batches = reader
+        .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|e| NopalError::Custom(format!("Parquet read error: {}", e)))?;
+    let batch = arrow::compute::concat_batches(&schema, &batches)
+        .map_err(|e| NopalError::Custom(format!("Parquet concat error: {}", e)))?;
 
-    log::info!("Read Arrow RecordBatch from Parquet: {:?}", path.as_ref());
+    log::info!(
+        "Read {} rows in {} batches from Parquet: {:?}",
+        batch.num_rows(),
+        batches.len(),
+        path.as_ref()
+    );
 
     Ok(batch)
 }

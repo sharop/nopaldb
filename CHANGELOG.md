@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`import_parquet` perdía filas y pisaba nodos existentes.**
+  - Leía solo el primer lote del archivo: 1 024 filas, el tamaño de lote del
+    lector. El resto se perdía sin error. `read_parquet` tenía el mismo
+    problema; ahora lee y concatena todos los lotes.
+  - Escribía fila por fila fuera de una transacción, así que una fila mala
+    dejaba escritas las anteriores. Además se saltaba el WAL y la historia
+    MVCC.
+  - Un `id` ya existente se reemplazaba por un nodo sin propiedades.
+
+  Ahora valida el archivo entero antes de escribir: solo se aceptan las
+  columnas `id`, `label` y `property_count`, sin nulos, con UUID válidos, sin
+  repetidos y sin ids que ya existan. Escribe todo en una transacción, o
+  nada. Un archivo sin filas no importa nada y no da error. La documentación
+  dice ahora que `export_parquet` e `import_parquet` llevan solo metadatos
+  (id y etiqueta), no un grafo completo.
+
 ### Added
 - **Contratos de NQL** (`docs/NQL_SEMANTICS.md` y `docs/es/SEMANTICA_NQL.md`):
   qué significa una consulta, independientemente de cómo se ejecute:
