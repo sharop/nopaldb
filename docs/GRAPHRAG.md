@@ -277,6 +277,11 @@ returns; the pattern gives one row per path. For a neighbourhood as the
 universe, pass the ids of `neighborhood(...)["nodes"]` as `candidates`;
 `neighborhood(..., within=ids)` restricts a walk to a set the same way.
 
+In NQL the same search is one condition:
+`where hybrid(c, …) and in_community(c, key, via = "MENTIONS")`. It ranks
+inside the same universe, it combines with the rest of the `where`, and it can
+seed a pattern ([NQL reference](en/NQL_REFERENCE.md#vector-and-hybrid-search-in-where)).
+
 See also the [Python cheat sheet](python/API_CHEATSHEET.md) (one line per
 call, the names assistants invent and the real ones),
 [UPSERT.md](UPSERT.md), [HYBRID_SEARCH.md](HYBRID_SEARCH.md) and the
