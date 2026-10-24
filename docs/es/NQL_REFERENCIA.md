@@ -447,6 +447,30 @@ silencio solo los hits de la búsqueda). `and` liga más que `or`.
 Detalle y API Rust/Python: [HYBRID_SEARCH.md](../HYBRID_SEARCH.md), [EMBEDDINGS.md](../EMBEDDINGS.md),
 [GRAPHRAG.md](../GRAPHRAG.md).
 
+**Buscar dentro de una comunidad: `in_community` (#214 fase 2b).** Una
+comunidad materializada (`materialize_communities`) también es un universo:
+
+```nql
+find c.text, score(c) from (c:Chunk)
+where hybrid(c, text = "riego", vector = [...], model = "minilm", k = 10)
+  and in_community(c, "leiden/L0/…", via = "MENTIONS")
+```
+
+ordena dentro de los chunks que tienen una arista `MENTIONS` hacia un miembro
+de esa comunidad. Sin `via`, `in_community(e, key)` son los propios
+miembros, para buscar entre las entidades. Es una restricción de semilla
+([semántica de NQL](SEMANTICA_NQL.md)):
+- se intersecta con los demás predicados empujados (`c.id in [...]`,
+  propiedades);
+- es el mismo universo que `community_members(key, via=…)` en Python;
+- es igual, como conjunto, a lo que devuelve el patrón
+  `(c)-[:MENTIONS]->(e)-[:IN_COMMUNITY]->(k:Community) where k.key = "…"`.
+
+Solo vale como condición del `and` raíz, junto a `hybrid` o `similar_to`
+sobre la misma variable. En otro sitio, con una opción desconocida o con una
+clave inexistente, es un error con nombre. Para filtrar filas por comunidad
+sin búsqueda, escribe ese patrón.
+
 ---
 
 ## Agregaciones y Funciones

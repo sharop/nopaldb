@@ -439,6 +439,12 @@ error (until 0.6.20 the `or` branch was silently lost). EXPLAIN prints the
 pushed predicates on a `Search universe:` line. Full rules in the
 [NQL reference](en/NQL_REFERENCE.md#vector-and-hybrid-search-in-where).
 
+`in_community(c, key[, via = "MENTIONS"])` (#214 phase 2b) adds a materialized
+community to that universe: its members, or the nodes with a `via` edge to
+one of them. The ids are read from the community's edges and passed to the
+search as a candidate set, intersected with `c.id in [...]` and filtered by
+the label and properties like any other set (see [Candidate set](#candidate-set)).
+
 The search can also seed a pattern of one or two hops — search and expand in
 one query, `score(c)` on every expanded row (`EXPLAIN` says `PATTERN PIPELINE
 (seed: HYBRID, hops: 2)` and a `Seeds:` line with `k` and the `LIMIT`); see
