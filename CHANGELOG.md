@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.9.1] - unreleased
+
+La exportación Arrow con propiedades deja de perder o inventar datos (#282):
+subgrafo inducido por etiqueta, columnas en orden estable, JSON en lugar de
+marcadores, y `Null` como nulo. Sin cambios de API.
 
 ### Fixed
 - **La exportación Arrow con propiedades** (`graph_to_arrow`, Python
