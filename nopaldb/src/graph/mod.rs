@@ -2179,53 +2179,6 @@ impl Graph {
         Ok(())
     }
 
-    /// Add node with label and properties. Despite taking a transaction, it
-    /// writes directly to the graph: the transaction is ignored.
-    #[deprecated(since = "0.8.1", note = "ignores the transaction and writes directly; use `tx.add_node(Node::new(label)...)` or `Graph::add_node`. Will be removed in 0.9.")]
-    pub async fn add_node_with_label_and_props(
-        &self,
-        label: String,
-        properties: HashMap<String, PropertyValue>,
-        _tx: &mut Transaction,
-    ) -> Result<Node> {
-        // Create node
-        let node = Node {
-            id: NodeId::new_v4(),
-            label,
-            properties,
-            kind: crate::types::NodeKind::Individual,
-        };
-        // Add to graph
-        let _ = self.add_node(node.clone()).await?;
-        Ok(node)
-    }
-
-    /// Delete node. Despite taking a transaction, it deletes directly: the
-    /// transaction is ignored.
-    #[deprecated(since = "0.8.1", note = "ignores the transaction and deletes directly; use `tx.delete_node(id)` or `Graph::delete_node`. Will be removed in 0.9.")]
-    pub async fn delete_node_with_tx(
-        &self,
-        id: NodeId,
-        _tx: &mut Transaction,
-    ) -> Result<()> {
-        // Use existing delete_node method
-        self.delete_node(id).await
-    }
-
-    /// Does nothing: it was never implemented and returns `Ok(())` without
-    /// writing.
-    #[deprecated(since = "0.8.1", note = "does nothing (never implemented); use `tx.add_node(node)` with the same id, which writes a new version on commit. Will be removed in 0.9.")]
-    pub async fn update_node_with_tx(
-        &self,
-        _node: Node,
-        _tx: &mut Transaction,
-    ) -> Result<()> {
-        // TODO: Implement proper node update with transaction
-        // For now, just return Ok
-        log::warn!("update_node_with_tx not fully implemented");
-        Ok(())
-    }
-
     // ═════════════════════════════════════════════════════════
     // ✅ MÉTODOS DE EMBEDDINGS
     // ═════════════════════════════════════════════════════════

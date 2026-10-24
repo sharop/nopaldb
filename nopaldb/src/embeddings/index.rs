@@ -611,12 +611,6 @@ impl HnswIndex {
         self.orphans.len()
     }
 
-    /// Siempre 0 desde 0.6.11: la verificación ya no reinserta puntos.
-    #[deprecated(since = "0.6.11", note = "la verificación ya no reinserta puntos; ver `orphans` (#201)")]
-    pub fn repaired(&self) -> usize {
-        0
-    }
-
     /// `DataId` muertos que siguen en el grafo: los tombstones del llamador.
     pub fn dead_points(&self) -> usize {
         self.tombstones
