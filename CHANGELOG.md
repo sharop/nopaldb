@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Buscar dentro de una comunidad o de una vecindad** (#214 fase 2b).
+  - `Graph::community_members(key)` (Python `community_members(key)`)
+    devuelve los miembros de una comunidad materializada.
+  - `Graph::community_members_via(key, "MENTIONS")` (Python
+    `community_members(key, via="MENTIONS")`) devuelve los nodos con una
+    arista `MENTIONS` hacia un miembro: los chunks que mencionan las
+    entidades de la comunidad. Es el salto entre donde se calculan las
+    comunidades y donde se busca.
+
+  Pasados como `candidates` a `search_hybrid`, el top-k se calcula **dentro**
+  de la comunidad. Las dos leen solo las aristas de esa comunidad y de sus
+  miembros, nunca todo el grafo, y una clave inexistente da error. El
+  resultado es igual, como conjunto, al del patrón
+  `(c)-[:MENTIONS]->(e)-[:IN_COMMUNITY]->(k:Community {key})`.
+- **`ExpandOptions::within`** (Python `neighborhood(..., within=[ids])`):
+  restringe el recorrido de `neighborhood` a un conjunto, como `labels`.
+  Un nodo fuera del conjunto no entra ni se expande, y las semillas no se
+  filtran. Se comprueba antes de leer el nodo. De paso, el BFS ya no relee
+  los nodos que `labels` descartó.
+- `impl From<&Neighborhood> for CandidateSet`: una vecindad como universo de
+  búsqueda.
+- La receta de [GRAPHRAG.md](docs/GRAPHRAG.md) gana el paso "5. Search
+  inside a community", que corre en CI como los otros cuatro.
+
+### Changed
+- **`ExpandOptions` tiene un campo nuevo, `within`.** El código que la
+  construye con `..Default::default()` (la forma de la documentación) no
+  cambia. Una construcción que nombre todos los campos sin `..Default` deja
+  de compilar.
+
 ## [0.8.5] - 2026-10-24
 
 `import_parquet` deja de perder filas y de pisar nodos existentes (#275), y

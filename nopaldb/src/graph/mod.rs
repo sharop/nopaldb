@@ -11,6 +11,7 @@ pub mod communities;
 #[cfg(feature = "embeddings-index")]
 pub mod hybrid;
 pub mod candidate_set;
+pub(crate) mod universe;
 pub(crate) mod applier;
 pub use view::{GraphView, Subgraph};
 pub use upsert::{LinkSpec, UpsertOutcome, UpsertRequest, UPSERT_TX_ROWS};

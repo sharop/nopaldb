@@ -435,6 +435,28 @@ impl PyGraph {
         ]))
     }
 
+    /// The members of the materialized community `community_key`, as a list
+    /// of ids sorted by id: the universe for a search "inside this
+    /// community" (`search_hybrid(candidates=…)`).
+    ///
+    /// With `via="MENTIONS"`, instead of the members it returns the nodes
+    /// that have a `MENTIONS` edge pointing at one of them: communities are
+    /// usually computed on entities while the search runs on chunks, and
+    /// this is the hop between them. Reads only the edges of that community
+    /// and of its members, never the whole graph. Unknown key → error.
+    #[pyo3(signature = (community_key, via=None))]
+    fn community_members(&self, py: Python<'_>, community_key: &str, via: Option<String>) -> PyResult<Vec<String>> {
+        let graph = self.graph()?;
+        let key = community_key.to_string();
+        let ids = to_py_result(crate::python::runtime::block_on(py, async move {
+            match via {
+                Some(edge_type) => graph.community_members_via(&key, &edge_type).await,
+                None => graph.community_members(&key).await,
+            }
+        }))?;
+        Ok(ids.iter().map(|id| id.to_string()).collect())
+    }
+
     /// Current fingerprint of the content a community report summarizes:
     /// its members (label and properties) and the edges between them (type
     /// and properties). `upsert_community_report` stores it as
@@ -537,7 +559,10 @@ impl PyGraph {
     /// neither returned nor expanded; seeds are not filtered), `max_nodes`
     /// caps the result (then `truncated` is True) and `max_edges_per_node`
     /// caps how many edges of one node are considered (the real brake on a
-    /// super-node). Runs with the GIL released.
+    /// super-node). `within` = [ids] restricts the walk to that set, like
+    /// `labels` (a node outside is neither returned nor expanded; seeds are
+    /// not filtered), checked before the node is read. Runs with the GIL
+    /// released.
     ///
     /// rank="ppr" (0.6.10, #176): when the neighbourhood does not fit in
     /// `max_nodes`, keep the most relevant nodes instead of BFS order. The BFS
@@ -557,7 +582,7 @@ impl PyGraph {
     ///     >>> hits = graph.search_hybrid(text=q, vector=v, model="m", k=10)
     ///     >>> ctx = graph.neighborhood([h["node_id"] for h in hits], depth=1,
     ///     ...                          edge_types=["MENTIONS"], max_nodes=200)
-    #[pyo3(signature = (ids, depth=1, direction="out", edge_types=None, labels=None, max_nodes=1000, max_edges_per_node=None, rank="bfs", alpha=0.15, iterations=20, candidate_factor=5, seed_weights=None))]
+    #[pyo3(signature = (ids, depth=1, direction="out", edge_types=None, labels=None, max_nodes=1000, max_edges_per_node=None, rank="bfs", alpha=0.15, iterations=20, candidate_factor=5, seed_weights=None, within=None))]
     #[allow(clippy::too_many_arguments)]
     fn neighborhood(
         &self,
@@ -574,9 +599,18 @@ impl PyGraph {
         iterations: usize,
         candidate_factor: usize,
         seed_weights: Option<std::collections::HashMap<String, f64>>,
+        within: Option<Vec<String>>,
     ) -> PyResult<Py<PyDict>> {
         let graph = self.graph()?;
         let ids = ids.iter().map(|s| parse_uuid(s, "node")).collect::<PyResult<Vec<_>>>()?;
+        let within = match within {
+            Some(list) => Some(
+                list.iter()
+                    .map(|s| parse_uuid(s, "within"))
+                    .collect::<PyResult<crate::CandidateSet>>()?,
+            ),
+            None => None,
+        };
         let rank = match rank {
             "bfs" => crate::Rank::Bfs,
             "ppr" => {
@@ -599,7 +633,7 @@ impl PyGraph {
                 )))
             }
         };
-        let opts = crate::ExpandOptions { direction: parse_direction(direction)?, edge_types, labels, max_nodes, max_edges_per_node, rank };
+        let opts = crate::ExpandOptions { direction: parse_direction(direction)?, edge_types, labels, max_nodes, max_edges_per_node, rank, within };
         let nb = to_py_result(crate::python::runtime::block_on(py, async move { graph.neighborhood(&ids, depth, &opts).await }))?;
         let out = PyDict::new(py);
         let nodes = PyList::empty(py);

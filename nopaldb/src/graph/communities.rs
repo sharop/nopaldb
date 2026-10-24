@@ -295,14 +295,7 @@ impl Graph {
     /// [`Self::upsert_community_report`] guarda como `source_version`. Ver
     /// el comentario del módulo.
     pub async fn community_fingerprint(&self, community_key: &str) -> Result<String> {
-        let community = self.community_by_key(community_key).await?;
-        let members: BTreeSet<NodeId> = self
-            .get_incoming_edges(community.id)
-            .await?
-            .into_iter()
-            .filter(|e| e.edge_type == IN_COMMUNITY)
-            .map(|e| e.source)
-            .collect();
+        let members: BTreeSet<NodeId> = self.community_members(community_key).await?.into_iter().collect();
         let mut reader = ContentReader::default();
         reader.fingerprint(self, &members).await
     }
@@ -406,7 +399,7 @@ impl Graph {
         Ok(out)
     }
 
-    async fn community_by_key(&self, community_key: &str) -> Result<Node> {
+    pub(crate) async fn community_by_key(&self, community_key: &str) -> Result<Node> {
         let value = PropertyValue::String(community_key.to_string());
         for id in self.find_nodes_by_property("key", &value).await? {
             let node = self.get_node(id).await?;

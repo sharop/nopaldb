@@ -107,7 +107,7 @@ as a predicate.
 The pieces above, as the one flow people ask an assistant for (and the one
 it invents when it is not written down): indexes, idempotent ingestion of
 chunks with their entities and relations, hybrid retrieval that seeds the
-pattern, multi-hop, and a context cut. **The code is
+pattern, multi-hop, a context cut, and a search inside a community. **The code is
 `nopaldb/python/scripts/graphrag_sample.py` § recipe**, which runs in CI
 against the compiled extension; `scripts/check_graphrag_recipe.py` fails when
 these blocks and the sample diverge, so what you read is what runs. The corpus
@@ -249,6 +249,33 @@ each node once at its minimum depth, the seeds first, then by PPR score,
 are kept even when `labels` filters their label out. The loop at the end is
 the budget: `len` stands for your tokenizer, the order is the ranking, and
 the first thing that does not fit ends it.
+
+### 5. Search inside a community
+
+<!-- recipe:community:start -->
+```python
+# Communities are computed on entities; the search runs on chunks. Materialize the
+# Leiden partition once, then search INSIDE one community: the chunks that mention
+# one of its entities are the universe, and ranking happens inside it (#214).
+g.materialize_communities([g.leiden(labels=["Entity"], edge_types=["RELATED"])])
+key = next(iter(g.execute_nql(
+    'find k.key from (e:Entity)-[:IN_COMMUNITY]->(k:Community) where e.name = "Nopal"')))["k.key"]
+local = g.community_members(key, via="MENTIONS")       # chunk ids, each once
+inside = g.search_hybrid(text=question, vector=q, model="m", k=3, candidates=local, hydrate=True)
+```
+<!-- recipe:community:end -->
+
+A community is a universe like any other: `community_members(key)` gives its
+members, and with `via="MENTIONS"` the nodes that point at one of them (here,
+the chunks that mention one of its entities). The search ranks **inside** that
+set, on both branches, so it returns `k` hits whenever the community has `k`
+chunks; it is not a global search filtered afterwards. Both calls read only
+the edges of that community and of its members. The universe equals, as a
+set, what the pattern
+`(c:Chunk)-[:MENTIONS]->(e:Entity)-[:IN_COMMUNITY]->(k:Community {key})`
+returns; the pattern gives one row per path. For a neighbourhood as the
+universe, pass the ids of `neighborhood(...)["nodes"]` as `candidates`;
+`neighborhood(..., within=ids)` restricts a walk to a set the same way.
 
 See also the [Python cheat sheet](python/API_CHEATSHEET.md) (one line per
 call, the names assistants invent and the real ones),

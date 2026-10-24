@@ -88,6 +88,11 @@ pub struct ExpandOptions {
     pub max_edges_per_node: Option<usize>,
     /// Qué sobrevive a un corte por `max_nodes` (#176). Default: BFS.
     pub rank: Rank,
+    /// Restringe el recorrido a este conjunto (#214 fase 2b): un nodo fuera
+    /// no entra ni se expande, como con `labels`, y las semillas tampoco se
+    /// filtran. Se comprueba antes de leer el nodo, así que es más barato
+    /// que `labels`. `None` (o `CandidateSet::All`) = sin restricción.
+    pub within: Option<super::CandidateSet>,
 }
 
 impl Default for ExpandOptions {
@@ -99,6 +104,7 @@ impl Default for ExpandOptions {
             max_nodes: 1000,
             max_edges_per_node: None,
             rank: Rank::Bfs,
+            within: None,
         }
     }
 }
@@ -207,6 +213,9 @@ impl Graph {
     ) -> Result<Neighborhood> {
         let mut nb = Neighborhood::default();
         let mut seen_edges: HashSet<EdgeId> = HashSet::new();
+        // Nodos ya descartados por `labels`: no se vuelven a leer cada vez
+        // que otro nodo los alcanza.
+        let mut rejected: HashSet<NodeId> = HashSet::new();
         let mut frontier: Vec<NodeId> = Vec::new();
 
         for node in self.get_nodes(seeds).await?.into_iter().flatten() {
@@ -244,7 +253,13 @@ impl Graph {
                 let mut want: Vec<NodeId> = Vec::new();
                 let mut dedup: HashSet<NodeId> = HashSet::new();
                 for (_, other) in &pending {
-                    if !nb.depth_of.contains_key(other) && dedup.insert(*other) {
+                    if nb.depth_of.contains_key(other) || rejected.contains(other) {
+                        continue;
+                    }
+                    if opts.within.as_ref().is_some_and(|w| !w.contains(other)) {
+                        continue;
+                    }
+                    if dedup.insert(*other) {
                         want.push(*other);
                     }
                 }
@@ -252,6 +267,7 @@ impl Graph {
                     if let Some(labels) = &opts.labels
                         && !labels.contains(&node.label)
                     {
+                        rejected.insert(node.id);
                         continue;
                     }
                     if nb.nodes.len() >= opts.max_nodes {
@@ -352,4 +368,13 @@ fn personalized_pagerank(
         rank = next;
     }
     ids.into_iter().zip(rank).collect()
+}
+
+/// Una vecindad como universo de búsqueda: sus nodos, semillas incluidas
+/// (#214 fase 2b). Para buscar solo entre lo alcanzado, sin las semillas,
+/// filtra `depth_of` antes.
+impl From<&Neighborhood> for super::CandidateSet {
+    fn from(nb: &Neighborhood) -> Self {
+        nb.nodes.iter().map(|n| n.id).collect()
+    }
 }
