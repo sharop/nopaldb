@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.9.0] - unreleased
+## [0.9.0] - 2026-10-24
 
 Cierra la fase 2b de #214: buscar dentro de una comunidad o una vecindad,
 desde Rust, Python y NQL (`in_community`). La semántica de patrones queda
