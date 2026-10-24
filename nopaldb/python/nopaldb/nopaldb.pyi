@@ -231,6 +231,7 @@ class Graph:
         partition: str = "leiden",
         min_jaccard: float = 0.5,
     ) -> dict[str, int]: ...
+    def community_members(self, community_key: str, via: Optional[str] = None) -> list[str]: ...
     def community_fingerprint(self, community_key: str) -> str: ...
     def upsert_community_report(
         self,
@@ -256,6 +257,7 @@ class Graph:
         iterations: int = 20,
         candidate_factor: int = 5,
         seed_weights: Optional[dict[str, float]] = None,
+        within: Optional[list[str]] = None,
     ) -> NeighborhoodResult: ...
 
     # ── Idempotent upsert (M1-4) ────────────────────────────────────

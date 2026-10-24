@@ -165,7 +165,7 @@ with tempfile.TemporaryDirectory() as tmp:
     g.close()
 
 
-# 6. Recipe: end to end (#230). The four blocks between the `recipe:<name>`
+# 6. Recipe: end to end (#230). The five blocks between the `recipe:<name>`
 #    markers are the ones docs/GRAPHRAG.md § "Recipe: end to end" shows, byte
 #    for byte after dedent: scripts/check_graphrag_recipe.py fails when they
 #    diverge, so the doc cannot age. Only `embed`, `path`, `question`, the
@@ -308,6 +308,23 @@ with tempfile.TemporaryDirectory() as tmp:
     assert 2 in depths.values() and depths["Nopal"] == 1, depths
     assert all(n["label"] == "Entity" or n["id"] in seeds for n in ctx["nodes"])
     assert context and sum(len(p) for p in context) <= 600 and context[0] == hits[0]["node"]["properties"]["text"]
+
+    # recipe:community:start
+    # Communities are computed on entities; the search runs on chunks. Materialize the
+    # Leiden partition once, then search INSIDE one community: the chunks that mention
+    # one of its entities are the universe, and ranking happens inside it (#214).
+    g.materialize_communities([g.leiden(labels=["Entity"], edge_types=["RELATED"])])
+    key = next(iter(g.execute_nql(
+        'find k.key from (e:Entity)-[:IN_COMMUNITY]->(k:Community) where e.name = "Nopal"')))["k.key"]
+    local = g.community_members(key, via="MENTIONS")       # chunk ids, each once
+    inside = g.search_hybrid(text=question, vector=q, model="m", k=3, candidates=local, hydrate=True)
+    # recipe:community:end
+    members = set(g.community_members(key))
+    assert members and all(g.get_node(m)["label"] == "Entity" for m in members)
+    assert inside and {h["node_id"] for h in inside} <= set(local), inside
+    via_pattern = {r["c.id"] for r in g.execute_nql(
+        f'find c.id from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:IN_COMMUNITY]->(k:Community) where k.key = "{key}"')}
+    assert set(local) == via_pattern, "the same universe as the two-hop pattern, as a set"
     g.close()
 
 print("graphrag_sample: OK")
