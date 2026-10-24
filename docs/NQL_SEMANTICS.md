@@ -30,7 +30,8 @@ These are not equivalent. The first gives `k` results inside the filter whenever
 - **Seed constraints** define the universe:
   - the label of `v`;
   - the equalities and `in` lists on `v` in the top-level `and` of the `where` (`v.tenant = "t7"`, `v.kind in ["a", "b"]`, `v.id = "…"`, `v.id in […]`);
-  - inline properties of `v`'s node pattern.
+  - inline properties of `v`'s node pattern;
+  - `in_community(v, key[, via = "T"])`: the members of a materialized community, or the nodes with a `T` edge to one of them. It is the same universe, as a set, as the explicit pattern through `IN_COMMUNITY`.
 
   `score(v)`, `rank(v)` and the raw scores are computed in that universe.
 - **Expansion constraints** are predicates on the other variables of the pattern (`e.kind = "lugar"`). They filter the expanded rows and **never change which seeds the search picks**: `k` counts seeds. A seed whose expansions all fail produces no row, so a query can return fewer than `k` seeds.
@@ -42,6 +43,7 @@ Tested by:
 - `nql_where_candidates_test::hybrid_returns_k_rows_inside_the_tenant`, `similar_to_returns_the_exact_top_k_inside_the_tenant`, `ids_are_the_universe_and_intersect`, `residual_predicates_still_filter_and_are_never_widened`, `a_search_must_be_a_root_conjunct` and `a_seeded_pattern_pushes_on_the_seed`;
 - `nql_vector_literal_test::explicit_k_wins_over_limit_and_limit_still_caps_rows`;
 - `nql_parens_and_literals_test::hybrid_and_a_parenthesised_or`;
+- `nql_in_community_test::the_universe_equals_the_explicit_pattern_as_a_set` and `in_community_intersects_with_id_lists`;
 - `candidate_set_test` (the universe for `search_hybrid(candidates=…)`).
 
 ## 3. Order of evaluation

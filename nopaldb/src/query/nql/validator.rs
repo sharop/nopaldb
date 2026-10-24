@@ -324,6 +324,7 @@ impl SemanticValidator {
             self.validate_vector_search_usage(&filter.condition, query)?;
             validate_search_is_root_conjunct(&filter.condition)?;
         }
+        validate_in_community(query)?;
         if let Some(order_by) = &query.order_by {
             for item in &order_by.items {
                 self.validate_pattern_embedding_usage(&item.expression, EmbeddingExprContext::OrderBy, query)?;
@@ -645,6 +646,10 @@ impl SemanticValidator {
                 if name.eq_ignore_ascii_case("leiden") {
                     #[cfg(feature = "algorithms")]
                     crate::query::nql::executor::aggregations::leiden_config_from_args(args)?;
+                    return Ok(());
+                }
+                // Su forma y su lugar los valida `validate_in_community`.
+                if name.eq_ignore_ascii_case("in_community") {
                     return Ok(());
                 }
                 if let Some(Expression::NamedArg { name: arg, .. }) =
@@ -1396,6 +1401,120 @@ impl Default for SemanticValidator {
 /// válido junto a ella (`hybrid(c, …) and (c.a = 1 or c.b = 2)`, cuando NQL
 /// acepte paréntesis en el WHERE: hoy el AST los rechaza). AND liga más que
 /// OR: `hybrid(…) and c.a = 1 or c.b = 2` es `(hybrid and a) or b`.
+/// `in_community(v, "key"[, via = "EDGE_TYPE"])` (#214 fase 2b) restringe el
+/// universo de una búsqueda sobre `v`: es una restricción de semilla
+/// (`docs/NQL_SEMANTICS.md` § 2). Por eso solo vale como condición del AND
+/// raíz del WHERE y junto a `hybrid(v, …)` o `similar_to(v, …)` sobre la
+/// misma variable. En cualquier otro sitio sería una función que los
+/// evaluadores de fila no conocen, y dejaría pasar todas las filas: es un
+/// error con nombre.
+fn validate_in_community(query: &Query) -> Result<()> {
+    const FORM: &str = "in_community(var, \"community key\"[, via = \"EDGE_TYPE\"])";
+    fn is_in_community(name: &str) -> bool {
+        name.eq_ignore_ascii_case("in_community")
+    }
+    fn contains(expr: &Expression) -> bool {
+        match expr {
+            Expression::FunctionCall { name, args } => is_in_community(name) || args.iter().any(contains),
+            Expression::BinaryOp { left, right, .. } => contains(left) || contains(right),
+            Expression::UnaryOp { expr, .. } => contains(expr),
+            Expression::NamedArg { value, .. } => contains(value),
+            _ => false,
+        }
+    }
+    fn conjuncts<'e>(expr: &'e Expression, out: &mut Vec<&'e Expression>) {
+        match expr {
+            Expression::BinaryOp { left, op: BinaryOperator::And, right } => {
+                conjuncts(left, out);
+                conjuncts(right, out);
+            }
+            other => out.push(other),
+        }
+    }
+    let first_var = |args: &[Expression]| -> Option<String> {
+        match args.iter().find(|a| !matches!(a, Expression::NamedArg { .. })) {
+            Some(Expression::Property { variable, property }) if property.is_empty() => Some(variable.clone()),
+            _ => None,
+        }
+    };
+    let misplaced = || {
+        NopalError::SemanticError(format!(
+            "in_community: must be a condition of the WHERE's top-level AND, next to hybrid(...) or \
+             similar_to(...) on the same variable: `{FORM}`. To filter rows by community without a \
+             search, use the pattern `(e)-[:IN_COMMUNITY]->(k:Community) where k.key = \"…\"`"
+        ))
+    };
+
+    for proj in &query.find.projections {
+        if let Projection::Expression { expr, .. } = proj
+            && contains(expr)
+        {
+            return Err(misplaced());
+        }
+    }
+    if let Some(order_by) = &query.order_by
+        && order_by.items.iter().any(|i| contains(&i.expression))
+    {
+        return Err(misplaced());
+    }
+    if query.having.as_ref().is_some_and(|h| contains(&h.condition)) {
+        return Err(misplaced());
+    }
+    let Some(filter) = &query.filter else { return Ok(()) };
+    let mut parts = Vec::new();
+    conjuncts(&filter.condition, &mut parts);
+
+    let searched: Vec<String> = parts
+        .iter()
+        .filter_map(|p| match p {
+            Expression::FunctionCall { name, args }
+                if name.eq_ignore_ascii_case("hybrid") || name.eq_ignore_ascii_case("similar_to") =>
+            {
+                first_var(args)
+            }
+            _ => None,
+        })
+        .collect();
+
+    for part in parts {
+        match part {
+            Expression::FunctionCall { name, args } if is_in_community(name) => {
+                let positional: Vec<&Expression> =
+                    args.iter().filter(|a| !matches!(a, Expression::NamedArg { .. })).collect();
+                let var = match positional.as_slice() {
+                    [Expression::Property { variable, property }, Expression::Literal(PropertyValue::String(_))]
+                        if property.is_empty() =>
+                    {
+                        variable.clone()
+                    }
+                    _ => {
+                        return Err(NopalError::SemanticError(format!(
+                            "in_community: expected `{FORM}` (a variable and the community key as a string)"
+                        )))
+                    }
+                };
+                for arg in args {
+                    if let Expression::NamedArg { name, value } = arg {
+                        let ok = name.eq_ignore_ascii_case("via")
+                            && matches!(value.as_ref(), Expression::Literal(PropertyValue::String(_)));
+                        if !ok {
+                            return Err(NopalError::SemanticError(format!(
+                                "in_community: unknown option `{name}`; the only one is `via = \"EDGE_TYPE\"`"
+                            )));
+                        }
+                    }
+                }
+                if !searched.contains(&var) {
+                    return Err(misplaced());
+                }
+            }
+            other if contains(other) => return Err(misplaced()),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn validate_search_is_root_conjunct(condition: &Expression) -> Result<()> {
     fn search_name(name: &str) -> Option<&'static str> {
         if name.eq_ignore_ascii_case("hybrid") {

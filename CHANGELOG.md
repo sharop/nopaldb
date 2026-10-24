@@ -31,6 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   los nodos que `labels` descartó.
 - `impl From<&Neighborhood> for CandidateSet`: una vecindad como universo de
   búsqueda.
+- **NQL `in_community(v, key[, via = "T"])`** (#214 fase 2b): buscar dentro
+  de una comunidad en una sola condición:
+  `where hybrid(c, …) and in_community(c, "leiden/L0/…", via = "MENTIONS")`.
+  - Es una restricción de semilla: el top-k se calcula dentro de los chunks
+    que mencionan un miembro de la comunidad, o dentro de los miembros si no
+    hay `via`.
+  - Se intersecta con los demás predicados empujados.
+  - Es el mismo universo que `community_members(key, via=…)` e igual, como
+    conjunto, al patrón explícito por `IN_COMMUNITY`.
+  - Solo vale en el `and` raíz junto a `hybrid`/`similar_to` sobre la misma
+    variable. En otro sitio, con una opción desconocida o con una clave
+    inexistente, da error con nombre. EXPLAIN la muestra en `Search universe`.
 - La receta de [GRAPHRAG.md](docs/GRAPHRAG.md) gana el paso "5. Search
   inside a community", que corre en CI como los otros cuatro.
 

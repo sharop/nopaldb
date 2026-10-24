@@ -30,7 +30,8 @@ No son equivalentes. La primera da `k` resultados dentro del filtro siempre que 
 - **Restricciones de semilla**: definen el universo.
   - la etiqueta de `v`;
   - las igualdades y listas `in` sobre `v` en el `and` raíz del `where` (`v.tenant = "t7"`, `v.kind in ["a", "b"]`, `v.id = "…"`, `v.id in […]`);
-  - las propiedades inline del nodo `v`.
+  - las propiedades inline del nodo `v`;
+  - `in_community(v, key[, via = "T"])`: los miembros de una comunidad materializada, o los nodos con una arista `T` hacia uno de ellos. Es el mismo universo, como conjunto, que el patrón explícito por `IN_COMMUNITY`.
 
   `score(v)`, `rank(v)` y los scores crudos se calculan en ese universo.
 - **Restricciones de expansión**: predicados sobre las otras variables del patrón (`e.kind = "lugar"`). Filtran las filas expandidas y **nunca cambian qué semillas elige la búsqueda**: `k` cuenta semillas. Una semilla cuyas expansiones fallan todas no produce filas, así que una consulta puede devolver menos de `k` semillas.
@@ -42,6 +43,7 @@ Lo comprueban:
 - `nql_where_candidates_test::hybrid_returns_k_rows_inside_the_tenant`, `similar_to_returns_the_exact_top_k_inside_the_tenant`, `ids_are_the_universe_and_intersect`, `residual_predicates_still_filter_and_are_never_widened`, `a_search_must_be_a_root_conjunct` y `a_seeded_pattern_pushes_on_the_seed`;
 - `nql_vector_literal_test::explicit_k_wins_over_limit_and_limit_still_caps_rows`;
 - `nql_parens_and_literals_test::hybrid_and_a_parenthesised_or`;
+- `nql_in_community_test::the_universe_equals_the_explicit_pattern_as_a_set` e `in_community_intersects_with_id_lists`;
 - `candidate_set_test` (el universo de `search_hybrid(candidates=…)`).
 
 ## 3. Orden de evaluación

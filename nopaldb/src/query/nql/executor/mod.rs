@@ -5904,7 +5904,8 @@ impl<'a> Executor<'a> {
         let ef = call.ef_search.unwrap_or(crate::embeddings::DEFAULT_EF_SEARCH);
         // La etiqueta del patrón y lo que el WHERE empuja (#214 fase 2) son
         // el universo: el top-k se calcula dentro de ellos.
-        let pushed = pushed_predicates(query, &call.variable);
+        let mut pushed = pushed_predicates(query, &call.variable);
+        self.resolve_pushed_communities(&mut pushed).await?;
         let node_filter = crate::graph::hybrid::NodeFilter {
             label: label.clone(),
             eq: pushed.eq.clone(),
@@ -5943,6 +5944,26 @@ impl<'a> Executor<'a> {
         Ok(Some(nodes))
     }
 
+    /// Resuelve los `in_community(...)` empujados a ids de la comunidad (o de
+    /// sus vecinos por `via`) y los intersecta con los `ids` del WHERE: el
+    /// universo de la búsqueda. Una clave inexistente es un error.
+    #[cfg(feature = "embeddings-index")]
+    async fn resolve_pushed_communities(&self, pushed: &mut PushedPredicates) -> Result<()> {
+        for (key, via) in std::mem::take(&mut pushed.communities) {
+            let ids: HashSet<NodeId> = match &via {
+                Some(edge_type) => self.graph.community_members_via(&key, edge_type).await?,
+                None => self.graph.community_members(&key).await?,
+            }
+            .into_iter()
+            .collect();
+            pushed.ids = Some(match pushed.ids.take() {
+                None => ids,
+                Some(cur) => cur.intersection(&ids).copied().collect(),
+            });
+        }
+        Ok(())
+    }
+
     /// Pre-compute `hybrid(...)` from the WHERE into the top-k hybrid hits
     /// (RRF fusion of full-text + vector), hydrated, best first. `None` when
     /// the WHERE has no `hybrid`.
@@ -5960,7 +5981,8 @@ impl<'a> Executor<'a> {
         let k = effective_k(call.k, query);
         // La etiqueta del patrón y los predicados que el WHERE empuja (#214
         // fase 2) son el universo de la búsqueda: el top-k se calcula dentro.
-        let pushed = pushed_predicates(query, &call.variable);
+        let mut pushed = pushed_predicates(query, &call.variable);
+        self.resolve_pushed_communities(&mut pushed).await?;
         let label = pattern_label_for(query, &call.variable);
         let filter = (label.is_some() || !pushed.eq.is_empty())
             .then(|| crate::graph::HybridFilter { label, props: pushed.eq.clone() });
@@ -6352,6 +6374,10 @@ pub(crate) struct PushedPredicates {
     /// `None` = el WHERE no fija ids; `Some` = intersección de los que fija
     /// (vacía si ninguno es un UUID: ningún nodo los tiene).
     pub ids: Option<HashSet<NodeId>>,
+    /// `in_community(v, key[, via = "T"])` (#214 fase 2b): `(key, via)`. Se
+    /// resuelven a ids en el paso asíncrono previo a la búsqueda
+    /// ([`Executor::resolve_pushed_communities`]) y se intersectan con `ids`.
+    pub communities: Vec<(String, Option<String>)>,
     /// Los predicados empujados tal como se escribieron, para EXPLAIN.
     pub described: Vec<String>,
 }
@@ -6359,7 +6385,7 @@ pub(crate) struct PushedPredicates {
 #[cfg(feature = "embeddings-index")]
 impl PushedPredicates {
     pub(crate) fn is_empty(&self) -> bool {
-        self.eq.is_empty() && self.any_of.is_empty() && self.ids.is_none()
+        self.eq.is_empty() && self.any_of.is_empty() && self.ids.is_none() && self.communities.is_empty()
     }
 
     pub(crate) fn candidates(&self) -> crate::graph::CandidateSet {
@@ -6422,6 +6448,16 @@ pub(crate) fn pushed_predicates(query: &Query, var: &str) -> PushedPredicates {
     let mut parts = Vec::new();
     conjuncts(&filter.condition, &mut parts);
     for part in parts {
+        if let Some((target, key, via)) = in_community_call(part)
+            && target == var
+        {
+            pushed.described.push(match &via {
+                Some(t) => format!("in_community({var}, {key:?}, via = {t:?})"),
+                None => format!("in_community({var}, {key:?})"),
+            });
+            pushed.communities.push((key, via));
+            continue;
+        }
         let Expression::BinaryOp { left, op, right } = part else { continue };
         let (prop, value) = match (&**left, &**right) {
             (Expression::Property { variable, property }, Expression::Literal(v))
@@ -6460,6 +6496,33 @@ pub(crate) fn pushed_predicates(query: &Query, var: &str) -> PushedPredicates {
         }
     }
     pushed
+}
+
+/// `in_community(v, "key"[, via = "T"])` → `(v, key, via)`, si la expresión
+/// tiene exactamente esa forma (el validador ya la exige).
+#[cfg(feature = "embeddings-index")]
+pub(crate) fn in_community_call(expr: &Expression) -> Option<(String, String, Option<String>)> {
+    let Expression::FunctionCall { name, args } = expr else { return None };
+    if !name.eq_ignore_ascii_case("in_community") {
+        return None;
+    }
+    let positional = positional_args(args);
+    let [Expression::Property { variable, property }, Expression::Literal(PropertyValue::String(key))] =
+        positional.as_slice()
+    else {
+        return None;
+    };
+    if !property.is_empty() {
+        return None;
+    }
+    let mut via = None;
+    for (n, v) in named_args(args) {
+        match (n, v) {
+            ("via", Expression::Literal(PropertyValue::String(t))) => via = Some(t.clone()),
+            _ => return None,
+        }
+    }
+    Some((variable.clone(), key.clone(), via))
 }
 
 /// `v.id`, las pseudo-propiedades que el evaluador resuelve sin mirar

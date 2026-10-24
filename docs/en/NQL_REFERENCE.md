@@ -440,6 +440,29 @@ the search hits). `and` binds tighter than `or`. Details and the
 Rust/Python API: [HYBRID_SEARCH.md](../HYBRID_SEARCH.md), [EMBEDDINGS.md](../EMBEDDINGS.md),
 [GRAPHRAG.md](../GRAPHRAG.md).
 
+**Search inside a community: `in_community` (#214 phase 2b).** A materialized
+community (`materialize_communities`) is a universe too:
+
+```nql
+find c.text, score(c) from (c:Chunk)
+where hybrid(c, text = "riego", vector = [...], model = "minilm", k = 10)
+  and in_community(c, "leiden/L0/…", via = "MENTIONS")
+```
+
+ranks inside the chunks that have a `MENTIONS` edge to a member of that
+community. Without `via`, `in_community(e, key)` is the members themselves,
+for a search over the entities. It is a seed constraint
+([NQL semantics](../NQL_SEMANTICS.md#2-search-the-universe-seed-constraints-and-expansion-constraints)):
+- it intersects with the other pushed predicates (`c.id in [...]`, properties);
+- it is the same universe as Python `community_members(key, via=…)`;
+- it equals, as a set, what the pattern
+  `(c)-[:MENTIONS]->(e)-[:IN_COMMUNITY]->(k:Community) where k.key = "…"` returns.
+
+It is only valid as a condition of the top-level `and`, next to `hybrid` or
+`similar_to` on the same variable. Anywhere else, with an unknown option, or
+with an unknown key, it is a named error. To filter rows by community without
+a search, write that pattern.
+
 ---
 
 ## Aggregations & Functions
