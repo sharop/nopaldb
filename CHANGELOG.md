@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **La exportación Arrow con propiedades** (`graph_to_arrow`, Python
+  `to_arrow_complete`, `nodes_to_arrow_with_properties`,
+  `edges_to_arrow_with_properties`) **daba datos incorrectos o incompletos
+  sin aviso:**
+  - Con filtro de etiqueta exportaba **todas** las aristas del grafo. Ahora
+    solo las que tienen los dos extremos dentro (subgrafo inducido).
+  - El orden de las columnas de propiedades salía de un mapa sin orden. Ahora
+    van por nombre, y el mismo grafo da el mismo esquema.
+  - Una propiedad que solo tenía listas, objetos o bytes no generaba columna,
+    y un valor de otro tipo en una columna entera salía nulo. Ahora una
+    columna mixta es texto y no pierde valores.
+  - Listas, objetos y bytes salían como `<complex>` / `<bytes:N>`, y un
+    `Null` explícito como el texto `"null"`. Ahora van en JSON, y `Null` es
+    nulo de Arrow.
+  - Una propiedad llamada `id` o `label` (`source`, `target` o `edge_type` en
+    aristas) duplicaba la columna estructural. Ahora sale como
+    `property.<nombre>`.
+  - Exportar sin nodos era un error. Ahora devuelve un lote vacío con su
+    esquema.
+
+  Quien leía `<complex>` o el texto `"null"` verá JSON y nulos. Contrato
+  completo en `docs/arrow/03-TECHNICAL.md` § Vista analítica.
+
 ## [0.9.0] - 2026-10-24
 
 Cierra la fase 2b de #214: buscar dentro de una comunidad o una vecindad,

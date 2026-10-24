@@ -8,7 +8,7 @@ use arrow::array::{ArrayRef, StringArray, Int64Array, UInt64Array, BooleanArray,
 use arrow::datatypes::{Schema, Field, DataType};
 use std::sync::Arc;
 //use arrow::record_batch::RecordBatch;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use crate::error::{NopalError, Result};
 use crate::types::{Node, Edge, PropertyValue};
 use crate::mvcc::VersionedNode;
@@ -82,24 +82,31 @@ pub fn nodes_to_arrow(nodes: &[Node]) -> Result<RecordBatch> {
 ///
 /// This exports individual properties as columns, providing a clean
 /// columnar format perfect for ML/analytics.
+///
+/// What every cell holds (the analytical view):
+/// - one column per property, **sorted by name**, so two exports of the same
+///   graph have the same schema whatever the insertion order;
+/// - a property with one scalar type everywhere keeps it (`Int64`,
+///   `Float64`, `Boolean`, `Utf8`); with mixed types, or with lists, objects
+///   or bytes, the column is `Utf8` and each cell is the value as text, with
+///   lists, objects and bytes **as JSON** (bytes as an array of numbers).
+///   Until 0.9.0 such values became `<complex>` / `<bytes:N>`, a property
+///   that only had them got no column at all, and a value of another type in
+///   an integer column became null;
+/// - an explicit `Null`, like a missing property, is an Arrow null (it was
+///   the text `"null"` in text columns);
+/// - a property named like a structural column (`id`, `label`) is exported
+///   as `property.<name>`, so it never shadows the structural one.
+///
+/// No nodes (or none with `label_filter`) gives an empty batch with the
+/// `id` and `label` columns, like the edge export.
 pub fn nodes_to_arrow_with_properties(nodes: &[Node], label_filter: Option<&str>) -> Result<RecordBatch> {
-    if nodes.is_empty() {
-        return Err(NopalError::Custom("No nodes to export".into()));
-    }
-
     // Filter by label if specified
     let filtered_nodes: Vec<&Node> = if let Some(label) = label_filter {
         nodes.iter().filter(|n| n.label == label).collect()
     } else {
         nodes.iter().collect()
     };
-
-    if filtered_nodes.is_empty() {
-        return Err(NopalError::Custom(format!(
-            "No nodes found with label '{}'",
-            label_filter.unwrap_or("any")
-        )));
-    }
 
     // Step 1: Discover all properties and their types
     let property_schema = infer_property_schema(&filtered_nodes);
@@ -116,9 +123,9 @@ pub fn nodes_to_arrow_with_properties(nodes: &[Node], label_filter: Option<&str>
             PropertyType::Int => DataType::Int64,
             PropertyType::Float => DataType::Float64,
             PropertyType::Bool => DataType::Boolean,
-            PropertyType::Mixed => DataType::Utf8, // Fallback to string
+            PropertyType::Mixed => DataType::Utf8, // text / JSON
         };
-        fields.push(Field::new(prop_name, arrow_type, true)); // nullable
+        fields.push(Field::new(column_name(prop_name, &["id", "label"]), arrow_type, true)); // nullable
     }
 
     let schema = Arc::new(Schema::new(fields));
@@ -126,7 +133,7 @@ pub fn nodes_to_arrow_with_properties(nodes: &[Node], label_filter: Option<&str>
     // Step 3: Build columns
     let mut id_builder = StringBuilder::new();
     let mut label_builder = StringBuilder::new();
-    let mut property_builders: HashMap<String, PropertyBuilder> = HashMap::new();
+    let mut property_builders: BTreeMap<String, PropertyBuilder> = BTreeMap::new();
 
     for (prop_name, prop_type) in &property_schema {
         property_builders.insert(
@@ -216,20 +223,31 @@ pub fn edges_to_arrow(edges: &[Edge]) -> Result<RecordBatch> {
     Ok(batch)
 }
 
-/// Helper: Convert PropertyValue to string representation
-///
-/// Formato PROPIO del export Arrow (`<bytes:N>`, `<complex>`, Float crudo) —
-/// NO delegar en `Display`/`to_display_string`: cambiaría columnas que los
-/// consumidores de RecordBatch/Parquet ya esperan.
-fn property_value_to_string(value: &PropertyValue) -> String {
+/// The text of a value in a `Utf8` column: scalars as themselves (a float
+/// as Rust prints it), lists, objects and bytes as JSON (bytes as an array
+/// of numbers), and `Null` as an Arrow null (`None`). Until 0.9.0 lists and
+/// objects were `<complex>`, bytes `<bytes:N>` and `Null` the text `"null"`:
+/// display forms that read as data and cannot be read back.
+fn text_cell(value: &PropertyValue) -> Option<String> {
     match value {
-        PropertyValue::String(s) => s.clone(),
-        PropertyValue::Int(i) => i.to_string(),
-        PropertyValue::Float(f) => f.to_string(),
-        PropertyValue::Bool(b) => b.to_string(),
-        PropertyValue::Null => "null".to_string(),
-        PropertyValue::Bytes(bytes) => format!("<bytes:{}>", bytes.len()),
-        PropertyValue::Object(_) | PropertyValue::List(_) => "<complex>".to_string(),
+        PropertyValue::Null => None,
+        PropertyValue::String(s) => Some(s.clone()),
+        PropertyValue::Int(i) => Some(i.to_string()),
+        PropertyValue::Float(f) => Some(f.to_string()),
+        PropertyValue::Bool(b) => Some(b.to_string()),
+        PropertyValue::Bytes(_) | PropertyValue::Object(_) | PropertyValue::List(_) => {
+            Some(serde_json::Value::from(value).to_string())
+        }
+    }
+}
+
+/// The column of a property: its name, or `property.<name>` when the name is
+/// one of the structural columns of the batch (`reserved`).
+fn column_name(property: &str, reserved: &[&str]) -> String {
+    if reserved.contains(&property) {
+        format!("property.{property}")
+    } else {
+        property.to_string()
     }
 }
 
@@ -259,7 +277,7 @@ pub fn edges_to_arrow_with_properties(edges: &[Edge]) -> Result<RecordBatch> {
     ];
 
     for key in &property_keys {
-        fields.push(Field::new(key, DataType::Utf8, true));
+        fields.push(Field::new(column_name(key, &["id", "source", "target", "edge_type"]), DataType::Utf8, true));
     }
 
     let schema = Arc::new(Schema::new(fields));
@@ -293,11 +311,9 @@ pub fn edges_to_arrow_with_properties(edges: &[Edge]) -> Result<RecordBatch> {
         let mut builder = StringBuilder::new();
 
         for edge in edges {
-            if let Some(value) = edge.properties.get(key) {
-                let value_str = property_value_to_string(value);
-                builder.append_value(&value_str);
-            } else {
-                builder.append_null();
+            match edge.properties.get(key).and_then(text_cell) {
+                Some(text) => builder.append_value(&text),
+                None => builder.append_null(),
             }
         }
 
@@ -328,8 +344,14 @@ pub async fn graph_to_arrow(
         graph.get_all_nodes().await?
     };
 
-    // Get edges
-    let edges = graph.get_all_edges().await?;
+    // Edges: with a label, only those whose BOTH endpoints are exported (the
+    // induced subgraph). Until 0.9.0 every edge of the graph came along, so
+    // the "subgraph" had edges to nodes it did not contain.
+    let mut edges = graph.get_all_edges().await?;
+    if label_filter.is_some() {
+        let included: std::collections::HashSet<_> = nodes.iter().map(|n| n.id).collect();
+        edges.retain(|e| included.contains(&e.source) && included.contains(&e.target));
+    }
 
     log::info!(
         "Exporting graph: {} nodes, {} edges",
@@ -364,8 +386,8 @@ pub fn empty_edges_batch() -> RecordBatch {
 }
 
 /// Infer property schema from nodes
-fn infer_property_schema(nodes: &[&Node]) -> HashMap<String, PropertyType> {
-    let mut schema = HashMap::new();
+fn infer_property_schema(nodes: &[&Node]) -> BTreeMap<String, PropertyType> {
+    let mut schema = BTreeMap::new();
 
     for node in nodes {
         for (key, value) in &node.properties {
@@ -375,8 +397,8 @@ fn infer_property_schema(nodes: &[&Node]) -> HashMap<String, PropertyType> {
                 PropertyValue::Float(_) => PropertyType::Float,
                 PropertyValue::Bool(_) => PropertyType::Bool,
                 PropertyValue::Null => continue,
-                PropertyValue::Bytes(_) => continue,
-                PropertyValue::Object(_) | PropertyValue::List(_) => continue,
+                // Sin tipo Arrow propio: van como texto JSON.
+                PropertyValue::Bytes(_) | PropertyValue::Object(_) | PropertyValue::List(_) => PropertyType::Mixed,
             };
 
             schema.entry(key.clone())
@@ -431,11 +453,10 @@ impl PropertyBuilder {
 
     fn append_value(&mut self, value: &PropertyValue) {
         match self {
-            PropertyBuilder::String(b) => {
-                // Mismo formato que property_value_to_string (dedup interno,
-                // salida idéntica).
-                b.append_value(property_value_to_string(value));
-            }
+            PropertyBuilder::String(b) => match text_cell(value) {
+                Some(text) => b.append_value(text),
+                None => b.append_null(),
+            },
             PropertyBuilder::Int(b) => {
                 match value {
                     PropertyValue::Int(i) => b.append_value(*i),

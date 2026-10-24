@@ -305,14 +305,29 @@ VersionedNode.valid_from → UInt64
 VersionedNode.valid_to   → UInt64 (nullable)
 VersionedNode.is_current → Boolean
 
-// PropertyValue → Arrow (future)
-PropertyValue::String  → Utf8
-PropertyValue::Int     → Int64
-PropertyValue::Float   → Float64
-PropertyValue::Bool    → Boolean
-PropertyValue::Bytes   → Binary
-PropertyValue::Null    → Null
 ```
+
+### Vista analítica con propiedades (`to_arrow_complete`, `to_arrow_with_label`)
+
+`graph_to_arrow` (Python `to_arrow_complete`) y `nodes_to_arrow_with_properties`
+dan una **vista analítica**, no un intercambio reversible del grafo. Lo que
+promete cada lote:
+
+| Qué | Contrato |
+|---|---|
+| Subgrafo por etiqueta | Con `label`, solo las aristas con **ambos** extremos en los nodos exportados (subgrafo inducido). Se conservan los self-loops y las aristas paralelas. Hasta 0.9.0 salían todas las aristas del grafo |
+| Orden de columnas | `id`, `label` (o `id`, `source`, `target`, `edge_type` en aristas) y después una columna por propiedad, **ordenadas por nombre**. El mismo grafo da el mismo esquema, sin importar el orden de inserción |
+| Tipo de una columna de nodo | Si la propiedad tiene un solo tipo escalar en todos los nodos, ese tipo: `Int64`, `Float64`, `Boolean` o `Utf8`. Si mezcla tipos, o tiene listas, objetos o bytes, `Utf8` |
+| Celda de texto | El escalar tal cual. Listas, objetos y bytes van **en JSON** (los bytes, como arreglo de números). Hasta 0.9.0 eran `<complex>` / `<bytes:N>`, y un valor de otro tipo en una columna entera salía nulo |
+| Columnas de aristas | `Utf8`, con las mismas reglas de celda |
+| `Null` y propiedad ausente | Nulo de Arrow en los dos casos (antes `Null` era el texto `"null"`). Esta vista no los distingue |
+| Nombre reservado | Una propiedad llamada como una columna estructural (`id`, `label`, `source`, `target`, `edge_type`) sale como `property.<nombre>` |
+| Lote vacío | Sin nodos (o sin nodos de esa etiqueta) devuelve un lote vacío con su esquema, como las aristas, en vez de un error |
+
+No es un respaldo ni un intercambio tipado: los tipos de una columna mixta
+se pierden al pasar a texto, y un `Null` no se distingue de una propiedad
+ausente. Un perfil de intercambio tipado y versionado es trabajo aparte.
+
 
 ## 🧮 Memory Efficiency
 
