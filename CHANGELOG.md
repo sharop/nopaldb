@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.9.2] - unreleased
+
+Conversión con NetworkX en las dos direcciones (`nopaldb.networkx`, extra
+`nopaldb[networkx]`) y una lectura consistente del grafo
+(`Graph.export_graph`), que ahora usa también la exportación Arrow (#285).
+Todo aditivo.
 
 ### Added
 - **Conversión con NetworkX** (`nopaldb.networkx`, con el extra
