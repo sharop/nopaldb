@@ -1586,6 +1586,28 @@ impl Graph {
         self.storage.get_all_nodes().await
     }
 
+    /// The nodes and edges of the graph, or of the subgraph induced by
+    /// `label` (its nodes, and only the edges whose two endpoints are among
+    /// them), read as **one consistent state**.
+    ///
+    /// It holds the write gate while it reads, so no write lands halfway:
+    /// an edge never appears without its endpoints, nor a node without the
+    /// edges written in the same transaction. Writers wait for the read to
+    /// finish. This is what the Arrow and NetworkX exports use.
+    pub async fn export_snapshot(&self, label: Option<&str>) -> Result<(Vec<Node>, Vec<Edge>)> {
+        let _gate = self.write_gate.lock().await;
+        let nodes = match label {
+            Some(l) => self.get_nodes_by_label(l).await?,
+            None => self.get_all_nodes().await?,
+        };
+        let mut edges = self.get_all_edges().await?;
+        if label.is_some() {
+            let included: HashSet<NodeId> = nodes.iter().map(|n| n.id).collect();
+            edges.retain(|e| included.contains(&e.source) && included.contains(&e.target));
+        }
+        Ok((nodes, edges))
+    }
+
     /// Scan nodes in bounded batches (internal use for streaming executor).
     pub(crate) async fn scan_nodes_batch(
         &self,

@@ -96,7 +96,7 @@ jobs:
         run: cargo test -p nopaldb --features core --test sack_traversal_test
 
       - name: Test PropertyValue conversion API
-        run: cargo test -p nopaldb --features core --test property_value_conversion_test --test export_test --test parquet_codecs_test --test parquet_import_test --test arrow_export_contract_test
+        run: cargo test -p nopaldb --features core --test property_value_conversion_test --test export_test --test parquet_codecs_test --test parquet_import_test --test arrow_export_contract_test --test export_snapshot_test
 
       - name: Test EXPLAIN honesty (plan == execution)
         run: cargo test -p nopaldb --features core --test nql_explain_honesty_test
@@ -136,6 +136,6 @@ jobs:
         run: |
           python -m venv .venv
           . .venv/bin/activate
-          pip install --quiet maturin mypy
+          pip install --quiet maturin mypy "networkx>=3.0"
           maturin develop -m nopaldb/Cargo.toml
           make check-python PYTHON=python

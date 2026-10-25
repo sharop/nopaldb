@@ -22,6 +22,7 @@ Single index for every document in `docs/`, in English with the Spanish pages ma
 ## Python
 
 - [Python docs index](python/README.md) · [Quick Start](python/QUICKSTART.md) · [API Reference](python/API_REFERENCE.md) · [Configuration](python/CONFIGURATION.md)
+- [NetworkX conversion](python/NETWORKX.md): `to_networkx` / `from_networkx`, faithful both ways
 - [NQL Guide](python/NQL_GUIDE.md) · [Edge patterns](python/EDGE_PATTERNS.md) · [Schema inspection](python/SCHEMA_INSPECTION.md) · [Arrow export](python/ARROW_EXPORT.md) · [Examples](python/EXAMPLES.md)
 - [Referencia API Python (resumen en español)](es/API_PYTHON.md) · [Configuración (ES)](es/CONFIGURACION.md)
 

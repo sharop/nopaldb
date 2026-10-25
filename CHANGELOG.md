@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Conversión con NetworkX** (`nopaldb.networkx`, con el extra
+  `pip install "nopaldb[networkx]"`). Ver
+  [docs/python/NETWORKX.md](docs/python/NETWORKX.md).
+  - `to_networkx(graph, label=None, key=None)` devuelve un `MultiDiGraph`:
+    conserva aristas paralelas, self-loops y nodos aislados. Las propiedades
+    van en sus tipos nativos (nada pasa a texto), y un nombre reservado sale
+    como `property.<nombre>`.
+  - `from_networkx(graph, G, …)` es idempotente. Hace upsert de cada nodo
+    por `nx_key` (su clave de NetworkX) y omite las aristas que ya existen.
+    Una clave que no sea str, int o float da error con nombre.
+- **`Graph.export_graph(label=None)`** (Rust `Graph::export_snapshot`): el
+  grafo, o el subgrafo inducido por una etiqueta, leído como **un solo estado
+  consistente**. Toma el write gate mientras lee, así que una arista nunca
+  aparece sin sus extremos. La exportación Arrow (`graph_to_arrow`) también
+  lo usa ahora.
+
 ## [0.9.1] - 2026-10-24
 
 La exportación Arrow con propiedades deja de perder o inventar datos (#282):

@@ -20,6 +20,10 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 
+[project.optional-dependencies]
+# Conversión con NetworkX (`nopaldb.networkx`): se importa solo al usarla.
+networkx = ["networkx>=3.0"]
+
 [tool.maturin]
 # Solo redb desde 0.8.0 (sled retirado, #141). Una base sled de 0.5.x se
 # migra con la wheel 0.7: `pip install "nopaldb==0.7.*"` y `Graph.migrate`.
