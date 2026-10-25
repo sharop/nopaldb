@@ -769,6 +769,35 @@ impl PyGraph {
         export_to_arrow(py, &graph, label)
     }
 
+    /// The whole graph, or the subgraph induced by `label`, as plain Python
+    /// objects: `{"nodes": [node dicts], "edges": [edge dicts]}`, with the
+    /// properties in their native types (int, float, str, bool, None, list,
+    /// dict, bytes), nothing turned into text. With `label`, only the edges
+    /// whose two endpoints have that label.
+    ///
+    /// Read as one consistent state: writers wait while it reads, so no
+    /// write is seen halfway. It is what `nopaldb.networkx.to_networkx`
+    /// builds on. Runs with the GIL released.
+    #[pyo3(signature = (label=None))]
+    fn export_graph(&self, py: Python<'_>, label: Option<String>) -> PyResult<Py<PyDict>> {
+        let graph = self.graph()?;
+        let (nodes, edges) = to_py_result(crate::python::runtime::block_on(py, async move {
+            graph.export_snapshot(label.as_deref()).await
+        }))?;
+        let out = PyDict::new(py);
+        let py_nodes = PyList::empty(py);
+        for n in &nodes {
+            py_nodes.append(node_to_pydict(py, n)?)?;
+        }
+        let py_edges = PyList::empty(py);
+        for e in &edges {
+            py_edges.append(edge_to_pydict(py, e)?)?;
+        }
+        out.set_item("nodes", py_nodes)?;
+        out.set_item("edges", py_edges)?;
+        Ok(out.unbind())
+    }
+
     /// Export edges to Arrow format
     #[pyo3(signature = ())]
     fn edges_to_arrow<'py>(

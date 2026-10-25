@@ -337,21 +337,10 @@ pub async fn graph_to_arrow(
     graph: &crate::graph::Graph,
     label_filter: Option<&str>,
 ) -> Result<(RecordBatch, RecordBatch)> {
-    // Get nodes
-    let nodes = if let Some(label) = label_filter {
-        graph.get_nodes_by_label(label).await?
-    } else {
-        graph.get_all_nodes().await?
-    };
-
-    // Edges: with a label, only those whose BOTH endpoints are exported (the
-    // induced subgraph). Until 0.9.0 every edge of the graph came along, so
-    // the "subgraph" had edges to nodes it did not contain.
-    let mut edges = graph.get_all_edges().await?;
-    if label_filter.is_some() {
-        let included: std::collections::HashSet<_> = nodes.iter().map(|n| n.id).collect();
-        edges.retain(|e| included.contains(&e.source) && included.contains(&e.target));
-    }
+    // One consistent read (write gate held). With a label, the induced
+    // subgraph: only edges whose BOTH endpoints are exported (until 0.9.0
+    // every edge of the graph came along).
+    let (nodes, edges) = graph.export_snapshot(label_filter).await?;
 
     log::info!(
         "Exporting graph: {} nodes, {} edges",

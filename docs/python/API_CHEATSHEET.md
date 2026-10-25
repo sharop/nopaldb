@@ -56,6 +56,7 @@ g = nopaldb.Graph.open("./data")
 | `get_nodes(ids: list[str]) -> list[NodeDict | None]` | Many point reads, input order kept. |
 | `neighborhood(ids: list[str], depth: int = 1, direction: str = "out", edge_types: Optional[list[str]] = None, labels: Optional[list[str]] = None, max_nodes: int = 1000, max_edges_per_node: Optional[int] = None, rank: str = "bfs", alpha: float = 0.15, iterations: int = 20, candidate_factor: int = 5, seed_weights: Optional[dict[str, float]] = None, within: Optional[list[str]] = None,) -> NeighborhoodResult` | BFS expansion from seed ids with depth, direction, edge-type and label filters, `max_nodes`; `within=[ids]` restricts the walk to a set. |
 | `community_members(community_key: str, via: Optional[str] = None) -> list[str]` | Ids of a materialized community; with `via="MENTIONS"`, the chunks that mention its members. Pass as `search_hybrid(candidates=…)` to search inside the community. |
+| `export_graph(label: Optional[str] = None) -> dict[str, list[dict[str, Any]]]` | The graph (or the subgraph induced by `label`) as `{"nodes", "edges"}` with native property types, read as one consistent state. `nopaldb.networkx.to_networkx(graph)` builds a `MultiDiGraph` on it ([NETWORKX.md](NETWORKX.md)). |
 | `neighbors(id: str, direction: str = "out", edge_types: Optional[list[str]] = None) -> list[NodeDict]` | Direct neighbours. |
 | `degree(id: str, direction: str = "both") -> int` | Degree of a node. |
 
