@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.9.2] - unreleased
+## [0.9.2] - 2026-10-25
 
 Conversión con NetworkX en las dos direcciones (`nopaldb.networkx`, extra
 `nopaldb[networkx]`) y una lectura consistente del grafo
