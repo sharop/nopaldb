@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.9.3] - unreleased
+
+Arreglo del deadlock que podía colgar para siempre la construcción en
+paralelo de un índice HNSW (#289, cierra #288). La construcción sigue en
+paralelo y los volcados del índice no cambian de formato.
 
 ### Fixed
 - **Construir un índice HNSW en paralelo podía quedarse colgado para siempre**
