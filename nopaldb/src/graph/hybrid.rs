@@ -69,6 +69,8 @@ pub(crate) struct NodeFilter {
 
 #[cfg(feature = "embeddings-index")]
 impl NodeFilter {
+    /// Only `search_hybrid` builds a filter from a `HybridFilter`.
+    #[cfg(feature = "hybrid")]
     pub(crate) fn new(filter: Option<&HybridFilter>, any_of: Vec<(String, Vec<PropertyValue>)>) -> Self {
         let (label, eq) = match filter {
             Some(f) => (f.label.clone(), f.props.clone()),

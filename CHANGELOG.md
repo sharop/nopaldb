@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Construir un índice HNSW en paralelo podía quedarse colgado para siempre**
+  (#288). Desde 128 vectores, `build_batch` y los lotes incrementales usan
+  `parallel_insert` de `hnsw_rs`. Su actualización inversa de vecinos recorría
+  la lista del punto nuevo con el candado de lectura tomado y, dentro del
+  bucle, pedía el de escritura de cada vecino. Dos inserciones simultáneas
+  podían esperarse para siempre (≈ 1 construcción de cada 180 bajo carga, y
+  también en `hnsw_rs` 0.3.5). Ahora NopalDB usa una copia interna de
+  `hnsw_rs` 0.3.4 (MIT/Apache-2.0, con atribución, en `src/embeddings/hnsw_rs`)
+  que copia la lista antes de tomar ningún candado de escritura. La
+  construcción sigue en paralelo y los volcados del índice no cambian de
+  formato. Se descartó insertar en serie: con 16 núcleos es ~10× más lento
+  (50k × 384: 33 s → 318 s).
+
+### Changed
+- `hnsw_rs` deja de ser dependencia; entran directamente las suyas
+  (`anndists`, `rayon`, `parking_lot`, `mmap-rs`, `hashbrown`, `indexmap`,
+  `cpu-time`), que ya llegaban por él. La feature `hnsw-simd` activa ahora
+  `anndists/simdeez_f`.
+- `--features embeddings-index` sin `hybrid` vuelve a compilar con
+  `-D warnings` (un constructor que solo usa `search_hybrid` quedaba como
+  código muerto), y el CI comprueba esa combinación.
+
 ## [0.9.2] - 2026-10-25
 
 Conversión con NetworkX en las dos direcciones (`nopaldb.networkx`, extra

@@ -56,7 +56,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use hnsw_rs::prelude::{AnnT, DistCosine, Hnsw, HnswIo};
+use crate::embeddings::hnsw_rs::prelude::{AnnT, DistCosine, Hnsw, HnswIo};
 use serde::{Deserialize, Serialize};
 
 use super::index::{HnswIndex, EXACT_SEARCH_THRESHOLD};

@@ -202,7 +202,10 @@ when they no longer match what you have; the pattern is written out in
 **Feature flag:** `embeddings-index` (included in `core` tier)
 
 NopalDB includes a built-in HNSW (Hierarchical Navigable Small World) index for
-O(log N) approximate nearest neighbor search, powered by `hnsw_rs 0.3`.
+O(log N) approximate nearest neighbor search, powered by an internal copy of
+`hnsw_rs` 0.3.4 (`src/embeddings/hnsw_rs`) with one fix: parallel index builds
+could deadlock in its reverse neighbour update (#288). The dump format is the
+crate's, unchanged.
 
 ### Building an index
 

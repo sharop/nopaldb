@@ -41,6 +41,11 @@ jobs:
       - name: Check embeddings without the HNSW index
         run: cargo check -p nopaldb --features embeddings
 
+      # El índice HNSW (y su copia interna de hnsw_rs) sin `hybrid`: un helper
+      # que solo usa `search_hybrid` quedaba como código muerto (#288).
+      - name: Check the HNSW index without hybrid
+        run: cargo check -p nopaldb --features embeddings-index
+
       # Los ejemplos no los compilaba nadie y dos dejaron de compilar.
       - name: Examples compile-check
         run: cargo check -p nopaldb --features full --examples

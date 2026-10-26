@@ -16,7 +16,7 @@
 use crate::error::NopalError;
 use crate::types::NodeId;
 
-use hnsw_rs::prelude::*; // incluye Hnsw, HnswIo, Neighbour, DistCosine, etc.
+use crate::embeddings::hnsw_rs::prelude::*; // incluye Hnsw, HnswIo, Neighbour, DistCosine, etc.
 
 use std::collections::HashMap;
 

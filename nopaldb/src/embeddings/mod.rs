@@ -4,6 +4,8 @@ pub mod node;
 pub mod edge;
 pub mod path_reference;
 #[cfg(feature = "embeddings-index")]
+pub(crate) mod hnsw_rs;
+#[cfg(feature = "embeddings-index")]
 pub mod index;
 #[cfg(feature = "embeddings-index")]
 pub mod persistence;
