@@ -131,8 +131,8 @@ cargo clippy -p nopaldb --features full -- -D warnings
 | `algorithms` | none |
 | `hypergraph` | none |
 | `embeddings` | none |
-| `embeddings-index` | `embeddings`, `hnsw_rs` |
-| `hnsw-simd` | `embeddings-index`, `hnsw_rs/simdeez_f` |
+| `embeddings-index` | `embeddings`; the dependencies of the internal `hnsw_rs` copy (`anndists`, `rayon`, `parking_lot`, `mmap-rs`, …) |
+| `hnsw-simd` | `embeddings-index`, `anndists/simdeez_f` |
 | `fulltext` | `tantivy` |
 | `hybrid` | `fulltext`, `embeddings-index` |
 | `full-isolation` | none |
