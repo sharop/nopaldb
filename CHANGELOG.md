@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Guía de actualización a 0.9.3** desde 0.6–0.8
+  ([docs/UPGRADING_0.9.md](docs/UPGRADING_0.9.md),
+  [docs/es/ACTUALIZAR_0.9.md](docs/es/ACTUALIZAR_0.9.md)): datos que revisar
+  (negativos sin signo antes de 0.8.3, DELETE/UPDATE con patrón antes de
+  0.8.4), consultas que ahora devuelven otras filas, la exportación Arrow de
+  0.9.1, los cambios de la API de Rust y qué probar después de actualizar.
+
 ## [0.9.3] - 2026-10-26
 
 Arreglo del deadlock que podía colgar para siempre la construcción en

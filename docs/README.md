@@ -6,6 +6,7 @@ Single index for every document in `docs/`, in English with the Spanish pages ma
 
 - [Feature Tiers & Compilation Guide](FEATURE_TIERS.md) — how to build by role (EN/ES)
 - [Adoption Guide](ADOPTION.md) — fastest path in for Rust and Python; operational model
+- [Upgrading to 0.9.3](UPGRADING_0.9.md) · [ES](es/ACTUALIZAR_0.9.md) — from 0.6–0.8: data to check, queries that now return other rows, Arrow export, Rust API changes, and what to test
 - [Migrating to 0.6](MIGRATION_0.6.md) · [ES](es/MIGRACION_0.6.md) — redb is the engine; sled was removed in 0.8.0; how to migrate a 0.5.x database
 - [Durability Guarantees](DURABILITY.md) — what survives a crash, per write type and engine
 - [Backup & read-only](BACKUP_AND_READ_ONLY.md)
