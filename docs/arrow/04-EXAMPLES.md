@@ -4,6 +4,21 @@
 
 Este documento muestra ejemplos prácticos de cómo usar Arrow en escenarios reales.
 
+**Dependencias.** Los ejemplos usan los traits `arrow::array::AsArray`
+(`as_string`, `as_primitive`, `as_boolean`) y `arrow::array::Array` (`len`),
+así que tu `Cargo.toml` necesita
+el crate `arrow` en la misma versión mayor que NopalDB, además de la feature
+`analytics` (incluida en `core`):
+
+```toml
+[dependencies]
+nopaldb = { version = "0.9", features = ["core"] }
+arrow = "59"
+tokio = { version = "1", features = ["full"] }
+```
+
+Las salidas que se muestran son ilustrativas (dependen de tus datos).
+
 ---
 
 ## 📊 Ejemplo 1: Analytics Dashboard
@@ -13,7 +28,8 @@ Crear un dashboard en tiempo real con métricas del grafo.
 
 ### Código
 ```rust
-use nopaldb::{Graph, Node, PropertyValue};
+use arrow::array::{Array, AsArray};
+use nopaldb::Graph;
 use std::collections::HashMap;
 
 #[tokio::main]
@@ -24,7 +40,7 @@ async fn main() -> nopaldb::Result<()> {
     let batch = graph.to_arrow().await?;
     
     println!("📊 Social Network Analytics Dashboard\n");
-    println!("=" .repeat(50));
+    println!("{}", "=".repeat(50));
     
     // Métrica 1: Total de nodos
     let total_nodes = batch.num_rows();
@@ -105,7 +121,8 @@ Analizar progreso de jugadores en un RPG.
 
 ### Código
 ```rust
-use nopaldb::{Graph, Node, PropertyValue};
+use arrow::array::{Array, AsArray};
+use nopaldb::Graph;
 
 async fn analyze_player_progress(graph: &Graph) -> nopaldb::Result<()> {
     println!("🎮 Player Progress Analytics\n");
@@ -137,7 +154,10 @@ async fn analyze_player_progress(graph: &Graph) -> nopaldb::Result<()> {
         println!("   Player {}: {} changes", &id[..8], count);
     }
     
-    // Analizar frecuencia de updates
+    // `timestamp` es el reloj lógico del grafo (monótono, avanza con cada
+    // transacción), no segundos: la diferencia entre dos versiones del mismo
+    // nodo es una distancia en ese reloj. Las filas salen ordenadas por
+    // (id, versión).
     let mut time_diffs = Vec::new();
     for i in 1..timestamps.len() {
         if ids.value(i) == ids.value(i - 1) {
@@ -147,8 +167,8 @@ async fn analyze_player_progress(graph: &Graph) -> nopaldb::Result<()> {
     }
     
     if !time_diffs.is_empty() {
-        let avg_time: u64 = time_diffs.iter().sum::<u64>() / time_diffs.len() as u64;
-        println!("\n⏱️  Average time between updates: {}s", avg_time);
+        let avg_gap: u64 = time_diffs.iter().sum::<u64>() / time_diffs.len() as u64;
+        println!("\n⏱️  Average clock ticks between updates: {}", avg_gap);
     }
     
     Ok(())
@@ -176,7 +196,7 @@ async fn main() -> nopaldb::Result<()> {
    Player jkl31415: 58 changes
    Player mno16171: 52 changes
 
-⏱️  Average time between updates: 342s
+⏱️  Average clock ticks between updates: 342
 ```
 
 ---
@@ -188,7 +208,8 @@ Analizar un grafo de conocimiento científico.
 
 ### Código
 ```rust
-use nopaldb::{Graph, Node, PropertyValue};
+use arrow::array::{Array, AsArray};
+use nopaldb::Graph;
 
 async fn analyze_knowledge_graph(graph: &Graph) -> nopaldb::Result<()> {
     println!("🧬 Knowledge Graph Analysis\n");
@@ -246,11 +267,16 @@ async fn main() -> nopaldb::Result<()> {
 ## 📈 Ejemplo 4: Time-Series Analysis
 
 ### Objetivo
-Analizar cómo evoluciona el grafo en el tiempo (MVCC).
+Analizar cómo evoluciona el grafo a lo largo de los commits (MVCC).
+
+El historial no guarda hora de reloj: `timestamp` es el reloj lógico del
+grafo, monótono, que avanza con cada transacción. Este ejemplo agrupa por
+ventanas de 1000 unidades de ese reloj; si necesitas tiempo real, guárdalo tú como propiedad del nodo.
 
 ### Código
 ```rust
-use nopaldb::{Graph, Node, PropertyValue};
+use arrow::array::{Array, AsArray};
+use nopaldb::Graph;
 use std::collections::HashMap;
 
 async fn time_series_analysis(graph: &Graph) -> nopaldb::Result<()> {
@@ -261,29 +287,29 @@ async fn time_series_analysis(graph: &Graph) -> nopaldb::Result<()> {
     let timestamps = history.column(3).as_primitive::<arrow::datatypes::UInt64Type>();
     let is_current = history.column(6).as_boolean();
     
-    // Agrupar por timestamp (redondear a horas)
-    let mut hourly_activity = HashMap::new();
+    // Agrupar por ventanas de 1000 unidades del reloj lógico (no segundos)
+    let mut activity = HashMap::new();
     
     for i in 0..timestamps.len() {
         if !is_current.value(i) {
             continue;  // Solo contar versiones activas
         }
         
-        let hour = timestamps.value(i) / 3600;  // Redondear a hora
-        *hourly_activity.entry(hour).or_insert(0) += 1;
+        let window = timestamps.value(i) / 1000;
+        *activity.entry(window).or_insert(0usize) += 1;
     }
     
-    // Ordenar por hora
-    let mut sorted: Vec<_> = hourly_activity.iter().collect();
+    // Ordenar por ventana
+    let mut sorted: Vec<_> = activity.iter().collect();
     sorted.sort_by_key(|x| x.0);
     
-    println!("🕐 Activity by Hour:");
-    println!("   Hour | Activity | Graph");
+    println!("🕐 Activity by clock window (×1000):");
+    println!("   Win  | Activity | Graph");
     println!("   -----|----------|{}","-".repeat(30));
     
-    for (hour, count) in sorted.iter() {
-        let bar = "█".repeat(*count / 10);
-        println!("   {:4} | {:8} | {}", hour, count, bar);
+    for (window, count) in sorted.iter() {
+        let bar = "█".repeat(**count / 10);
+        println!("   {:4} | {:8} | {}", window, count, bar);
     }
     
     // Calcular picos de actividad
@@ -293,8 +319,8 @@ async fn time_series_analysis(graph: &Graph) -> nopaldb::Result<()> {
         .collect();
     
     println!("\n🔝 Peak Activity:");
-    for (hour, count) in peak_hours {
-        println!("   Hour {}: {} updates", hour, count);
+    for (window, count) in peak_hours {
+        println!("   Window {}: {} updates", window, count);
     }
     
     Ok(())
@@ -312,8 +338,8 @@ async fn main() -> nopaldb::Result<()> {
 ```
 📈 Time-Series Analysis
 
-🕐 Activity by Hour:
-   Hour | Activity | Graph
+🕐 Activity by clock window (×1000):
+   Win  | Activity | Graph
    -----|----------|------------------------------
      10 |      120 | ████████████
      11 |      340 | ██████████████████████████████████
@@ -322,7 +348,7 @@ async fn main() -> nopaldb::Result<()> {
      14 |       90 | █████████
 
 🔝 Peak Activity:
-   Hour 11: 340 updates
+   Window 11: 340 updates
 ```
 
 ---
@@ -334,7 +360,8 @@ Detectar nodos anómalos usando estadísticas del grafo.
 
 ### Código
 ```rust
-use nopaldb::{Graph, Node, PropertyValue};
+use arrow::array::{Array, AsArray};
+use nopaldb::Graph;
 
 async fn detect_anomalies(graph: &Graph) -> nopaldb::Result<()> {
     println!("🔍 Anomaly Detection\n");
@@ -407,7 +434,7 @@ Exportar grandes grafos a Parquet para procesamiento distribuido.
 
 ### Código
 ```rust
-use nopaldb::{Graph, Node, PropertyValue};
+use nopaldb::Graph;
 use std::time::Instant;
 
 async fn batch_export(graph: &Graph, output_dir: &str) -> nopaldb::Result<()> {

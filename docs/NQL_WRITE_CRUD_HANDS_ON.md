@@ -143,12 +143,30 @@ let bob = tx.add_node(
         .with_property("city", PropertyValue::String("GDL".into()))
 ).await?;
 
+let carol = tx.add_node(
+    Node::new("Person")
+        .with_property("name", PropertyValue::String("Carol".into()))
+        .with_property("role", PropertyValue::String("designer".into()))
+        .with_property("city", PropertyValue::String("MTY".into()))
+).await?;
+
+let acme = tx.add_node(
+    Node::new("Company")
+        .with_property("name", PropertyValue::String("Acme Corp".into()))
+        .with_property("city", PropertyValue::String("CDMX".into()))
+).await?;
+
 tx.commit().await?;
 
 graph.add_edge(
     Edge::new(alice, bob, "KNOWS")
         .with_property("since", PropertyValue::Int(2020))
         .with_property("strength", PropertyValue::String("high".into()))
+).await?;
+
+graph.add_edge(
+    Edge::new(carol, acme, "WORKS_AT")
+        .with_property("since", PropertyValue::Int(2023))
 ).await?;
 # Ok(())
 # }
@@ -178,6 +196,17 @@ bob = tx.add_node("Person", {
     "city": "GDL",
 })
 
+carol = tx.add_node("Person", {
+    "name": "Carol",
+    "role": "designer",
+    "city": "MTY",
+})
+
+acme = tx.add_node("Company", {
+    "name": "Acme Corp",
+    "city": "CDMX",
+})
+
 tx.commit()
 
 tx = graph.begin_transaction()
@@ -185,6 +214,7 @@ tx.add_edge(alice, bob, "KNOWS", {
     "since": 2020,
     "strength": "high",
 })
+tx.add_edge(carol, acme, "WORKS_AT", {"since": 2023})
 tx.commit()
 ```
 
@@ -357,6 +387,7 @@ Esta etapa deliberadamente deja fuera:
 - `CREATE GRAPH` en NQL
 - `BEGIN / COMMIT / ROLLBACK` como sintaxis NQL
 - `MERGE`
+- patrones de escritura de más de un salto o con cuantificador: `update` y `delete` con patrón admiten un salto, y algo más largo es un error con nombre. Desde 0.8.4 ese salto respeta la dirección y las propiedades inline de nodos y aristas, igual que `find` con el mismo patrón ([semántica de NQL § 4](es/SEMANTICA_NQL.md#4-un-patrón-un-significado))
 
 Si necesitas crear o abrir la base, sigue usando:
 

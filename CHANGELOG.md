@@ -102,9 +102,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   estaba documentado. `path_embedding_similarity` usa el mismo mensaje. Se
   corrigen el docstring de `add_path_reference_embedding` (daba otra fórmula)
   y el paso 6 del acto 2 del tutorial, que registraba la referencia a 384.
+- **Documentación revisada contra el código de 0.9.4**: 57 archivos, con los
+  ejemplos ejecutados. Lo que un lector copiaba y fallaba, o contradecía al
+  código:
+  - unos 90 comentarios `--` en bloques NQL (NQL solo acepta `//` y
+    `/* */`), `<-> [:T] <->` en lugar de `<-[:T]->`, `<>` en lugar de `!=`,
+    `create` en lugar de `add`;
+  - métodos de Python que no existen (`graph.add_node`, `export_to_pandas`,
+    `Transaction.delete_node`, variables `_source`/`_target`), firmas
+    incorrectas (`add_node(label, properties=None)`) y "zero-copy" de Rust a
+    Python (Python recibe bytes Arrow IPC);
+  - la referencia NQL documentaba `delimiter` (la opción es `separator`) y
+    decía que Arrow/Parquet no se exportan; `at timestamp` se documenta como
+    lo que es;
+  - aislamiento: ReadUncommitted no permite lecturas sucias (es
+    ReadCommitted), RepeatableRead no detecta escritura-escritura y
+    Serializable bloquea solo nodos; el ejemplo de reintento de deadlocks no
+    capturaba el error donde nace;
+  - el índice btree no acelera rangos en NQL, `QUERY_PLANNER_DOCS.MD`
+    reescrito sobre lo que existe, `community_fast` descrito como lo que es,
+    cifras sin medición retiradas o marcadas como ilustrativas;
+  - Rust ≥ 1.89 (no 1.85) en la página de crates.io, nopaldb sí está en PyPI
+    (`tutorials/`), y la guía de desarrollo con rutas, comandos y targets de
+    `make` reales.
 
 ### Added
-- **Guía de actualización a 0.9.3** desde 0.6–0.8
+- **Guía de actualización a 0.9.4** desde 0.6–0.9.3
   ([docs/UPGRADING_0.9.md](docs/UPGRADING_0.9.md),
   [docs/es/ACTUALIZAR_0.9.md](docs/es/ACTUALIZAR_0.9.md)): datos que revisar
   (negativos sin signo antes de 0.8.3, DELETE/UPDATE con patrón antes de

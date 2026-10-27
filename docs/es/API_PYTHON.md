@@ -1,7 +1,10 @@
 # Referencia de API Python
 
 Esta referencia resume la API Python real expuesta por el wrapper PyO3. La
-referencia bilingue completa vive en [API_REFERENCE.md](../python/API_REFERENCE.md).
+referencia en inglés vive en [API_REFERENCE.md](../python/API_REFERENCE.md), y
+todas las firmas, una por línea, en el
+[cheat sheet](../python/API_CHEATSHEET.md) (comprobado en CI contra el stub
+`nopaldb.pyi`).
 
 ## Build
 
@@ -12,9 +15,9 @@ cargo build -p nopaldb --release --features full
 # Wrapper Python
 make build-wheel
 
-# Desarrollo local Python
+# Desarrollo local Python (desde la raíz del repo, con un virtualenv activo)
 cd nopaldb
-maturin develop --release --features python-full
+maturin develop --release   # las features (python-full) salen de pyproject.toml
 ```
 
 `cargo build --features full` no genera el wrapper Python; para Python usa
@@ -62,15 +65,31 @@ tx.commit()
 ```
 
 La transaccion Python expone `add_node`, `add_edge`, `commit` y `rollback`.
-Para borrar datos desde Python usa NQL `delete`.
+`add_node(label, propiedades)` exige las propiedades (`{}` si no hay). Los
+valores pueden ser `str`, `int`, `float`, `bool`, `bytes`, `None` (se guarda
+como null) y `list` / `tuple` / `dict` anidados.
+
+El nivel de aislamiento se elige al abrirla: `graph.begin_transaction()` es
+Read Committed; también acepta `"read_uncommitted"`, `"read_committed"`,
+`"repeatable_read"` y `"serializable"` (otro texto es `ValueError`). Ver
+[CONFIGURACION.md](CONFIGURACION.md).
+
+Para borrar datos desde Python usa NQL `delete`
+(`graph.execute_nql('delete (p:Persona) where p.nombre = "Beto"')`, que también
+borra las aristas del nodo) o `graph.delete("Persona", "nombre", "Beto")`, que
+borra el nodo cuya propiedad coincide y devuelve su id (`None` si no hay).
 
 ## Arrow
 
 ```python
-nodes_bytes = graph.to_arrow(label="Persona")
+nodes_bytes = graph.to_arrow(label="Persona")    # id, label + propiedades de Persona
 edges_bytes = graph.edges_to_arrow()
 nodes_bytes, edges_bytes = graph.to_arrow_complete()
 ```
+
+Son streams Arrow IPC (`pyarrow.ipc.open_stream(b).read_all()`). `to_arrow()`
+sin label solo trae `id`, `label` y `property_count`. Columnas y casos vacíos:
+[ARROW_EXPORT.md](../python/ARROW_EXPORT.md).
 
 ## Schema
 
@@ -183,8 +202,10 @@ reasoner = nopaldb.ELReasoner.from_graph(graph)
 
 ## Resultados
 
-`NqlResult` expone `kind`, `query`, `write`, `explain`, `profile`, `message` y
-`summary`.
+`NqlResult` expone `kind`, `query`, `write`, `explain`, `profile`, `message`,
+`summary` y, desde 0.9.4, `data`: el contenido de un `export` (el texto
+CSV/JSON, o la ruta escrita en Arrow/Parquet). Una consulta que no parsea o no
+valida lanza `RuntimeError`.
 
 `QueryResult` soporta `len(result)`, iteracion, acceso por indice y `columns`.
 

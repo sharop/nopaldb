@@ -11,7 +11,11 @@ Buscar nodos por `(propiedad, valor)` sin escanear toda la base: un
 **índice invertido** que mapea `(propiedad, valor)` → `[NodeId, ...]`.
 
 Consumidores: `get_node_by_property`, `get_all_nodes_by_property`, la
-post-verificación de transacciones y el filtro del hybrid search.
+post-verificación de transacciones, el filtro de `search_hybrid` y el
+universo de `similar_to`/`hybrid` en NQL (las igualdades sobre la variable
+buscada, 0.7.0). Es distinto de los índices que crea `create_index`
+(`Hash`/`BTree`/`FullText`, ver [INDEXING_DOCS.MD](INDEXING_DOCS.MD)): el
+`INDEX SEEK` del planificador de `find` usa esos, no este.
 
 ## Formato v2 (0.4.36+)
 

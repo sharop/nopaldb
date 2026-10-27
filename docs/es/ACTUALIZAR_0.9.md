@@ -1,10 +1,11 @@
-# Actualizar a 0.9.3
+# Actualizar a 0.9.4
 
 > English: [docs/UPGRADING_0.9.md](../UPGRADING_0.9.md).
 
 Esta página es para una aplicación que usa NopalDB 0.6.x, 0.7.x u 0.8.x y
-pasa a **0.9.3**. La mayoría de las actualizaciones no requieren cambiar
-código: el formato en disco es el mismo y la API de Python solo ganó métodos.
+pasa a **0.9.4**. La mayoría de las actualizaciones no requieren cambiar
+código: no hay ningún paso manual de migración y la API de Python solo ganó
+métodos.
 Lo que merece atención son los arreglos por los que una consulta devuelve
 **otras filas** que antes, y dos bugs viejos que pueden haber **escrito datos
 incorrectos ya**. Cada punto enlaza a su entrada del
@@ -13,31 +14,39 @@ incorrectos ya**. Cada punto enlaza a su entrada del
 Instalación:
 
 ```bash
-pip install -U "nopaldb==0.9.3"          # Python 3.10+
-pip install -U "nopaldb[networkx]==0.9.3" # con la conversión a NetworkX
+pip install -U "nopaldb==0.9.4"          # Python 3.10+
+pip install -U "nopaldb[networkx]==0.9.4" # con la conversión a NetworkX
 ```
 
 ```toml
-nopaldb = "0.9"   # Rust; 0.9.3 o posterior
+nopaldb = "0.9"   # Rust; 0.9.4 o posterior
 ```
 
 ## 1. Lo que no cambia
 
-- **Las bases redb se abren tal como están.** Sin migración y sin
-  reconstruir nada. El layout, el WAL y el índice de propiedades son los
-  mismos desde 0.6.
-- **El volcado del índice HNSW tiene el mismo formato.** Se carga al abrir,
-  como antes. 0.9.3 trae una copia interna de `hnsw_rs` 0.3.4 con un arreglo
-  de deadlock, y el código del volcado no cambia.
-- **La API de Python solo creció.** Entre 0.6 y 0.9.3 no se quitó ni se
-  renombró ningún método de Python.
+- **Las bases redb se abren tal como están**, sin ningún paso manual. Si
+  vienes de 0.6.11 o anterior, la **primera apertura** hace una pasada O(n)
+  por cada índice que reconstruye: el índice de propiedades pasa a su formato
+  v3 (0.6.11) y se construye el índice de etiquetas (0.6.12). Las aperturas
+  siguientes son rápidas. Detalle en la
+  [matriz de compatibilidad](MIGRACION_0.6.md#matriz-de-compatibilidad).
+- **El volcado del índice HNSW se lee como antes.** Se carga en la **primera
+  búsqueda vectorial** de cada modelo, no al abrir. Un volcado escrito por
+  0.6.10 o anterior (formato 2) se reconstruye una vez en esa primera
+  búsqueda. 0.9.3 trae una copia interna de `hnsw_rs` 0.3.4 con un arreglo de
+  deadlock; el código del volcado no cambia.
+- **La API de Python solo creció.** Entre 0.6 y 0.9.4 no se quitó ni se
+  renombró ningún método ni parámetro de Python.
 
-## 2. Revisa primero tus datos: dos bugs que escribieron datos incorrectos
+## 2. Revisa primero tus datos: bugs que escribieron datos incorrectos
+
+Un tercero, listas de enteros pequeños guardadas de forma que vuelven como bytes, se arregla en 0.9.4: ver [Arreglado en 0.9.4](#arreglado-en-094-consultas-que-daban-filas-incorrectas-sin-error).
 
 Los dos están arreglados, pero actualizar no repara lo que ya escribieron.
-Solo afectan a escrituras hechas **con NQL**. Las escrituras con la API de
-Python o de Rust (`add_node`, `upsert_many`, propiedades en diccionario,
-`delete_node`) no se vieron afectadas.
+Solo afectan a escrituras hechas **con NQL**. Las escrituras con la API no se
+vieron afectadas: en Python `upsert`, `upsert_many`, `delete` y
+`tx.add_node` / `tx.add_edge`; en Rust también `Graph::add_node`,
+`Graph::delete_node` y los métodos de la transacción.
 
 ### Los números negativos perdían el signo (arreglado en 0.8.3)
 
@@ -96,6 +105,32 @@ un resultado guardado dependen del anterior, verán la diferencia.
 | [0.8.3](../../CHANGELOG.md#083---2026-10-23) | `where a and (b or c)` | error de parseo | agrupa |
 | 0.8.3 | `r.p * 2`, `-expr`, `!x`, `not (…)` | se ignoraban en silencio (`r.p * 2 = 6` corría como `r.p = 6`; `not (…)` dejaba pasar todas las filas) | **error con nombre** |
 
+### Arreglado en 0.9.4: consultas que daban filas incorrectas sin error
+
+Una revisión de la documentación contra 0.9.3 encontró más casos. Si usas
+0.9.3, estas son las consultas que conviene volver a revisar al actualizar:
+
+| Consulta | 0.9.3 | 0.9.4 |
+|---|---|---|
+| `find u.name from ()-[:F]->(u)`: un extremo anónimo ([#293](https://github.com/sharop/nopaldb/issues/293)) | `u` era el **origen** | `u` es el destino |
+| `(a)-[:F]->(b)-[:F]->(a)`: una variable repetida (#293) | caminos que no cierran | la segunda `a` es la primera |
+| `where p.active`: una propiedad, variable o literal sueltos ([#294](https://github.com/sharop/nopaldb/issues/294)) | `find` dejaba pasar todos los nodos; `delete`/`update` no tocaban ninguno | error con nombre: escribe `p.active = true` |
+| `find degree(n) as dg … where dg > 1`: un alias de la proyección (#294) | 0 filas; con el alias proyectado, `where degree(n) > 1` se ignoraba | el alias es su expresión |
+| `avg(r.w) as m … having m > 0.5` (#294) | ninguna fila | filtra los grupos |
+| `export parquet "f"` / `export arrow` ([#295](https://github.com/sharop/nopaldb/issues/295)) | respondía "Exported" sin escribir nada | escribe el archivo |
+| `export csv with delimiter=";"` (#295) | opción ignorada, comas | error con nombre que lista las opciones (`separator`) |
+| `path_anomaly_score` con una referencia de otra dimensión ([#297](https://github.com/sharop/nopaldb/issues/297)) | `1.0` para todos los caminos | error con nombre con las dos dimensiones |
+| `find … group by p.town having count(*) > 1` sin aristas ([#299](https://github.com/sharop/nopaldb/issues/299)) | todos los grupos | solo los grupos que cumplen |
+| `find … at timestamp 3` ([#298](https://github.com/sharop/nopaldb/issues/298)) | el estado actual | error con nombre (el time travel es la API de Rust) |
+
+Fuera de NQL: con `Serializable`, una transacción descartada o revertida con
+`rollback()` conservaba sus candados de nodo, y el siguiente escritor fallaba
+con `Lock timeout` a los 5 s ([#296](https://github.com/sharop/nopaldb/issues/296)).
+0.9.4 los suelta en toda salida.
+
+**Listas que volvían como bytes** ([#300](https://github.com/sharop/nopaldb/issues/300)). Una lista de enteros 0–255 (`[1, 2]`), una tupla de ellos o una lista vacía (`[]`) se guardaban de forma que volvían como `bytes`; una lista de pares `[texto, valor]` volvía como dict, y un dict vacío como `bytes`. 0.9.4 escribe esas formas sin ambigüedad. **Lo guardado así antes de 0.9.4 sigue leyéndose como `bytes`** (en disco no se distingue de unos bytes de verdad): reescríbelo, por ejemplo leyendo el nodo y volviendo a escribir la propiedad como lista. Una base escrita por 0.9.4 que contenga uno de esos valores no la abre 0.9.3 o anterior. Las sentencias `sketch` / `commit` por
+`execute_nql` respondían un mensaje OK y ahora son error.
+
 Además, desde 0.6.13 la búsqueda híbrida con filtros selectivos devuelve más
 de los documentos permitidos (`search_hybrid` y `hybrid()` en NQL): aparecen
 resultados que antes faltaban. Si cortas por un umbral de `score(c)` con
@@ -107,8 +142,8 @@ búsqueda y el orden de evaluación.
 
 ## 4. Exportación Arrow: otras columnas y valores (0.9.1)
 
-`to_arrow_complete` (en Rust `graph_to_arrow`),
-`nodes_to_arrow_with_properties` y `edges_to_arrow_with_properties` daban
+`to_arrow_complete` en Python, y en Rust `graph_to_arrow`,
+`nodes_to_arrow_with_properties` y `edges_to_arrow_with_properties`, daban
 datos incorrectos o incompletos
 ([0.9.1](../../CHANGELOG.md#091---2026-10-24)). Ahora:
 
@@ -148,15 +183,16 @@ datos incorrectos o incompletos
   y la distancia coseno de NopalDB no tiene camino SIMD, así que no acelera
   nada.
 - **`import_parquet`** (0.8.5) importa ahora todas las filas en una
-  transacción y rechaza un archivo con nulos, ids inválidos o repetidos, o ids
-  que ya existen. Antes se quedaba con las primeras 1 024 filas y reemplazaba
+  transacción y rechaza un archivo con columnas distintas de `id`, `label` y
+  `property_count`, con nulos, con ids inválidos o repetidos, o con ids que ya
+  existen. Antes se quedaba con las primeras 1 024 filas y reemplazaba
   los nodos existentes por nodos vacíos.
 
 ## 6. Bases sled
 
 Una base creada con 0.5.x (o con `engine="sled"` en 0.6–0.7) ya no abre desde
 0.8.0: el error lo dice y da la receta. Mígrala una vez con 0.7 y abre la
-copia con 0.9.3. Ver [MIGRACION_0.6.md](MIGRACION_0.6.md).
+copia con 0.9.4. Ver [MIGRACION_0.6.md](MIGRACION_0.6.md).
 
 ## 7. Después de actualizar: qué probar
 
@@ -167,7 +203,8 @@ pedimos que reportes:
    con la versión anterior.
 2. **Búsqueda vectorial tras reiniciar.** Corre `knn_nodes` o
    `search_hybrid`, cierra la base, reábrela y corre la misma consulta: los
-   mismos ids. Esto comprueba el volcado HNSW, que se carga al abrir.
+   mismos ids. Esto comprueba el volcado HNSW, que se carga en la primera
+   búsqueda vectorial después de abrir.
 3. **Búsqueda híbrida con tus filtros reales** (tenant, documento, ACL): el
    número de filas, y si ahora vuelven `k` filas donde antes volvían menos.
    `search_hybrid_explain` / `explain` en NQL muestran el camino tomado.

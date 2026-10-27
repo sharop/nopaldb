@@ -40,7 +40,7 @@ pub struct Embedding {
     pub node_id: NodeId,   // UUID of the graph node
     pub vector:  Vec<f32>, // Dense vector (any dimension)
     pub model:   String,   // Model name used to generate it
-    pub version: u32,      // Increment to invalidate cached embeddings
+    pub version: u32,      // 1 from Embedding::new; add_node_embedding never changes it
 }
 ```
 
@@ -78,7 +78,7 @@ embeddings where absolute scale carries meaning (image descriptors, sensor data)
 ## Quick example — semantic document search
 
 ```rust
-use nopaldb::{Graph, NopalError};
+use nopaldb::Graph;
 use nopaldb::types::{Node, PropertyValue};
 use nopaldb::embeddings::Embedding;
 use uuid::Uuid;
@@ -125,10 +125,10 @@ async fn main() -> nopaldb::Result<()> {
     for (score, title) in &results {
         println!("  {:.4}  {}", score, title);
     }
-    //  1.0000  Rust memory safety guide
-    //  0.9964  Zero-copy data with Apache Arrow
-    //  0.3482  Introduction to graph databases
-    //  0.1920  BERT and sentence embeddings
+    //  0.9962  Rust memory safety guide
+    //  0.9332  Zero-copy data with Apache Arrow
+    //  0.2978  Introduction to graph databases
+    //  0.2958  BERT and sentence embeddings
 
     Ok(())
 }
@@ -138,29 +138,35 @@ async fn main() -> nopaldb::Result<()> {
 
 ## Combining with graph queries
 
-The real power comes when you use the graph to *filter* before comparing vectors.
-Instead of scanning all embeddings, restrict candidates first:
+Use the graph to *narrow* the candidates, then rank only those by vector
+similarity. `search_hybrid` (feature `hybrid`, in `core`) takes the set as its
+universe (`candidates`) and computes the top-k inside it:
 
 ```rust
-// Step 1 — narrow candidates with NQL
-let candidates = graph.execute_nql(
-    "find doc from (doc:Article) -> [:CITED_BY] -> (popular:Article)
+use nopaldb::{CandidateSet, HybridQuery};
+
+// Step 1 — narrow candidates with NQL (rows carry the `doc.id` column)
+let rows = graph.execute_nql(
+    "find doc.id from (doc:Article)-[:CITED_BY]->(popular:Article)
      where popular.citations > 500"
 ).await?;
+let ids = rows
+    .rows()
+    .iter()
+    .filter_map(|r| r.get_string("doc.id"))
+    .filter_map(|s| s.parse::<uuid::Uuid>().ok());
 
-// Step 2 — rank by semantic similarity only within those candidates
-let mut ranked: Vec<(f32, Node)> = Vec::new();
-for node in candidates.nodes {
-    if let Ok(emb) = graph.get_node_embedding(node.id, "minilm").await {
-        ranked.push((query_emb.cosine_similarity(&emb), node));
-    }
-}
-ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+// Step 2 — vector search restricted to those candidates
+let mut q = HybridQuery::new();
+q.vector = Some((query_vector.clone(), "minilm".to_string()));
+q.k = 10;
+q.candidates = CandidateSet::ids(ids);
+let hits = graph.search_hybrid(q).await?; // Vec<HybridHit>: node_id, score, ranks
 ```
 
-This pattern — **graph filter → vector rank** — is significantly faster than ANN
-(approximate nearest-neighbor) over the full corpus when your graph structure can
-eliminate most candidates upfront.
+When the set is small for the index, the vector branch scores those vectors
+exactly instead of walking the HNSW graph; see
+[HYBRID_SEARCH.md](HYBRID_SEARCH.md) for the rules and the measured costs.
 
 ---
 
@@ -447,12 +453,12 @@ minus deserialising and indexing).
 ### NQL: `similar_to()` in WHERE
 
 ```sql
--- Find the 10 companies most similar to "Atlas Fiduciary Group"
+// Find the 10 companies most similar to "Atlas Fiduciary Group"
 find n.name from (n:Company)
 where similar_to(n, "Atlas Fiduciary Group", "minilm")
 limit 10
 
--- Combine with graph predicates
+// Combine with graph predicates
 find n.name from (n:Company)
 where similar_to(n, "Atlas Fiduciary Group", "minilm") and n.sector = "offshore"
 limit 10
@@ -472,14 +478,14 @@ the tenant); the other WHERE predicates apply to the result set. Full rules in t
 ### Other NQL embedding functions
 
 ```sql
--- Filter: only nodes that have an embedding
+// Filter: only nodes that have an embedding
 find n.title from (n:Article) where has_embedding(n, "minilm")
 
--- Projection: cosine similarity score
+// Projection: cosine similarity score
 find n.title, embedding_similarity(n, "uuid-of-ref-node", "minilm") as sim
 from (n:Article)
 
--- Aggregation: k nearest neighbors as JSON array
+// Aggregation: k nearest neighbors as JSON array
 find n.title, knn_nodes(n, 5, "minilm") as neighbors
 from (n:Article)
 ```
@@ -504,13 +510,20 @@ See `docs/HNSW_ALGORITHM.md` for a deep dive into how HNSW works.
 `make bench BENCH=hnsw_ops` measures the index on synthetic 384-dimensional
 vectors (fixed seed; sizes via `NOPALDB_HNSW_N`, default `10000,100000`). The
 target wraps `cargo bench` with `CARGO_PROFILE_RELEASE_PANIC=unwind`: the
-workspace's release profile aborts on panic, and bench harnesses need unwind. Orders of magnitude on an Apple Silicon laptop,
-0.5.18, k = 10:
+workspace's release profile aborts on panic, and bench harnesses need unwind.
+
+> **Historical numbers (0.5.18).** The table below predates incremental
+> inserts (0.5.19), the reachability rework (0.6.11) and the memory fix
+> (0.6.12). For current build/search/memory figures see the table in
+> [GRAPHRAG.md](GRAPHRAG.md) (`make bench BENCH=retrieval_dims`, 0.6.11/0.6.12)
+> and "Every point is reachable" above.
+
+Orders of magnitude on an Apple Silicon laptop, 0.5.18, k = 10:
 
 | what | N = 10k | N = 100k |
 |---|---|---|
 | `build_batch` (index from scratch) | 2.35 s | 90.7 s |
-| `rebuild_after_insert` (one new embedding + full rebuild: today's cost) | 2.38 s | 102.7 s |
+| `rebuild_after_insert` (one new embedding + full rebuild: the cost before 0.5.19) | 2.38 s | 102.7 s |
 | `insert_incremental` (one `HnswIndex::insert` on a live index) | 4.1 ms | 9.6 ms |
 | `search_knn`, `ef_search` 30 / 60 | 0.55 ms / 1.1 ms | 0.95 ms / 1.7 ms |
 | `search_knn_filtered`, filter passes 1 % / 10 % / 100 % of ids | 12.1 / 6.0 / 2.5 ms | 63.6 / 27.6 / 4.6 ms |
@@ -519,10 +532,12 @@ workspace's release profile aborts on panic, and bench harnesses need unwind. Or
 
 What the numbers say:
 
-- A new embedding currently costs a full rebuild on the next search
-  (`add_node_embedding` invalidates the cached index): ~580× the cost of the
-  incremental insert the index already supports at 10k, ~10 000× at 100k. That
-  gap is what [#113](https://github.com/sharop/nopaldb/issues/113) closes.
+- In 0.5.18 a new embedding cost a full rebuild on the next search
+  (`add_node_embedding` invalidated the cached index): ~580× the cost of an
+  incremental insert at 10k, ~10 000× at 100k. Since 0.5.19
+  ([#113](https://github.com/sharop/nopaldb/issues/113)) it is an incremental
+  insert into the cached index (see "Incremental inserts, updates and
+  deletes").
 - Opening a database and searching once used to pay the whole build, because
   the HNSW graph lived only in RAM: almost two minutes at 100k vectors. With
   the dump ([#114](https://github.com/sharop/nopaldb/issues/114)) the same
@@ -539,7 +554,8 @@ What the numbers say:
 
 ## Current boundaries
 
-- **Batch upsert** — `add_node_embedding` is one-at-a-time.
+- **Batch loading** — use `add_node_embeddings` (see above);
+  `add_node_embedding` is one vector per call.
 - **HNSW dumps are per process lifecycle** — the graph is written after a
   full build and in `close()`, not per insert; a crash before `close()` means
   a rebuild on the next open (correct, just slow at 100k). Indexes under 1024
@@ -548,4 +564,6 @@ What the numbers say:
 - **Edge embedding HNSW** — `EdgeEmbedding` storage exists but the HNSW index only
   covers node embeddings currently.
 - **Automatic invalidation** — updating a node's properties does not invalidate its
-  embedding. Use the `version` field to track staleness in your application.
+  embedding. Store a content hash and the model name as node properties and
+  re-embed when they change (see "Lifecycle" above); the `Embedding::version`
+  field is not a staleness marker (`add_node_embedding` always stores 1).

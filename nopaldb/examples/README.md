@@ -1,6 +1,10 @@
 # NopalDB Game Examples 🎮
 
-Three production-ready examples demonstrating NopalDB's graph database capabilities for game development.
+Three examples demonstrating NopalDB's graph database capabilities for game development.
+
+This page covers only those three. The directory holds many more Rust and Python
+examples (transactions, MVCC time travel, embeddings, algorithms, ML, Arrow, NQL);
+run any Rust one with `cargo run -p nopaldb --example <name> --features full`.
 
 ## Examples
 
@@ -65,7 +69,7 @@ cargo run --example rpg_quest_system
 cargo run --example skill_tree
 cargo run --example character_network
 
-# Databases are created in ./examples/
+# Databases are created in ./examples/, relative to where you run cargo
 ls examples/*.db
 ```
 
@@ -80,7 +84,7 @@ where q.level_required <= 5
 
 ### Pattern Matching
 ```nql
-find p.name, f.name
+find p.name, q.name
 from (p:Player) -> [:COMPLETED] -> (q:Quest)
 ```
 
@@ -121,5 +125,5 @@ All examples use:
 ## Learn More
 
 - [NopalDB Documentation](../README.md)
-- [NQL Query Language](../docs/NQL.md)
-- [API Reference](../docs/API.md)
+- [NQL Query Language](../../docs/en/NQL_REFERENCE.md)
+- [API Reference](https://docs.rs/nopaldb)

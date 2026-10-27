@@ -1,5 +1,16 @@
 # Performance Benchmarks: Apache Arrow en NopalDB
 
+> **Aviso (0.9.4): contenido ilustrativo, no medido.** Las cifras de este
+> documento no salen de benchmarks del repositorio y no deben citarse como
+> rendimiento de NopalDB. **No existen:** benchmarks móviles (iOS/Android) ni
+> builds móviles o WASM; tampoco los benches que se citan (`cargo bench
+> export`, `simd`, `compression`, ni benches de Arrow con `--features
+> analytics`). Los benches reales están en `nopaldb/benches/`
+> (`graph_ops`, `hnsw_ops`, `retrieval`, `retrieval_dims`, `text_filter`,
+> `exact_threshold`, `hybrid_props_band`, `gc_removals`; `make bench
+> BENCH=<nombre>`), y ninguno mide la exportación Arrow. Rust → Python no es
+> zero-copy: Python recibe bytes Arrow IPC.
+
 ## 🎯 Objetivo
 
 Demostrar el **impacto real** de Arrow en NopalDB con benchmarks medibles.

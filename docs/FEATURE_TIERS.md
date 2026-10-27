@@ -32,7 +32,7 @@ cargo test  -p nopaldb --lib
 
 ### `core` — Analytics & Algorithms
 
-Everything in `default` plus Arrow/Parquet export, ML data helpers, graph algorithms, the experimental `EdgeTarget` type, embeddings, and full-text indexing.
+Everything in `default` plus Arrow/Parquet export, ML data helpers, graph algorithms, the experimental `EdgeTarget` type, embeddings + HNSW, full-text indexing and hybrid search.
 
 | Feature | What it enables |
 |---------|-----------------|
@@ -42,7 +42,9 @@ Everything in `default` plus Arrow/Parquet export, ML data helpers, graph algori
 | `hypergraph` | Experimental: defines the `EdgeTarget` type (hyperedges, n-ary roles), not yet wired into edges (`Edge.target` is still one node) |
 | `embeddings` / `embeddings-index` | Semantic embeddings and HNSW indexing |
 | `fulltext` | Tantivy-backed full-text indexes |
-| `full-isolation` | Isolation levels, lock manager and deadlock detection (in the `full` tier) |
+| `hybrid` | Hybrid search: full-text + vector fused with RRF |
+
+`full-isolation` (isolation levels, lock manager and deadlock detection) is **not** in `core`: it comes with the `full` tier, or on its own with `--features full-isolation`.
 
 ```bash
 cargo build -p nopaldb --features core
@@ -125,24 +127,25 @@ cargo clippy -p nopaldb --features full -- -D warnings
 |---------|--------------|
 | `storage-redb` | `redb` — default backend since 0.6.0 |
 | ~~`storage-sled`~~ | removed in 0.8.0 (#141). Optional from 0.6.0 to 0.7 to open and migrate 0.5.x databases; migrate them with 0.7 |
-| `cli` | both engines — builds the `nopaldb` binary (`nopaldb migrate`, `nopaldb engine`); `cargo install nopaldb --features cli` |
+| `cli` | `storage-redb` — builds the `nopaldb` binary (`nopaldb migrate`, `nopaldb engine`, `nopaldb stats`); `cargo install nopaldb --features cli` |
 | `analytics` | `arrow`, `parquet` |
-| `ml` | `analytics` |
+| `ml` | `analytics`, `bytemuck` |
 | `algorithms` | none |
 | `hypergraph` | none |
 | `embeddings` | none |
 | `embeddings-index` | `embeddings`; the dependencies of the internal `hnsw_rs` copy (`anndists`, `rayon`, `parking_lot`, `mmap-rs`, …) |
-| `hnsw-simd` | `embeddings-index`, `anndists/simdeez_f` |
+| `hnsw-simd` | `embeddings-index`, `anndists/simdeez_f`. **Not recommended:** it does not build outside x86, and `DistCosine` — the only distance NopalDB uses — has no SIMD path, so it gives no speedup |
 | `fulltext` | `tantivy` |
 | `hybrid` | `fulltext`, `embeddings-index` |
 | `full-isolation` | none |
 | `reasoner` | none |
-| `owl-import` | `reasoner` |
+| `owl-import` | `reasoner`, `oxttl`, `oxrdf` |
 | `shacl` | `regex`, `owl-import` (shapes are Turtle; `sh:class` uses the taxonomy) |
 | `python` | `pyo3` |
 | `python-reasoner` | `python`, `reasoner` |
 | `python-owl` | `python`, `owl-import` |
-| `python-full` | `python`, `python-reasoner`, `python-owl`, `full` |
+| `python-shacl` | `python`, `shacl` |
+| `python-full` | `python`, `python-reasoner`, `python-owl`, `python-shacl`, `full` (what the PyPI wheels are built with) |
 
 ---
 
@@ -182,7 +185,7 @@ Los tiers son aditivos: `full` incluye `semantic` mas `full-isolation` (niveles 
 # Motor minimo
 cargo build -p nopaldb
 
-# Core: analytics + ML + algoritmos + hipergrafos + embeddings + full-text
+# Core: analytics + ML + algoritmos + hipergrafos + embeddings/HNSW + full-text + híbrida
 cargo build -p nopaldb --features core
 
 # Semantic: + reasoner OWL-EL + Turtle + SHACL

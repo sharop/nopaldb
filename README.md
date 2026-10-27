@@ -34,7 +34,7 @@ This repository contains the **engine** (Rust library + Python wrapper), license
 - ✅ **Property Graph Model** - Nodes, edges, and properties
 - ✅ **Persistent Storage** - redb backend (sled was removed in 0.8.0; migrate 0.5.x databases with 0.7, see [docs/MIGRATION_0.6.md](docs/MIGRATION_0.6.md))
 - ✅ **ACID Transactions** - Full transaction support
-- ✅ **MVCC** - Multi-Version Concurrency Control with snapshot isolation
+- ✅ **MVCC** - Multi-Version Concurrency Control: ReadCommitted by default, snapshot reads with RepeatableRead/Serializable (`full-isolation`)
 - ✅ **Isolation Levels** - `ReadCommitted` (default), `RepeatableRead`, `Serializable` with per-node locking and deadlock detection, via the `full-isolation` feature ([guide](docs/ISOLATION_LEVELS.md), [deadlock detection](docs/DEADLOCK_DETECTION.md))
 - ✅ **Write-Ahead Logging (WAL)** - Crash recovery and durability
 - ✅ **NQL Query Language** - property-graph pattern graph queries
@@ -209,7 +209,7 @@ find n.name from (n:Chunk)
 where hybrid(n, "graph memory", "current_query", "e5-large")
 limit 10
 
--- or with the question's vector written in the query (0.6.9), seeding a one-hop expansion
+// or with the question's vector written in the query (0.6.9), seeding a one-hop expansion
 find c.text, e.name from (c:Chunk)-[:MENTIONS]->(e:Entity)
 where hybrid(c, text = "graph memory", vector = [...], model = "e5-large", k = 10)
 ```
@@ -244,7 +244,7 @@ Notes:
 - Recommended syntax: `export` goes at the end of the query.
 - Prefix form (`export ...` before `find`) is not supported.
 - Export path is optional and must be passed with `path="..."`. If omitted, results are returned inline.
-- Arrow/Parquet exports are available via the Graph API (`to_arrow()`, `export_parquet()`).
+- Arrow/Parquet exports are available via the Graph API: Rust has `to_arrow()` and `export_parquet()`; Python has `to_arrow()` / `to_arrow_complete()` (Arrow IPC bytes) — write Parquet from them with `pyarrow`.
 
 ---
 
@@ -256,7 +256,7 @@ Notes:
 nopaldb = "0.9"
 
 # With a specific tier
-nopaldb = { version = "0.9", features = ["core"] }        # analytics + ML + algorithms + full-text
+nopaldb = { version = "0.9", features = ["core"] }        # analytics + ML + algorithms + hypergraph + embeddings/HNSW + full-text + hybrid
 nopaldb = { version = "0.9", features = ["semantic"] }     # + OWL reasoner + SHACL
 nopaldb = { version = "0.9", features = ["full"] }         # complete feature set (includes full-isolation)
 ```
@@ -279,15 +279,14 @@ See **[Feature Tiers Guide](docs/FEATURE_TIERS.md)** for detailed compilation op
 ### Examples 📚
 
 #### Rust Examples
-See `examples/`:
-- `basic_usage.rs` - Getting started
+See [`nopaldb/examples/`](nopaldb/examples/) (run with `cargo run -p nopaldb --example <name> --features full`):
 - `transaction_demo.rs` - ACID transactions
 - `rpg_quest_system.rs` - RPG quest dependencies
 - `skill_tree.rs` - Game skill trees
 - `character_network.rs` - Social networks
 
 #### Python Examples
-See `examples/`:
+See [`nopaldb/examples/`](nopaldb/examples/):
 - `test_nql.py` - NQL queries
 - `test_transactions.py` - Transaction API
 - `test_arrow_properties.py` - Arrow export + ML
@@ -304,7 +303,7 @@ See `examples/`:
 - **[Tutorial NQL (Español)](docs/es/NQL_TUTORIAL.md)** - Aprende paso a paso
 
 #### API Documentation
-- **[Python API Guide](python/README.md)** - Python bindings
+- **[Python API Guide](docs/python/README.md)** - Python bindings
 - **[Rust API Docs](https://docs.rs/nopaldb)** - Generated from the source; built with the `full` tier so every feature-gated module is there
 
 #### Build & Features
@@ -474,7 +473,7 @@ Este repositorio contiene el **motor** (librería Rust + wrapper Python), con li
 - ✅ **Modelo de Grafo de Propiedades** - Nodos, aristas y propiedades
 - ✅ **Almacenamiento Persistente** - Backend redb (sled se retiró en 0.8.0; las bases de 0.5.x se migran con 0.7, ver [docs/es/MIGRACION_0.6.md](docs/es/MIGRACION_0.6.md))
 - ✅ **Transacciones ACID** - Soporte completo de transacciones
-- ✅ **MVCC** - Control de Concurrencia Multi-Versión con aislamiento snapshot
+- ✅ **MVCC** - Control de Concurrencia Multi-Versión: ReadCommitted por defecto, lecturas de snapshot con RepeatableRead/Serializable (`full-isolation`)
 - ✅ **Niveles de Aislamiento** - `ReadCommitted` (default), `RepeatableRead`, `Serializable` con locking por nodo y detección de deadlocks, vía la feature `full-isolation` ([guía](docs/ISOLATION_LEVELS.md), [detección de deadlocks](docs/DEADLOCK_DETECTION.md))
 - ✅ **Write-Ahead Logging (WAL)** - Recuperación ante fallos y durabilidad
 - ✅ **Lenguaje de Consultas NQL** - Consultas de grafos basadas en patrones de grafos de propiedades
@@ -570,7 +569,7 @@ Notas:
 - Sintaxis recomendada: `export` va al final de la consulta.
 - La forma con prefijo (`export ...` antes de `find`) no está soportada.
 - La ruta de exportación es opcional y se pasa con `path="..."`. Si se omite, el resultado se devuelve inline.
-- Arrow/Parquet se exportan vía la API de Graph (`to_arrow()`, `export_parquet()`).
+- Arrow/Parquet se exportan vía la API de Graph: en Rust `to_arrow()` y `export_parquet()`; en Python `to_arrow()` / `to_arrow_complete()` (bytes Arrow IPC) — el Parquet se escribe desde ahí con `pyarrow`.
 
 ---
 
@@ -582,7 +581,7 @@ Notas:
 nopaldb = "0.9"
 
 # Con un tier específico
-nopaldb = { version = "0.9", features = ["core"] }        # analytics + ML + algoritmos + full-text
+nopaldb = { version = "0.9", features = ["core"] }        # analytics + ML + algoritmos + hipergrafos + embeddings/HNSW + full-text + híbrida
 nopaldb = { version = "0.9", features = ["semantic"] }     # + reasoner OWL + SHACL
 nopaldb = { version = "0.9", features = ["full"] }         # conjunto completo (incluye full-isolation)
 ```
@@ -615,10 +614,10 @@ Ver **[Guía de Feature Tiers](docs/FEATURE_TIERS.md)** para opciones de compila
 - **[Índice de Documentación](docs/README.md)** - Guía central de docs (bilingüe)
 - **[Guía de Adopción](docs/ADOPTION.md)** - La ruta rápida para Rust y Python, con pointers a las apps MCP y Studio
 - **[Roadmap](ROADMAP.md)** - Dirección por temas, y qué queda explícitamente fuera del alcance
-- **[Guía API Python](python/README.md)** - Bindings Python
+- **[Guía API Python](docs/python/README.md)** - Bindings Python
 
 #### Versionado (SemVer)
-- **Patch (`X.Y.Z`)**: incremento automático por push a `main` mediante PR de bot (`.github/workflows/auto-bump-patch.yml`).
+- **Patch (`X.Y.Z`)**: incremento manual en un PR de release (chore), editando los 3 archivos de versión y comprobando con `make check-version-sync`.
 - **Minor (`X.Y.0`)**: incremento manual cuando se agrupan features para release.
 - **Major (`X.0.0`)**: incremento manual para breaking changes.
 - Fuente de verdad de versión: `Cargo.toml`, `nopaldb/Cargo.toml`, `nopaldb/pyproject.toml`.

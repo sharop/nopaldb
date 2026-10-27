@@ -35,15 +35,25 @@ graph = nopaldb.Graph.in_memory()
 tx = graph.begin_transaction()
 
 # Create nodes
-ana = tx.add_node("Person", {"name": "Ana", "age": 28, "city": "NYC"})
-bob = tx.add_node("Person", {"name": "Bob", "age": 35, "city": "SF"})
-carla = tx.add_node("Person", {"name": "Carla", "age": 22, "city": "LA"})
+ana = tx.add_node("Person", {"name": "Ana", "age": 28, "city": "NYC", "active": True})
+bob = tx.add_node("Person", {"name": "Bob", "age": 35, "city": "SF", "active": True})
+carla = tx.add_node("Person", {"name": "Carla", "age": 22, "city": "LA", "active": False})
 
 # Connect (Ana knows Bob, Bob knows Carla)
 tx.add_edge(ana, bob, "KNOWS")
 tx.add_edge(bob, carla, "KNOWS")
 
+# For the fraud example in chapter 5: two accounts that used the same IP
+acct_a = tx.add_node("Account", {"number": "A-100"})
+acct_b = tx.add_node("Account", {"number": "B-200"})
+ip = tx.add_node("IPAddress", {"address": "10.0.0.7"})
+tx.add_edge(acct_a, ip, "USED_IP")
+tx.add_edge(acct_b, ip, "USED_IP")
+
 tx.commit()
+
+# Run any query of this tutorial
+rows = [dict(r) for r in graph.execute_nql("find p.name, p.age from (p:Person)")]
 ```
 
 ---
@@ -93,7 +103,7 @@ where a.name = "Ana"
 Reads as: "Find people `b` where `a` (Ana) has a `KNOWS` relationship to `b`".
 
 ### Influence Analysis (2-step chain)
-Imagine analyzing idea propagation. If Ana influences Bob, and Bob influences Carla, whom does Ana influence indirectly?
+Imagine an idea spreading through acquaintances. Ana knows Bob and Bob knows Carla: whom does an idea of Ana's reach in two steps?
 
 ```nql
 find indirect.name
@@ -101,7 +111,7 @@ from (ana:Person {name: "Ana"}) -> [:KNOWS] -> (middle) -> [:KNOWS] -> (indirect
 ```
 
 **Mental Visualization:**
-`Ana -> Middle -> Indirect`
+`Ana -> Middle -> Indirect` (here: `Ana -> Bob -> Carla`, so the result is Carla)
 
 ---
 
@@ -117,12 +127,14 @@ from (p:Person {city: "NYC"})
 ```
 
 ### Basic Statistics
-Calculate average age of active users.
+Calculate the average age of active people.
 ```nql
-find avg(u.age), min(u.age), max(u.age)
-from (u:User)
-where u.active = true
+find avg(p.age), min(p.age), max(p.age)
+from (p:Person)
+where p.active = true
 ```
+
+Write the comparison: `where p.active` alone is an error since 0.9.4, not a filter.
 
 ---
 
@@ -135,8 +147,8 @@ The most efficient way to move data for ML is not iterating row-by-row, but expo
 
 **NQL Query:**
 ```nql
-find u.age, u.interests
-from (u:User)
+find p.age, p.city
+from (p:Person)
 export csv with path="social_graph.csv", header=true
 ```
 
@@ -152,18 +164,18 @@ print(df.describe())
 
 # Train model
 from sklearn.cluster import KMeans
-kmeans = KMeans(n_clusters=3).fit(df[['u.age']])
+kmeans = KMeans(n_clusters=2).fit(df[['p.age']])
 ```
 
 ### Advanced Example: Fraud Detection
 Identify accounts sharing the same device (IP) across multiple transactions.
 
 ```nql
-find acct1.id, acct2.id
+find acct1.number, acct2.number, ip.address
 from (acct1:Account) -> [:USED_IP] -> (ip:IPAddress) <- [:USED_IP] <- (acct2:Account)
-where acct1.id != acct2.id
+where acct1.number != acct2.number
 ```
-*Pattern: Two different accounts pointing to the same IP.*
+*Pattern: Two different accounts pointing to the same IP. Each pair comes out twice, once in each order.*
 
 ---
 
@@ -175,7 +187,7 @@ where acct1.id != acct2.id
 | `FROM` | Defines pattern (`(a)->(b)`). |
 | `WHERE` | Filters (`age > 18`). |
 | `LIMIT` | Restricts results (good for exploration). |
-| `EXPORT` | Exports results to CSV/JSON (optional path). |
+| `EXPORT` | Exports results to CSV/JSON (optional path) or Arrow/Parquet (to a file). |
 
 ---
 
@@ -195,9 +207,16 @@ limit 100
 export json with jsonl=true
 ```
 
+Without a path the export comes back inline. From Python, read it with `.data` (0.9.4):
+
+```python
+text = graph.execute_nql("find p.name, p.age from (p:Person) limit 100 export json with jsonl=true").data
+```
+
 Note:
-- Recommended syntax places `export` at the end.
+- `export` goes at the end of the query.
 - Prefix form (`export ...` before `find`) is not supported.
+- Options and formats: [NQL reference § Data Export](NQL_REFERENCE.md#data-export-export).
 
 ---
 

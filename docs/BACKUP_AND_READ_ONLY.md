@@ -35,8 +35,14 @@ so nothing you do afterwards can change anything.
 
 `Storage::copy_database` copies every keyspace byte for byte and verifies the
 result — pair counts plus a checksum recomputed by re-scanning the
-destination. Nothing is reinterpreted, so MVCC history and indexes survive
+destination. It also copies the `indexes/` and `hnsw/` side directories when
+the source has them (user indexes and the persisted vector index), checked
+file by file. Nothing is reinterpreted, so MVCC history and indexes survive
 intact.
+
+The same verified cold copy is available as `Graph.migrate(src, dst)` in
+Python and as `nopaldb migrate <src_dir> <dst_dir>` in the CLI (`cli`
+feature).
 
 ```rust
 use nopaldb::storage::{Storage, StorageOptions};
@@ -60,7 +66,8 @@ let backup = Graph::open_read_only("backups/2026-08-24").await?;
   opened with the same exclusive lock as a normal open. It is not a hot
   backup, and there is no way to take one today — see above.
 - **Close the source cleanly first** (`graph.close().await`), so its WAL is
-  applied. `copy_database` copies engine keyspaces, not `nopal.wal`.
+  applied. `copy_database` copies engine keyspaces and the `indexes/` and
+  `hnsw/` directories, not `nopal.wal`.
 - **The destination must be empty.** Copying into a directory that already has
   data is refused rather than merged.
 - **Do not copy the files yourself while the database is open.** A filesystem
@@ -74,6 +81,6 @@ place, stop the writer, move the directory, and open it.
 
 ## Which engine
 
-Everything on this page works with both storage backends. Since 0.6.0 redb is
-the default and the wheels published on PyPI ship both engines; see
-[ADOPTION.md](ADOPTION.md) and [MIGRATION_0.6.md](MIGRATION_0.6.md).
+Everything on this page is for redb, the only storage engine since 0.8.0
+(the PyPI wheels ship only redb). A 0.5.x (sled) database has to be migrated
+once with 0.7 first; see [MIGRATION_0.6.md](MIGRATION_0.6.md).

@@ -12,9 +12,14 @@ NQL is the query language for NopalDB, inspired by Cypher but optimized for Data
 find <projections>
 from <pattern>
 [where <conditions>]
+[group by <columns>]
+[having <conditions on groups>]
 [order by <columns>]
 [limit <number>]
 ```
+
+Comments inside NQL are `// line` and `/* block */`; `--` and `#` are not
+comments and fail to parse.
 
 ---
 
@@ -24,13 +29,13 @@ from <pattern>
 
 ### Basic Patterns
 ```nql
--- Match any node
+// Match any node
 find * from (n)
 
--- Match by Label
+// Match by Label
 find * from (p:Person)
 
--- Match with Inline Properties (New!)
+// Match with Inline Properties (New!)
 find * from (p:Person {name: "Alice", city: "NYC"})
 ```
 
@@ -47,13 +52,13 @@ find * from (p:Person {name: "Alice", city: "NYC"})
 
 ### Examples
 ```nql
--- Simple connection
+// Simple connection
 find * from (a)->(b)
 
--- Typed connection
+// Typed connection
 find * from (a)-[:KNOWS]->(b)
 
--- Variable assignment
+// Variable assignment
 find r.since from (a)-[r:KNOWS]->(b)
 ```
 
@@ -84,6 +89,15 @@ from (u:User)
 where u.active = true
 ```
 
+**Per group** (`having` filters the groups):
+```nql
+find u.name, count(*) as follows
+from (u:User)-[:FOLLOWS]->(v:User)
+group by u.name
+having count(*) > 10
+order by follows desc
+```
+
 ---
 
 ## 🔍 Filtering (WHERE)
@@ -92,18 +106,27 @@ Filter results based on properties.
 
 ### Operators
 - `=`, `!=`, `<`, `>`, `<=`, `>=`
-- `AND`, `OR`, `NOT`
+- `in [...]`: `where p.city in ["London", "Paris"]`
+- `AND`, `OR`, and parentheses for grouping
+
+There is no `NOT` / `!` yet: `!(p.age > 25)` is an error that says so.
+Write the opposite comparison instead (`p.age <= 25`, `p.status != "done"`).
+
+Every condition is a comparison. A bare property such as `where p.active` is
+an error since 0.9.4 that asks for `p.active = true` (until 0.9.3 it was
+accepted and filtered nothing). A projection alias can be used in `where`
+and `having` (since 0.9.4): `find a.name, avg(r.w) as m from (a)-[r:RATES]->(b) group by a.name having m > 0.5`.
 
 ### Examples
 ```nql
--- Numeric comparison
+// Numeric comparison
 where p.age > 25
 
--- String matching
+// String matching
 where p.city = "London"
 
--- Boolean logic
-where (p.age > 18 or p.student = true) and p.active
+// Boolean logic
+where (p.age > 18 or p.student = true) and p.active = true
 ```
 
 ---
@@ -156,12 +179,16 @@ Important:
 ### ADD
 Create new nodes or relationships.
 ```nql
--- Add a node
+// Add a node
 add (p:Person {name: "Bob", age: 30})
 
--- Add a relationship with edge properties
+// Add a relationship with edge properties
 add (a:Person {name: "Alice"})-[:KNOWS {since: 2020, strength: "high"}]->(b:Person {name: "Bob"})
 ```
+
+`add` always creates: both nodes of that pattern are new even if an `Alice`
+already exists. For idempotent writes by key use `graph.upsert(...)` (see the
+[API cheat sheet](API_CHEATSHEET.md)).
 
 ### UPDATE
 Modify existing properties.
@@ -178,14 +205,16 @@ where a.name = "Alice" and b.name = "Bob"
 ### DELETE
 Remove nodes or relationships.
 ```nql
--- Delete only the matched relationship
+// Delete only the matched relationship
 delete (a:Person)-[:KNOWS]->(b:Person)
 where a.name = "Alice" and b.name = "Bob"
 
--- Delete nodes
+// Delete nodes
 delete (p:Person)
 where p.last_login < 1600000000
 ```
+
+Deleting a node also deletes the edges attached to it.
 
 ---
 

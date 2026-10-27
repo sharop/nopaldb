@@ -1,7 +1,5 @@
 # Schema Inspection API
 
-**NopalDB v0.2.0+**
-
 ## Overview
 
 NopalDB provides a comprehensive Schema Inspection API that allows you to explore the structure of your graph database without scanning all data manually.

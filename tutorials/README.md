@@ -7,9 +7,11 @@ deterministas y ejemplos en Rust y Python.
 ## Requisitos previos
 
 - **Python ≥ 3.10**
-- **Toolchain de Rust** — el paquete Python `nopaldb` se compila desde el código fuente
-  con [maturin]; **no está publicado en PyPI**. La versión queda fijada por
-  [`rust-toolchain.toml`](../rust-toolchain.toml) en la raíz del repo.
+- El paquete Python `nopaldb`, desde PyPI (`pip install nopaldb`, wheels para
+  CPython 3.10+) o compilado desde este checkout con `make install-nopaldb`.
+- **Toolchain de Rust** — solo para compilar desde el código fuente (maturin). La
+  versión queda fijada por [`rust-toolchain.toml`](../rust-toolchain.toml) en la raíz
+  del repo.
 
 ## Instalación
 
@@ -21,7 +23,9 @@ make install-min      # base, sin embeddings (sentence-transformers / torch)
 # o, con embeddings reales (Actos 2 y 4):
 make install
 
-# 2. Compilar e instalar el paquete Python nopaldb (maturin, requiere Rust)
+# 2. El paquete Python nopaldb: desde PyPI...
+pip install nopaldb
+# ...o compilado desde este checkout (maturin, requiere Rust; es lo que hace el CI)
 make install-nopaldb
 ```
 
@@ -35,9 +39,10 @@ Verifica la instalación:
 python3 -c "import nopaldb; print(nopaldb.__version__)"
 ```
 
-> **Nota:** `nopaldb` ya **no** aparece en `requirements.txt` ni en `pyproject.toml`
-> porque no se instala desde PyPI sino desde el código fuente. Por eso es un paso aparte
-> (`make install-nopaldb`).
+> **Nota:** `nopaldb` no aparece en `requirements.txt` ni en `pyproject.toml` para que
+> puedas elegir: la versión de PyPI (`pip install nopaldb`) o la de este checkout
+> (`make install-nopaldb`), que es la que usan los notebooks en CI. Por eso es un paso
+> aparte.
 
 ## Ejecutar los notebooks
 

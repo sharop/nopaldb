@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/badge/license-MPL--2.0-brightgreen.svg)](https://github.com/sharop/nopaldb/blob/main/nopaldb/LICENSE)
 
 High-performance embedded **graph database** for Python, written in Rust:
-ACID transactions, MVCC time-travel, a Cypher-like query language (NQL),
+ACID transactions over an MVCC store, a Cypher-like query language (NQL),
 vector search, and zero-copy Apache Arrow export for ML pipelines.
 
 Runs **in-process** — no server to deploy. One `pip install`, one file on disk.
@@ -92,8 +92,10 @@ df = batch.to_pandas()   # zero-copy into Pandas / Polars / PyTorch pipelines
 - **One process per data directory** (embedded file lock). Threads within the
   process run in parallel — the bindings release the GIL during database calls.
 - Use `graph.bulk_loader(batch_size)` for large ingestions.
-- Time-travel: MVCC version history is queryable; old versions are garbage
-  collected on demand.
+- Time travel (reading the graph as of an earlier commit) is a Rust API
+  (`Graph::as_of`, `Graph::get_node_at`, `Graph::history`); Python has no
+  time-travel API. Garbage collection of old versions (`start_auto_gc`) is
+  Rust-only too.
 
 ## Links
 

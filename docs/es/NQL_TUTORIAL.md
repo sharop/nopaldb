@@ -35,15 +35,25 @@ graph = nopaldb.Graph.in_memory()
 tx = graph.begin_transaction()
 
 # Crear nodos
-ana = tx.add_node("Persona", {"nombre": "Ana", "edad": 28, "ciudad": "CDMX"})
-beto = tx.add_node("Persona", {"nombre": "Beto", "edad": 35, "ciudad": "GDL"})
-carla = tx.add_node("Persona", {"nombre": "Carla", "edad": 22, "ciudad": "MTY"})
+ana = tx.add_node("Persona", {"nombre": "Ana", "edad": 28, "ciudad": "CDMX", "activo": True})
+beto = tx.add_node("Persona", {"nombre": "Beto", "edad": 35, "ciudad": "GDL", "activo": True})
+carla = tx.add_node("Persona", {"nombre": "Carla", "edad": 22, "ciudad": "MTY", "activo": False})
 
 # Conectar (Ana conoce a Beto, Beto conoce a Carla)
 tx.add_edge(ana, beto, "CONOCE")
 tx.add_edge(beto, carla, "CONOCE")
 
+# Para el ejemplo de fraude del capítulo 5: dos cuentas que usaron la misma IP
+cuenta_a = tx.add_node("Cuenta", {"numero": "A-100"})
+cuenta_b = tx.add_node("Cuenta", {"numero": "B-200"})
+ip = tx.add_node("DireccionIP", {"direccion": "10.0.0.7"})
+tx.add_edge(cuenta_a, ip, "USO_IP")
+tx.add_edge(cuenta_b, ip, "USO_IP")
+
 tx.commit()
+
+# Ejecutar cualquier consulta de este tutorial
+filas = [dict(r) for r in graph.execute_nql("find p.nombre, p.edad from (p:Persona)")]
 ```
 
 ---
@@ -93,7 +103,7 @@ where a.nombre = "Ana"
 Esto lee: "Encuentra personas `b` tal que `a` (Ana) tiene una relación `CONOCE` hacia `b`".
 
 ### Análisis de Influencia (Cadena de 2 pasos)
-Imagina que analizas la propagación de una idea. Si Ana influye en Beto, y Beto influye en Carla, ¿a quién influye Ana indirectamente?
+Imagina una idea que se propaga entre conocidos. Ana conoce a Beto y Beto conoce a Carla: ¿a quién llega en dos pasos una idea de Ana?
 
 ```nql
 find indirecto.nombre
@@ -101,7 +111,7 @@ from (ana:Persona {nombre: "Ana"}) -> [:CONOCE] -> (intermedio) -> [:CONOCE] -> 
 ```
 
 **Visualización Mental:**
-`Ana -> Intermedio -> Indirecto`
+`Ana -> Intermedio -> Indirecto` (aquí: `Ana -> Beto -> Carla`, así que el resultado es Carla)
 
 ---
 
@@ -117,12 +127,14 @@ from (p:Persona {ciudad: "CDMX"})
 ```
 
 ### Estadísticas Básicas
-Calcular la edad promedio de los usuarios activos.
+Calcular la edad promedio de las personas activas.
 ```nql
-find avg(u.edad), min(u.edad), max(u.edad)
-from (u:Usuario)
-where u.activo = true
+find avg(p.edad), min(p.edad), max(p.edad)
+from (p:Persona)
+where p.activo = true
 ```
+
+Escribe la comparación: `where p.activo` solo es un error desde 0.9.4, no un filtro.
 
 ---
 
@@ -135,8 +147,8 @@ La forma más eficiente de mover datos para ML no es iterar fila por fila, sino 
 
 **Consulta NQL:**
 ```nql
-find u.edad, u.intereses
-from (u:Usuario)
+find p.edad, p.ciudad
+from (p:Persona)
 export csv with path="social_graph.csv", header=true
 ```
 
@@ -152,18 +164,18 @@ print(df.describe())
 
 # Entrenar modelo
 from sklearn.cluster import KMeans
-kmeans = KMeans(n_clusters=3).fit(df[['u.edad']])
+kmeans = KMeans(n_clusters=2).fit(df[['p.edad']])
 ```
 
 ### Ejemplo Avanzado: Detección de Fraude
 Identificar cuentas que comparten el mismo dispositivo (IP) a través de múltiples transacciones.
 
 ```nql
-find cuenta1.id, cuenta2.id
+find cuenta1.numero, cuenta2.numero, ip.direccion
 from (cuenta1:Cuenta) -> [:USO_IP] -> (ip:DireccionIP) <- [:USO_IP] <- (cuenta2:Cuenta)
-where cuenta1.id != cuenta2.id
+where cuenta1.numero != cuenta2.numero
 ```
-*Patrón: Dos cuentas distintas apuntando a la misma IP.*
+*Patrón: Dos cuentas distintas apuntando a la misma IP. Cada par sale dos veces, una en cada orden.*
 
 ---
 
@@ -175,7 +187,7 @@ where cuenta1.id != cuenta2.id
 | `FROM` | Define el patrón (`(a)->(b)`). |
 | `WHERE` | Filtra (`edad > 18`). |
 | `LIMIT` | Restringe resultados (útil para exploración). |
-| `EXPORT` | Exporta resultados a CSV/JSON (ruta opcional). |
+| `EXPORT` | Exporta resultados a CSV/JSON (ruta opcional) o Arrow/Parquet (a archivo). |
 
 ---
 
@@ -195,9 +207,16 @@ limit 100
 export json with jsonl=true
 ```
 
+Sin ruta, el export vuelve inline. Desde Python se lee con `.data` (0.9.4):
+
+```python
+texto = graph.execute_nql("find p.nombre, p.edad from (p:Persona) limit 100 export json with jsonl=true").data
+```
+
 Nota:
-- La sintaxis recomendada pone `export` al final.
+- `export` va al final de la consulta.
 - La forma con prefijo (`export ...` antes de `find`) no está soportada.
+- Opciones y formatos: [referencia NQL § Exportación](NQL_REFERENCIA.md#exportación-de-datos-export).
 
 ---
 

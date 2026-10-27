@@ -4,8 +4,9 @@
 conversion is meant to be faithful: identity, parallel edges, self-loops,
 isolated nodes, labels, and properties in their native types all survive. It
 is a conversion, not a NetworkX backend. Run NetworkX algorithms on the
-converted graph, or use the native ones (`pagerank`, `leiden`, …) for large
-graphs.
+converted graph, or use the native ones for large graphs: PageRank is the NQL
+aggregation `pagerank(n)` (`find n.name, pagerank(n) as pr from (n:Person)
+order by pr desc`), not a Python method; Leiden is `graph.leiden(...)`.
 
 ```bash
 pip install "nopaldb[networkx]"

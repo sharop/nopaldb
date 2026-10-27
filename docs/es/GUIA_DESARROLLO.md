@@ -29,9 +29,9 @@ full  ⊃  semantic  ⊃  core  ⊃  default
 | Tier | Qué incluye | Para quién |
 |------|-------------|------------|
 | `default` | Solo el backend redb | Build mínimo, CI rápido |
-| `core` | + analytics, ML, algoritmos, hipergrafos, full-text | Investigadores, data scientists |
-| `semantic` | + reasoner OWL-EL, Turtle import/export | Ingenieros de knowledge graphs |
-| `full` | Conjunto público completo | CI completo, desarrollo full-stack |
+| `core` | + analytics, ML, algoritmos, hipergrafos, embeddings/HNSW, full-text, búsqueda híbrida | Investigadores, data scientists |
+| `semantic` | + reasoner OWL-EL, Turtle import/export, SHACL | Ingenieros de knowledge graphs |
+| `full` | + `full-isolation` (niveles de aislamiento, locks, deadlocks): conjunto público completo | CI completo, desarrollo full-stack |
 
 ```bash
 # Compilar el tier que necesitas
@@ -55,9 +55,9 @@ cd nopaldb && maturin develop --release --features python-full
 ### 1. El Grafo (`src/graph`) y el Storage (`src/storage`)
 NopalDB desacopla la **topología** del grafo del **almacenamiento** físico.
 
-*   **Abstracción**: `Graph` encapsula `Storage` y opera contra una capa de backend desacoplada (`StorageBackend` trait).
+*   **Abstracción**: `Graph` encapsula `Storage`, que habla con el motor a través de los traits internos `KvEngine` / `KvKeyspace` (`src/storage/kv/`). El antiguo trait `StorageBackend` ya no existe.
 *   **Físico**: Backend **redb** (embebido), el único desde 0.8.0; las bases sled de 0.5.x se migran con 0.7.
-    *   Clave: `u64` (NodeId) -> Valor: `bincode(Node)`
+    *   Clave: `NodeId` (UUID) codificado en binario (layout v2, `src/storage/keys.rs`) -> Valor: el `Node` serializado con **MessagePack** (`rmp_serde`)
 *   **Perfiles runtime**: `Default` (predeterminado), `Mobile` (opcional, memoria conservadora), `Server` (cache agresivo).
 *   **Indices**: Mantenemos índices secundarios (ej. búsqueda por propiedad) sincronizados atómicamente con los datos.
 
@@ -65,9 +65,11 @@ NopalDB desacopla la **topología** del grafo del **almacenamiento** físico.
 Este es el corazón crítico. Si esto falla, perdemos datos.
 
 **Modelo de Concurrencia:**
-Usamos **Snapshot Isolation** (SI).
-*   **Lectores**: Ven el estado de la DB en el instante `Time(T_start)`. Nunca bloquean a escritores.
-*   **Escritores**: Crean nuevas versiones de los datos. Bloquean solo si hay conflicto `Write-Write`.
+MVCC con cuatro niveles de aislamiento (feature `full-isolation`; sin ella todo es `ReadCommitted`):
+*   **`ReadCommitted`** (default; `ReadUncommitted` hoy se comporta igual): cada lectura ve lo último commiteado; no hay validación al commit.
+*   **`RepeatableRead`**: lee del snapshot del inicio de la transacción, pero **no detecta conflictos write-write** (lost updates posibles).
+*   **`Serializable`**: snapshot + locks de lectura/escritura **por nodo** (las aristas no se bloquean) + validación de conflictos y fantasmas en `commit()`.
+*   Las escrituras se bufferizan en la transacción y crean versiones nuevas al commit. Detalle: [ISOLATION_LEVELS.md](../ISOLATION_LEVELS.md).
 
 **Estructura Crítica (`Transaction` struct):**
 ```rust
@@ -82,7 +84,7 @@ pub struct Transaction {
 ```
 
 **Guard de Seguridad (`Drop`):**
-Implementamos `Drop` para `Transaction`. Si una Tx sale de scope sin llamar a `commit()`, se ejecuta automáticamente `rollback()`. **Nunca** dejamos transacciones "colgadas".
+Implementamos `Drop` para `Transaction`. Si una Tx sale de scope sin llamar a `commit()`, sus cambios se descartan (nunca se escribieron), queda marcada como abortada y, desde 0.9.4 (#296), libera sus locks. No escribe `WalRecord::Abort` (`Drop` no puede ser async): en código async preferir `rollback_async()`.
 
 ### 3. El Motor de Queries (NQL)
 El parseo es una pipeline de 3 fases:
@@ -122,17 +124,23 @@ fn mi_funcion() -> Result<T> {
 Tenemos 3 niveles de tests. Tu PR debe incluir los necesarios:
 1.  **Unit Tests**: En el mismo archivo, módulo `tests`. Prueban funciones aisladas.
 2.  **Integration Tests**: En carpeta `tests/`. Prueban la API pública (`Graph::open`, `execute_nql`) como si fueras un usuario.
-3.  **Doc Tests**: Ejemplos de código en la documentación. Garantizan que los ejemplos del README no se rompan.
+3.  **Doc Tests**: Ejemplos en los doc comments del código (`cargo test --doc`). Los ejemplos del README **no** se compilan como doctests; las recetas de Python que sí se ejecutan viven en `nopaldb/python/scripts/*_sample.py` (`make check-python`).
 
-Comando sagrado:
+Lo que corre el CI (`.github/workflows/community-ci.yml`), en corto:
 ```bash
-cargo test
+cargo test -p nopaldb --features core --lib      # = make test-core
+# + tests de integración por feature, p. ej.:
+cargo test -p nopaldb --features full-isolation --test p1_isolation_levels_test --test deadlock_tests
+make check-doc-links       # links de la documentación
+make check-version-sync    # versión igual en los 3 archivos
 ```
+`make package-qa` corre la batería completa de release.
 
 ### 4. Linting (Clippy)
 El CI fallará si tienes warnings.
 ```bash
-cargo clippy -- -D warnings
+cargo clippy -p nopaldb --features semantic -- -D warnings   # lo que corre el CI
+make clippy-full                                             # tier full
 ```
 Hazle caso a Clippy. Sabe más Rust que nosotros.
 
@@ -146,11 +154,11 @@ Supongamos que quieres agregar una función matemática `SQRT()` a NQL.
     *   Modifica `nql.pest` para aceptar `SQRT`.
     *   Actualiza `ast.rs` para incluir `Func::Sqrt`.
 2.  **Evaluación**:
-    *   Ve a `src/query/nql/executor.rs`.
+    *   Ve a `src/query/nql/executor/mod.rs`.
     *   En el `match function_name`, agrega el caso para `SQRT`.
     *   Maneja el error si el input es negativo (recuerda: no pánico, retorna `NopalError`).
 3.  **Test**:
-    *   Agrega un test case en `tests/nql_math_tests.rs`: `FIND n WHERE SQRT(n.val) > 4`.
+    *   Agrega un test case en `tests/nql_math_tests.rs`: `find n.val from (n:Item) where sqrt(n.val) > 4`.
 
 ---
 
@@ -158,7 +166,7 @@ Supongamos que quieres agregar una función matemática `SQRT()` a NQL.
 
 Modificar estos archivos requiere aprobación explícita de maintainers senior:
 *   `src/wal/mod.rs`: Corrupción aquí significa pérdida de datos irrecuperable.
-*   `src/mvcc/watermark.rs`: Bug aquí rompe la consistencia (lecturas sucias o fantasmas).
+*   `src/transaction/mod.rs` y `src/graph/applier.rs`: Bug aquí rompe la consistencia (visibilidad de snapshots, orden de commit).
 
 ---
 
@@ -172,7 +180,7 @@ Con esto, tienes las llaves del reino. NopalDB es un sistema complejo, pero modu
 
 ### ¿Qué es el Modelo Volcano?
 
-A partir de v0.3.5, el ejecutor de queries de NopalDB usa el **Modelo Volcano** (también llamado *Iterator Model* o *Pull-based Model*). En lugar de cargar todos los nodos en un `Vec<Node>` antes de procesar, cada operador expone un método `next()` y "jala" una fila a la vez.
+El ejecutor de queries de NopalDB usa el **Modelo Volcano** (también llamado *Iterator Model* o *Pull-based Model*). En lugar de cargar todos los nodos en un `Vec<Node>` antes de procesar, cada operador expone un método `next()` y "jala" una fila a la vez.
 
 ```
          LIMIT
@@ -191,7 +199,8 @@ A partir de v0.3.5, el ejecutor de queries de NopalDB usa el **Modelo Volcano** 
 El componente central es el trait `NodeStream` en `src/query/nql/executor/operators.rs`:
 
 ```rust
-use futures::future::BoxFuture;
+// alias local (el crate `futures` se retiró en 0.8.1)
+pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 pub trait NodeStream: Send + Sync {
     fn next<'a>(&'a mut self) -> BoxFuture<'a, Result<Option<Node>>>;
@@ -242,7 +251,7 @@ materialización final en QueryResult           [compatibilidad API]
 
 > Ver tambien: [`docs/INDEXING_DOCS.MD`](../INDEXING_DOCS.MD).
 
-A partir de v0.3.5, los índices **sobreviven reinicios**. Usamos la estrategia **Metadata + Rebuild**:
+Los índices **sobreviven reinicios**. Usamos la estrategia **Metadata + Rebuild**:
 
 1. Al crear/eliminar un índice → se persiste metadata (`metadata.bin`).
 2. Al iniciar la DB → `IndexManager::load_indices()` valida/repara metadata y reconstruye índices en un solo pass por lotes.
@@ -262,16 +271,16 @@ self.save_metadata_internal(&index_name)?;
 nopaldb/src/
 ├── graph/mod.rs          # Punto de entrada público. Graph::open, execute_nql
 ├── types.rs              # Node, Edge, NodeKind, PropertyValue, EdgeTarget
-├── storage/              # KV embebido (redb) + contrato pluggable
+├── storage/              # KV embebido (redb) + traits internos KvEngine/KvKeyspace
 ├── index/                # IndexManager: Hash, B-Tree, Full-Text (Tantivy), Taxonomy
-├── transaction/          # Transaction + MVCC + Snapshot Isolation
-├── mvcc/                 # Watermark, versioning, GC horizon
-├── lock_manager/         # Detección de deadlocks
+├── transaction/          # Transaction: write buffer, commit/rollback, niveles de aislamiento
+├── mvcc/mod.rs           # Versiones de nodos/aristas (validez por timestamp, elegibilidad GC)
+├── lock_manager.rs       # Locks por nodo + detección de deadlocks (feature full-isolation)
+├── planner/mod.rs        # QueryPlanner: decide si usar índice o full scan
 ├── wal/                  # Write-Ahead Log (durabilidad)
 ├── query/
 │   └── nql/
 │       ├── parser/       # Pest grammar → AST
-│       ├── planner/      # QueryPlanner: decide si usar índice o full scan
 │       └── executor/
 │           ├── mod.rs    # Executor: orquesta el pipeline Volcano
 │           ├── operators.rs  # NodeStream trait + Scan/Filter/Limit streaming
@@ -294,7 +303,7 @@ nopaldb/src/
 
 Modificar estos archivos requiere aprobación explícita de maintainers senior:
 *   `src/wal/mod.rs`: Corrupción aquí significa pérdida de datos irrecuperable.
-*   `src/mvcc/watermark.rs`: Bug aquí rompe la consistencia (lecturas sucias o fantasmas).
+*   `src/transaction/mod.rs` y `src/graph/applier.rs`: Bug aquí rompe la consistencia (visibilidad de snapshots, orden de commit).
 *   `src/query/nql/executor/mod.rs`: Cambios aquí pueden silenciosamente cambiar semántica de queries. **Requiere tests de integración completos**.
 *   `src/index/mod.rs`: Si la metadata de índices se desincroniza de los datos reales, las queries devolverán resultados incorrectos sin error.
 

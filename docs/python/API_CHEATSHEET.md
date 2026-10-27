@@ -1,6 +1,6 @@
 # NopalDB Python API cheat sheet
 
-One page, one line per operation, signatures copied from `nopaldb/python/nopaldb/nopaldb.pyi` (the stub that `check_stubs.py` keeps in sync with the extension). Everything below is a method of `nopaldb.Graph` unless it is a static constructor. A CI guard (`check_cheatsheet.py`) fails if a name here stops existing.
+One page, one line per operation, signatures copied from `nopaldb/python/nopaldb/nopaldb.pyi` (the stub that `check_stubs.py` keeps in sync with the extension). Everything below is a method of `nopaldb.Graph` unless it is a static constructor or the row says otherwise (`add_node` / `add_edge` belong to a `Transaction` or a `BulkLoader`). A CI guard (`check_cheatsheet.py`) fails if a name here stops existing.
 
 ```python
 import nopaldb
@@ -12,8 +12,9 @@ g = nopaldb.Graph.open("./data")
 | method | what it does |
 |---|---|
 | `open(path: str) -> "Graph"` | Open or create a database directory (redb by default). |
+| `open_with_profile(path: str, profile: str = "default") -> "Graph"` | Open with a profile: `"default"`, `"mobile"` or `"server"` (redb page cache 1 GiB / 16 MiB / 256 MiB). |
 | `in_memory() -> "Graph"` | Ephemeral graph for tests. |
-| `migrate(src: str, dst: str, src_engine: str = "auto", dst_engine: str = "auto", profile: str = "default") -> dict[str, Any]` | Copy a database between engines, verified. |
+| `migrate(src: str, dst: str, src_engine: str = "auto", dst_engine: str = "auto", profile: str = "default") -> dict[str, Any]` | Verified copy of a closed database directory; returns the report with `"verified"`. |
 | `checkpoint() -> None` | Force the durable checkpoint. |
 | `close() -> None` | Close cleanly (also via `with`): checkpoint, HNSW dump, full-text commit and its merges joined; nothing writes to the directory after it returns. |
 
@@ -21,12 +22,12 @@ g = nopaldb.Graph.open("./data")
 
 | method | what it does |
 |---|---|
-| `add_node(label: str, properties: Props) -> str` | One node; returns its id. |
-| `add_edge(source: str, target: str, edge_type: str, properties: Optional[Props] = None) -> str` | One edge between existing nodes. |
+| `add_node(label: str, properties: Props) -> str` | `Transaction` / `BulkLoader`: one node; returns its id. `properties` is required (`{}` for none). |
+| `add_edge(source: str, target: str, edge_type: str, properties: Optional[Props] = None) -> str` | `Transaction` / `BulkLoader`: one edge between existing nodes; returns its id. |
 | `upsert(label: str, key: str, props: Props, vector: Optional[list[float]] = None, model: Optional[str] = None, links: Optional[list[dict[str, Any]]] = None,) -> tuple[str, str]` | Idempotent write by `(label, key)`; `vector`/`model` attach an embedding, `links` create edges in the same call. Each link is `{"type": str, "target_label": str, "target_key": str, "target_key_value": Any, "props": dict?, "stub": bool?}`; with `stub` a missing target is created as `{target_key: value}` and filled by its own upsert later. Returns `(outcome, node_id)`, outcome `"created" / "updated" / "unchanged"`. |
 | `upsert_many(requests: list[dict[str, Any]]) -> list[tuple[str, str]]` | Many upserts, one transaction per chunk of 1 024; each request is `{"label", "key", "props", "vector"?, "model"?, "links"?}` (the arguments of `upsert` as keys); returns `(outcome, node_id)` per request, in order. The GraphRAG [recipe](../GRAPHRAG.md#recipe-end-to-end) ingests with it. |
-| `delete(label: str, key: str, value: Property) -> Optional[str]` | Delete by `(label, key, value)`. |
-| `begin_transaction(isolation: Optional[str] = None) -> "Transaction"` | Explicit transaction with an isolation level. |
+| `delete(label: str, key: str, value: Property) -> Optional[str]` | Delete the node of `label` whose property `key` equals `value`; returns its id, `None` if none. |
+| `begin_transaction(isolation: Optional[str] = None) -> "Transaction"` | Explicit transaction (`tx.add_node`, `tx.add_edge`, `tx.commit()`, `tx.rollback()`). Isolation: `"read_committed"` (default), `"read_uncommitted"`, `"repeatable_read"`, `"serializable"`. |
 
 ## Embeddings and indexes
 
@@ -64,7 +65,7 @@ g = nopaldb.Graph.open("./data")
 
 | method | what it does |
 |---|---|
-| `execute_nql(query: str) -> "NqlResult"` | Run any NQL statement; the result has `.query` (rows), `.write`, `.explain`, `.profile`. |
+| `execute_nql(query: str) -> "NqlResult"` | Run any NQL statement; the result has `.kind`, `.query` (rows), `.write`, `.explain`, `.profile`, `.message`, `.summary` and, since 0.9.4, `.data` (the CSV/JSON text of an `export`, or the path it wrote for Arrow/Parquet). |
 
 ## Operations
 
@@ -72,7 +73,8 @@ g = nopaldb.Graph.open("./data")
 |---|---|
 | `get_stats() -> Stats` | Structured stats of storage, WAL, indexes, graph. |
 | `get_schema() -> dict[str, Any]` | Labels, edge types and their properties. |
-| `to_arrow(label: str | None = None) -> bytes` | Nodes as an Arrow table. |
+| `to_arrow(label: str | None = None) -> bytes` | Nodes as an Arrow IPC stream; properties only with `label` ([ARROW_EXPORT.md](ARROW_EXPORT.md)). |
+| `to_arrow_complete(label: str | None = None) -> tuple[bytes, bytes]` | Nodes and edges with properties; with `label`, the induced subgraph. |
 | `bulk_loader(batch_size: int) -> "BulkLoader"` | Batched loader for large ingestions. |
 | `storage_engine() -> str` | Which engine the open database uses. |
 
