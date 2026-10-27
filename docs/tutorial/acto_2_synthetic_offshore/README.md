@@ -226,12 +226,12 @@ En vez de definir reglas explícitas ("si hay más de 3 hops y el monto supera X
 
 **¿Cómo funciona `path_anomaly_score(node_model, edge_model)`?**
 1. Registras uno o varios *paths de referencia* que representan comportamiento normal.
-2. Cada referencia se convierte en un vector (promedio de los embeddings de sus nodos y aristas).
+2. Cada path se convierte en un vector que **concatena** el promedio de los embeddings de sus nodos y el de sus aristas: `media(nodos) ‖ media(aristas)`. Con 384 + 384 dimensiones mide 768, y las referencias se registran con esa misma dimensión.
 3. Para cada nuevo path, el motor calcula `1 − coseno(vector_path, centroide_referencias)`.
 4. Score próximo a 1.0 → el path es muy diferente al baseline → señal de alerta.
 5. Score próximo a 0.0 → el path se parece al baseline → comportamiento normal.
 
-**Precondición:** registrar al menos un path de referencia con `add_path_reference_embedding(nombre, node_model, edge_model, vector)` que defina el "patrón normal".
+**Precondición:** registrar al menos un path de referencia con `add_path_reference_embedding(nombre, node_model, edge_model, vector)` que defina el "patrón normal". El vector mide `dim(node_model) + dim(edge_model)`; si mide otra cosa, la consulta falla con un error que da las dos dimensiones (hasta 0.9.3 devolvía 1.0 para todos los paths, #297).
 
 <!-- source: queries/06_path_anomaly.nql -->
 ```sql
@@ -243,7 +243,7 @@ order by anomaly desc
 limit 10
 ```
 
-**Qué obtienes:** el notebook registra primero un baseline (transferencia típica desde el flagship) y muestra qué paths se desvían más. En este dataset sintético las anomalías son moderadas; sobre datos reales el score se vuelve accionable.
+**Qué obtienes:** el notebook registra primero un baseline (una transferencia típica: la media de los dos nodos concatenada con el embedding de su arista) y muestra qué paths se desvían más. En este dataset sintético las anomalías son moderadas y distintas entre paths; sobre datos reales el score se vuelve accionable.
 
 **Por qué completa el ciclo:**
 - Paso 3 → embeddings de nodos (significado textual)

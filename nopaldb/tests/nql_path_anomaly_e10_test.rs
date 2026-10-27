@@ -435,6 +435,203 @@ mod tests {
     }
 
     // ────────────────────────────────────────────────────────────
+    // #297: dimensión de la referencia vs. vector del path
+    //
+    // El vector del path es media(nodos) ‖ media(aristas): con nodos y aristas
+    // de dimensión 3 mide 6. Dominio ficticio: plantas y recetas.
+    // ────────────────────────────────────────────────────────────
+
+    /// Grafo Planta -[:USADA_EN]-> Receta con dos recetas:
+    /// - "Ensalada": embeddings alineados con la referencia "típica".
+    /// - "Mole": embeddings ortogonales.
+    ///
+    /// Nodos y aristas en dimensión 3 ⇒ vector del path de dimensión 6.
+    async fn setup_plant_recipes() -> Result<Graph> {
+        let graph = Graph::in_memory().await?;
+        let mut tx = graph.begin_transaction().await?;
+        let nopal = tx
+            .add_node(Node::new("Planta").with_property("name", str_val("Nopal")))
+            .await?;
+        let ensalada = tx
+            .add_node(Node::new("Receta").with_property("name", str_val("Ensalada")))
+            .await?;
+        let mole = tx
+            .add_node(Node::new("Receta").with_property("name", str_val("Mole")))
+            .await?;
+        let e_ens = tx.add_edge(Edge::new(nopal, ensalada, "USADA_EN"))?;
+        let e_mole = tx.add_edge(Edge::new(nopal, mole, "USADA_EN"))?;
+        tx.commit().await?;
+
+        graph.add_node_embedding(nopal, vec![1.0, 0.0, 0.0], "flora").await?;
+        graph.add_node_embedding(ensalada, vec![1.0, 0.0, 0.0], "flora").await?;
+        graph.add_node_embedding(mole, vec![0.0, 0.0, 1.0], "flora").await?;
+        graph.add_edge_embedding(e_ens, vec![1.0, 0.0, 0.0], "uso").await?;
+        graph.add_edge_embedding(e_mole, vec![0.0, 1.0, 0.0], "uso").await?;
+        Ok(graph)
+    }
+
+    const PLANT_QUERY: &str = r#"
+        find r.name, path_anomaly_score("flora", "uso") as anomaly
+        from (p:Planta {name: "Nopal"})-[:USADA_EN]->(r:Receta)
+        order by anomaly desc
+    "#;
+
+    #[tokio::test]
+    async fn test_anomaly_reference_at_node_dimension_is_named_error() -> Result<()> {
+        let graph = setup_plant_recipes().await?;
+        // Error típico (#297): referencia registrada a la dimensión de los nodos (3)
+        // en vez de la del vector del path (3 + 3 = 6).
+        graph
+            .add_path_reference_embedding(
+                "receta_tipica".to_string(),
+                "flora".to_string(),
+                "uso".to_string(),
+                vec![1.0, 0.0, 0.0],
+            )
+            .await?;
+
+        let err = graph
+            .execute_nql(PLANT_QUERY)
+            .await
+            .expect_err("a reference with the wrong dimension must fail, not score 1.0");
+        let msg = err.to_string();
+        assert!(msg.contains("dimension mismatch"), "expected dimension mismatch, got: {}", msg);
+        assert!(msg.contains("receta_tipica"), "error must name the reference, got: {}", msg);
+        assert!(msg.contains("6") && msg.contains("3"), "error must state both dimensions, got: {}", msg);
+        assert!(
+            msg.contains("mean of node embeddings") && msg.contains("mean of edge embeddings"),
+            "error must explain how the path vector is built, got: {}",
+            msg
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_anomaly_mixed_reference_dimensions_is_error() -> Result<()> {
+        let graph = setup_plant_recipes().await?;
+        graph
+            .add_path_reference_embedding(
+                "bien".to_string(),
+                "flora".to_string(),
+                "uso".to_string(),
+                vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            )
+            .await?;
+        graph
+            .add_path_reference_embedding(
+                "mal".to_string(),
+                "flora".to_string(),
+                "uso".to_string(),
+                vec![0.0, 1.0, 0.0],
+            )
+            .await?;
+
+        // Antes: "mal" se descartaba en silencio y el centroide era solo "bien".
+        let err = graph
+            .execute_nql(PLANT_QUERY)
+            .await
+            .expect_err("an incompatible reference must not be silently ignored");
+        let msg = err.to_string();
+        assert!(msg.contains("dimension mismatch") && msg.contains("mal"), "got: {}", msg);
+        assert!(!msg.contains("'bien'"), "the compatible reference must not be blamed, got: {}", msg);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_anomaly_reference_at_path_dimension_discriminates_paths() -> Result<()> {
+        let graph = setup_plant_recipes().await?;
+        // Referencia = vector del path Nopal→Ensalada: [1,0,0] ‖ [1,0,0].
+        graph
+            .add_path_reference_embedding(
+                "receta_tipica".to_string(),
+                "flora".to_string(),
+                "uso".to_string(),
+                vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            )
+            .await?;
+
+        let result = graph.execute_nql(PLANT_QUERY).await?;
+        assert_eq!(result.len(), 2);
+        let first = get_float(&result, 0, "anomaly");
+        let second = get_float(&result, 1, "anomaly");
+        match result.rows()[0].get("r.name") {
+            Some(PropertyValue::String(s)) => assert_eq!(s, "Mole", "Mole must be the most anomalous"),
+            other => panic!("unexpected: {:?}", other),
+        }
+        // Nopal→Ensalada coincide con la referencia; Nopal→Mole no.
+        assert!(second < 1e-4, "Ensalada path should score ≈ 0, got {}", second);
+        assert!(first > 0.5 && first < 1.0, "Mole path should score in (0.5, 1), got {}", first);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_anomaly_zero_norm_centroid_is_error() -> Result<()> {
+        let graph = setup_plant_recipes().await?;
+        // Dos referencias opuestas: el centroide es el vector cero.
+        graph
+            .add_path_reference_embedding(
+                "norte".to_string(),
+                "flora".to_string(),
+                "uso".to_string(),
+                vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            )
+            .await?;
+        graph
+            .add_path_reference_embedding(
+                "sur".to_string(),
+                "flora".to_string(),
+                "uso".to_string(),
+                vec![-1.0, 0.0, 0.0, -1.0, 0.0, 0.0],
+            )
+            .await?;
+
+        let err = graph
+            .execute_nql(PLANT_QUERY)
+            .await
+            .expect_err("a zero-norm centroid must fail, not score 1.0");
+        assert!(err.to_string().contains("centroid"), "got: {}", err);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_anomaly_edge_without_embedding_is_error() -> Result<()> {
+        // Sin embedding de arista no hay vector de path (ni se recorta a la
+        // dimensión de los nodos): la consulta falla con un error explícito.
+        let graph = Graph::in_memory().await?;
+        let mut tx = graph.begin_transaction().await?;
+        let epazote = tx
+            .add_node(Node::new("Planta").with_property("name", str_val("Epazote")))
+            .await?;
+        let frijoles = tx
+            .add_node(Node::new("Receta").with_property("name", str_val("Frijoles")))
+            .await?;
+        tx.add_edge(Edge::new(epazote, frijoles, "USADA_EN"))?;
+        tx.commit().await?;
+        graph.add_node_embedding(epazote, vec![1.0, 0.0, 0.0], "flora").await?;
+        graph.add_node_embedding(frijoles, vec![0.0, 1.0, 0.0], "flora").await?;
+        graph
+            .add_path_reference_embedding(
+                "ref".to_string(),
+                "flora".to_string(),
+                "uso".to_string(),
+                vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            )
+            .await?;
+
+        let err = graph
+            .execute_nql(
+                r#"
+                find path_anomaly_score("flora", "uso") as anomaly
+                from (p:Planta)-[:USADA_EN]->(r:Receta)
+            "#,
+            )
+            .await
+            .expect_err("a path without edge embeddings must fail");
+        assert!(err.to_string().contains("Embedding not found for edge"), "got: {}", err);
+        Ok(())
+    }
+
+    // ────────────────────────────────────────────────────────────
     // Test 10: path_knn_references en WHERE (apertura E-10)
     // ────────────────────────────────────────────────────────────
 

@@ -91,6 +91,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Lock timeout` a los 5 s. El lock manager libera ahora de forma síncrona
   (`LockManager::release_locks_sync`, nuevo; `release_locks` se conserva), así
   que toda salida sin commit suelta los candados en el acto.
+- **`path_anomaly_score` devolvía `1.0` fijo cuando la referencia tenía otra
+  dimensión** (#297). El vector de un camino es la concatenación
+  `media(nodos) ‖ media(aristas)` (`node_dim + edge_dim`, p. ej. 384 + 384 =
+  768). Una referencia de otro tamaño se descartaba sin aviso y, sin ninguna
+  compatible, el score era 1.0 para todos los caminos. Ahora una referencia de
+  otra dimensión, aunque haya otras compatibles, es un error que nombra la
+  referencia, ambas dimensiones y cómo se construye el vector, y un centroide
+  de norma cero también es error. Sin referencias se mantiene `1.0`, como
+  estaba documentado. `path_embedding_similarity` usa el mismo mensaje. Se
+  corrigen el docstring de `add_path_reference_embedding` (daba otra fórmula)
+  y el paso 6 del acto 2 del tutorial, que registraba la referencia a 384.
 
 ### Added
 - **Guía de actualización a 0.9.3** desde 0.6–0.8

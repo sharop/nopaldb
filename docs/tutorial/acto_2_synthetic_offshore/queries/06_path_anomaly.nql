@@ -2,6 +2,8 @@
 // PRECONDICION: el notebook registro >=1 path reference embedding con
 // `add_path_reference_embedding(name, node_model, edge_model, vector)`.
 // Sin referencias, score = 1.0 para todos.
+// El vector de cada path es media(nodos) ‖ media(aristas): mide
+// dim(node_model) + dim(edge_model). Una referencia de otra dimension es un error.
 //
 // `path_anomaly_score(node_model, edge_model)` = 1 - cosine(path_vec, centroid_refs).
 // Score alto -> path raro vs. el patron baseline.
