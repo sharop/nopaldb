@@ -53,6 +53,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **NQL: `where false` dejaba pasar todas las filas**: los evaluadores de
   condiciones trataban cualquier expresión que no fuera una comparación como
   verdadera. Ahora `true`/`false` valen lo que dicen (#294).
+- **Una lista de enteros pequeños, una tupla o una lista vacía volvían como
+  `bytes`** (#300). `Bytes` se serializa como una secuencia de enteros, igual
+  que una lista, y `PropertyValue` sin etiqueta probaba `Bytes` primero: en
+  el storage (MessagePack) y en el WAL (JSON), `[1, 2]` volvía como
+  `b'\x01\x02'`, `[]` como `b''`, una lista de pares `[texto, valor]` como
+  objeto y el objeto vacío como `bytes`. Ahora esas tres formas se escriben
+  envueltas (`{"$list": …}`, `{"$object": []}`) y vuelven como se
+  escribieron; todo lo demás se escribe con los mismos bytes que antes y lo
+  ya guardado se lee igual. **Lo que se guardó antes de 0.9.4 con esas formas
+  sigue leyéndose como `bytes`** (en disco no se distingue de unos bytes):
+  hay que reescribirlo. Una base escrita por 0.9.4 con alguno de esos valores
+  no la lee 0.9.3 o anterior.
 
 ### Added
 - **Guía de actualización a 0.9.3** desde 0.6–0.8
