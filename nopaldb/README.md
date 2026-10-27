@@ -13,7 +13,7 @@ time-travel, a built-in query language (NQL), and Apache Arrow analytics.
 
 ## Features
 
-- **ACID + MVCC** — snapshot isolation and time-travel queries over a versioned store.
+- **ACID + MVCC** — snapshot reads and time travel over a versioned store (`Graph::as_of`, `Graph::get_node_at`, `Graph::history`).
 - **NQL** — a Cypher-like query language for pattern matching and traversal.
 - **Embedded** — runs in-process, no separate server. redb storage (sled was removed in 0.8.0; migrate 0.5.x databases with 0.7).
 - **Analytics** — zero-copy export to Apache Arrow / Parquet (`analytics` feature).
@@ -26,9 +26,11 @@ time-travel, a built-in query language (NQL), and Apache Arrow analytics.
 cargo add nopaldb
 ```
 
-Requires Rust ≥ 1.85 (edition 2024).
+Requires Rust ≥ 1.89 (edition 2024).
 
 ## Quickstart
+
+The example uses Tokio as the async runtime (`tokio = { version = "1", features = ["macros", "rt-multi-thread"] }`).
 
 ```rust
 use nopaldb::{Edge, Graph, Node, PropertyValue, Result};
@@ -63,7 +65,11 @@ async fn main() -> Result<()> {
 | `algorithms` | Graph algorithms (community detection, centrality, …) |
 | `embeddings`, `embeddings-index` | Vector embeddings + HNSW ANN index |
 | `fulltext` | Full-text search (Tantivy) |
+| `hybrid` | Hybrid search (full-text + vector, RRF); implies `fulltext` + `embeddings-index` |
+| `hypergraph` | Hyperedges |
 | `reasoner`, `owl-import`, `shacl` | OWL EL reasoning, RDF/OWL import, SHACL validation |
+| `full-isolation` | Isolation levels, lock manager and deadlock detection |
+| `cli` | The `nopaldb` binary (`migrate`, `engine`, `stats`) |
 | `python` | PyO3 bindings (used to build the Python package) |
 
 Convenience meta-features: `core`, `semantic`, `full`. See
@@ -71,8 +77,14 @@ Convenience meta-features: `core`, `semantic`, `full`. See
 
 ## Python
 
-NopalDB also ships as a Python package built with [maturin]. See the
-[repository][repo] for build instructions.
+NopalDB also ships as a Python package on PyPI, built with [maturin]:
+
+```bash
+pip install nopaldb
+```
+
+Prebuilt abi3 wheels (CPython 3.10+) for Linux, macOS and Windows. See the
+[repository][repo] to build from source.
 
 ## License
 

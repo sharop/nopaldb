@@ -1,6 +1,6 @@
 # Durability Guarantees
 
-What NopalDB guarantees when the process dies at an arbitrary point (e.g. `SIGKILL`, power loss at the OS-buffer level notwithstanding), and what it does not. Continuously exercised by the SIGKILL crash harnesses (`nopaldb/tests/crash_commit_test.rs`, `crash_mixed_load_test.rs`) run on every CI build and nightly with 100 kill rounds.
+What NopalDB guarantees when the process dies at an arbitrary point (e.g. `SIGKILL`, power loss at the OS-buffer level notwithstanding), and what it does not. Continuously exercised by the SIGKILL crash harnesses: `nopaldb/tests/crash_commit_test.rs` runs on every CI build (20 kill rounds), and the nightly job runs it and `crash_mixed_load_test.rs` with 100 kill rounds each.
 
 ## Committed transactions
 
@@ -71,9 +71,9 @@ The same guarantees, by call:
 
 | call | durable when it returns | survives power loss | recover after an interrupted load |
 |---|---|---|---|
-| `graph.begin_transaction()` … `tx.commit()` | yes: the whole write-set is fsynced in the WAL before `commit()` returns | yes | reopen: committed transactions are replayed |
+| `graph.begin_transaction()` … `tx.add_node(...)` / `tx.add_edge(...)` … `tx.commit()` | yes: the whole write-set is fsynced in the WAL before `commit()` returns | yes | reopen: committed transactions are replayed |
 | `graph.upsert(...)`, `graph.upsert_many(...)` | yes: each upsert (each chunk of 1 024 for `upsert_many`) is a transaction | yes | reopen; re-running the same upserts is a no-op for what already landed |
-| `graph.add_node(...)`, `add_edge`, `delete_node`, `delete_edge` (direct writes) | to process death, immediately; to power loss after the next syncer tick (`flush_every_ms`), `checkpoint()` or `close()` | up to the last sync interval may be lost | reopen: acknowledged direct writes are replayed |
+| `graph.delete(label, key, value)` (direct write: the delete itself does not go through a transaction) | to process death, immediately; to power loss after the next syncer tick (`flush_every_ms`), `checkpoint()` or `close()` | up to the last sync interval may be lost | reopen: acknowledged direct writes are replayed |
 | `graph.bulk_loader(...)` … `loader.finish()` | when `finish()` returns: it ends with a durable engine checkpoint | yes, once `finish()` returned; a load killed before `finish()` keeps the batches the engine already made durable and loses the rest (bulk batches do not go through the WAL) | rerun the load; the bulk path is not idempotent by key, so start from an empty directory or use `upsert_many` for reruns |
 | `graph.checkpoint()` | n/a | makes everything above power-loss safe and empties the WAL | shortens the next open |
 | `graph.close()` | n/a | same as `checkpoint()`, then releases the directory | a database not closed is reopened by `Graph.open()` with automatic replay; no manual step |

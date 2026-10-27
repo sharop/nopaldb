@@ -87,6 +87,8 @@ c. **Exactitud cuando se promete.** Una rama que se declara exacta devuelve el m
 d. **Simetría de la dirección.** Ver el contrato 4.
 e. **Nada en silencio.** Lo que NQL no evalúa es un error con nombre, nunca una condición que pasa o falla sin avisar. Eso incluye la aritmética `+ - * / %`, la negación `!` / `not`, el menos sobre una expresión, una búsqueda bajo `or` y un patrón de escritura de más de un salto. Hasta 0.8.2 esos operadores se descartaban (`x * 2 = 6` se ejecutaba como `x = 6`). Su soporte se sigue en [#269](https://github.com/sharop/nopaldb/issues/269).
 
+   Desde 0.9.4 también: una propiedad, variable o literal suelto como condición de `where`/`having` es un error con nombre (escribe `p.activo = true`, no `p.activo`); un alias de la proyección en `where`/`having` vale por su expresión (`find degree(n) as dg … where dg > 1`), salvo que se llame como una variable del patrón; un extremo anónimo nunca toma un nombre del patrón; una variable repetida tiene que ser el mismo nodo (`(a)-[:F]->(b)-[:F]->(a)` son los ciclos de 2, `(a)-[:F]->(a)` los self-loops); una opción desconocida de `export` es un error que lista las válidas; `sketch` / `commit` por `execute_statement` son un error. Hasta 0.9.3 cada uno daba filas equivocadas, o una respuesta OK, sin error.
+
 Lo comprueban:
 - (a) `nql_where_candidates_test::residual_predicates_still_filter_and_are_never_widened`, `candidate_set_test::results_lie_in_the_set_and_fill_k_when_the_set_allows` (test de propiedades), `hybrid_selective_filter_test`;
 - (b) `nql_pattern_properties_test::two_hops_with_predicates_match_brute_force` y `partitioning_the_where_adds_up` (las filas sin filtro son las de `P` más las de su complemento, el oráculo de partición de consultas), `nql_pattern_expansion_test::explain_names_the_expansion_filters`;
@@ -114,4 +116,4 @@ Todo esto da un error con nombre, nunca un resultado distinto:
 - Patrones `OPTIONAL`.
 - Aritmética y negación en expresiones (#269).
 
-Las consultas en el tiempo (`at`) están en la [referencia NQL](NQL_REFERENCIA.md). Los índices y las búsquedas leen el estado actual.
+`at timestamp <n>` se parsea pero NQL no lo aplica: desde 0.9.4 es un error con nombre (hasta 0.9.3 la consulta leía el estado actual, #298) ([referencia NQL § Viaje en el tiempo](NQL_REFERENCIA.md#viaje-en-el-tiempo-at-timestamp)). Las lecturas en un instante son de la API Rust. Los índices y las búsquedas leen el estado actual.

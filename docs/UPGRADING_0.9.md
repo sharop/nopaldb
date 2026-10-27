@@ -1,10 +1,10 @@
-# Upgrading to 0.9.3
+# Upgrading to 0.9.4
 
 > Español: [docs/es/ACTUALIZAR_0.9.md](es/ACTUALIZAR_0.9.md).
 
 This page is for an application that runs NopalDB 0.6.x, 0.7.x or 0.8.x and
-moves to **0.9.3**. Most upgrades need no code change: the on-disk format is
-the same, and the Python API only gained methods. What deserves attention are
+moves to **0.9.4**. Most upgrades need no code change: no manual migration
+step, and the Python API only gained methods. What deserves attention are
 the fixes that make a query return **different rows** than before, and two
 old bugs that may have **already written wrong data**. Each item links to its
 [CHANGELOG](../CHANGELOG.md) entry.
@@ -12,30 +12,38 @@ old bugs that may have **already written wrong data**. Each item links to its
 Install:
 
 ```bash
-pip install -U "nopaldb==0.9.3"          # Python 3.10+
-pip install -U "nopaldb[networkx]==0.9.3" # with the NetworkX conversion
+pip install -U "nopaldb==0.9.4"          # Python 3.10+
+pip install -U "nopaldb[networkx]==0.9.4" # with the NetworkX conversion
 ```
 
 ```toml
-nopaldb = "0.9"   # Rust; 0.9.3 or later
+nopaldb = "0.9"   # Rust; 0.9.4 or later
 ```
 
 ## 1. What does not change
 
-- **redb databases open as they are.** No migration and no rebuild. The
-  layout, the WAL and the property index are the same since 0.6.
-- **The HNSW index dump is the same format.** It is loaded on open as before.
-  0.9.3 ships an internal copy of `hnsw_rs` 0.3.4 with a deadlock fix, and the
-  dump code is unchanged.
-- **The Python API only grew.** No Python method was removed or renamed
-  between 0.6 and 0.9.3.
+- **redb databases open as they are**, with no manual step. Coming from
+  0.6.11 or earlier, the **first open** does one O(n) pass per index it
+  rebuilds: the property index moves to its v3 format (0.6.11) and the label
+  index is built (0.6.12). Later opens are fast. Details in the
+  [compatibility matrix](MIGRATION_0.6.md#compatibility-matrix).
+- **The HNSW index dump is read as before.** It is loaded on the **first
+  vector search** of each model, not on open. A dump written by 0.6.10 or
+  earlier (format 2) is rebuilt once on that first search. 0.9.3 ships an
+  internal copy of `hnsw_rs` 0.3.4 with a deadlock fix; the dump code is
+  unchanged.
+- **The Python API only grew.** No Python method or parameter was removed or
+  renamed between 0.6 and 0.9.4.
 
-## 2. Check your data first: two bugs that wrote wrong data
+## 2. Check your data first: bugs that wrote wrong data
+
+A third one, lists of small integers stored so that they read back as bytes, is fixed in 0.9.4: see [Fixed in 0.9.4](#fixed-in-094-queries-that-gave-wrong-rows-without-an-error).
 
 Both are fixed, but upgrading does not repair what they already wrote. They
-only affect writes made **through NQL**. Writes through the Python or Rust
-API (`add_node`, `upsert_many`, dict properties, `delete_node`) were not
-affected.
+only affect writes made **through NQL**. Writes through the API were not
+affected: in Python `upsert`, `upsert_many`, `delete` and `tx.add_node` /
+`tx.add_edge`; in Rust also `Graph::add_node`, `Graph::delete_node` and the
+transaction methods.
 
 ### Negative numbers lost their sign (fixed in 0.8.3)
 
@@ -93,6 +101,32 @@ difference.
 | [0.8.3](../CHANGELOG.md#083---2026-10-23) | `where a and (b or c)` | parse error | groups |
 | 0.8.3 | `r.p * 2`, `-expr`, `!x`, `not (…)` | silently ignored (`r.p * 2 = 6` ran as `r.p = 6`; `not (…)` let every row through) | **named error** |
 
+### Fixed in 0.9.4: queries that gave wrong rows without an error
+
+A documentation review against 0.9.3 found more cases. If you run 0.9.3,
+these are the queries to recheck after upgrading:
+
+| Query | 0.9.3 | 0.9.4 |
+|---|---|---|
+| `find u.name from ()-[:F]->(u)`: an anonymous endpoint ([#293](https://github.com/sharop/nopaldb/issues/293)) | `u` was the **source** | `u` is the target |
+| `(a)-[:F]->(b)-[:F]->(a)`: a repeated variable (#293) | paths that do not close | the second `a` is the first one |
+| `where p.active`: a bare property, variable or literal ([#294](https://github.com/sharop/nopaldb/issues/294)) | `find` let every node through; `delete`/`update` matched none | named error: write `p.active = true` |
+| `find degree(n) as dg … where dg > 1`: a projection alias (#294) | 0 rows; with the alias projected, `where degree(n) > 1` was ignored | the alias is its expression |
+| `avg(r.w) as m … having m > 0.5` (#294) | no rows | filters the groups |
+| `export parquet "f"` / `export arrow` ([#295](https://github.com/sharop/nopaldb/issues/295)) | answered "Exported" and wrote nothing | writes the file |
+| `export csv with delimiter=";"` (#295) | option ignored, commas | named error listing the options (`separator`) |
+| `path_anomaly_score` with a reference of another dimension ([#297](https://github.com/sharop/nopaldb/issues/297)) | `1.0` for every path | named error with both dimensions |
+| `find … group by p.town having count(*) > 1` without edges ([#299](https://github.com/sharop/nopaldb/issues/299)) | every group | only the groups that pass |
+| `find … at timestamp 3` ([#298](https://github.com/sharop/nopaldb/issues/298)) | the current state | named error (time travel is the Rust API) |
+
+Outside NQL: under `Serializable`, a transaction dropped or rolled back with
+`rollback()` kept its node locks, and the next writer failed with `Lock
+timeout` after 5 s ([#296](https://github.com/sharop/nopaldb/issues/296)).
+0.9.4 releases them on every exit.
+
+**Lists that came back as bytes** ([#300](https://github.com/sharop/nopaldb/issues/300)). A list of integers 0–255 (`[1, 2]`), a tuple of them, or an empty list (`[]`) was stored so that it came back as `bytes`; a list of `[text, value]` pairs came back as a dict, and an empty dict as `bytes`. 0.9.4 writes those shapes unambiguously. **Values stored that way before 0.9.4 still read as `bytes`** (on disk they cannot be told apart from real bytes): rewrite them, for example by reading the node and writing the property again as a list. A database written by 0.9.4 that holds such a value cannot be opened by 0.9.3 or earlier. `sketch` / `commit` statements through
+`execute_nql` were an OK message and are now an error.
+
 Hybrid search with selective filters also returns more of the allowed
 documents since 0.6.13 (`search_hybrid` and the NQL `hybrid()`): results that
 used to be missing now appear. If you cut by a `score(c)` threshold with
@@ -104,8 +138,9 @@ the order of evaluation.
 
 ## 4. Arrow export: other columns and values (0.9.1)
 
-`to_arrow_complete` (Rust `graph_to_arrow`), `nodes_to_arrow_with_properties`
-and `edges_to_arrow_with_properties` gave wrong or incomplete data
+`to_arrow_complete` in Python, and in Rust `graph_to_arrow`,
+`nodes_to_arrow_with_properties` and `edges_to_arrow_with_properties`, gave
+wrong or incomplete data
 ([0.9.1](../CHANGELOG.md#091---2026-10-24)). Now:
 
 - with a label, only the edges with both endpoints inside the label are
@@ -143,15 +178,15 @@ and `edges_to_arrow_with_properties` gave wrong or incomplete data
   `anndists`), and NopalDB's cosine distance has no SIMD path, so it speeds
   nothing up.
 - **`import_parquet`** (0.8.5) now imports every row in one transaction, and
-  rejects a file with nulls, invalid or repeated ids, or ids that already
-  exist. Before, it kept only the first 1 024 rows and replaced existing
+  rejects a file with columns other than `id`, `label` and `property_count`,
+  with nulls, with invalid or repeated ids, or with ids that already exist. Before, it kept only the first 1 024 rows and replaced existing
   nodes with empty ones.
 
 ## 6. sled databases
 
 A database created with 0.5.x (or with `engine="sled"` on 0.6–0.7) no longer
 opens since 0.8.0: the error says so and gives the recipe. Migrate it once
-with 0.7, then open the copy with 0.9.3. See
+with 0.7, then open the copy with 0.9.4. See
 [MIGRATION_0.6.md](MIGRATION_0.6.md).
 
 ## 7. After upgrading: what to test
@@ -163,7 +198,8 @@ we ask you to report back:
    old version.
 2. **Vector search after a restart.** Run `knn_nodes` or `search_hybrid`,
    close the database, reopen it and run the same query: same ids. This
-   checks the HNSW dump, which is loaded on open.
+   checks the HNSW dump, which is loaded on the first vector search after
+   opening.
 3. **Hybrid search with your real filters** (tenant, document, ACL): the
    number of rows, and whether `k` rows come back where fewer did before.
    `search_hybrid_explain` / NQL `explain` show the path taken.

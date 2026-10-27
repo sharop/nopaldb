@@ -65,17 +65,23 @@ NopalDB implementa **waiting inteligente**:
 5. Cuando lock se libera → **Wake-up** automático
 ```rust
 // Tx1 tiene lock en Alice
-let mut tx2 = graph.begin_transaction()
-    .with_isolation(Serializable);
+let mut tx2 = graph
+    .begin_transaction()
+    .await?
+    .with_isolation(IsolationLevel::Serializable);
 
 // Tx2 espera automáticamente
-tx2.add_node(alice)?;  // Espera hasta que Tx1 libere
+tx2.add_node(alice).await?;  // Espera hasta que Tx1 libere (o 5 s → error)
 
-// Tx1 hace commit
+// (en otra task) Tx1 hace commit
 tx1.commit().await?;  // ← Despierta a Tx2
 
 // Tx2 continúa inmediatamente
 ```
+
+El deadlock y el timeout se devuelven **en la operación que pide el lock**
+(`get_node`, `add_node`, o `commit()` para los nodos borrados), no solo en
+`commit()`.
 
 ---
 
@@ -91,13 +97,9 @@ nopaldb = { version = "0.9", features = ["full-isolation"] }
 
 ### Timeout
 
-Por defecto: **5 segundos**
-
-Se puede configurar:
-```rust
-let lock_manager = LockManager::new()
-    .with_timeout(Duration::from_secs(10));
-```
+**5 segundos, fijo.** `LockManager::with_timeout` existe, pero cada `Graph`
+crea su propio `LockManager` y no hay API en `Graph` para cambiarlo. Al
+vencer, la operación devuelve `NopalError::ConcurrencyError("Lock timeout: …")`.
 
 ---
 
@@ -108,9 +110,13 @@ let lock_manager = LockManager::new()
 | ReadUncommitted | No | No aplica |
 | ReadCommitted | No | No aplica |
 | RepeatableRead | No* | No aplica |
-| **Serializable** | **Sí** | **Sí** |
+| **Serializable** | **Sí** (por nodo; las aristas no se bloquean) | **Sí** |
 
 *RepeatableRead usa snapshots, no locks tradicionales
+
+Los locks se liberan en `commit()` (también si falla), `rollback()`,
+`rollback_async()` y al hacer drop de la transacción sin commit (desde 0.9.4,
+#296).
 
 ---
 
@@ -118,7 +124,7 @@ let lock_manager = LockManager::new()
 
 ### Ejemplo 1: Transferencia bancaria sin deadlock
 ```rust
-use nopaldb::{Graph, Node, IsolationLevel};
+use nopaldb::{Graph, IsolationLevel, Node};
 
 let graph = Graph::in_memory().await?;
 
@@ -129,39 +135,55 @@ let bob_id = setup.add_node(Node::new("Account")).await?;
 setup.commit().await?;
 
 // Transferencia con orden consistente
-let mut tx = graph.begin_transaction()
+let mut tx = graph
+    .begin_transaction()
     .await?
     .with_isolation(IsolationLevel::Serializable);
 
 // Siempre adquirir locks en el MISMO orden
-let min_id = alice_id.min(bob_id);
-let max_id = alice_id.max(bob_id);
+let (first, second) = if alice_id < bob_id { (alice_id, bob_id) } else { (bob_id, alice_id) };
 
-tx.add_node(Node::new("Account") { id: min_id }).await?;
-tx.add_node(Node::new("Account") { id: max_id }).await?;
+// Leer y volver a escribir con el mismo id (no hay `update_node`)
+let a = tx.get_node(first).await?;
+let b = tx.get_node(second).await?;
+tx.add_node(a).await?;
+tx.add_node(b).await?;
 
 tx.commit().await?;
 ```
 
 ### Ejemplo 2: Manejo de deadlock
+El deadlock puede salir de cualquier operación de la transacción, así que el
+cuerpo va en una función que devuelve `Result` y el reintento mira su
+resultado (con `?` dentro del `loop`, el primer `Deadlock` saldría del bucle):
+
 ```rust
-loop {
-    let mut tx = graph.begin_transaction()
+use std::time::Duration;
+use nopaldb::{Graph, IsolationLevel, Node, NopalError, Result};
+
+async fn transfer(graph: &Graph, alice: Node, bob: Node) -> Result<()> {
+    let mut tx = graph
+        .begin_transaction()
         .await?
         .with_isolation(IsolationLevel::Serializable);
-    
+
     // Lógica de negocio
-    tx.add_node(alice)?;
-    tx.add_node(bob)?;
-    
-    match tx.commit().await {
-        Ok(_) => break,  // ✅ Éxito
-        Err(NopalError::Deadlock(_)) => {
-            // ⚠️ Deadlock detectado, retry con backoff
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            continue;
+    tx.add_node(alice).await?;
+    tx.add_node(bob).await?;
+    tx.commit().await
+    // si algo falla, `tx` se suelta aquí y libera sus locks (0.9.4)
+}
+
+let mut backoff = Duration::from_millis(50);
+loop {
+    match transfer(&graph, alice.clone(), bob.clone()).await {
+        Ok(()) => break, // ✅ Éxito
+        Err(NopalError::Deadlock(_)) | Err(NopalError::TransactionConflict(_)) => {
+            // ⚠️ Deadlock o conflicto: reintentar con backoff
+            tokio::time::sleep(backoff).await;
+            backoff *= 2;
         }
-        Err(e) => return Err(e),  // ❌ Otro error
+        Err(e) => return Err(e), // ❌ Otro error
     }
 }
 ```
@@ -177,7 +199,7 @@ loop {
 
 ### Timeouts
 
-- **Lock acquisition**: 5 segundos (configurable)
+- **Lock acquisition**: 5 segundos (fijo)
 - **Deadlock check**: Cada 500ms mientras espera
 
 ### Escalabilidad
@@ -193,12 +215,12 @@ Probado con:
 
 ### "Lock timeout: tx waiting for node"
 
-**Causa**: Transacción esperó más de 5 segundos
+**Causa**: Transacción esperó más de 5 segundos (`NopalError::ConcurrencyError`)
 
 **Solución**:
-1. Aumentar timeout
-2. Reducir duración de transacciones
-3. Optimizar lógica de negocio
+1. Reducir duración de transacciones (el timeout no es configurable desde `Graph`)
+2. Optimizar lógica de negocio
+3. Antes de 0.9.4, una transacción `Serializable` soltada sin `commit()` también retenía sus locks hasta este timeout (#296): actualizar, o terminarla siempre con `commit()` / `rollback_async()`
 
 ### "Deadlock detected: tx aborted (victim)"
 

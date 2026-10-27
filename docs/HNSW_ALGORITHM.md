@@ -37,6 +37,27 @@ The main tuning parameters are:
 | `ef_search` | Candidate width while querying |
 
 Higher values generally improve recall and increase memory or CPU cost.
+NopalDB's defaults are `M` = 24, `ef_construction` = 400 and `ef_search` = 30.
+
+## What NopalDB adds around HNSW
+
+- **Exact path for small indexes:** with at most 1024 points
+  (`EXACT_SEARCH_THRESHOLD`) a search compares the query with every point.
+  Exact, deterministic, and cheaper than a graph walk at that size; such
+  indexes are not persisted (rebuilding them costs milliseconds).
+- **Parallel build:** `build_batch` inserts in parallel from 128 points up;
+  below that it inserts serially so the graph does not depend on the number
+  of threads.
+- **Orphan repair:** HNSW pruning can leave a point no search reaches. After
+  a build and after each insert every new point searches for itself; the ones
+  that do not find themselves are compared directly on every search and saved
+  in the dump.
+- **Internal `hnsw_rs` 0.3.4 copy** (`src/embeddings/hnsw_rs`): since 0.9.3
+  it carries a lock-order fix for a deadlock in parallel builds (#288). The
+  dump format is the crate's.
+
+Details, measurements and persistence rules are in
+[EMBEDDINGS.md](EMBEDDINGS.md#hnsw-index--approximate-nearest-neighbor-search).
 
 ## Distance
 
@@ -75,7 +96,8 @@ let matches = index.search_knn_filtered(
 
 ## Python API
 
-Build the Python wrapper with `python-full`:
+The wheel on PyPI (`pip install nopaldb`) includes it. To build the wrapper
+from source, use the `python-full` feature:
 
 ```bash
 cd nopaldb

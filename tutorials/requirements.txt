@@ -1,5 +1,5 @@
-# nopaldb se construye desde el código fuente con maturin (no está en PyPI):
-#   make install-nopaldb   (o: pip install ../nopaldb)
+# nopaldb se instala aparte: desde PyPI (pip install nopaldb) o desde este
+# checkout con maturin (make install-nopaldb, lo que hace el CI).
 jupyter>=1.0
 notebook>=7.0
 pandas>=2.0

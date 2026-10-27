@@ -39,7 +39,8 @@ or earlier; `graph.get_stats()` does not expose it, but the Rust
 
 The flat keys of 0.6.x (`total_nodes`, `total_edges`, `avg_degree`,
 `storage_engine`, `wal_bytes`, all strings) stay at the top level of the
-Python dict for one more minor release. Read the sections instead.
+Python dict for compatibility (still there in 0.9). New code should read the
+sections instead.
 
 ## Symptom → what to read
 

@@ -1,15 +1,18 @@
 # Machine Learning Examples on NopalDB
 
-NopalDB demonstrates real Graph Neural Network (GNN) and Graph ML capabilities through practical examples.
+These are small, self-contained Rust examples that implement Graph ML techniques
+(GCN, Node2Vec-style embeddings, link prediction, fraud scoring) by hand on top of
+the graph API. They are teaching examples on toy graphs (5–10 nodes), not a GNN
+API of NopalDB and not benchmarks.
 
 ## Overview
 
-| Example | Algorithm | Task | Accuracy | Lines |
-|---------|-----------|------|----------|-------|
-| **Node Classification** | GCN | Community Detection | 90% | ~200 |
-| **Graph Embeddings** | Node2Vec | Similarity Learning | High | ~300 |
-| **Link Prediction** | Adamic-Adar | Citation Prediction | Good | ~200 |
-| **Fraud Detection** | DFS Cycles | Risk Scoring | 100% | ~250 |
+| Example | Algorithm | Task | Graph |
+|---------|-----------|------|-------|
+| **Node Classification** | GCN | Community Detection | 10 nodes |
+| **Graph Embeddings** | Node2Vec-style | Similarity Learning | 6 nodes |
+| **Link Prediction** | Adamic-Adar | Citation Prediction | 5 nodes |
+| **Fraud Detection** | DFS Cycles | Risk Scoring | 5 nodes |
 
 ---
 
@@ -32,6 +35,12 @@ h'[v] = σ(W · Σ(h[u] / sqrt(deg(v) * deg(u))))
 - **Tanh activation** for non-linearity
 - **Degree + bias features** for initialization
 
+> **Label leakage.** The input feature of each node is `degree / 10 ± 0.5`,
+> where the sign is the node's *true* community (`extract_features`,
+> `+0.5` for members 0–4, `-0.5` for 5–9). The 90 % below therefore shows
+> message passing smoothing a feature that already encodes the answer; it is
+> not evidence that the GCN discovers communities from structure alone.
+
 ### Dataset: Karate Club
 
 - 10 members, 2 communities
@@ -40,12 +49,12 @@ h'[v] = σ(W · Σ(h[u] / sqrt(deg(v) * deg(u))))
 
 ### Results
 ```
-Community A (0-4): 100% accuracy (5/5)
-Community B (5-9): 80% accuracy (4/5)
-Overall: 90% accuracy
-
-Bridge node correctly identified (embedding near 0)
+Member 0-4: A → A  ✓ (5/5)
+Member 5:   B → A  ✗ (embedding: 0.034, next to the bridge)
+Member 6-9: B → B  ✓ (4/4)
+Accuracy: 9/10 (90.0%)
 ```
+(Deterministic: no random weights.)
 
 ### Run
 ```bash
@@ -87,15 +96,16 @@ minimize: log σ(-emb(u) · emb(w)) for random w
 - 1 bridge paper (GNN)
 
 ### Results
-```
-ML Cluster:
-  ML Basics ↔ Deep Learning: 0.613 (high similarity)
-  ML Basics ↔ Neural Nets: 0.068 (different approaches)
 
-Graph Cluster:
-  Graph Theory ↔ GNN: 0.706 (highly related)
-  Graph Algorithms ↔ GNN: 0.203 (less related)
+The walks and the training are not seeded (`rand::rng()`), so the
+similarities change on every run. One run (0.9.3):
 ```
+Machine Learning Basics → Neural Networks 0.394, Deep Learning 0.284
+Graph Theory            → Graph Neural Networks 0.819, Graph Algorithms 0.129
+Graph Algorithms        → Graph Neural Networks -0.116
+```
+What tends to hold across runs is the cluster structure (ML papers closer to
+each other, Graph Theory close to GNN), not the exact values.
 
 ### Run
 ```bash
@@ -136,9 +146,8 @@ score(u,v) = Σ(1 / log(degree(w)))
 
 ### Results
 
-Paper A most likely to cite:
+Paper A most likely to cite (0.9.3 output, a single candidate):
 1. "Network Analysis" (score: 2.000)
-2. "Machine Learning on Graphs" (score: 1.000)
 
 ### Run
 ```bash
@@ -179,9 +188,9 @@ Normal Accounts:
   Bob: 🟢 LOW (0.0)
 
 Suspicious Accounts (circular transfers):
-  Charlie: 🔴 MEDIUM (50.0)
-  Dana: 🔴 MEDIUM (50.0)
-  Eve: 🔴 MEDIUM (50.0)
+  Charlie: 🟡 MEDIUM (50.0)
+  Dana: 🟡 MEDIUM (50.0)
+  Eve: 🟡 MEDIUM (50.0)
 ```
 
 ### Run
@@ -191,55 +200,26 @@ cargo run --example ml_fraud_detection --release
 
 ---
 
-## Comparison with Other Frameworks
+## What NopalDB provides, and what it does not
 
-| Feature | NopalDB | NetworkX | Neo4j | PyG |
-|---------|---------|----------|-------|-----|
-| **Language** | Rust | Python | Cypher | Python |
-| **Performance** | High | Low | High | Medium |
-| **GNN Support** | Native | Limited | Plugin | Native |
-| **ACID Transactions** | ✅ | ❌ | ✅ | ❌ |
-| **Embeddings** | ✅ | ✅ | ❌ | ✅ |
-| **Production-Ready** | ✅ | ❌ | ✅ | ⚠️ |
+- **Provided:** the graph (ACID transactions), stored embeddings with an HNSW
+  index, graph algorithms in NQL (see [ALGORITHMS.md](ALGORITHMS.md)) and
+  Arrow export. The examples above use only that public API.
+- **Not provided:** a GNN layer, a training loop or an autograd engine. The
+  GCN and Node2Vec code lives in the example files; for real models export
+  the graph and train with a dedicated library (PyG, DGL, …).
+- No performance figures are given for these examples: on 5–10 nodes they
+  measure nothing useful.
 
----
+## Moving data to a Python ML stack
 
-## Performance Benchmarks
+Arrow export exists today (it is not zero-copy across the Rust→Python
+boundary: Python receives Arrow IPC bytes). See:
 
-### Node Classification (GCN)
-- **Training**: <50ms (2 layers, 10 nodes)
-- **Inference**: <5ms per node
-- **Memory**: ~1MB for graph + embeddings
+- [docs/arrow](arrow/01-OVERVIEW.md) — Rust API (`to_arrow`, `to_arrow_complete`, Parquet)
+- [docs/python/ARROW_EXPORT.md](python/ARROW_EXPORT.md) — Python (`graph.to_arrow_complete()` → `pyarrow`)
 
-### Graph Embeddings (Node2Vec)
-- **Random walks**: 30 walks in ~10ms
-- **Training**: 100 epochs in ~200ms
-- **Memory**: ~2KB per node (8D embeddings)
-
----
-
-## Next Steps with Apache Arrow
-
-When NopalDB integrates Apache Arrow (Phase 5.5):
-
-### Benefits
-
-1. **Zero-copy** to PyTorch/TensorFlow
-2. **Columnar format** for batch processing
-3. **SIMD optimizations** for GNN operations
-4. **Interoperability** with Python ML ecosystem
-
-### Example (Future)
-```rust
-// Export to Arrow
-let arrow_table = graph.to_arrow().await?;
-
-// Train GNN in Python
-python_gnn.train(arrow_table);
-
-// Import trained embeddings back
-graph.import_embeddings(embeddings).await?;
-```
+Embeddings computed outside go back with `graph.add_node_embeddings(model, items)`.
 
 ---
 
@@ -280,17 +260,8 @@ To add new ML examples:
 1. Create file in `examples/gnn_*.rs`
 2. Use existing graph API (no external ML libs needed)
 3. Add to this documentation
-4. Submit PR with benchmarks
+4. Submit PR
 
 ---
 
-## Future ML Features (Roadmap)
-
-- [ ] **GAT** (Graph Attention Networks)
-- [ ] **GraphSAGE** (Inductive learning)
-- [ ] **Temporal GNNs** (Dynamic graphs)
-- [ ] **PyTorch integration** (via Arrow)
-- [ ] **GPU acceleration** (CUDA kernels)
-- [ ] **Distributed training** (multi-node)
-
-Progress: 30% → 35% (ML examples complete!)
+No further ML features are scheduled.

@@ -1,6 +1,8 @@
 # Graph Algorithms in NopalDB
 
-NopalDB includes 7 built-in graph algorithms, all integrated into the NQL query language.
+NopalDB includes 7 built-in graph algorithms, all callable from the NQL query
+language (shortest path only returns the distance in NQL; the path itself
+needs the Rust API).
 
 ---
 
@@ -12,7 +14,7 @@ NopalDB includes 7 built-in graph algorithms, all integrated into the NQL query 
 | **Betweenness** | O(V·E) | Bridge detection | `betweenness(n)` |
 | **Clustering** | O(V·d²) | Community cohesion | `clustering(n)` |
 | **Degree** | O(E) | Connectivity | `degree(n)` |
-| **Shortest Path** | O(E·log V) | Path finding | Rust API |
+| **Shortest Path** | O(E·log V) | Path finding | `shortestPath("src-uuid", "dst-uuid")` (distance) / Rust API (path) |
 | **Community (Louvain)** | O(E·log² V) | Community detection | `community(n)` |
 | **Community (Leiden)** | ~O(E · levels · iterations) | Well-connected communities, hierarchy | `leiden(n)` |
 
@@ -26,7 +28,7 @@ NopalDB includes 7 built-in graph algorithms, all integrated into the NQL query 
 
 ### Example
 ```sql
--- Find most influential people
+// Find most influential people
 find n.name, pagerank(n) as rank
 from (n:Person)
 order by rank desc
@@ -56,17 +58,21 @@ limit 10
 
 ### Example
 ```sql
--- Find critical connectors
+// Find critical connectors
 find n.name, betweenness(n) as bc
 from (n:Person)
-where bc > 0.5
+where betweenness(n) > 0.5
 order by bc desc
 ```
+
+> Filter with the function itself (`where betweenness(n) > 0.5`). Filtering by
+> the projected alias (`where bc > 0.5`) returns no rows up to 0.9.3; from
+> 0.9.4 an alias in WHERE stands for its expression (#294).
 
 ### Algorithm
 - Brandes' algorithm
 - Counts shortest paths through each node
-- Normalized by (n-1)(n-2)/2
+- Normalized by (n-1)(n-2)
 
 ### Output
 - Score between 0 and 1
@@ -86,7 +92,7 @@ order by bc desc
 
 ### Example
 ```sql
--- Find tightly-knit groups
+// Find tightly-knit groups
 find n.community, clustering(n) as cohesion
 from (n:Person)
 group by n.community
@@ -118,7 +124,7 @@ C(v) = 2·T(v) / (k(v)·(k(v)-1))
 
 ### Example
 ```sql
--- Find most connected nodes
+// Find most connected nodes
 find n.name, degree(n) as connections
 from (n:Person)
 order by connections desc
@@ -131,8 +137,9 @@ limit 10
 - **Out-Degree**: Outgoing edges only
 
 ### Output
-- Integer count of connections
-- Can be normalized to [0,1]
+- Count of connections (NQL returns it as a float, e.g. `3.0`)
+- NQL computes total degree, not normalized; in/out degree and
+  normalization are options of the Rust `DegreeConfig`
 
 ### Best For
 - Quick connectivity analysis
@@ -151,7 +158,7 @@ limit 10
 use nopaldb::algorithms::shortest_path::{ShortestPath, ShortestPathConfig};
 
 // Unweighted (BFS)
-let sp = ShortestPath::default();
+let sp = ShortestPath::with_defaults();
 let result = sp.find_path(&graph, source, target).await?;
 
 // Weighted (Dijkstra)
@@ -166,6 +173,15 @@ if let Some(path) = result {
     println!("Path: {:?}", path.path);
     println!("Distance: {}", path.distance);
 }
+```
+
+### Example (NQL)
+```sql
+// Distance only (hops, or summed weight); -1.0 when there is no path.
+// Both arguments must be node UUID string literals.
+find shortestPath("<source-uuid>", "<target-uuid>") as dist
+from (n)
+limit 1
 ```
 
 ### Algorithms
@@ -223,8 +239,9 @@ limit 25
 - Known limitation: can produce internally disconnected communities
 
 ### Output
-- Community ID per node (0-indexed integers)
+- Community ID per node (0-indexed; NQL returns it as a float, e.g. `2.0`)
 - Result cached per topology version
+- Deterministic: nodes are processed in node-id order
 
 ### Best For
 - Fraud ring detection
@@ -250,7 +267,7 @@ Leiden is a direct improvement over Louvain that **guarantees internally connect
 | Quality function | Modularity | CPM (Constant Potts Model) |
 | Well-connected guarantee | ❌ No | ✅ Yes |
 | Resolution limit | Present | Absent (CPM avoids it) |
-| Deterministic | ❌ (HashSet iteration) | ✅ (sorted iteration) |
+| Deterministic | ✅ (node-id order) | ✅ (sorted iteration) |
 | Separate cache | — | ✅ Independent of community() |
 | NQL function | `community(n)` | `leiden(n)` |
 
@@ -477,22 +494,22 @@ writes (42k nodes, 335k edges) in one transaction.
 ### Example (NQL)
 
 ```sql
--- Basic
+// Basic
 find n.name, leiden(n) as cluster
 from (n)
 order by cluster
 limit 25
 
--- Scoped and weighted (0.6.11): only entities and their RELATED edges,
--- weighted by the edge property `w`, with another resolution
+// Scoped and weighted (0.6.11): only entities and their RELATED edges,
+// weighted by the edge property `w`, with another resolution
 find n.name, leiden(n, labels = ["Entity"], edge_types = ["RELATED"], weight = "w", gamma = 0.2) as cluster
 from (n:Entity)
 order by cluster
 
--- With gamma guidance via EXPLAIN
+// With gamma guidance via EXPLAIN
 explain find leiden(n) from (n)
 
--- Compare Louvain vs Leiden (independent caches, single query)
+// Compare Louvain vs Leiden (independent caches, single query)
 find n.name,
      community(n) as louvain,
      leiden(n)    as leiden_comm
@@ -512,7 +529,7 @@ limit 20
 | Highly fragmented desired | 0.5 – 1.0 |
 
 ### Output
-- Community ID per node (0-indexed, contiguous integers after renumbering)
+- Community ID per node (0-indexed, contiguous after renumbering; NQL returns it as a float)
 - Separate topology-versioned cache from `community()` / Louvain
 - Deterministic: same topology always produces the same partition
 
@@ -535,7 +552,7 @@ find n.name,
       betweenness(n) as bridge_score,
       clustering(n) as cohesion
 from (n:Person)
-where connections > 10
+where degree(n) > 10
 order by importance desc
 limit 20
 ```
@@ -551,7 +568,7 @@ limit 20
 | Find tight groups | Clustering | Local density |
 | Quick connectivity | Degree | Fast & simple |
 | Optimal routing | Shortest Path | Minimal cost |
-| Fast community exploration | community_fast | Low-latency approximate |
+| Fast community exploration | community_fast | Label propagation (3 rounds) over the matched nodes only; approximate |
 | Community detection (standard) | community / Louvain | Modularity optimization |
 | Community detection (quality) | leiden / Leiden | CPM + well-connected guarantee |
 | GNN neighborhood features | leiden | Disconnected communities break embeddings |
@@ -562,33 +579,30 @@ limit 20
 
 ### 1. Use GROUP BY for Aggregations
 ```sql
--- ✅ GOOD: Aggregate by group
+// With GROUP BY, an algorithm column is the average over the group
 find n.city, pagerank(n) as avg_rank
 from (n:Person)
 group by n.city
-
--- ❌ BAD: Compute for each node individually
--- (NQL doesn't support per-node projections yet)
 ```
 
 ### 2. Filter Before Computing
 ```sql
--- ✅ GOOD: Filter first
+// ✅ GOOD: Filter first
 find betweenness(n) as bc
 from (n:Person)
 where n.age > 18
 
--- ❌ BAD: Compute then filter in Python
+// ❌ BAD: Compute then filter in Python
 ```
 
 ### 3. Use Appropriate Algorithm
 ```sql
--- ✅ GOOD: Degree for simple connectivity
+// ✅ GOOD: Degree for simple connectivity
 find degree(n) as connections
 from (n:Person)
 
--- ❌ BAD: Betweenness for simple connectivity
--- (10-100x slower than degree)
+// ❌ BAD: Betweenness for simple connectivity
+// (10-100x slower than degree)
 ```
 
 ### 4. Batch Operations
@@ -622,7 +636,7 @@ cargo test --lib clustering
 cargo test --lib degree
 cargo test --lib shortest_path
 cargo test --lib community
-cargo test leiden   # Leiden-specific tests (7 cases)
+cargo test leiden   # Leiden-specific tests
 
 # Test all algorithms
 cargo test --lib algorithms
@@ -652,17 +666,7 @@ python examples/test_all_algorithms.py
 
 ## 🚀 Roadmap
 
-### Coming in v0.3.0
-- Triangle Counting
-- K-Core Decomposition
-- Label Propagation
-- Parallel execution (Rayon)
-
-### Future
-- Graph Neural Networks (GNN) integration
-- Streaming algorithms
-- Approximation algorithms for massive graphs
-- GPU acceleration
+Nothing is scheduled here; open an issue if you need another algorithm.
 
 ---
 

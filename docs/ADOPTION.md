@@ -13,7 +13,7 @@ nopaldb = { version = "0.9", features = ["core"] }
 | Tier | What you get |
 |------|--------------|
 | *default* | Property graph + NQL + MVCC + WAL (redb storage; 0.5.x sled databases are migrated with 0.7) |
-| `core` | + Arrow/Parquet export, graph algorithms, embeddings + HNSW, full-text search, ML helpers |
+| `core` | + Arrow/Parquet export, graph algorithms, embeddings + HNSW, full-text and hybrid search, ML helpers, hypergraph types |
 | `semantic` | + OWL-EL reasoner, Turtle import/export, SHACL validation |
 | `full` | + `full-isolation`: isolation levels, per-node lock manager, deadlock detection |
 
@@ -108,15 +108,18 @@ https://github.com/Anxious-Mind-Group/ndbstudio.
    loss with `StorageOptions::direct_write_durability = Immediate` — see
    [DURABILITY.md](DURABILITY.md). Use transactions when several operations
    must land together.
-4. **Isolation:** default is ReadCommitted. RepeatableRead/Serializable (with
-   conflict detection and deadlock aborts) require the `full-isolation`
-   feature — semantics in [ISOLATION_LEVELS.md](ISOLATION_LEVELS.md). On
+4. **Isolation:** default is ReadCommitted. RepeatableRead (snapshot reads,
+   no write-write detection) and Serializable (per-node locks, conflict
+   detection and deadlock aborts) require the `full-isolation` feature, which
+   the PyPI wheels include (`begin_transaction(isolation="serializable")`) —
+   semantics in [ISOLATION_LEVELS.md](ISOLATION_LEVELS.md). On
    conflict (`TransactionConflict`/`Deadlock`/`ConcurrencyError`), retry the
    transaction.
 5. **Bulk ingestion:** use `graph.bulk_loader(batch_size)` instead of
    per-item transactions.
 6. **Update-heavy datasets:** enable MVCC garbage collection
-   (`graph.start_auto_gc(config)`), or old versions accumulate. GC never
+   (`graph.start_auto_gc(config)`, Rust only: the Python bindings have no GC
+   API), or old versions accumulate. GC never
    removes versions still readable by open transactions.
 7. **When something is slow or seems stuck,** read `graph.get_stats()`
    (Python), `Graph::stats()` (Rust) or run `nopaldb stats <dir>`: what the

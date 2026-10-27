@@ -19,6 +19,7 @@
 - [Vector and hybrid search in WHERE](#vector-and-hybrid-search-in-where)
 - [Aggregations & Functions](#aggregations--functions)
 - [Data Export (EXPORT)](#data-export-export)
+- [Time travel (AT TIMESTAMP)](#time-travel-at-timestamp)
 - [Operators](#operators)
 - [Examples by Discipline](#examples-by-discipline)
 
@@ -70,18 +71,32 @@ Relationships connect nodes. The arrow direction matters.
 - `<->`: Bidirectional relationship (any direction).
 - `-[:FRIEND]->`: Outgoing relationship of specific type "FRIEND".
 - `<-[:PURCHASED]-`: Incoming relationship of type "PURCHASED".
+- `<-[:COLLABORATES]->`: Relationship of type "COLLABORATES" in either direction.
+  With brackets the arrow is written `<-[...]->`; `<->` alone takes no brackets.
 
 ### Connection Examples
 ```nql
--- A knows B
+// A knows B
 from (a:Person) -> [:KNOWS] -> (b:Person)
 
--- Influence Chain: A influences B, B influences C
+// Influence Chain: A influences B, B influences C
 from (a:Person) -> [:INFLUENCES] -> (b:Person) -> [:INFLUENCES] -> (c:Person)
 
--- Mutual Collaboration
-from (author1:Researcher) <-> [:COLLABORATES] <-> (author2:Researcher)
+// Mutual Collaboration
+from (author1:Researcher)<-[:COLLABORATES]->(author2:Researcher)
 ```
+
+### Variables in a pattern (0.9.4)
+
+- **A repeated variable is the same node.** `(a)-[:FOLLOWS]->(b)-[:FOLLOWS]->(a)`
+  returns the 2-cycles (`a` follows `b` and `b` follows `a` back), and
+  `(a)-[:FOLLOWS]->(a)` returns the self-loops. A repeated edge variable is the
+  same edge. Until 0.9.3 the second `a` was bound again to any node, so the
+  first pattern also returned paths that do not close.
+- **An anonymous endpoint never takes a name of the pattern.** In
+  `find u.name from ()-[:FOLLOWS]->(u)`, `u` is the target and `()` stays
+  anonymous. Until 0.9.3 the anonymous node could be bound to `u`, and the
+  query returned the sources.
 
 ---
 
@@ -119,20 +134,48 @@ names them, never a silently different condition. Until 0.8.2 they were
 dropped: `x * 2 = 6` ran as `x = 6`, and `-5` lost its sign. To exclude, use
 `!=` or `not in`.
 
+### Conditions must be comparisons (0.9.4)
+
+A bare property, variable or literal is not a condition: `where p.active` is a
+named error that asks for the comparison, `where p.active = true`. The same in
+`having`. Until 0.9.3 `find` let every node through and `delete`/`update`
+touched none.
+
+### Projection aliases in WHERE and HAVING (0.9.4)
+
+An alias of the `find` stands for its expression in `where` and `having`:
+
+```nql
+// Nodes with more than one edge
+find n.name, degree(n) as dg from (n:Person) where dg > 1
+
+// Groups whose average weight is above 0.5
+find a.name, avg(r.w) as m from (a:Person)-[r:RATES]->(b:Recipe)
+group by a.name having m > 0.5
+```
+
+An alias with the same name as a pattern variable is not substituted: the
+name keeps meaning the variable. Until 0.9.3 an alias was read as a property
+that does not exist, so both queries above returned no rows.
+
 ### Examples
 ```nql
--- High-value customers
+// High-value customers
 where c.total_purchases > 50000
 
--- Geographic and demographic segmentation
+// Geographic and demographic segmentation
 where (p.city = "NYC" or p.city = "SF") and p.age < 30
 
--- Exclusion
+// Exclusion
 where p.status != "Inactive"
 
--- Below zero
+// Below zero
 where m.temp < -1
 ```
+
+Nodes without `status` are not returned by the exclusion: a comparison on a
+missing property is false, `!=` included. See
+[NQL semantics § Comparisons and values](../NQL_SEMANTICS.md#comparisons-and-values).
 
 ---
 
@@ -158,13 +201,13 @@ The class can be named three ways; the first form that resolves wins:
 | Full IRI | `"http://plantas.example/flora#Arbol"` | the class node's `iri` property |
 
 ```nql
--- Every plant: direct instances and instances of subclasses alike
+// Every plant: direct instances and instances of subclasses alike
 find n.label from (n) where instanceOf(n, "Planta")
 
--- Same class, unambiguous across namespaces
+// Same class, unambiguous across namespaces
 find n.iri from (n) where instanceOf(n, "flora:Rosa")
 
--- Only the classes under Planta
+// Only the classes under Planta
 find c.label from (c) where subClassOf(c, "Planta")
 ```
 
@@ -200,7 +243,10 @@ Rules:
 - `path.nodes` and `path.edges` work only in `FIND`
 - `path.*` requires a single linear pattern with at least one relationship
 
-`PROFILE` is also available through `execute_statement()`:
+`PROFILE` runs the query and returns its timings. From Rust it goes through
+`graph.execute_statement("profile …")` (the result is `NqlResult::Profile`;
+`execute_nql` rejects it); from Python, `graph.execute_nql("profile …")` and
+the timings are in `result.profile`:
 
 ```nql
 profile
@@ -221,7 +267,9 @@ NQL supports CRUD for **graph content**:
 
 Important:
 - NQL does **not** create the storage/database container. That is done through the API with `Graph.open(...)` or `Graph.in_memory()`.
-- NQL does **not** currently support `CREATE GRAPH`, `BEGIN`, `COMMIT`, `ROLLBACK`, or `MERGE`.
+- NQL does **not** currently support `CREATE GRAPH`, `BEGIN`, `ROLLBACK`, or `MERGE`. Each `add`/`update`/`delete` runs in its own transaction; explicit transactions are the API (`graph.begin_transaction()`).
+- The grammar has `sketch <name> = <statement>` and `commit <name>` (staged changes), but `execute_statement` (Rust) and `execute_nql` (Python) reject them with a named error since 0.9.4; sketches are the Rust API `nopaldb::query::SketchManager`. Until 0.9.3 they answered an OK message without doing anything.
+- Write patterns have one hop and honour the direction and the inline properties of nodes and edges (0.8.4): they change exactly what `find` with the same pattern returns. A longer or quantified write pattern is a named error.
 
 ### ADD
 ```nql
@@ -237,28 +285,27 @@ where a.name = "Alice" and b.name = "Bob"
 
 ### DELETE
 ```nql
--- Deletes only the matched relationship
+// Deletes only the matched relationship
 delete (a:Person)-[:KNOWS]->(b:Person)
 where a.name = "Alice" and b.name = "Bob"
 
--- Deletes nodes (and their incident relationships)
+// Deletes nodes (and their incident relationships)
 delete (p:Person)
 where p.name = "Bob"
 ```
 
-For a detailed status matrix and end-to-end examples:
-- `docs/NQL_WRITE_CRUD_STATUS.md`
-- `docs/NQL_WRITE_CRUD_HANDS_ON.md`
+End-to-end examples in NQL, Rust and Python:
+[NQL_WRITE_CRUD_HANDS_ON.md](../NQL_WRITE_CRUD_HANDS_ON.md).
 
 ---
 
 ## Indexes (CREATE INDEX / DROP INDEX)
 
 ```nql
-create index on Person(email)                      -- hash (default): equality lookups
-create index on Person(age) type btree             -- range queries
-create index on Article(body) type fulltext        -- BM25 text search, used by hybrid()
-drop index Person_email                            -- the name is Label_property
+create index on Person(email)                      // hash (default): equality lookups
+create index on Person(age) type btree             // range queries
+create index on Article(body) type fulltext        // BM25 text search, used by hybrid()
+drop index Person_email                            // the name is Label_property
 ```
 
 ### Full-text analyzer
@@ -270,10 +317,10 @@ else, so `clasificacion` does not find `clasificación` and `catálogos` does no
 find `catálogo`. The `with (...)` clause configures the analyzer per index:
 
 ```nql
--- Everything on for Spanish: stemming, stop words, accent folding
+// Everything on for Spanish: stemming, stop words, accent folding
 create index on Nota(cuerpo) type fulltext with (language = "spanish")
 
--- Each switch can be turned off (or on without a language, for folding only)
+// Each switch can be turned off (or on without a language, for folding only)
 create index on Nota(cuerpo) type fulltext with (language = "spanish", stopwords = false)
 create index on Nota(cuerpo) type fulltext with (ascii_folding = true)
 ```
@@ -305,27 +352,32 @@ into a top-K search instead of a scan. The query vector comes either from a
 **reference node** looked up by its `name` property (positional form) or,
 since 0.6.9, from a **vector literal written in the query** (named form): a
 GraphRAG agent embeds the question and searches with it, no node needed.
-K is `k = N` when given, else `LIMIT` (default 10). Rows come out best first
-unless you `ORDER BY`.
+K is `k = N` when given. Without `k`, a single-node query uses its `LIMIT`
+(10 if there is none) and a pattern uses 10, whatever its `LIMIT`. Rows come
+out best first unless you `ORDER BY`.
 
 ```nql
--- Nearest neighbours of the node named "q" in the "minilm" embedding space
+// Nearest neighbours of the node named "q" in the "minilm" embedding space
 find n.title from (n:Article) where similar_to(n, "q", "minilm") limit 10
 
--- Same with the question's vector inside the query
+// Same with the question's vector inside the query
 find n.title from (n:Article)
 where similar_to(n, vector = [0.12, -0.03, 1e-05, …], model = "minilm", k = 10)
 
--- Full-text + vector, fused by Reciprocal Rank Fusion
+// Full-text + vector, fused by Reciprocal Rank Fusion
 find n.title from (n:Article) where hybrid(n, "graph memory", "q", "minilm") limit 10
 find n.title from (n:Article)
 where hybrid(n, text = "graph memory", vector = [...], model = "minilm", k = 10)
 
--- Search and expand in one query: the search seeds a one-hop pattern
+// Search and expand in one query: the search seeds a one-hop pattern
 find c.text, e.name from (c:Chunk)-[:MENTIONS]->(e:Entity)
 where similar_to(c, vector = [...], model = "minilm", k = 10)
 
--- Tuned: every HybridQuery parameter is a named option
+// … or a two-hop one (chunk → entity → related entity), with the chunk's score on every row
+find c.text, f.name, score(c) from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:RELATED]->(f:Entity)
+where hybrid(c, text = "riego", vector = [...], model = "minilm", k = 10)
+
+// Tuned: every HybridQuery parameter is a named option
 find n.title from (n:Article)
 where hybrid(n, "graph memory", "q", "minilm", rrf_k = 30, ef_search = 128, overfetch = 8, text_index = "Article_body")
 limit 10
@@ -367,7 +419,7 @@ where similar_to(c, vector = [...], model = "minilm", k = 10)
 ```
 
 `score(var)` needs a `similar_to`/`hybrid` on that same variable, works in
-one-hop patterns (each expanded row carries its searched node's score), and is
+one- and two-hop patterns (each expanded row carries its searched node's score), and is
 only a FIND column: rows already come best first, so it is rejected in WHERE,
 ORDER BY, GROUP BY and HAVING, and next to aggregations. EXPLAIN names its
 source (`Score: score(c) = cosine similarity of similar_to(c) …`).
@@ -426,7 +478,7 @@ it could return fewer than 10 rows, or none. Pushed: `v.p = literal` and
 `v.p in [literals]` with non-null scalars (string, integer, float, boolean;
 equality is typed, `1` is not `1.0`, as everywhere in NQL), `v.id = "…"` /
 `v.id in [...]`, and the pattern's inline properties `(c:Chunk {kind: "x"})`.
-Everything else — ranges, `<>`, `not in`, `null`, list or object values,
+Everything else — ranges, `!=`, `not in`, `null`, list or object values,
 functions, other variables — still applies to the search's rows, and the whole
 `where` is always re-applied, so pushing never admits a row that fails it.
 `rank(c)` and `score(c)` are computed in that universe, the same as
@@ -490,23 +542,23 @@ where p.active = true
 ```
 
 ```nql
--- Exploration (fast/approximate)
+// Exploration (fast/approximate)
 find community_fast(n) as cluster_fast
 from (n)
 limit 1
 
--- Exact Louvain partition
+// Exact Louvain partition
 find community(n) as cluster
 from (n)
 limit 1
 
--- Leiden (Traag et al. 2019) — well-connected communities, deterministic
+// Leiden (Traag et al. 2019) — well-connected communities, deterministic
 find n.name, leiden(n) as leiden_cluster
 from (n)
 order by leiden_cluster
 limit 20
 
--- Compare Louvain vs Leiden in one query (independent caches)
+// Compare Louvain vs Leiden in one query (independent caches)
 find n.name, community(n) as louvain, leiden(n) as leiden_comm
 from (n)
 limit 10
@@ -516,40 +568,57 @@ limit 10
 
 ## Data Export (EXPORT)
 
-Export results to CSV or JSON.
-Best practice is to place `export` at the end of the query.
-The export path is optional.
-If no path is provided, the result is returned inline.
+Export the result of a `find` to CSV, JSON, Arrow IPC or Parquet. `export` goes
+at the end of the query, after `limit`.
 
 ### Syntax
 ```nql
-find ...
-from ...
+find p.name, p.age
+from (p:Person)
 export csv with path="path/to/file.csv", header=true, separator=","
 ```
 
 ```nql
-find ...
-from ...
+find p.name, p.age
+from (p:Person)
 export json with path="path/to/file.json", pretty=true
 ```
 
 ```nql
-find ...
-from ...
+// No path: the result comes back inline, one JSON object per line
+find p.name, p.age
+from (p:Person)
 export json with jsonl=true
 ```
 
 ```nql
--- Not supported:
-export csv with header=true
-find ...
+// Binary formats always write a file
+find p.name, p.age from (p:Person) export arrow with path="people.arrow"
+find p.name, p.age from (p:Person) export parquet "people.parquet"
 ```
 
-### Supported Formats
-- **CSV**: Optional path. Options: `header=true|false`, `delimiter=","`.
-- **JSON**: Optional path. Options: `pretty=true|false`, `jsonl=true|false`.
-- **ARROW/PARQUET**: Not exported via NQL. Use the Graph API (`to_arrow()`, `export_parquet()`).
+`export` before `find` is not supported.
+
+### Formats and options
+
+| Format | Options | Without a path |
+|---|---|---|
+| `csv` | `path`, `separator` (default `","`), `header` (default `true`) | returned inline |
+| `json` | `path`, `pretty` (default `false`), `jsonl` (default `false`) | returned inline |
+| `arrow` | `path` (required): writes an Arrow IPC file | error |
+| `parquet` | none: the path goes in the syntax, `export parquet "file.parquet"` | — |
+
+Options are checked per format (0.9.4). An unknown option is a named error
+that lists the valid ones: `export csv with delimiter=";"` fails and says the
+option is `separator`. `arrow` and `parquet` need the `analytics` feature (the
+Python wheel includes it); without it they are a named error. Until 0.9.3
+unknown options were ignored, `export arrow` returned a text summary and
+`export parquet` reported success without writing the file.
+
+Inline export (csv and json without `path`): in Rust,
+`graph.execute_statement(q)` returns `NqlResult::Export { data, .. }` with the
+text; in Python, `graph.execute_nql(q).data` (new in 0.9.4). With a path,
+`data` holds the same text (csv/json) or the written path (arrow/parquet).
 
 **Example (CSV export):**
 ```nql
@@ -558,6 +627,25 @@ from (p:Person)
 order by p.age
 export csv with path="./users.csv", header=true
 ```
+
+---
+
+## Time travel (AT TIMESTAMP)
+
+The grammar accepts `at timestamp <n>` after `limit` and before `export`:
+
+```nql
+find p.name from (p:Person) limit 10 at timestamp 42
+```
+
+`<n>` would be a value of the database's logical clock (a counter that grows
+with commits), not Unix time. **NQL does not apply the clause yet.** Since
+0.9.4 a query with `at timestamp` is a named error (until 0.9.3 it read the
+current state with no warning, #298). Point-in-time reads are
+the Rust API: `graph.get_node_at_strict(id, ts)` reads the version of a node
+visible at `ts` (an error if there is none); `graph.get_node_at(id, ts)` and
+the snapshot `graph.as_of(ts)` fall back to the current node when no version
+is found. Python has no time-travel API.
 
 ---
 
@@ -579,6 +667,7 @@ export csv with path="./users.csv", header=true
 | Float | `3.14` | Decimals. |
 | Bool | `true`, `false` | Boolean logic. |
 | Null | `null` | Absence of value. |
+| List | `[1, -2]`, `["a", "b"]` | Literal lists, for `in [..]` and `vector = [...]`. |
 
 ---
 
@@ -587,7 +676,7 @@ export csv with path="./users.csv", header=true
 ### 🔬 For Sociologists: Network Analysis
 Finding opinion leaders in a community.
 ```nql
--- Who is "followed" by people who are themselves highly followed?
+// Who is "followed" by people who are themselves highly followed?
 find leader.name
 from (leader:Person) <- [:FOLLOWS] <- (follower:Person) <- [:FOLLOWS] <- (fan:Person)
 limit 20

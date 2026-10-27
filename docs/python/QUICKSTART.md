@@ -14,10 +14,13 @@ pip install nopaldb
 ```
 
 ### From Source
+Only needed to work on NopalDB itself; `pip install nopaldb` is the normal path.
+With a virtualenv active and a Rust toolchain installed:
 ```bash
 git clone https://github.com/sharop/nopaldb.git
-cd nopaldb
-maturin develop --release --features python-full
+cd nopaldb/nopaldb          # the crate directory, where pyproject.toml lives
+pip install maturin
+maturin develop --release   # features come from pyproject.toml (python-full)
 ```
 
 ### Verify Installation
@@ -131,9 +134,11 @@ result = graph.execute_nql("""
 """)
 ```
 
-### Relationships without Explicit Variables
+### Relationships with Anonymous Endpoints
 ```python
-# Auto-generated variables (_source, _target)
+# `()` matches any node. With `find *` the unnamed endpoints show up as
+# n.* (source) and m.* (target); name them, as in (a)-[r:KNOWS]->(b),
+# when you want to project or filter their properties.
 result = graph.execute_nql("""
     find *
     from ()-[r:KNOWS]->()
@@ -169,8 +174,8 @@ nodes_bytes, edges_bytes = graph.to_arrow_complete()
 nodes_reader = pa.ipc.open_stream(nodes_bytes)
 edges_reader = pa.ipc.open_stream(edges_bytes)
 
-nodes_df = nodes_reader.read_next_batch().to_pandas()
-edges_df = edges_reader.read_next_batch().to_pandas()
+nodes_df = nodes_reader.read_all().to_pandas()
+edges_df = edges_reader.read_all().to_pandas()
 
 print(f"Nodes: {len(nodes_df)}")
 print(f"Edges: {len(edges_df)}")
@@ -228,15 +233,22 @@ for name in ["Alice", "Bob", "Charlie", "Diana"]:
 tx.add_edge(users[0], users[1], "FOLLOWS", {"since": 2020})
 tx.add_edge(users[1], users[2], "FOLLOWS", {"since": 2021})
 tx.add_edge(users[0], users[3], "FOLLOWS", {"since": 2019})
+tx.add_edge(users[3], users[1], "FOLLOWS", {"since": 2022})
 
 tx.commit()
 
-# Analyze
+# Analyze: followers per user (f follows a)
 result = graph.execute_nql("""
     find a.name, count(*) as followers
-    from ()-[r:FOLLOWS]->(a:User)
+    from (f:User)-[r:FOLLOWS]->(a:User)
     group by a.name
+    order by followers desc, a.name
 """)
+for row in result:
+    print(row["a.name"], row["followers"])
+# Bob 2
+# Charlie 1
+# Diana 1
 ```
 
 ### Fraud Detection (Synthetic Offshore Network)

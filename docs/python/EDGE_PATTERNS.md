@@ -6,35 +6,49 @@ Guía completa para trabajar con relaciones en NopalDB.
 
 ## 🎯 Sintaxis de Edge Patterns
 
+Los bloques de esta sección son fragmentos de `from`; en una consulta van
+como `find ... from <patrón>`. Los comentarios dentro de NQL son `// línea` y
+`/* bloque */` (`--` y `#` no son comentarios y no parsean).
+
 ### Básico
 ```nql
-(a)->(b)                    # Cualquier relación
-(a)-->(b)                   # Bidireccional
-(a)<-(b)                    # Relación entrante
+(a)->(b)                    // Cualquier relación saliente
+(a)<-(b)                    // Relación entrante
+(a)<->(b)                   // Ambos sentidos
+(a)<-[:KNOWS]->(b)          // Ambos sentidos, con tipo
 ```
 
 ### Con Variable
 ```nql
-(a)-[r]->(b)                # Variable 'r' para la arista
+(a)-[r]->(b)                // Variable 'r' para la arista
 ```
 
 ### Con Tipo
 ```nql
-(a)-[:KNOWS]->(b)           # Solo relaciones KNOWS
-(a)-[:WORKS_AT|LIVES_IN]->(b)  # Múltiples tipos (futuro)
+(a)-[:KNOWS]->(b)           // Solo relaciones KNOWS
 ```
+
+Varios tipos en un mismo patrón (`[:WORKS_AT|LIVES_IN]`) no se soportan aún;
+usa una variable y filtra por tipo:
+`find a.name, b.name from (a)-[r]->(b) where r.type in ['WORKS_AT', 'LIVES_IN']`.
 
 ### Con Variable y Tipo
 ```nql
-(a)-[r:KNOWS]->(b)          # Variable + tipo
+(a)-[r:KNOWS]->(b)          // Variable + tipo
 ```
 
-### Sin Variables (Auto-generadas) ✨ NUEVO
+### Extremos anónimos
 ```nql
-()-[r:KNOWS]->()            # Variables _source, _target
-()->(b)                     # Solo _target
-(a)->()                     # Solo _source
+()-[r:KNOWS]->()            // Cualquier origen y destino
+()->(b)                     // Solo nombras el destino
+(a)->()                     // Solo nombras el origen
 ```
+
+`()` casa con cualquier nodo. Con `find *`, los extremos sin nombre salen como
+`n.*` (origen) y `m.*` (destino); si quieres proyectar o filtrar sus
+propiedades, nómbralos: `(a)-[r:KNOWS]->(b)`. Desde 0.9.4 (#293) un extremo
+anónimo nunca toma el nombre del otro extremo (hasta 0.9.3,
+`find u.name from ()-[:F]->(u)` podía devolver los orígenes).
 
 ---
 
@@ -58,15 +72,15 @@ tx.commit()
 ### Consultar Propiedades
 
 ```nql
--- Proyección simple
+// Proyección simple
 find r.since, r.strength
 from (a:Person)-[r:KNOWS]->(b:Person)
 
--- Con nombres de nodos
+// Con nombres de nodos
 find a.name, r.since, b.name
 from (a:Person)-[r:KNOWS]->(b:Person)
 
--- Wildcard (incluye propiedades de edges)
+// Wildcard (incluye propiedades de edges)
 find *
 from (a:Person)-[r:KNOWS]->(b:Person)
 ```
@@ -180,11 +194,11 @@ group by r.strength
 
 ### Análisis Temporal
 ```nql
--- Conexiones por año
-find year(r.since) as año, count(*) as conexiones
+// Conexiones por año (r.since guarda el año como entero)
+find r.since, count(*) as conexiones
 from ()-[r:KNOWS]->()
-group by año
-order by año desc
+group by r.since
+order by r.since desc
 ```
 
 ### Score Promedio
@@ -194,6 +208,10 @@ from (a:Person)-[r:KNOWS]->()
 group by a.name
 having avg(r.trust_score) > 0.8
 ```
+
+Desde 0.9.4 (#294). `having confianza_promedio > 0.8`, con el alias, es lo
+mismo; hasta 0.9.3 la primera forma pedía `r.trust_score` en el `group by` y
+la del alias no devolvía grupos.
 
 ---
 
@@ -205,10 +223,10 @@ having avg(r.trust_score) > 0.8
 
 ### Optimizar Queries
 ```nql
--- Rápido: tipo específico
+// Rápido: tipo específico
 from (a)-[:KNOWS]->(b)
 
--- Lento: filtrar después
+// Lento: filtrar después
 from (a)-[r]->(b)
 where r.type = 'KNOWS'
 ```
@@ -219,20 +237,24 @@ where r.type = 'KNOWS'
 
 ### Synthetic Offshore Network
 ```nql
--- Oficiales en múltiples jurisdicciones
-find o.name, 
-       count(distinct e.jurisdiction) as jurisdicciones,
-       avg(r.ownership_percentage) as porcentaje_promedio
+// Oficiales con participación en más de 3 entidades
+find o.name,
+     count(*) as entidades,
+     avg(r.ownership_percentage) as porcentaje_promedio
 from (o:Officer)-[r:OFFICER_OF]->(e:Entity)
 where r.ownership_percentage > 0
 group by o.name
-having count(distinct e.jurisdiction) > 3
-order by jurisdicciones desc
+having count(*) > 3
+order by entidades desc
 ```
+
+`count(distinct ...)` no se soporta. Para contar jurisdicciones distintas,
+agrupa por las dos columnas (`find o.name, e.jurisdiction ... group by
+o.name, e.jurisdiction`) y cuenta las filas por oficial en Python.
 
 ### Detección de Fraude
 ```nql
--- Transacciones sospechosas
+// Transacciones sospechosas
 find t.amount, t.timestamp, a.name, b.name
 from (a:Account)-[t:TRANSFER]->(b:Account)
 where t.amount > 10000 

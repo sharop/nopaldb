@@ -1,12 +1,8 @@
 # NopalDB Python API Reference
-# Referencia del API de NopalDB Python
 
-**[English](#english)** | **[Español](#español)**
-
----
-
-<a name="english"></a>
-## 🔷 English
+> En español: [docs/es/API_PYTHON.md](../es/API_PYTHON.md). Exact signatures
+> of every method: [API cheat sheet](API_CHEATSHEET.md) and the stub
+> `nopaldb/python/nopaldb/nopaldb.pyi`.
 
 ### Graph Class
 
@@ -179,15 +175,22 @@ graph = nopaldb.Graph.in_memory()
 
 #### Transaction Methods
 
-##### `begin_transaction() -> Transaction`
+##### `begin_transaction(isolation: str | None = None) -> Transaction`
 
 Start a new transaction.
 
 ```python
-tx = graph.begin_transaction()
+tx = graph.begin_transaction()                  # Read Committed
 # ... add nodes/edges ...
 tx.commit()
+
+tx = graph.begin_transaction("serializable")
 ```
+
+**Parameters:**
+- `isolation` (str, optional): `"read_uncommitted"`, `"read_committed"`
+  (the default), `"repeatable_read"` or `"serializable"`. Anything else raises
+  `ValueError`. See [Configuration](CONFIGURATION.md) § Concurrency.
 
 **Returns:** Transaction instance
 
@@ -220,7 +223,9 @@ stats = profile.profile
 
 **Returns:** `NqlResult`
 
-**Raises:** RuntimeError if query fails
+**Raises:** `RuntimeError` if the statement does not parse, fails
+validation (for example a bare property as a condition, `where p.active`,
+since 0.9.4) or fails to execute.
 
 ---
 
@@ -234,7 +239,10 @@ Export nodes to Apache Arrow format.
 nodes_bytes = graph.to_arrow(label="Person")
 ```
 
-**Returns:** Arrow IPC stream (bytes)
+**Returns:** Arrow IPC stream (bytes). With `label`: `id`, `label` and one
+column per property of those nodes. Without it: only `id`, `label` and
+`property_count`, and an empty graph raises `RuntimeError`. Columns and empty
+cases of every export method: [ARROW_EXPORT.md](ARROW_EXPORT.md).
 
 ---
 
@@ -255,10 +263,13 @@ Until 0.6.5 this raised `ValueError`.
 
 ##### `to_arrow_complete(label: str = None) -> tuple[bytes, bytes]`
 
-Export complete graph (nodes + edges) to Arrow.
+Export complete graph (nodes + edges, with their properties) to Arrow. With
+`label`, the subgraph induced by that label: its nodes and only the edges whose
+two endpoints have it, read as one consistent state (writers wait meanwhile).
 
 ```python
 nodes_bytes, edges_bytes = graph.to_arrow_complete()
+people, knows = graph.to_arrow_complete("Person")
 ```
 
 **Returns:** Tuple of (nodes_bytes, edges_bytes)
@@ -307,16 +318,18 @@ Manages atomic operations on the graph.
 
 #### Methods
 
-##### `add_node(label: str, properties: dict = None) -> str`
+##### `add_node(label: str, properties: dict) -> str`
 
-Add a node to the graph.
+Add a node to the graph; returns its UUID. `properties` is required (pass
+`{}` for none).
 
 ```python
 tx.add_node("Person", {"name": "Alice"})
 ```
 
 **Properties Support:**
-- `str`, `int`, `float`, `bool`, `None`, `bytes`
+- `str`, `int`, `float`, `bool`, `bytes`, `None` (stored as null)
+- `list`, `tuple` (stored as a list) and `dict`, nested to any depth
 
 ##### `add_edge(source: str, target: str, edge_type: str, properties: dict = None) -> str`
 
@@ -326,14 +339,14 @@ Add an edge between two nodes.
 tx.add_edge(id1, id2, "KNOWS", {"since": 2024})
 ```
 
-##### `delete_node(id: str)`
-Mark a node for deletion.
-
-##### `delete_edge(id: str)`
-Mark an edge for deletion.
-
 ##### `commit()` / `rollback()`
 Finalize or cancel the transaction.
+
+A transaction only adds. To delete, use NQL
+(`graph.execute_nql('delete (p:Person) where p.name = "Alice"')`, which also
+removes the node's edges) or `graph.delete(label, key, value)`, which deletes
+the node whose property `key` equals `value` and returns its id (`None` if
+there is none).
 
 ---
 
@@ -345,7 +358,9 @@ Finalize or cancel the transaction.
 - `explain`: `str | None`
 - `profile`: `ProfileResult | None`
 - `message`: `str | None`
-- `summary`: resumen legible del resultado
+- `data`: `str | None` (since 0.9.4) — the content of an `export`
+  statement: the CSV/JSON text, or the path written for Arrow/Parquet
+- `summary`: human-readable summary of the result
 
 ### QueryResult Class
 
@@ -371,62 +386,25 @@ Structured result for `PROFILE <query>`.
 
 ---
 
-<a name="español"></a>
-## 🔷 Español
+## Other methods
 
-### Clase Graph
+This page covers the core: opening, transactions, NQL, Arrow export, bulk
+loading and the result classes. Everything else has a one-line entry in the
+[API cheat sheet](API_CHEATSHEET.md), which CI checks against the stub
+(`nopaldb.pyi`), and a topic page:
 
-Punto de entrada principal para trabajar con NopalDB.
-
-#### Métodos de Consulta
-
-##### `execute_nql(query: str) -> NqlResult`
-
-Ejecuta una consulta NQL. Soporta tanto lectura (`FIND`) como escritura (`ADD`, `UPDATE`, `DELETE`).
-
-```python
-# Lectura
-res = graph.execute_nql("find p.nombre from (p:Persona)")
-for row in res.query:
-    print(row["p.nombre"])
-
-# Escritura
-res = graph.execute_nql("add (p:Persona {nombre: 'Alice'})")
-print(res.write)
-```
-
-**Parámetros:**
-- `query` (str): Cadena de consulta NQL
-
-**Ver también:** [Guía NQL](NQL_GUIDE.md)
+| area | methods | see |
+|---|---|---|
+| Open / close | `open_with_profile`, `in_memory_with_profile`, `close`, `with nopaldb.Graph.open(...) as g:` | [Configuration](CONFIGURATION.md) |
+| Point reads and neighbours | `get_node(s)`, `get_edge(s)`, `neighbors`, `degree`, `neighborhood` | [GraphRAG](../GRAPHRAG.md) |
+| Idempotent writes | `upsert`, `upsert_many`, `delete(label, key, value)` | [API cheat sheet](API_CHEATSHEET.md) |
+| Indexes | `create_index`, `drop_index`, `list_indexes`, `describe_index` | [Configuration](CONFIGURATION.md) |
+| Embeddings and search | `add_node_embedding(s)`, `knn_nodes`, `search_hybrid`, `search_hybrid_explain` | [Embeddings](../EMBEDDINGS.md), [Hybrid search](../HYBRID_SEARCH.md) |
+| Communities | `leiden`, `leiden_hierarchy`, `materialize_communities`, `community_members`, `upsert_community_report`, `stale_reports` | [GraphRAG](../GRAPHRAG.md) |
+| Schema | `get_schema`, `get_labels`, `get_edge_types`, `get_label_properties`, … | [Schema inspection](SCHEMA_INSPECTION.md) |
+| Whole-graph export | `export_graph`, `nopaldb.networkx.to_networkx` | [NetworkX](NETWORKX.md) |
+| Semantic | `import_turtle`, `export_turtle`, `validate_shapes`, `nopaldb.ELReasoner` | [API cheat sheet](API_CHEATSHEET.md) |
 
 ---
 
-#### Métodos de Exportación
-
-##### `to_arrow(label: str = None) -> bytes`
-
-Exporta nodos a formato Apache Arrow.
-
-##### `edges_to_arrow() -> bytes`
-
-Exporta aristas a formato Apache Arrow.
-
----
-
-### Clase Transaction
-
-#### Métodos
-
-##### `add_node(label: str, properties: dict = None) -> str`
-Agrega un nodo en la transacción actual.
-
-##### `add_edge(source: str, target: str, edge_type: str, properties: dict = None) -> str`
-Agrega una arista. Soporta propiedades en la arista.
-
----
-
-### Reference / Referencia
-
-**Version:** 0.2.0  
-**Updated:** January 2026
+**Español:** la referencia en español es [docs/es/API_PYTHON.md](../es/API_PYTHON.md).

@@ -10,6 +10,7 @@ Use the exact method names from the cheat sheet; `execute`, `upsert_node`, `crea
 - [Quick start](https://github.com/sharop/nopaldb/blob/main/docs/python/QUICKSTART.md)
 - [API reference](https://github.com/sharop/nopaldb/blob/main/docs/python/API_REFERENCE.md)
 - [Type stub](https://github.com/sharop/nopaldb/blob/main/nopaldb/python/nopaldb/nopaldb.pyi): the authoritative signatures
+- [NetworkX adapter](https://github.com/sharop/nopaldb/blob/main/docs/python/NETWORKX.md): `nopaldb.networkx`, export a graph or subgraph to NetworkX
 
 ## NQL
 
@@ -27,4 +28,5 @@ Use the exact method names from the cheat sheet; `execute`, `upsert_node`, `crea
 
 - [README](https://github.com/sharop/nopaldb/blob/main/README.md)
 - [CHANGELOG](https://github.com/sharop/nopaldb/blob/main/CHANGELOG.md)
+- [Upgrading to 0.9](https://github.com/sharop/nopaldb/blob/main/docs/UPGRADING_0.9.md)
 - [Repository](https://github.com/sharop/nopaldb) · [PyPI](https://pypi.org/project/nopaldb/) · [crates.io](https://crates.io/crates/nopaldb)

@@ -30,14 +30,14 @@ NopalDB organizes features into tiers. Choose the one that matches your work:
 
 ```bash
 cargo build -p nopaldb                        # default (redb backend)
-cargo build -p nopaldb --features core        # + analytics, ML, algorithms, hypergraph
-cargo build -p nopaldb --features semantic    # + OWL-EL reasoner, Turtle import/export
-cargo build -p nopaldb --features full        # complete public feature set
+cargo build -p nopaldb --features core        # + analytics, ML, algorithms, hypergraph, embeddings/HNSW, full-text, hybrid
+cargo build -p nopaldb --features semantic    # + OWL-EL reasoner, Turtle import/export, SHACL
+cargo build -p nopaldb --features full        # + full-isolation (complete public feature set)
 ```
 
 Tiers are additive: `full ⊃ semantic ⊃ core`.
 
-Python bindings are orthogonal — add `python` to any tier: `--features core,python`.
+Python bindings are orthogonal and are built with `maturin`, not `cargo build` (PyO3 needs Python's linker configuration): `cd nopaldb && maturin develop --release` uses the `python-full` feature from `pyproject.toml`. With the wheel installed in your venv, `make check-python` runs the stub and sample checks CI runs.
 
 See **[Feature Tiers Guide](docs/FEATURE_TIERS.md)** for the complete reference, build recipes, and decision matrix.
 
@@ -55,8 +55,8 @@ cargo test -p nopaldb --features semantic --lib
 cargo test -p nopaldb --features full --lib
 
 # Integration tests (require specific features)
-cargo test --test owl_import_integration_test --features owl-import
-cargo test --test p1_isolation_levels_test --features full-isolation
+cargo test -p nopaldb --features semantic --test owl_import_integration_test
+cargo test -p nopaldb --features full-isolation --test p1_isolation_levels_test
 
 # Full QA package
 make package-qa
@@ -70,10 +70,12 @@ We enforce strict code quality standards. Before submitting a PR, please run:
     ```bash
     cargo fmt
     ```
-2.  **Run Clippy** (ensure 0 warnings):
+2.  **Run Clippy** (ensure 0 warnings; this is the command CI runs):
     ```bash
-    cargo clippy -p nopaldb --features core -- -D warnings
+    cargo clippy -p nopaldb --features semantic -- -D warnings
     ```
+    `make clippy-full` also lints the `full` tier. CI compiles with `-D warnings`, so also run
+    `cargo check -p nopaldb --features full --examples` if you touched examples.
 
 ## Commit Guidelines
 
@@ -106,7 +108,9 @@ nopaldb/src/
 ├── algorithms/     PageRank, centrality, clustering, community, shortest path
 ├── arrow_export/   Zero-copy Arrow IPC for ML pipelines
 ├── ml/             ML integrations (Arrow tensors, PyG)
+├── embeddings/     Vector embeddings + HNSW index
 ├── reasoner/       OWL-EL reasoner (CR1+CR2+CR3)
+├── shacl/          SHACL validation
 ├── rdf_owl/        Turtle importer/exporter
 ├── schema/         Runtime schema inference
 └── python/         PyO3 bindings

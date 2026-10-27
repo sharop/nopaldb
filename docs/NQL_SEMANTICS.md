@@ -87,6 +87,8 @@ c. **Exactness when promised.** A branch that reports itself exact returns the s
 d. **Direction symmetry.** See contract 4.
 e. **No silent fallbacks.** What NQL does not evaluate is a named error, never a condition that silently passes or fails. That includes arithmetic `+ - * / %`, negation `!` / `not`, unary minus on an expression, a search under `or`, and a write pattern of more than one hop. Until 0.8.2 such operators were dropped (`x * 2 = 6` ran as `x = 6`). Support is tracked in [#269](https://github.com/sharop/nopaldb/issues/269).
 
+   Since 0.9.4 also: a bare property, variable or literal as a `where`/`having` condition is a named error (write `p.active = true`, not `p.active`); a projection alias in `where`/`having` stands for its expression (`find degree(n) as dg … where dg > 1`), unless it has the name of a pattern variable; an anonymous endpoint never takes a name of the pattern; a repeated variable must be the same node (`(a)-[:F]->(b)-[:F]->(a)` are the 2-cycles, `(a)-[:F]->(a)` the self-loops); an unknown `export` option is an error that lists the valid ones; `sketch` / `commit` through `execute_statement` are an error. Until 0.9.3 each of these gave wrong rows, or an OK answer, without an error.
+
 Tested by:
 - (a) `nql_where_candidates_test::residual_predicates_still_filter_and_are_never_widened`, `candidate_set_test::results_lie_in_the_set_and_fill_k_when_the_set_allows` (property test), `hybrid_selective_filter_test`;
 - (b) `nql_pattern_properties_test::two_hops_with_predicates_match_brute_force` and `partitioning_the_where_adds_up` (the rows without a filter are the rows of `P` plus the rows of its complement, the query-partitioning oracle), `nql_pattern_expansion_test::explain_names_the_expansion_filters`;
@@ -114,4 +116,4 @@ These are named errors, never a different result:
 - `OPTIONAL` patterns.
 - Arithmetic and negation in expressions (#269).
 
-Time-travel queries (`at`) are covered by the [NQL reference](en/NQL_REFERENCE.md). Indexes and searches read the current state.
+`at timestamp <n>` parses but NQL does not apply it: since 0.9.4 it is a named error (until 0.9.3 the query read the current state, #298) ([NQL reference § Time travel](en/NQL_REFERENCE.md#time-travel-at-timestamp)). Point-in-time reads are the Rust API. Indexes and searches read the current state.

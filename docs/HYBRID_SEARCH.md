@@ -22,9 +22,9 @@ inspection — see [Explaining a result](#explaining-a-result).
 ## API
 
 - **Rust:** `Graph::search_hybrid(HybridQuery) -> Vec<HybridHit>`.
-- **Python:** `graph.search_hybrid(text=None, vector=None, model=None, k=10, ef=None, label=None, props=None, text_index=None, rrf_k=60.0)` → `list[dict]` of `{node_id, score, text_rank, vector_rank}`.
+- **Python:** `graph.search_hybrid(text=None, vector=None, model=None, k=10, ef=None, label=None, props=None, text_index=None, rrf_k=60.0, hydrate=False, candidates=None)` → `list[dict]` of `{node_id, score, text_rank, vector_rank}` (`hydrate=True` adds each hit's node; `candidates` is a list of node ids that bounds the universe, see [Candidate set](#candidate-set)).
 - **Rust:** `Graph::search_hybrid_explain(HybridQuery) -> HybridExplain` — same search, plus why each hit ranked where it did.
-- **Python:** `graph.search_hybrid_explain(...)` with the same arguments → `dict`.
+- **Python:** `graph.search_hybrid_explain(...)` with the same arguments except `hydrate` → `dict`.
 - **MCP:** the `search_hybrid` tool (read-only).
 - **NQL:** `where hybrid(n, "text", "ref_name", "model")` — see below.
 
@@ -192,8 +192,11 @@ left with a filter is the property lookup and the label confirmation on the
 set.
 
 The NQL `where` restricts the universe since 0.7.0 (see [NQL
-`hybrid()`](#nql-hybrid)). Leiden communities and `neighborhood` results as
-candidate sets are the next part of #214 phase 2b.
+`hybrid()`](#nql-hybrid)). Since 0.9.0 (#214 phase 2b) a Leiden community
+can be the universe too: `graph.community_members(key, via=…)` returns its
+member ids for `candidates`, and NQL has `in_community(...)`; the ids of a
+`neighborhood(...)` result (optionally bounded with `within=`) can be passed
+as `candidates` the same way.
 
 ### How the text path applies the filter
 
@@ -238,9 +241,9 @@ The cutoff is by set size only. A *rare* query term makes the global path
 cheap (0.02 ms per request, 0.56 ms for the whole escalation at 1% document
 frequency) while the term set still costs its 2.3 ms at 512 ids, so sets of
 a few hundred with rare terms pay more than they could; choosing by term
-frequency as well is the planner of #214 (`CandidateSet`), which also makes
-any graph predicate — a community, a neighbourhood, an id list — the
-candidate space of both branches.
+frequency as well is not implemented. (Making a graph predicate — a
+community, a neighbourhood, an id list — the candidate space of both branches
+is the `CandidateSet` of #214, shipped through 0.9.0.)
 
 The allowed-set itself starts from the property index (ids only) and the
 label is confirmed on those candidates; until 0.6.12 it started from the

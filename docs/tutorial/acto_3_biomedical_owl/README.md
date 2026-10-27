@@ -208,16 +208,16 @@ formado antes de cargar datos en él.
 Esta es la diferencia más importante del Acto 3, vale detenerse:
 
 ```sql
--- Query A: búsqueda naive (grafo de propiedades)
--- Encuentra: 1 nodo (sólo el class node "Disease")
+// Query A: búsqueda naive (grafo de propiedades)
+// Encuentra: 1 nodo (sólo el class node "Disease")
 find n.name as nombre
 from (n)
 where n.label = "Disease"
 ```
 
 ```sql
--- Query B: búsqueda semántica (knowledge graph)
--- Encuentra: 5 individuos (Covid19, Dengue, Influenza, Tuberculosis, StrepThroat)
+// Query B: búsqueda semántica (knowledge graph)
+// Encuentra: 5 individuos (Covid19, Dengue, Influenza, Tuberculosis, StrepThroat)
 find n.name as nombre, n.label as tipo_directo
 from (n)
 where instanceOf(n, "Disease")
@@ -436,7 +436,7 @@ Para la query de contraste (que devuelve 0 individuos):
 <!-- source: queries/05_naive_vs_semantic.nql -->
 ```sql
 find n.name from (n) where n.label = "Disease"
--- Resultado: sólo el class node Disease (sin individuos)
+// Resultado: sólo el class node Disease (sin individuos)
 ```
 
 ---

@@ -1,337 +1,139 @@
 # NopalDB Query Planner
 
-**Vigente para**: 0.6.x (revisado 2026-09-19). El plan que imprime `EXPLAIN` es el que se ejecuta ([test de honestidad](../nopaldb/tests/nql_explain_honesty_test.rs)); no hay hints de query: el planner decide solo por indices y estadisticas.
+**Vigente para**: 0.9.x (revisado 2026-10-26). El plan que imprime `EXPLAIN` es el que se ejecuta ([test de honestidad](../nopaldb/tests/nql_explain_honesty_test.rs)); no hay hints de query.
 
 ---
 
-## What is the Query Planner? / ¿Qué es el Query Planner?
+## What it decides / Qué decide
 
-The **Query Planner** is a **cost-based optimizer** that automatically chooses the fastest execution strategy for your queries.
+For a `find` over a single node pattern, the executor picks **how the first
+nodes are fetched**. There are three strategies:
 
-El **Query Planner** es un **optimizador basado en costos** que elige automáticamente la estrategia de ejecución más rápida para tus queries.
+| Strategy | When | Cost |
+|---|---|---|
+| `ID LOOKUP` | `where n.id = "<uuid>"` or `n.id in [...]` | point reads by id |
+| `INDEX SEEK` / `INDEX SEEK (IN)` | `where n.prop = <literal>` or `n.prop in [...]` (alone or inside an `AND`) **and** a `Hash` or `BTree` index exists on `Label.prop` | index lookup, then the rest of the `where` on those rows |
+| `LABEL SCAN` | anything else | reads every node of the label |
+
+What it does **not** do:
+
+- **No range seeks.** `n.age > 50`, `<=`, and `order by` never use an index,
+  `BTree` included: they scan the label.
+- **No join reordering.** A pattern with relationships runs as a
+  `PATTERN PIPELINE` from its first node, in the order written (seeded by an
+  id lookup or by `similar_to`/`hybrid` when present).
+- **No hints** (`USE INDEX` does not exist) and no SQL syntax: queries are NQL
+  (`find … from (n:Label) where …`), see the [NQL reference](en/NQL_REFERENCE.md).
+
+When an equality index exists it is always used; the cost model below only
+adds an estimate (and a note when it would have preferred the scan).
 
 ---
 
-## How It Works / Cómo Funciona
-
-```
-Query → Parser → Planner → Optimizer → Executor → Results
-                    ↓
-            [Choose Best Plan]
-            - Index Seek: O(log N)
-            - Label Scan: O(N)
-            - Filter pushdown
-            - Join reordering
-```
-
----
-
-## Cost Model / Modelo de Costos
-
-### Operation Costs / Costos de Operaciones
-
-| Operation | Cost Formula | Example (1M nodes) |
-|-----------|--------------|-------------------|
-| **Index Seek** | 10 + 0.1 * rows | ~210 (for 2K results) |
-| **Label Scan** | 1.0 * rows | ~1,000,000 |
-| **Filter** | 0.1 * rows | ~100,000 |
-| **Expand** | 0.5 * edges | ~500,000 |
-
-### Cost Estimation / Estimación de Costos
+## EXPLAIN
 
 ```python
-# Without index
-SELECT n FROM Person WHERE name = "Alice"
-→ LabelScan: 1M nodes * 1.0 = 1,000,000 cost
-
-# With index
-SELECT n FROM Person WHERE name = "Alice"
-→ IndexSeek: 10 + (0.1 * 1) = 10.1 cost
-
-# SPEEDUP: 99,990x faster!
-```
-
----
-
-## EXPLAIN Command / Comando EXPLAIN
-
-### Usage / Uso
-
-```sql
-EXPLAIN find n.name
-from (n:Person)
-where n.age > 30
-```
-
-### Output / Salida
-
-```
-Query Execution Plan:
-┌─────────────────────────────────────┐
-│ → IndexSeek (Person_age)            │
-│   Rows: ~2,000                      │
-│   Cost: 20.5                        │
-│   ├─ Index: BTree                   │
-│   └─ Predicate: age > 30            │
-│                                     │
-│ → Filter                            │
-│   Rows: ~2,000                      │
-│   Cost: 200.0                       │
-│   └─ Additional conditions          │
-│                                     │
-│ Total Cost: 220.5                   │
-│ Estimated Time: 0.22ms              │
-└─────────────────────────────────────┘
-```
-
----
-
-## Optimization Strategies / Estrategias de Optimización
-
-### 1. Index Selection / Selección de Índices
-
-**Rule:** Use index if `index_cost < scan_cost`
-
-```python
-# Example decision
-if has_index and (10 + 0.1*results) < (1.0 * total_nodes):
-    use_index()
-else:
-    full_scan()
-```
-
-### 2. Filter Pushdown / Empuje de Filtros
-
-Push filters as early as possible:
-
-```sql
-# ❌ Bad: Filter after join
-SELECT n.name
-FROM (n:Person)-[:KNOWS]->(m:Person)
-WHERE n.age > 30
-
-# ✅ Good: Filter before join
-SELECT n.name
-FROM (n:Person WHERE n.age > 30)-[:KNOWS]->(m:Person)
-```
-
-### 3. Join Reordering / Reordenamiento de Joins
-
-Start with smallest result set:
-
-```sql
-# ❌ Bad: Start with 1M nodes
-FROM (n:Person)-[:WORKS_AT]->(c:Company WHERE c.name = "Google")
-
-# ✅ Good: Start with 1 node
-FROM (c:Company WHERE c.name = "Google")<-[:WORKS_AT]-(n:Person)
-```
-
----
-
-## Statistics / Estadísticas
-
-### Graph Statistics / Estadísticas del Grafo
-
-The planner uses these statistics:
-
-El planner usa estas estadísticas:
-
-```rust
-struct GraphStats {
-    total_nodes: usize,           // Total nodes
-    nodes_per_label: HashMap,     // Nodes per label
-    total_edges: usize,           // Total edges
-    edges_per_type: HashMap,      // Edges per type
-    avg_degree: f64,              // Average connections
-    property_cardinality: HashMap // Unique values per property
-}
-```
-
-### Updating Statistics / Actualizar Estadísticas
-
-```python
-# Automatic after bulk operations
-with graph.bulk_loader(1000) as loader:
-    for label, props in nodes:
-        loader.add_node(label, props)
-# → the schema cache is invalidated by every write; the next read rebuilds it
-
-# Manual update
-graph.rebuild_schema()  # Rebuilds statistics
-```
-
----
-
-## Performance Monitoring / Monitoreo de Rendimiento
-
-### Query Profiling / Perfilado de Queries
-
-```python
-# Enable profiling
-graph.enable_profiling()
-
-# Run query
-result = graph.execute_nql("find n from (n:Person)")
-
-# Get profile
-profile = graph.get_last_profile()
-print(f"Execution time: {profile['time_ms']}ms")
-print(f"Rows scanned: {profile['rows_scanned']}")
-print(f"Rows returned: {profile['rows_returned']}")
-print(f"Index used: {profile['index_used']}")
-```
-
----
-
-## Best Practices / Mejores Prácticas
-
-### 1. Create Indexes for WHERE Clauses
-
-```python
-# ✅ Good
 graph.create_index("Person", "email", "hash")
-result = graph.execute_nql("find n from (n:Person) where n.email = 'alice@x.com'")
-# → Uses index
-
-# ❌ Bad
-result = graph.execute_nql("find n from (n:Person) where n.email = 'alice@x.com'")
-# → Full scan
+print(graph.execute_nql('explain find n.name from (n:Person) where n.email = "p1@example.org"').explain)
 ```
 
-### 2. Use EXPLAIN Before Production
+Real output (0.9.3):
 
-```python
-# Test query performance
-explain = graph.execute_nql("EXPLAIN find n from (n:Person) where n.age > 30")
-print(explain)
-
-# If cost > 10000, create index
-if explain['cost'] > 10000:
-    graph.create_index("Person", "age", "btree")
+```
+Query Execution Plan
+====================
+Strategy: INDEX SEEK
+  Index: Person_email (tipo Hash)
+  Label: Person
+  Predicate: email = p1@example.org
+  Runtime fallback: label scan si el índice regresa vacío o falla.
+Planner estimate: ~2 rows, cost 10.2
 ```
 
-### 3. Monitor Slow Queries
+Without the index, or with a range:
 
-```python
-# Log slow queries (> 100ms)
-graph.set_slow_query_threshold(100)
-
-# Check slow query log
-slow_queries = graph.get_slow_queries()
-for query in slow_queries:
-    print(f"Query: {query['sql']}")
-    print(f"Time: {query['time_ms']}ms")
-    print(f"Plan: {query['plan']}")
 ```
+Strategy: LABEL SCAN
+  Label: Person
+  Predicate: email = p1@example.org
+  Reason: no existe índice para Person.email (crear con CREATE INDEX).
+
+Strategy: LABEL SCAN
+  Reason: la condición no es `var.prop = literal` ni `var.prop in [...]` (ni un AND que los contenga)
+```
+
+On a very small label the estimate can favour the scan; EXPLAIN then adds
+`Cost note: el modelo de costos preferiría LABEL SCAN (label chico); la
+ejecución usa el índice de todas formas.`
+
+Other strategies you may see: `ID LOOKUP`, `INDEX SEEK (IN)`,
+`PATTERN PIPELINE` (with `seed: SIMILAR_TO`, `HYBRID` or `ID LOOKUP` and
+the number of hops), and the vector/hybrid lines described in
+[HYBRID_SEARCH.md](HYBRID_SEARCH.md).
 
 ---
 
-## Examples / Ejemplos
+## PROFILE
 
-### Example 1: Simple Query
-
-```python
-# Query
-result = graph.execute_nql("""
-    find n.name
-    from (n:Person)
-    where n.age > 30
-""")
-
-# Planner decisions:
-# 1. Check for index on Person.age
-# 2. If index exists → IndexSeek
-# 3. If no index → LabelScan
-# 4. Apply filter
-```
-
-### Example 2: Complex Query
+`profile <query>` runs the query and returns the same plan plus timing:
 
 ```python
-# Query with multiple filters
-result = graph.execute_nql("""
-    find n.name, c.name
-    from (n:Person)-[:WORKS_AT]->(c:Company)
-    where n.age > 30 and c.revenue > 1000000
-""")
-
-# Planner decisions:
-# 1. Estimate: Person with age>30 = 10K nodes
-# 2. Estimate: Company with revenue>1M = 100 nodes
-# 3. Start with Company (smaller)
-# 4. Expand to Person
-# 5. Filter by age
+r = graph.execute_nql('profile find n.name from (n:Person) where n.email = "p1@example.org"')
+p = r.profile
+print(p.plan)                    # same text as EXPLAIN
+print(p.execution_ms, p.rows_returned, p.statement_type)   # e.g. 0.19 1 query
 ```
+
+There is no slow-query log and no per-operator profile.
 
 ---
 
-## Troubleshooting / Solución de Problemas
+## Cost model / Modelo de costos
 
-### Query Not Using Index
+`QueryPlanner` (`nopaldb/src/planner/mod.rs`) compares an index seek with a
+label scan using these constants:
 
-**Problem:** Index exists but not used
+| Constant | Value |
+|---|---|
+| `SCAN_COST_PER_NODE` | 1.0 |
+| `INDEX_SEEK_BASE_COST` | 10.0 |
+| `INDEX_SEEK_PER_ROW` | 0.1 |
+| `FILTER_COST_PER_ROW` | 0.1 |
+| `_EXPAND_COST_PER_EDGE` | 0.5 (unused) |
 
-**Solution:**
+- label scan = `nodes_of_label × 1.0`
+- index seek = `10 + 0.1 × (nodes_of_label / cardinality)`
+
+The statistics come from `Graph::get_stats()` (Rust) → `GraphStats`:
+`total_nodes`, `total_edges`, `nodes_per_label`, `edges_per_type`,
+`avg_degree`, `property_cardinality`. The counts come from the schema
+manager; `property_cardinality` is a heuristic (half the label's node count
+per property), not a measured distinct count. `graph.create_planner()`
+returns a planner built from them.
+
+(Python's `graph.get_stats()` is a different thing: the operational state,
+see [OPERATIONS.md](OPERATIONS.md).)
+
+---
+
+## Keeping it accurate / Mantenimiento
+
 ```python
-# Check plan
-explain = graph.execute_nql("EXPLAIN your_query")
-print(explain)
-
-# Verify index name matches
-indexes = graph.list_indexes()
-print(indexes)
-
-# Force index usage
-query_with_hint = "find n from (n:Person USE INDEX Person_age) where n.age > 30"
+graph.list_indexes()      # [(name, label, property, type), ...]
+graph.rebuild_schema()    # recount labels / properties used by the statistics
+graph.rebuild_indexes()   # rebuild user indexes from the nodes
 ```
 
-### High Cost Estimates
+### Query not using the index
 
-**Problem:** Planner estimates high cost
-
-**Solution:**
-```python
-# Update statistics
-graph.rebuild_schema()
-
-# Create appropriate index
-graph.create_index("Person", "age", "btree")
-
-# Verify improvement
-explain_after = graph.execute_nql("EXPLAIN your_query")
-```
+1. `graph.list_indexes()`: is there an index on exactly that `Label.property`?
+2. The predicate must be `n.prop = <literal>` or `n.prop in [...]` on the
+   pattern variable. Ranges, functions and `or` scan.
+3. `FullText` indexes are never used for equality; text goes through
+   `hybrid(...)` / `search_hybrid`.
 
 ---
 
-## Comparison / Comparación
-
-### NopalDB vs Others
-
-| Feature | NopalDB | Neo4j | SQLite |
-|---------|---------|-------|--------|
-| Cost-based | ✅ | ✅ | ✅ |
-| Index hints | ✅ | ✅ | ✅ |
-| Statistics | ✅ | ✅ | ✅ |
-| EXPLAIN | ✅ | ✅ | ✅ |
-| Auto-tuning | 🔜 | ✅ | ❌ |
-
----
-
-## Future Improvements / Mejoras Futuras
-
-- [ ] Histogram statistics
-- [ ] Join cost estimation
-- [ ] Query result caching
-- [ ] Adaptive query execution
-- [ ] Machine learning cost models
-
----
-
-**See Also:**
-- [Indexing Documentation](INDEXING_DOCS.md)
-- [NQL Reference](NQL_REFERENCE.md)
-
-**Ver También:**
-- [Documentación de Indexación](INDEXING_DOCS.md)
-- [Referencia NQL](NQL_REFERENCE.md)
+**See Also / Ver También:**
+- [Indexing Documentation](INDEXING_DOCS.MD)
+- [NQL Reference](en/NQL_REFERENCE.md) · [Referencia NQL](es/NQL_REFERENCIA.md)

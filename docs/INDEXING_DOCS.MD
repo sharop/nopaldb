@@ -1,6 +1,6 @@
 # NopalDB Indexing System
 
-**Vigente para**: 0.6.x (revisado 2026-09-19). Los tres tipos (`Hash`, `BTree`, `FullText`) son los de `IndexType`; el indice de propiedades del layout v2 se describe en [PROPERTY_INDEXING.md](PROPERTY_INDEXING.md) y el analizador del indice de texto en [INDEXING_DOCS](#3-full-text-index-tantivy-powered) y [docs/en/NQL_REFERENCE.md](en/NQL_REFERENCE.md) (`CREATE INDEX ... WITH`).
+**Vigente para**: 0.9.x (revisado 2026-10-26). Los tres tipos (`Hash`, `BTree`, `FullText`) son los de `IndexType`; el indice de propiedades del layout v2 se describe en [PROPERTY_INDEXING.md](PROPERTY_INDEXING.md) y el analizador del indice de texto en [INDEXING_DOCS](#3-full-text-index-tantivy-powered) y [docs/en/NQL_REFERENCE.md](en/NQL_REFERENCE.md) (`CREATE INDEX ... WITH`).
 
 ---
 
@@ -40,42 +40,42 @@ result = graph.execute_nql("""
 ```
 
 **Performance:**
-- **Without index**: O(N) - scan all nodes
-- **With hash index**: O(1) - instant lookup
-- **Speedup**: 1000x for 1M nodes
+- **Without index**: the query reads every node of the label (`LABEL SCAN`)
+- **With an index**: `where n.prop = <literal>` and `where n.prop in [...]`
+  (alone or inside an `AND`) are answered by an index seek (`INDEX SEEK`);
+  `EXPLAIN` shows which one ran
 
 ---
 
-### 2. BTree Index (O(log N) range queries)
+### 2. BTree Index
 
-**Use for:** Range queries, sorting  
-**Usar para:** Consultas de rangos, ordenamiento
+**Use for:** Equality lookups today, like Hash (ordered structure internally)  
+**Usar para:** Hoy, búsquedas de igualdad, igual que Hash (estructura ordenada por dentro)
 
 ```rust
 // Rust
 graph.create_index("Person", "age", IndexType::BTree).await?;
-
-// Query
-find n from (n:Person) where n.age > 30 and n.age < 50
 ```
 
 ```python
 # Python
 graph.create_index("Person", "age", "btree")
-
-# Query
-result = graph.execute_nql("""
-    find n.name, n.age
-    from (n:Person)
-    where n.age >= 18 and n.age <= 65
-    order by n.age
-""")
 ```
 
-**Performance:**
-- **Without index**: O(N) - scan all nodes
-- **With btree index**: O(log N) - binary search
-- **Speedup**: 100x for 1M nodes
+**Ranges are not served by the index.** The query planner only seeks an
+index for `= <literal>` and `in [...]`; a range such as `n.age > 50` (or
+`order by`) runs as a label scan whatever the index type. Check it with
+`EXPLAIN`:
+
+```
+explain find n.name from (n:Person) where n.age > 50
+Strategy: LABEL SCAN
+  Reason: la condición no es `var.prop = literal` ni `var.prop in [...]` (ni un AND que los contenga)
+```
+
+**Los rangos no usan el índice.** El planificador solo busca en un índice
+con `= <literal>` e `in [...]`; un rango (`n.age > 50`) o un `order by` se
+resuelven recorriendo la etiqueta, sea cual sea el tipo de índice.
 
 ---
 
@@ -177,49 +177,36 @@ for name, label, prop, type in indexes:
 
 ### Performance Tips / Tips de Rendimiento
 
-1. **Create indexes BEFORE bulk imports**
+1. **Either order works for bulk imports**
    ```python
-   # ❌ Slow
-   import_1M_nodes()
-   graph.create_index("Person", "name", "hash")  # Slow backfill
-   
-   # ✅ Fast
+   # An index created first is maintained on every write
    graph.create_index("Person", "name", "hash")
-   import_1M_nodes()  # Indexed on insert
+   import_nodes()
+
+   # An index created afterwards backfills the existing nodes
+   # (progress via graph.set_progress_callback)
+   import_nodes()
+   graph.create_index("Person", "name", "hash")
    ```
 
 2. **Use appropriate index type**
-    - Equality: Hash
-    - Range: BTree
+    - Equality / `in [...]`: Hash (or BTree; neither speeds up ranges)
     - Text: FullText
 
-3. **Monitor index size**
+3. **Inspect indexes**
    ```python
-   indexes = graph.list_indexes()
-   for name, label, prop, type in indexes:
+   for name, label, prop, type in graph.list_indexes():
        print(f"{name}: {type}")
+   graph.describe_index("Person_name")   # details of one index
    ```
-
----
-
-## Storage Overhead / Sobrecarga de Almacenamiento
-
-| Index Type | Space Overhead | Example (1M nodes) |
-|------------|----------------|-------------------|
-| Hash       | ~50 bytes/node | 50 MB            |
-| BTree      | ~80 bytes/node | 80 MB            |
-| FullText   | ~200 bytes/node | 200 MB          |
-
-**Total with all 3 indexes**: ~330 MB for 1M nodes
 
 ---
 
 ## Limitations / Limitaciones
 
-- Max 100 indexes per database
-- Max 200 character keys
-- No composite indexes (yet)
-- No partial indexes (yet)
+- No range seeks: `<`, `>`, `between`-style filters and `order by` scan the label
+- One property per index: no composite indexes
+- No partial indexes
 
 ---
 
@@ -231,8 +218,9 @@ for name, label, prop, type in indexes:
 
 **Solution:**
 1. Verify index exists: `graph.list_indexes()`
-2. Check query uses indexed column
-3. Rebuild index: `drop + create`
+2. Run `explain <query>`: only `= literal` / `in [...]` on the indexed
+   property produce `INDEX SEEK`; ranges always scan
+3. Rebuild index: `drop + create` (or `graph.rebuild_indexes()`)
 
 ### Out of memory
 
@@ -263,19 +251,24 @@ graph.create_index("Person", "bio", "fulltext")
 # Insert data
 for i in range(10000):
     graph.execute_nql(f"""
-        create (p:Person {{
+        add (p:Person {{
             email: 'person_{i}@example.com',
             age: {20 + i % 60},
             bio: 'Expert in area {i % 10}'
         }})
     """)
 
-# Query with index (age uses the btree; text goes through hybrid search)
+# Equality on an indexed property: INDEX SEEK
 result = graph.execute_nql("""
     find n.email
     from (n:Person)
-    where n.age > 50
+    where n.email = 'person_42@example.com'
 """)
+
+# A range is a label scan, with or without the btree index
+older = graph.execute_nql("find n.email from (n:Person) where n.age > 50")
+
+# Text goes through hybrid search
 hits = graph.search_hybrid(text="expert", k=10, label="Person")
 
 # Close
@@ -284,15 +277,5 @@ graph.close()
 
 ---
 
-## Performance Benchmarks / Benchmarks de Rendimiento
-
-| Operation | No Index | Hash | BTree | Speedup |
-|-----------|----------|------|-------|---------|
-| Exact match (1M) | 1000ms | 1ms | 5ms | 1000x |
-| Range query (1M) | 5000ms | N/A | 50ms | 100x |
-| Text search (1M) | 10000ms | N/A | 100ms | 100x |
-
----
-
-**Next**: Query Planner Documentation
-**Siguiente**: Documentación del Query Planner
+**Next**: [Query Planner Documentation](QUERY_PLANNER_DOCS.MD)
+**Siguiente**: [Documentación del Query Planner](QUERY_PLANNER_DOCS.MD)

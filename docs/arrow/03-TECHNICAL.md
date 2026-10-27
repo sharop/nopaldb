@@ -104,9 +104,9 @@ for age in ages {
 }
 // Tiempo: O(n)
 
-// Con SIMD (Arrow automático)
-let sum = ages.sum();
-// Tiempo: O(n/8) en CPUs con AVX-512
+// Con el kernel de Arrow (vectorizable por el compilador)
+use arrow::compute::sum;
+let total = sum(&ages);          // ages: &Int64Array → Option<i64>
 ```
 
 **Instrucciones SIMD usadas:**
@@ -114,15 +114,8 @@ let sum = ages.sum();
 - AVX2: 256-bit (8 × i32)
 - AVX-512: 512-bit (16 × i32)
 
-### Benchmarks SIMD
-```
-Operación: Sumar 1M integers
-
-Scalar (loop):     50.0 ms
-SSE2 (4-wide):     12.5 ms  (4x speedup)
-AVX2 (8-wide):      6.2 ms  (8x speedup)
-AVX-512 (16-wide):  3.1 ms  (16x speedup)
-```
+El aprovechamiento real de SIMD depende del CPU, del tipo y de las flags de
+compilación; NopalDB no publica mediciones propias de estos kernels.
 
 ## 🗜️ Compression (Parquet)
 
@@ -212,24 +205,21 @@ Parquet File:
 - ✅ Statistics → Predicate pushdown
 - ✅ Compression → Menor I/O
 
-## 🔄 Zero-Copy IPC (Inter-Process Communication)
+## 🔄 Arrow IPC (Rust → Python)
 
-### Cómo funciona Zero-Copy
-```
-Traditional Copy:
-┌─────────┐ Copy  ┌─────────┐ Copy  ┌─────────┐
-│  Rust   │──────→│ Buffer  │──────→│ Python  │
-│ Memory  │       │         │       │ Memory  │
-└─────────┘       └─────────┘       └─────────┘
-                2× memoria usada
+**No es zero-copy.** El wrapper de Python (`src/python/arrow.rs`) construye el
+`RecordBatch` en Rust, lo serializa a un stream Arrow IPC (`StreamWriter`) y
+copia esos bytes a un `bytes` de Python. `pyarrow.ipc.open_stream` los lee
+sin conversión fila por fila, pero la memoria de Rust y la de Python son
+distintas:
 
-Zero-Copy (Arrow):
-┌─────────┐
-│  Rust   │ ←─────── Python apunta a misma memoria
-│ Memory  │ ←─────── Sin copiar
-└─────────┘
-                1× memoria usada
 ```
+Rust RecordBatch ──serializa──→ Vec<u8> (IPC) ──copia──→ bytes (Python) ──→ pyarrow.Table
+```
+
+Lo que el formato ahorra es la conversión por fila (no hay dicts ni JSON de
+por medio). A partir de la `pyarrow.Table`, `to_pandas()` vuelve a copiar
+(`zero_copy_only=True` falla con varias columnas).
 
 ### Arrow IPC Format
 ```
@@ -240,27 +230,28 @@ Arrow IPC Stream:
 │  - Metadata                             │
 ├─────────────────────────────────────────┤
 │ RecordBatch Message 1                   │
-│  - Buffer pointers (mmap compatible)    │
-│  - No data copy!                        │
+│  - Metadata + buffers de cada columna   │
 ├─────────────────────────────────────────┤
-│ RecordBatch Message 2                   │
-│  - More buffer pointers                 │
+│ RecordBatch Message 2 (opcional)        │
+│  - ...                                  │
 └─────────────────────────────────────────┘
 ```
 
 **Implementación en NopalDB:**
 ```rust
-// Rust side
+// Lado Rust (lo que hace el wrapper; también sirve para escribir un archivo)
+use arrow::ipc::writer::StreamWriter;
 let batch = graph.to_arrow().await?;
-
-// Write to IPC stream (zero-copy possible)
-let mut writer = StreamWriter::try_new(&mut file, &batch.schema())?;
+let mut buf = Vec::new();
+let mut writer = StreamWriter::try_new(&mut buf, &batch.schema())?;
 writer.write(&batch)?;
+writer.finish()?;
+```
 
-// Python side (zero-copy read)
+```python
+# Lado Python: el wrapper ya devuelve los bytes del stream
 import pyarrow as pa
-reader = pa.ipc.open_stream('data.arrow')
-batch = reader.read_next_batch()  # No memory copy!
+table = pa.ipc.open_stream(graph.to_arrow()).read_all()
 ```
 
 ## 📊 Data Types
@@ -321,6 +312,7 @@ promete cada lote:
 | Celda de texto | El escalar tal cual. Listas, objetos y bytes van **en JSON** (los bytes, como arreglo de números). Hasta 0.9.0 eran `<complex>` / `<bytes:N>`, y un valor de otro tipo en una columna entera salía nulo |
 | Columnas de aristas | `Utf8`, con las mismas reglas de celda |
 | `Null` y propiedad ausente | Nulo de Arrow en los dos casos (antes `Null` era el texto `"null"`). Esta vista no los distingue |
+| Propiedad solo con `Null` | Si en todos los nodos exportados la propiedad vale `Null` (o falta), **no tiene columna**: sin un valor no hay tipo que inferir |
 | Nombre reservado | Una propiedad llamada como una columna estructural (`id`, `label`, `source`, `target`, `edge_type`) sale como `property.<nombre>` |
 | Lote vacío | Sin nodos (o sin nodos de esa etiqueta) devuelve un lote vacío con su esquema, como las aristas, en vez de un error |
 
@@ -386,17 +378,21 @@ struct Buffer {
 // - Vectorization automática del compilador
 ```
 
-### Lazy Evaluation
+### Filtrar y proyectar
 ```rust
-// Arrow usa lazy evaluation cuando posible
+// arrow-rs es eager: cada kernel produce un array nuevo.
+use arrow::array::AsArray;
+use arrow::compute::{filter_record_batch, kernels::cmp::gt};
+use arrow::array::Int64Array;
+use arrow::datatypes::Int64Type;
 
-let filtered = batch
-    .filter(|row| row.age > 25)?   // ← No ejecuta aún
-    .project(&["name", "age"])?;   // ← No ejecuta aún
-
-// Solo ejecuta cuando realmente necesitas los datos
-let result = filtered.collect()?;  // ← Ejecuta TODO aquí
+let ages = batch.column_by_name("age").unwrap().as_primitive::<Int64Type>();
+let mask = gt(ages, &Int64Array::new_scalar(25))?;
+let filtered = filter_record_batch(&batch, &mask)?;
+let projected = filtered.project(&[0, 2])?;   // por índice de columna
 ```
+(Evaluación diferida y optimización de consultas son de motores como
+DataFusion o Polars, no de arrow-rs.)
 
 ## 📈 Performance Characteristics
 
@@ -413,30 +409,7 @@ let result = filtered.collect()?;  // ← Ejecuta TODO aquí
 *k = SIMD width (4-16)  
 **Con sorted columns
 
-### Real-World Benchmarks
-```
-Dataset: 1M nodes
-
-Operation: SUM(age)
-Row-oriented: 250ms
-Arrow:        3ms
-Speedup:      83x
-
-Operation: FILTER(age > 25)
-Row-oriented: 500ms
-Arrow:        8ms
-Speedup:      62x
-
-Operation: GROUP BY label
-Row-oriented: 1000ms
-Arrow:        25ms
-Speedup:      40x
-
-Operation: Export to Python
-Row-oriented: 2000ms
-Arrow:        <1ms
-Speedup:      >2000x
-```
+No hay benchmarks de estas operaciones publicados para NopalDB.
 
 ## 🛠️ Implementation in NopalDB
 
@@ -459,94 +432,17 @@ Extract columns (ids, labels, counts)
     [Optional] Write Parquet (disk)
 ```
 
-### Code Flow
-```rust
-// 1. Storage scan
-pub async fn get_all_nodes(&self) -> Result<Vec<Node>> {
-    let mut nodes = Vec::new();
-    let db = self.db.read().await;
-    
-    for item in db.scan_prefix(b"node:") {
-        let (key, value) = item?;
-        // Skip metadata keys
-        if !is_metadata_key(&key) {
-            let node: Node = serde_json::from_slice(&value)?;
-            nodes.push(node);
-        }
-    }
-    
-    Ok(nodes)
-}
+El código vive en `nopaldb/src/arrow_export/mod.rs` (`nodes_to_arrow`,
+`nodes_to_arrow_with_properties`, `edges_to_arrow`, `graph_to_arrow`,
+`versioned_nodes_to_arrow`, `write_parquet`, `read_parquet`) y en los métodos
+de `Graph` (`to_arrow`, `to_arrow_with_label`, `history_to_arrow`,
+`export_parquet`, `import_parquet`).
 
-// 2. Convert to Arrow
-pub fn nodes_to_arrow(nodes: &[Node]) -> Result<RecordBatch> {
-    // Extract columns (columnar conversion)
-    let ids: StringArray = nodes.iter()
-        .map(|n| Some(n.id.to_string()))
-        .collect();
-    
-    let labels: StringArray = nodes.iter()
-        .map(|n| Some(n.label.as_str()))
-        .collect();
-    
-    let counts: Int64Array = nodes.iter()
-        .map(|n| Some(n.properties.len() as i64))
-        .collect();
-    
-    // Create RecordBatch
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(ids) as ArrayRef,
-            Arc::new(labels) as ArrayRef,
-            Arc::new(counts) as ArrayRef,
-        ],
-    )
-}
-
-// 3. Write Parquet
-pub fn write_parquet(batch: &RecordBatch, path: &Path) -> Result<()> {
-    let file = File::create(path)?;
-    let props = WriterProperties::builder()
-        .set_compression(Compression::SNAPPY)
-        .build();
-    
-    let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))?;
-    writer.write(batch)?;
-    writer.close()?;
-    
-    Ok(())
-}
-```
-
-## 🔮 Future Optimizations
-
-### Planned Improvements
-
-1. **Incremental Export**
-```rust
-   // Export solo nodos modificados
-   graph.export_delta("snapshot.parquet").await?;
-```
-
-2. **Predicate Pushdown**
-```rust
-   // Filter antes de export (más eficiente)
-   graph.to_arrow_filtered(|node| node.label == "Person").await?;
-```
-
-3. **Parallel Export**
-```rust
-   // Export paralelo por shards
-   graph.to_arrow_parallel(num_threads: 8).await?;
-```
-
-4. **Property Columns**
-```rust
-   // Export properties como columnas
-   // id | label | name | age | active
-   graph.to_arrow_with_properties(&["name", "age"]).await?;
-```
+Las propiedades como columnas ya existen: `graph.to_arrow_with_label(Some("Person"))`
+(o `nodes_to_arrow_with_properties`) da `id | label | <propiedades por nombre>`,
+con el contrato de la [vista analítica](#vista-analítica-con-propiedades-to_arrow_complete-to_arrow_with_label).
+No existen exportación incremental, exportación con filtro arbitrario ni
+exportación paralela.
 
 ## 📚 References
 

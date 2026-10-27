@@ -68,16 +68,16 @@ NQL `hybrid()` function takes `rrf_k`, `ef_search`, `overfetch` and
 `text_index` ([#115](https://github.com/sharop/nopaldb/issues/115), shipped in
 0.5.19), and since 0.6.9 both `similar_to` and `hybrid()` accept a literal
 vector and seed a one-hop pattern, so search and expansion fit in one query.
-Still open, tracked in
-[#174](https://github.com/sharop/nopaldb/issues/174) and
-[#176](https://github.com/sharop/nopaldb/issues/176):
-
-- `hybrid()` in NQL resolves the pattern label with a label scan;
-- `similar_to` can return fewer than K rows without saying so;
-- NQL has no score column;
-- `hybrid()` in NQL does not yet take property filters;
-- when `neighborhood` truncates, what survives follows BFS order instead of
-  relevance.
+The follow-ups once listed here are done
+([#174](https://github.com/sharop/nopaldb/issues/174),
+[#176](https://github.com/sharop/nopaldb/issues/176)): `hybrid()` no longer
+scans the label and `similar_to` returns K rows when K exist (0.6.10); NQL has
+`score(var)` (0.6.10); `neighborhood` can rank by Personalized PageRank
+(`rank="ppr"`, 0.6.10); and the NQL `where` is the search universe of
+`hybrid()` / `similar_to`, so property filters apply before the top-k (0.7.0).
+What shipped after that — GraphRAG with Leiden communities and community
+reports, `CandidateSet` (#214), the NQL semantic contracts, the NetworkX
+adapter — is in the [CHANGELOG](CHANGELOG.md).
 
 ### 4. Vector index durability
 
@@ -86,11 +86,11 @@ invalidating it ([#113](https://github.com/sharop/nopaldb/issues/113), shipped
 in 0.5.19), the index is persisted and loaded on reopen
 ([#114](https://github.com/sharop/nopaldb/issues/114), shipped in 0.5.20), and
 `benches/hnsw_ops.rs` measures build, insert, search and reopen
-([#112](https://github.com/sharop/nopaldb/issues/112)). Still open: loading
-embeddings in batches — one at a time, 100k vectors take hours
-([#175](https://github.com/sharop/nopaldb/issues/175)) — and measuring
-retrieval latency and recall at the dimensions real models use (384, 1024),
-not only the 64-dimension synthetic set.
+([#112](https://github.com/sharop/nopaldb/issues/112)). Embeddings load in
+batches with `add_node_embeddings` ([#175](https://github.com/sharop/nopaldb/issues/175),
+shipped in 0.6.10). Still open: measuring retrieval quality and latency with
+real text at the dimensions real models use (384, 1024), not only the
+64-dimension synthetic set ([#212](https://github.com/sharop/nopaldb/issues/212)).
 
 ## Out of scope
 
@@ -106,7 +106,7 @@ Decided, not deferred. Each item comes with what we recommend instead.
   the [MCP server](https://github.com/Anxious-Mind-Group/nopaldb-mcp) or your
   own service in front of it.
 - **Several processes on one data directory, or multi-tenancy inside one
-  process.** Both engines are single-process by design, and there are no
+  process.** The storage engine (redb) is single-process by design, and there are no
   tenant primitives. The supported pattern is one data directory per tenant
   and a single curator process per directory; to read a live database from
   elsewhere, take a cold backup and open the copy
@@ -182,17 +182,16 @@ acentos ([#74](https://github.com/sharop/nopaldb/issues/74), entregado en
 `overfetch` y `text_index` ([#115](https://github.com/sharop/nopaldb/issues/115),
 entregado en 0.5.19), y desde 0.6.9 `similar_to` y `hybrid()` aceptan un vector
 literal y siembran un patrón de un salto (de dos desde 0.6.19, #231), así que
-buscar y expandir cabe en una consulta. Sigue abierto, en
-[#174](https://github.com/sharop/nopaldb/issues/174) y
-[#176](https://github.com/sharop/nopaldb/issues/176):
-
-- `hybrid()` en NQL resuelve la etiqueta del patrón recorriendo la etiqueta
-  completa;
-- `similar_to` puede devolver menos de K filas sin avisar;
-- NQL no tiene columna de score;
-- `hybrid()` en NQL todavía no acepta filtros de propiedad;
-- cuando `neighborhood` trunca, lo que sobrevive sigue el orden del BFS y no
-  la relevancia.
+buscar y expandir cabe en una consulta. Los pendientes que antes se listaban aquí están hechos
+([#174](https://github.com/sharop/nopaldb/issues/174),
+[#176](https://github.com/sharop/nopaldb/issues/176)): `hybrid()` ya no
+recorre la etiqueta y `similar_to` devuelve K filas cuando existen (0.6.10);
+NQL tiene `score(var)` (0.6.10); `neighborhood` puede rankear con Personalized
+PageRank (`rank="ppr"`, 0.6.10), y el `where` de NQL es el universo de
+`hybrid()` / `similar_to`, así que los filtros de propiedad se aplican antes
+del top-k (0.7.0). Lo entregado después —GraphRAG con comunidades Leiden y
+reportes de comunidad, `CandidateSet` (#214), los contratos semánticos de NQL,
+el adaptador NetworkX— está en el [CHANGELOG](CHANGELOG.md).
 
 ### 4. Durabilidad del índice vectorial
 
@@ -201,11 +200,12 @@ invalidarlo ([#113](https://github.com/sharop/nopaldb/issues/113), entregado en
 0.5.19), el índice se persiste y se carga al reabrir
 ([#114](https://github.com/sharop/nopaldb/issues/114), entregado en 0.5.20), y
 `benches/hnsw_ops.rs` mide construcción, inserción, búsqueda y reapertura
-([#112](https://github.com/sharop/nopaldb/issues/112)). Sigue abierto: cargar
-embeddings por lotes —uno por uno, 100k vectores tardan horas
-([#175](https://github.com/sharop/nopaldb/issues/175))— y medir latencia y
-recall del retrieval con las dimensiones de los modelos reales (384, 1024), no
-solo con el set sintético de 64 dimensiones.
+([#112](https://github.com/sharop/nopaldb/issues/112)). Los embeddings se
+cargan por lotes con `add_node_embeddings`
+([#175](https://github.com/sharop/nopaldb/issues/175), entregado en 0.6.10).
+Sigue abierto: medir calidad y latencia del retrieval con texto real y las
+dimensiones de los modelos reales (384, 1024), no solo con el set sintético de
+64 dimensiones ([#212](https://github.com/sharop/nopaldb/issues/212)).
 
 ## Fuera del alcance
 
@@ -221,7 +221,7 @@ Decidido, no pospuesto. Cada punto viene con lo que recomendamos en su lugar.
   delante el [servidor MCP](https://github.com/Anxious-Mind-Group/nopaldb-mcp)
   o tu propio servicio.
 - **Varios procesos sobre un mismo directorio de datos, o multi-tenant dentro
-  de un proceso.** Ambos motores son de un solo proceso por diseño y no hay
+  de un proceso.** El motor de almacenamiento (redb) es de un solo proceso por diseño y no hay
   primitivas de tenant. El patrón soportado es un directorio por tenant y un
   único proceso curador por directorio; para leer una base viva desde otro
   lado, backup en frío y abrir la copia (`docs/BACKUP_AND_READ_ONLY.md`).

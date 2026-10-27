@@ -58,11 +58,11 @@ context = render(chunks, ctx["nodes"], ctx["edges"])
 ## In NQL
 
 ```sql
--- search and expand in ONE query: the question's vector is written in it (0.6.9)
+// search and expand in ONE query: the question's vector is written in it (0.6.9)
 find c.text, e.name from (c:Chunk)-[:MENTIONS]->(e:Entity)
 where similar_to(c, vector = [0.12, -0.03, ...], model = "minilm", k = 10)
 
--- two hops: chunk → entity → related entity, with the chunk's score on each row (0.6.19)
+// two hops: chunk → entity → related entity, with the chunk's score on each row (0.6.19)
 find c.text, f.name, score(c) from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:RELATED]->(f:Entity)
 where hybrid(c, text = "drip irrigation", vector = [...], model = "minilm", k = 10)
 
@@ -71,7 +71,7 @@ where hybrid(c, text = "drip irrigation", vector = [...], model = "minilm", k = 
 
 find c.text from (c:Chunk) where c.id in ["<uuid>", "<uuid>"]
 find e.name, e.kind from (c:Chunk)-[:MENTIONS]->(e:Entity) where c.id = "<uuid>"
-find e.name from (e:Entity) where e.name in ["ana", "beto"]     -- uses the hash index
+find e.name from (e:Entity) where e.name in ["ana", "beto"]     // uses the hash index
 ```
 
 `similar_to(var, vector = [...], model = "…", k = N)` and
@@ -202,7 +202,10 @@ fused `score`. Mind the scales before cutting: the
 [score table](en/NQL_REFERENCE.md#vector-and-hybrid-search-in-where) says
 what each column holds with `similar_to`, with `hybrid` and with both.
 `vector_score`/`text_score` are `null` on a row that only the other branch
-ranked, hence the `or 0.0`. `candidates` is the
+ranked, hence the `or 0.0`. `vector_score` is `1 − cosine distance`, i.e. the
+cosine similarity, not clamped: it lies in `[-1, 1]`, and in `[0, 1]` only
+when the vectors have no negative components (the "[0, 1]" in the recipe
+comment assumes that). `candidates` is the
 [candidate set](HYBRID_SEARCH.md#candidate-set): both branches rank inside
 it, so a chunk that is far down globally is still found inside the selected
 document; `label`/`props` can only narrow it. From NQL the same universe is
@@ -333,7 +336,7 @@ behind the MCP server does this in one round trip):
 find r.title, r.summary, r.rating, r.level from (r:Report)
 where similar_to(r, vector = [0.12, -0.03, ...], model = "m", k = 20)
 
--- members of a community, to write its report
+// members of a community, to write its report
 find e.name from (e:Entity)-[:IN_COMMUNITY]->(c:Community) where c.key = "leiden/L1/..."
 ```
 
@@ -440,8 +443,8 @@ projections), use the exact scan instead.
 ## Limits, and what comes next
 
 - Edges are still read one by one from storage during expansion (the
-  in-memory adjacency holds edge ids only). Typed adjacency (next) removes
-  those reads; `neighborhood` keeps the same contract.
+  in-memory adjacency holds edge ids only). A typed adjacency that would
+  remove those reads is an idea, not scheduled work.
 - Since 0.6.10, `search_hybrid(label=...)` and NQL `hybrid()` no longer scan
   the label: each branch checks the label on its candidates (see
   [HYBRID_SEARCH.md](HYBRID_SEARCH.md#filter)). A label that is very rare among
@@ -460,7 +463,8 @@ projections), use the exact scan instead.
   (before, embeddings spread over several labels could leave it short).
 - Since 0.6.10 NQL rows can carry the score: `score(c)` in FIND (cosine
   similarity with `similar_to`, RRF with `hybrid`). Mind the scale before
-  cutting at a threshold: a cosine lives in `[0, 1]`, an RRF score is at most
+  cutting at a threshold: a cosine lives in `[-1, 1]` (`[0, 1]` for vectors
+  without negative components), an RRF score is at most
   `2/rrf_k` (0.033 by default), so a cosine-style threshold on `hybrid` keeps
   nothing. Since 0.6.17 `rank(c)`, `text_score(c)` and `vector_score(c)`
   expose the raw pieces (#228): cut by `vector_score` or `rank` with `hybrid`,

@@ -10,7 +10,11 @@ Este tutorial te enseña a usar Arrow en NopalDB en menos de 5 minutos.
 [dependencies]
 nopaldb = { version = "0.9", features = ["analytics"] }
 tokio = { version = "1", features = ["full"] }
+arrow = "59"   # solo si lees columnas (traits AsArray / Array)
 ```
+
+¿Usas Python? La wheel de PyPI ya trae Arrow; ve directo a
+[Desde Python](#desde-python).
 
 ## 🚀 Ejemplo Básico
 
@@ -78,7 +82,7 @@ for field in schema.fields() {
 ```rust
 use arrow::array::AsArray;
 
-// Acceder a columna específica
+// Acceder a columna específica (requiere `arrow` en tu Cargo.toml)
 let labels = batch.column(1).as_string::<i32>();
 
 println!("\n🏷️  Labels:");
@@ -177,7 +181,8 @@ println!("\n📜 History RecordBatch:");
 println!("   Versions: {}", history_batch.num_rows());
 println!("   Columns: {}", history_batch.num_columns());
 
-// Output:
+// Output (en un grafo que solo tiene este nodo; cada nodo
+// escrito en una transacción aporta sus versiones):
 // 📜 History RecordBatch:
 //    Versions: 3
 //    Columns: 7
@@ -196,7 +201,7 @@ graph.export_parquet("my_graph.parquet").await?;
 import pyarrow.parquet as pq
 import pandas as pd
 
-# Leer Parquet (zero-copy)
+# Leer Parquet (descomprime a memoria de Arrow)
 table = pq.read_table('my_graph.parquet')
 df = table.to_pandas()
 
@@ -208,6 +213,25 @@ print(df.describe())
 active_users = df[df['label'] == 'Person']
 print(f"Total persons: {len(active_users)}")
 ```
+
+### Desde Python
+
+Sin pasar por un archivo: el wrapper devuelve streams Arrow IPC (bytes) que
+`pyarrow` lee directamente. Es una copia (Rust → bytes de Python), no
+zero-copy, pero no hay conversión fila por fila:
+
+```python
+import pyarrow as pa
+import nopaldb
+
+graph = nopaldb.Graph.open("./mi_grafo")
+nodes_ipc, edges_ipc = graph.to_arrow_complete("Person")   # con columnas de propiedades
+nodes = pa.ipc.open_stream(nodes_ipc).read_all()
+edges = pa.ipc.open_stream(edges_ipc).read_all()           # id, source, target, edge_type
+df = nodes.to_pandas()
+```
+
+Detalle en [docs/python/ARROW_EXPORT.md](../python/ARROW_EXPORT.md).
 
 ## 📊 Ejemplo Completo
 ```rust
@@ -240,7 +264,6 @@ async fn main() -> nopaldb::Result<()> {
     // 5. Verificar
     let metadata = std::fs::metadata("users.parquet")?;
     println!("   Size: {} bytes", metadata.len());
-    println!("   Compression: ~70% (estimated)");
     
     Ok(())
 }
@@ -251,14 +274,15 @@ async fn main() -> nopaldb::Result<()> {
 ✅ Inserted 1000 nodes
 📦 Exported to Arrow: 1000 rows
 💾 Saved to Parquet: users.parquet
-   Size: 4096 bytes
-   Compression: ~70% (estimated)
+   Size: <depende de los datos> bytes
 ```
 
 ## 🎯 Casos de Uso Rápidos
 
 ### Analytics: Contar por Label
 ```rust
+use arrow::array::{Array, AsArray};
+
 let batch = graph.to_arrow().await?;
 let labels = batch.column(1).as_string::<i32>();
 
@@ -276,6 +300,10 @@ for (label, count) in counts {
 
 ### Time-Travel: Ver Cambios
 ```rust
+use arrow::array::{Array, AsArray};
+
+// `timestamp` es el reloj lógico del grafo (monótono, avanza con cada
+// transacción), no segundos.
 let history = graph.history_to_arrow().await?;
 let versions = history.column(2).as_primitive::<arrow::datatypes::UInt64Type>();
 let timestamps = history.column(3).as_primitive::<arrow::datatypes::UInt64Type>();
@@ -283,7 +311,7 @@ let timestamps = history.column(3).as_primitive::<arrow::datatypes::UInt64Type>(
 println!("⏰ Version timeline:");
 for i in 0..versions.len() {
     println!(
-        "   v{} at t={}",
+        "   v{} at commit {}",
         versions.value(i),
         timestamps.value(i)
     );
@@ -351,10 +379,6 @@ cargo build --release --features analytics
 
 # Tests
 cargo test --features analytics
-
-# Binary size
-ls -lh target/release/nopaldb
-# ~15-20 MB con analytics
 ```
 
 ## 📚 Siguiente Paso
@@ -368,7 +392,7 @@ ls -lh target/release/nopaldb
 1. **Use Parquet para persistencia**: Más eficiente que JSON
 2. **Export por lotes**: Para grafos grandes (>1M nodos)
 3. **Combine con MVCC**: Time-travel analytics poderoso
-4. **Zero-copy cuando posible**: Usa PyArrow directamente
+4. **Desde Python, usa `pyarrow`**: `to_arrow_complete()` + `pa.ipc.open_stream` evita convertir fila por fila (no es zero-copy)
 
 ---
 

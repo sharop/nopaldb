@@ -1,5 +1,16 @@
 # ML Integration: NopalDB + PyTorch + TensorFlow
 
+> **Aviso (0.9.4): contenido ilustrativo, no medido.** Este documento describe
+> flujos posibles y aspiracionales; las cifras no son mediciones de NopalDB.
+> **No existen:** builds móviles (iOS/Android, "PyTorch Mobile" sobre
+> NopalDB), un build WASM ni un paquete `nopaldb-wasm`, ni una capa GNN en
+> NopalDB. Lo que sí existe para ML: exportación Arrow/Parquet
+> ([02-QUICKSTART.md](02-QUICKSTART.md), y desde Python
+> [ARROW_EXPORT.md](../python/ARROW_EXPORT.md); Rust → Python no es
+> zero-copy, son bytes Arrow IPC), embeddings con índice HNSW
+> ([EMBEDDINGS.md](../EMBEDDINGS.md)) y algoritmos de grafo en NQL
+> ([ALGORITHMS.md](../ALGORITHMS.md)).
+
 ## 🧠 Machine Learning con Grafos
 
 NopalDB está diseñada para **Machine Learning de grafos** (Graph Neural Networks, Graph Embeddings, etc).

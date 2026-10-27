@@ -65,7 +65,7 @@ Con SIMD (procesamiento paralelo):
 sum(ages)  # CPU procesa 4-8 valores a la vez
 → 1 operación
 
-Velocidad: 4-8x más rápido
+Velocidad: depende del CPU y del tipo de dato (ilustrativo, no medido en NopalDB)
 ```
 
 ### 2. **Cache-Friendly**
@@ -80,24 +80,27 @@ Lee ages completa → Datos contiguos en memoria
 → Cache hit rate alto
 → Menos accesos a RAM
 
-Velocidad: 10-100x más rápido
+Velocidad: depende del acceso (ilustrativo, no medido en NopalDB)
 ```
 
-### 3. **Zero-Copy**
-```rust
-// Compartir datos entre Rust y Python SIN copiar
+### 3. **Un formato estándar entre lenguajes**
 
-// Rust: Export a Arrow
-let batch = graph.to_arrow().await?;
+Entre Rust y Python **no hay zero-copy**: el wrapper serializa el
+`RecordBatch` a un stream Arrow IPC y Python recibe esos bytes (una copia).
+Lo que sí ganas es no convertir fila por fila: `pyarrow` lee el stream
+directamente.
 
-// Python: Import sin copiar memoria
+```python
 import pyarrow as pa
-table = pa.Table.from_batches([batch])
-df = table.to_pandas(zero_copy_only=True)
+import nopaldb
 
-# 0 bytes copiados!
-# 0ms overhead!
+graph = nopaldb.Graph.open("./mi_grafo")
+nodes_ipc, edges_ipc = graph.to_arrow_complete("Person")   # bytes (Arrow IPC)
+nodes = pa.ipc.open_stream(nodes_ipc).read_all()            # pyarrow.Table
+df = nodes.to_pandas()                                      # copia a pandas
 ```
+
+Ver [docs/python/ARROW_EXPORT.md](../python/ARROW_EXPORT.md).
 
 ### 4. **Interoperabilidad**
 ```
@@ -110,14 +113,11 @@ Arrow → DataFusion (SQL)
 Arrow → Spark (Big Data)
 ```
 
-## 📊 Comparación de Performance
+## 📊 Performance
 
-| Operación | Row-Oriented | Arrow Columnar | Speedup |
-|-----------|--------------|----------------|---------|
-| Sum 1M integers | 50ms | 0.5ms | **100x** |
-| Filter by age | 100ms | 2ms | **50x** |
-| Group by label | 200ms | 10ms | **20x** |
-| Export to Python | 500ms | <1ms | **500x** |
+No hay benchmarks de exportación Arrow publicados para NopalDB; las cifras
+de las secciones anteriores son ilustrativas del formato columnar en
+general, no mediciones de este proyecto.
 
 ## 🎯 Casos de Uso en NopalDB
 
@@ -126,25 +126,28 @@ Arrow → Spark (Big Data)
 // Export todo el grafo a Arrow
 let batch = graph.to_arrow().await?;
 
-// Análisis rápido con SIMD
+// Columna 2 = property_count (Int64). Requiere `arrow = "59"` en tu Cargo.toml.
+use arrow::array::AsArray;
+use arrow::compute::sum;
+use arrow::datatypes::Int64Type;
+
 let total_nodes = batch.num_rows();
-let avg_properties = batch.column(2).sum() / total_nodes;
+let total_props = sum(batch.column(2).as_primitive::<Int64Type>()).unwrap_or(0);
+let avg_properties = total_props as f64 / total_nodes as f64;
 ```
 
 ### 2. **Machine Learning**
-```rust
-// Export grafo → Arrow → PyTorch
-let batch = graph.to_arrow().await?;
-
-// En Python:
-# import torch
-# tensor = torch.from_numpy(batch.to_pandas().values)
-# model.train(tensor)
+```python
+# Desde Python: grafo → Arrow IPC → pyarrow → numpy/PyTorch
+import pyarrow as pa
+nodes = pa.ipc.open_stream(graph.to_arrow("Person")).read_all()
+ages = nodes.column("age").to_numpy()      # columna de una propiedad
+# torch.from_numpy(ages) ...
 ```
 
 ### 3. **Snapshots para Analytics**
 ```rust
-// Export snapshot histórico
+// Snapshot de metadatos (id, label, property_count; sin propiedades ni aristas)
 graph.export_parquet("snapshot_2024_01.parquet").await?;
 
 // Análisis en DuckDB:
@@ -177,7 +180,8 @@ let history = graph.history_to_arrow().await?;
 - Operaciones transaccionales (usa Graph API)
 - Queries de un solo nodo (usa get_node)
 - Updates frecuentes (usa Transaction)
-- Mobile/Embedded (usa CORE edition)
+- Binarios mínimos: Arrow/Parquet vienen con la feature `analytics`
+  (incluida en `core`); sin ella no se compilan
 
 ## 📦 Feature Flags
 
