@@ -231,6 +231,18 @@ impl PyNqlResult {
             _ => None,
         }
     }
+
+    /// Contenido de un `export`: el texto CSV/JSON (también cuando se
+    /// escribió con `path=`), o la ruta escrita en Arrow/Parquet, que solo
+    /// van a archivo. `None` si el resultado no es un export. Hasta 0.9.3 el
+    /// export sin `path` ("inline") no tenía forma de leerse desde Python.
+    #[getter]
+    fn data(&self) -> Option<String> {
+        match &self.inner {
+            RustNqlResult::Export { data, .. } => Some(data.clone()),
+            _ => None,
+        }
+    }
 }
 
 #[pyclass]

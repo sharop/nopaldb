@@ -1834,12 +1834,19 @@ impl Graph {
                     other
                 ))),
             },
-            Statement::Sketch(_) => {
-                Ok(NqlResult::Message("SKETCH: not yet available via execute_statement. Use SketchManager directly.".into()))
-            }
-            Statement::Commit(_) => {
-                Ok(NqlResult::Message("COMMIT: not yet available via execute_statement. Use SketchManager directly.".into()))
-            }
+            // Error y no un mensaje OK: hasta 0.9.3 respondían "not yet
+            // available" como éxito y quien no leía el texto creía que el
+            // sketch existía. No se implementan aquí porque un sketch vive en
+            // un `SketchManager` con estado propio y `execute_statement` no
+            // guarda estado entre llamadas.
+            Statement::Sketch(_) => Err(NopalError::QueryExecutionError(
+                "SKETCH is not supported by execute_statement/execute_nql; \
+                 from Rust use nopaldb::query::SketchManager".into(),
+            )),
+            Statement::Commit(_) => Err(NopalError::QueryExecutionError(
+                "COMMIT <sketch> is not supported by execute_statement/execute_nql; \
+                 from Rust use nopaldb::query::SketchManager".into(),
+            )),
         }
     }
 
@@ -1866,7 +1873,14 @@ impl Graph {
                     let exported = crate::query::nql::executor::export::execute_export(&result, &export)?;
 
                     if let crate::query::nql::NqlResult::Export { format, data, rows_exported } = exported {
-                        if let Some(PropertyValue::String(path)) = export.options.get("path") {
+                        use crate::query::nql::parser::ast::ExportFormat;
+                        // Arrow y Parquet siempre van a archivo: `data` es la ruta.
+                        let written_to = match (&export.format, export.options.get("path")) {
+                            (ExportFormat::Arrow | ExportFormat::Parquet(_), _) => Some(data.clone()),
+                            (_, Some(PropertyValue::String(path))) => Some(path.clone()),
+                            _ => None,
+                        };
+                        if let Some(path) = written_to {
                             let mut qr = crate::query::nql::QueryResult::new(vec![
                                 "format".to_string(),
                                 "exported_to".to_string(),
@@ -1874,7 +1888,7 @@ impl Graph {
                             ]);
                             let mut row = crate::query::nql::Row::new();
                             row.set("format", PropertyValue::String(format));
-                            row.set("exported_to", PropertyValue::String(path.clone()));
+                            row.set("exported_to", PropertyValue::String(path));
                             row.set("rows", PropertyValue::Int(rows_exported as i64));
                             qr.add_row(row);
                             Ok(qr)
