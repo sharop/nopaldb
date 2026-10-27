@@ -2,8 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use std::sync::Arc;
-use tokio::sync::{RwLock, Notify};
+use std::sync::{Arc, Mutex, MutexGuard};
+use tokio::sync::Notify;
 use crate::error::{NopalError, Result};
 use crate::types::NodeId;
 use crate::transaction::TransactionId;
@@ -167,12 +167,28 @@ impl std::fmt::Display for WaitForGraph {
 }
 
 /// Lock Manager - gestiona locks y detecta deadlocks
+///
+/// # Por qué `std::sync::Mutex` y no `tokio::sync::RwLock`
+///
+/// Una transacción tiene que poder soltar sus candados desde `Drop` y desde
+/// `rollback()` síncrono (#296), donde no se puede hacer `.await`. Con el
+/// `RwLock` de tokio las salidas eran malas: `blocking_write()` entra en
+/// pánico dentro del runtime, `try_write()` falla con contención y el
+/// release se perdería, y lanzar una task (`tokio::spawn`) exige un runtime
+/// vivo y deja una ventana en la que el nodo sigue tomado — o la task nunca
+/// corre si el runtime se está apagando.
+///
+/// Un `Mutex` síncrono es seguro aquí porque ninguna sección crítica cruza un
+/// `.await`: cada una es una consulta/inserción/borrado en un `HashMap`. Así
+/// nunca bloquea el runtime más que esas operaciones, y el release es
+/// inmediato desde cualquier contexto. Orden de adquisición: `node_locks`
+/// antes que `wait_for_graph`, y nunca al revés (no hay ciclo posible).
 pub struct LockManager {
     /// Locks actuales: NodeId → LockEntry
-    node_locks: Arc<RwLock<HashMap<NodeId, LockEntry>>>,
+    node_locks: Mutex<HashMap<NodeId, LockEntry>>,
 
     /// Wait-for graph para detección de deadlocks
-    wait_for_graph: Arc<RwLock<WaitForGraph>>,
+    wait_for_graph: Mutex<WaitForGraph>,
 
     /// Timeout para esperar locks (evita esperas infinitas)
     lock_timeout: Duration,
@@ -182,8 +198,8 @@ impl LockManager {
     /// Crea un nuevo lock manager
     pub fn new() -> Self {
         Self {
-            node_locks: Arc::new(RwLock::new(HashMap::new())),
-            wait_for_graph: Arc::new(RwLock::new(WaitForGraph::new())),
+            node_locks: Mutex::new(HashMap::new()),
+            wait_for_graph: Mutex::new(WaitForGraph::new()),
             lock_timeout: Duration::from_secs(5),
         }
     }
@@ -192,6 +208,18 @@ impl LockManager {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.lock_timeout = timeout;
         self
+    }
+
+    /// Toma el mapa de candados. Un pánico ajeno con el guard tomado no debe
+    /// impedir soltar candados (eso pasa en `Drop`): se recupera el contenido,
+    /// que cada sección crítica deja siempre consistente.
+    fn node_locks(&self) -> MutexGuard<'_, HashMap<NodeId, LockEntry>> {
+        self.node_locks.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Toma el wait-for graph (misma política de envenenamiento).
+    fn wait_for_graph(&self) -> MutexGuard<'_, WaitForGraph> {
+        self.wait_for_graph.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Determina si dos locks son compatibles
@@ -234,12 +262,12 @@ impl LockManager {
     }
 
     /// Maneja conflicto de lock: agrega al wait-for graph y detecta deadlock
-    async fn handle_lock_conflict(
+    fn handle_lock_conflict(
         &self,
         waiting_tx: TransactionId,
         holding_tx: TransactionId,
     ) -> Result<()> {
-        let mut graph = self.wait_for_graph.write().await;
+        let mut graph = self.wait_for_graph();
         graph.add_edge(waiting_tx, holding_tx);
 
         if graph.has_cycle() {
@@ -265,8 +293,8 @@ impl LockManager {
     }
 
     /// Limpia arista del wait-for graph
-    async fn cleanup_wait_for_edge(&self, from: TransactionId, to: TransactionId) {
-        let mut graph = self.wait_for_graph.write().await;
+    fn cleanup_wait_for_edge(&self, from: TransactionId, to: TransactionId) {
+        let mut graph = self.wait_for_graph();
         graph.remove_edge(from, to);
     }
 
@@ -299,64 +327,72 @@ impl LockManager {
                 )));
             }
 
-            let mut locks = self.node_locks.write().await;
+            // La sección crítica va en un bloque sin `.await`: el guard del
+            // `Mutex` síncrono no puede vivir a través de un punto de espera.
+            let (existing_tx_id, existing_lock_type, notify) = {
+                let mut locks = self.node_locks();
 
-            // ¿Hay lock existente?
-            if let Some(existing) = locks.get(&node_id) {
-                let existing_tx_id = existing.lock_info.tx_id;
-                let existing_lock_type = existing.lock_info.lock_type;
-                let notify = existing.notify.clone();
+                // ¿Hay lock existente?
+                match locks.get(&node_id) {
+                    Some(existing)
+                        if !self.is_lock_compatible(
+                            lock_type,
+                            existing.lock_info.lock_type,
+                            tx_id,
+                            existing.lock_info.tx_id,
+                        ) =>
+                    {
+                        // CONFLICTO → esperar fuera del guard
+                        (
+                            existing.lock_info.tx_id,
+                            existing.lock_info.lock_type,
+                            existing.notify.clone(),
+                        )
+                    }
+                    // CASO ESPECIAL: Read + Read (compartido)
+                    Some(existing)
+                        if lock_type == LockType::Read
+                            && existing.lock_info.lock_type == LockType::Read =>
+                    {
+                        return Ok(());
+                    }
+                    _ => {
+                        // No hay lock o es compatible → ADQUIRIR
+                        locks.insert(
+                            node_id,
+                            LockEntry {
+                                lock_info: LockInfo { tx_id, lock_type },
+                                notify: Arc::new(Notify::new()),
+                            },
+                        );
 
-                // Verificar compatibilidad
-                let is_compatible = self.is_lock_compatible(
-                    lock_type,
-                    existing_lock_type,
-                    tx_id,
-                    existing_tx_id,
-                );
-
-                if !is_compatible {
-                    // CONFLICTO → Esperar
-                    drop(locks);
-
-                    log::debug!(
-                        "tx{} waiting for {:?} lock on node {} (held by tx{} with {:?})",
-                        tx_id, lock_type, node_id, existing_tx_id, existing_lock_type
-                    );
-
-                    // Deadlock detection
-                    self.handle_lock_conflict(tx_id, existing_tx_id).await?;
-
-                    // Esperar con timeout (500ms)
-                    let _ = tokio::time::timeout(
-                        Duration::from_millis(500),
-                        notify.notified()
-                    ).await;
-
-                    // Cleanup
-                    self.cleanup_wait_for_edge(tx_id, existing_tx_id).await;
-
-                    log::debug!("tx{} retrying {:?} lock on node {}", tx_id, lock_type, node_id);
-                    continue;
+                        // Sin el id del nodo en los logs: CodeQL lo marca como dato sensible
+                        // (los ids salen de datos del usuario) y para depurar contención
+                        // bastan la tx y el tipo de candado.
+                        log::debug!("tx{} acquired {:?} lock", tx_id, lock_type);
+                        return Ok(());
+                    }
                 }
+            };
 
-                // CASO ESPECIAL: Read + Read (compartido)
-                if lock_type == LockType::Read && existing_lock_type == LockType::Read {
-                    return Ok(());
-                }
-            }
-
-            // No hay lock o es compatible → ADQUIRIR
-            locks.insert(
-                node_id,
-                LockEntry {
-                    lock_info: LockInfo { tx_id, lock_type },
-                    notify: Arc::new(Notify::new()),
-                },
+            log::debug!(
+                "tx{} waiting for {:?} lock (held by tx{} with {:?})",
+                tx_id, lock_type, existing_tx_id, existing_lock_type
             );
 
-            log::debug!("tx{} acquired {:?} lock on node {}", tx_id, lock_type, node_id);
-            return Ok(());
+            // Deadlock detection
+            self.handle_lock_conflict(tx_id, existing_tx_id)?;
+
+            // Esperar con timeout (500ms)
+            let _ = tokio::time::timeout(
+                Duration::from_millis(500),
+                notify.notified()
+            ).await;
+
+            // Cleanup
+            self.cleanup_wait_for_edge(tx_id, existing_tx_id);
+
+            log::debug!("tx{} retrying {:?} lock", tx_id, lock_type);
         }
     }
 
@@ -378,14 +414,26 @@ impl LockManager {
         self.acquire_lock_internal(node_id, tx_id, LockType::Write).await
     }
 
-    /// Libera todos los locks de una transacción
+    /// Libera todos los locks de una transacción.
+    ///
+    /// Se conserva `async` por compatibilidad de API; delega en
+    /// [`release_locks_sync`](Self::release_locks_sync).
     pub async fn release_locks(&self, tx_id: TransactionId) {
-        let mut locks = self.node_locks.write().await;
+        self.release_locks_sync(tx_id);
+    }
+
+    /// Libera todos los locks de una transacción sin `.await`: usable desde
+    /// `Drop` y desde `rollback()` síncrono (#296).
+    ///
+    /// Idempotente: liberar dos veces (p. ej. commit y luego `Drop`) no hace
+    /// nada la segunda vez, porque solo borra entradas con este `tx_id`.
+    pub fn release_locks_sync(&self, tx_id: TransactionId) {
+        let mut locks = self.node_locks();
 
         // Notificar a todos los waiters ANTES de remover
-        for (node_id, entry) in locks.iter() {
+        for entry in locks.values() {
             if entry.lock_info.tx_id == tx_id {
-                log::debug!("tx{} releasing lock on node {}", tx_id, node_id);
+                log::debug!("tx{} releasing a {:?} lock", tx_id, entry.lock_info.lock_type);
                 entry.notify.notify_waiters();
             }
         }
@@ -394,8 +442,8 @@ impl LockManager {
         locks.retain(|_, entry| entry.lock_info.tx_id != tx_id);
 
         // Limpiar del wait-for graph
-        let mut graph = self.wait_for_graph.write().await;
-        graph.remove_transaction(tx_id);
+        drop(locks);
+        self.wait_for_graph().remove_transaction(tx_id);
 
         log::debug!("Released all locks for tx{}", tx_id);
     }
@@ -466,6 +514,30 @@ mod tests {
         assert!(lm.is_lock_compatible(LockType::Read, LockType::Write, 1, 1));
         assert!(lm.is_lock_compatible(LockType::Write, LockType::Read, 1, 1));
         assert!(lm.is_lock_compatible(LockType::Write, LockType::Write, 1, 1));
+    }
+
+    /// #296: el release síncrono funciona sin runtime (como en `Drop`), deja
+    /// el nodo libre para otra tx y liberar dos veces es inocuo.
+    #[test]
+    fn test_release_locks_sync_es_idempotente_y_no_requiere_runtime() {
+        let lm = LockManager::new().with_timeout(Duration::from_millis(200));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let nodo = NodeId::new_v4();
+
+        rt.block_on(lm.acquire_write_lock(nodo, 1)).unwrap();
+        assert!(rt.block_on(lm.acquire_write_lock(nodo, 2)).is_err());
+
+        lm.release_locks_sync(1);
+        lm.release_locks_sync(1);
+        assert!(lm.wait_for_graph().edges.is_empty());
+
+        rt.block_on(lm.acquire_write_lock(nodo, 2)).unwrap();
+        // Liberar una tx sin candados no toca los de otra.
+        lm.release_locks_sync(1);
+        assert_eq!(lm.node_locks().get(&nodo).map(|e| e.lock_info.tx_id), Some(2));
     }
 
     #[test]

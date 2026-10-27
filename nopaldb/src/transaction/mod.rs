@@ -834,6 +834,11 @@ impl Transaction {
 
         self.state = TransactionState::Aborted;
 
+        // Liberar locks (Serializable, #296): el release es síncrono, así que
+        // este rollback los suelta igual que rollback_async().
+        #[cfg(feature = "full-isolation")]
+        self.release_locks();
+
         // Deregistrar del mapa de transacciones activas
         self.graph.deregister_tx_timestamp_sync(self.id);
 
@@ -894,6 +899,19 @@ impl Transaction {
     }
 
 
+
+    /// Suelta todos los candados de esta tx en el lock manager.
+    ///
+    /// Síncrono a propósito: lo llaman `Drop` y `rollback()`, que no pueden
+    /// hacer `.await` (#296). Idempotente: si la tx no tiene candados (ya los
+    /// soltó, o no es Serializable) no hace nada. Se libera por `tx_id` y no
+    /// solo por `acquired_locks`, porque los candados de lectura de
+    /// `get_node` no se registran ahí.
+    #[cfg(feature = "full-isolation")]
+    fn release_locks(&mut self) {
+        self.graph.lock_manager().release_locks_sync(self.id);
+        self.acquired_locks.clear();
+    }
 
     /// Helper para logging
     fn get_isolation_level_name(&self) -> &str {
@@ -1340,10 +1358,11 @@ impl Drop for Transaction {
             // Nota: No podemos llamar async aquí, solo limpiamos
             self.state = TransactionState::Aborted;
 
+            // Soltar los candados (#296): sin esto, un `?` que propagaba un
+            // error (p. ej. Deadlock en add_node) dejaba los nodos tomados y
+            // el siguiente escritor fallaba con "Lock timeout" a los 5 s.
             #[cfg(feature = "full-isolation")]
-            {
-                log::warn!("Transaction {} dropped with locks held - may cause delays", self.id);
-            }
+            self.release_locks();
         }
         // Siempre deregistrar al hacer drop, sin importar el estado previo
         self.graph.deregister_tx_timestamp_sync(self.id);
