@@ -71,6 +71,7 @@ fn eval_row_condition_with_algo(
         Expression::UnaryOp { op: UnaryOperator::Not, expr: inner } => {
             !eval_row_condition_with_algo(row, inner, source_var, target_var, algo_cache)
         }
+        Expression::Literal(PropertyValue::Bool(b)) => *b,
         _ => true,
     }
 }
@@ -449,6 +450,33 @@ struct LinearPatternBinding {
     edge_vars: HashMap<String, Edge>,
 }
 
+impl LinearPatternBinding {
+    /// Liga `var` a `node`. Una variable que el patrón ya ligó a otro nodo no
+    /// se pisa: `(a)-[:T]->(b)-[:T]->(a)` exige que las dos `a` sean el mismo
+    /// nodo. Hasta 0.9.3 la segunda sobrescribía a la primera y el patrón
+    /// devolvía caminos que no cerraban (#293). Devuelve `false` si choca.
+    fn bind_node_var(&mut self, var: &str, node: &Node) -> bool {
+        match self.node_vars.get(var) {
+            Some(bound) => bound.id == node.id,
+            None => {
+                self.node_vars.insert(var.to_string(), node.clone());
+                true
+            }
+        }
+    }
+
+    /// Como [`Self::bind_node_var`], para variables de arista repetidas.
+    fn bind_edge_var(&mut self, var: &str, edge: &Edge) -> bool {
+        match self.edge_vars.get(var) {
+            Some(bound) => bound.id == edge.id,
+            None => {
+                self.edge_vars.insert(var.to_string(), edge.clone());
+                true
+            }
+        }
+    }
+}
+
 /// Estado de frontera para BFS acotado en rutas cuantificadas (F1).
 struct FrontierState {
     binding: LinearPatternBinding,
@@ -568,6 +596,8 @@ impl<'a> Executor<'a> {
 
     /// Execute NQL query
     pub async fn execute(&self, query: Query) -> Result<QueryResult> {
+        // Un alias de la proyección en `where`/`having` es su expresión (#294).
+        let query = crate::query::nql::validator::resolve_projection_aliases(query);
         // F4-C: Run semantic validation (path.result, return rules, etc.)
         {
             use crate::query::nql::validator::SemanticValidator;
@@ -757,6 +787,20 @@ impl<'a> Executor<'a> {
             let mut nodes = Vec::new();
             while let Some(node) = final_node_stream.next().await? {
                 nodes.push(node);
+            }
+            // Los predicados con algoritmos del WHERE (`degree(n) > 1`) no
+            // corren en el stream. El camino sin agregaciones los aplica sobre
+            // las filas; este los perdía y, con `degree(n) as dg` en la
+            // proyección, devolvía todos los nodos (#294).
+            if let Some(post_expr) = &single_where_post_filter {
+                let all_nodes = self.graph.get_all_nodes().await?;
+                let cache = precompute_for_query(self.graph, &all_nodes, &query).await?;
+                let id_key = format!("{root_variable}.id");
+                nodes.retain(|node| {
+                    let mut row = result::Row::new();
+                    row.set(id_key.clone(), PropertyValue::String(node.id.to_string()));
+                    eval_row_condition_with_algo(&row, post_expr, root_variable, "", &cache)
+                });
             }
 
             let mut result = execute_aggregations(self.graph, nodes, &query, root_variable).await?;
@@ -1401,6 +1445,16 @@ impl<'a> Executor<'a> {
             edge_var.as_deref(),
             &query,
         );
+
+        // `(a)-[:T]->(a)`: la misma variable en los dos extremos es un
+        // self-loop, no dos nodos cualesquiera (#293).
+        if let (Some(s), Some(t)) = (&source_pattern.variable, &target_pattern.variable)
+            && s == t {
+                pattern_stream = Box::new(operators::FilterPatternStream::new(
+                    pattern_stream,
+                    |m| Ok(m.source.id == m.target.id),
+                ));
+            }
 
         // Bug 1 fix: detect if WHERE contains per-node algorithm predicates
         // (degree, pagerank, ...). These cannot be evaluated by the streaming
@@ -2400,12 +2454,14 @@ impl<'a> Executor<'a> {
                 next_binding.edges.push(edge.clone());
                 next_binding.nodes.push(next_node.clone());
 
-                if let Some(var) = &rel.variable {
-                    next_binding.edge_vars.insert(var.clone(), edge);
-                }
-                if let Some(var) = &target.variable {
-                    next_binding.node_vars.insert(var.clone(), next_node);
-                }
+                if let Some(var) = &rel.variable
+                    && !next_binding.bind_edge_var(var, &edge) {
+                        continue;
+                    }
+                if let Some(var) = &target.variable
+                    && !next_binding.bind_node_var(var, &next_node) {
+                        continue;
+                    }
 
                 if !self.binding_passes(&next_binding, target_filters) {
                     continue;
@@ -2535,10 +2591,13 @@ impl<'a> Executor<'a> {
                         let mut next_binding = state.binding.clone();
                         next_binding.edges.push(edge.clone());
                         next_binding.nodes.push(next_node.clone());
-                        if let Some(var) = &target.variable {
-                            next_binding.node_vars.insert(var.clone(), next_node.clone());
+                        let bound = match &target.variable {
+                            Some(var) => next_binding.bind_node_var(var, &next_node),
+                            None => true,
+                        };
+                        if bound {
+                            results.push(next_binding);
                         }
-                        results.push(next_binding);
                     }
 
                     // Continuar expandiendo si no alcanzamos el máximo
@@ -2686,6 +2745,7 @@ impl<'a> Executor<'a> {
                     }
                 }
             },
+            Expression::Literal(PropertyValue::Bool(b)) => *b,
             _ => true,
         }
     }
@@ -3649,6 +3709,16 @@ impl<'a> Executor<'a> {
         if let Some(edge_name) = edge_var {
             vars.retain(|v| v != edge_name);
         }
+        // Un extremo anónimo nunca toma el nombre que el patrón ya da al otro
+        // extremo: en `()-[:F]->(u)` la `u` proyectada es el destino. Hasta
+        // 0.9.3 la adivinanza la asignaba al origen y `find u.name`
+        // devolvía los orígenes (#293).
+        if let Some(named) = source_var {
+            vars.retain(|v| v != named);
+        }
+        if let Some(named) = target_var {
+            vars.retain(|v| v != named);
+        }
 
         if source_missing
             && let Some(first) = vars.first() {
@@ -3872,6 +3942,7 @@ impl<'a> Executor<'a> {
                     }
                 }
             }
+            Expression::Literal(PropertyValue::Bool(b)) => Ok(*b),
             _ => Ok(false),
         }
     }
@@ -4004,6 +4075,7 @@ impl<'a> Executor<'a> {
             Expression::FunctionCall { name, args } => {
                 Ok(self.evaluate_ontology_predicate(node, name, args, variable))
             }
+            Expression::Literal(PropertyValue::Bool(b)) => Ok(*b),
             _ => {
                 // For now, other expressions return true
                 Ok(true)

@@ -552,6 +552,7 @@ pub fn eval_condition(node: &Node, expr: &Expression, variable: &str) -> bool {
         {
             false
         }
+        Expression::Literal(PropertyValue::Bool(b)) => *b,
         _ => true,
     }
 }
@@ -584,6 +585,7 @@ pub fn eval_pattern_condition(m: &PatternMatch, expr: &Expression, source_var: &
                 }
             }
         },
+        Expression::Literal(PropertyValue::Bool(b)) => *b,
         _ => true,
     }
 }

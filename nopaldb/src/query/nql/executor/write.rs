@@ -176,6 +176,9 @@ impl<'a> WriteExecutor<'a> {
         tx: &mut Transaction,
     ) -> Result<DeleteResult> {
         log::info!("Executing DELETE statement (transactional)");
+        if let Some(filter) = &delete.filter {
+            crate::query::nql::validator::check_condition(&filter.condition, "WHERE")?;
+        }
 
         let has_relationships = delete.pattern.elements.iter()
             .any(|e| matches!(e, PatternElement::Relationship(_)));
@@ -283,6 +286,9 @@ impl<'a> WriteExecutor<'a> {
         _tx: &mut Transaction,
     ) -> Result<UpdateResult> {
         log::info!("Executing UPDATE statement");
+        if let Some(filter) = &update.filter {
+            crate::query::nql::validator::check_condition(&filter.condition, "WHERE")?;
+        }
 
         let has_relationships = update.pattern.elements.iter()
             .any(|e| matches!(e, PatternElement::Relationship(_)));

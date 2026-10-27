@@ -85,6 +85,16 @@ impl SemanticValidator {
 impl SemanticValidator {
     /// Validate a query
     fn validate_query(&self, query: &Query) -> Result<()> {
+        // `at timestamp <n>` se parsea pero ningún ejecutor lo aplica: hasta
+        // 0.9.3 la consulta devolvía el estado actual sin aviso (#298). Error
+        // con nombre hasta que NQL lea de verdad en un instante.
+        if query.time_travel.is_some() {
+            return Err(NopalError::SemanticError(
+                "AT TIMESTAMP is not applied by NQL yet: the query would read the current state. \
+                 Read past versions with the Rust API (Graph::as_of, Graph::get_node_at, Graph::history)"
+                    .to_string(),
+            ));
+        }
         // Rule 1: HAVING normalmente requiere GROUP BY, EXCEPTO cuando sólo
         // referencia funciones algorítmicas (degree, pagerank, etc.) que son
         // per-node y no necesitan agrupación.
@@ -343,6 +353,15 @@ impl SemanticValidator {
             self.validate_path_embedding_usage(&having.condition, EmbeddingExprContext::Having, query)?;
         }
 
+        // Al final: las reglas de arriba dan errores más específicos para
+        // ciertas condiciones sueltas (p. ej. `where path.state`).
+        if let Some(where_clause) = &query.filter {
+            check_condition(&where_clause.condition, "WHERE")?;
+        }
+        if let Some(having) = &query.having {
+            check_condition(&having.condition, "HAVING")?;
+        }
+
         Ok(())
     }
 
@@ -432,8 +451,10 @@ impl SemanticValidator {
 
                 // Para funciones algorítmicas, los argumentos son típicamente
                 // referencias a nodos (variable-only, e.g. `degree(e)`); no
-                // las validamos contra GROUP BY.
-                if !is_algo {
+                // las validamos contra GROUP BY. Los de una agregación
+                // tampoco: `avg(r.w)` agrega `r.w`, no la agrupa (hasta 0.9.3
+                // `having avg(r.w) > 0.5` pedía `r.w` en el GROUP BY, #294).
+                if !is_algo && !is_agg {
                     for arg in args {
                         self.validate_having_expression(arg, group_by_exprs)?;
                     }
@@ -2610,5 +2631,108 @@ mod tests {
         let result = validator.validate_query(&query);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("single path pattern"));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CONDITIONS AND PROJECTION ALIASES (#294)
+// ═══════════════════════════════════════════════════════════════
+
+/// Una condición de `where`/`having` tiene que producir un booleano.
+///
+/// Hasta 0.9.3 una propiedad, un literal o un alias sueltos se aceptaban y
+/// cada evaluador los resolvía distinto: el `find` los dejaba pasar todos
+/// (`where p.active` devolvía también `active: false`) y `delete`/`update`
+/// no tocaban ninguno (#294). Se rechazan con un error con nombre en lugar
+/// de dar a la propiedad suelta un valor de verdad: cinco evaluadores
+/// tendrían que acordarlo, y la comparación explícita no es ambigua.
+pub(crate) fn check_condition(expr: &Expression, clause: &str) -> Result<()> {
+    match expr {
+        Expression::BinaryOp { left, op: BinaryOperator::And | BinaryOperator::Or, right } => {
+            check_condition(left, clause)?;
+            check_condition(right, clause)
+        }
+        Expression::BinaryOp { .. } | Expression::UnaryOp { .. } | Expression::FunctionCall { .. } => Ok(()),
+        Expression::NamedArg { .. } => Ok(()),
+        Expression::Property { variable, property } => {
+            let shown = if property.is_empty() { variable.clone() } else { format!("{variable}.{property}") };
+            Err(NopalError::SemanticError(format!(
+                "{clause} condition `{shown}` is not a comparison: write `{shown} = true` \
+                 (a bare property, variable or alias is not a condition)"
+            )))
+        }
+        // `true`/`false` son condiciones; cada evaluador las resuelve por su
+        // valor (antes `where false` dejaba pasar todas las filas).
+        Expression::Literal(PropertyValue::Bool(_)) => Ok(()),
+        Expression::Literal(v) => Err(NopalError::SemanticError(format!(
+            "{clause} condition `{v:?}` is a literal, not a comparison"
+        ))),
+        Expression::Wildcard => Err(NopalError::SemanticError(format!(
+            "{clause} condition `*` is not a comparison"
+        ))),
+    }
+}
+
+/// Sustituye en `where` y `having` cada alias de la proyección por su
+/// expresión: `find degree(n) as dg … where dg > 1` se evalúa como
+/// `where degree(n) > 1`, y `avg(r.w) as m … having m > 0.5` como
+/// `having avg(r.w) > 0.5`.
+///
+/// Hasta 0.9.3 el alias se leía como una propiedad del nodo que no existe:
+/// `where dg > 1` daba 0 filas y `having m > 0.5` ninguna (#294). Un alias
+/// que coincide con una variable del patrón no se sustituye: la variable
+/// manda. Un alias de una agregación en el `where` queda como agregación y
+/// el validador lo rechaza con su error de siempre.
+pub(crate) fn resolve_projection_aliases(mut query: Query) -> Query {
+    let mut pattern_vars: HashSet<&str> = HashSet::new();
+    for pattern in &query.from.patterns {
+        for element in &pattern.elements {
+            match element {
+                PatternElement::Node(n) => pattern_vars.extend(n.variable.as_deref()),
+                PatternElement::Relationship(r) => pattern_vars.extend(r.variable.as_deref()),
+            }
+        }
+    }
+    let aliases: Vec<(String, Expression)> = query
+        .find
+        .projections
+        .iter()
+        .filter_map(|p| match p {
+            Projection::Expression { expr, alias: Some(alias) } if !pattern_vars.contains(alias.as_str()) => {
+                Some((alias.clone(), expr.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    if aliases.is_empty() {
+        return query;
+    }
+    if let Some(filter) = query.filter.as_mut() {
+        substitute_aliases(&mut filter.condition, &aliases);
+    }
+    if let Some(having) = query.having.as_mut() {
+        substitute_aliases(&mut having.condition, &aliases);
+    }
+    query
+}
+
+fn substitute_aliases(expr: &mut Expression, aliases: &[(String, Expression)]) {
+    match expr {
+        Expression::Property { variable, property } if property.is_empty() => {
+            if let Some((_, replacement)) = aliases.iter().find(|(a, _)| a == variable) {
+                *expr = replacement.clone();
+            }
+        }
+        Expression::BinaryOp { left, right, .. } => {
+            substitute_aliases(left, aliases);
+            substitute_aliases(right, aliases);
+        }
+        Expression::UnaryOp { expr: inner, .. } => substitute_aliases(inner, aliases),
+        Expression::FunctionCall { args, .. } => {
+            for arg in args {
+                substitute_aliases(arg, aliases);
+            }
+        }
+        _ => {}
     }
 }
