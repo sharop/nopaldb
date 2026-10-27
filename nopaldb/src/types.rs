@@ -68,14 +68,20 @@ pub fn fresh_id() -> uuid::Uuid {
 ///   Opciones registradas para cuando se necesite: marcar `#[non_exhaustive]`
 ///   (rompe una sola vez, peaje por adelantado) o una variante envoltorio
 ///   `Extended(...)`.
-/// - **`#[serde(untagged)]` hace que el ORDEN de declaración importe**: la
-///   deserialización prueba variantes en orden. `Int` antes que `Float`
-///   (los enteros JSON parsean como `Int`) y `Bytes` antes que `List`
-///   (un arreglo JSON de enteros pequeños deserializa como `Bytes`, no
-///   `List` — quirk existente, pinneado en tests). Reordenar variantes es
-///   un cambio silencioso de formato de datos.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
+/// - **Formato serde** (MessagePack en el storage, JSON en el WAL): sin
+///   etiqueta, cada variante como su valor. `Bytes` es una secuencia de
+///   enteros, igual que una lista, así que tres formas son ambiguas y hasta
+///   0.9.3 volvían cambiadas (#300): una lista de enteros 0–255 (o vacía)
+///   como `Bytes`, una lista de pares `[texto, valor]` como `Object`, y el
+///   objeto vacío como `Bytes`. Desde 0.9.4 solo esas tres se escriben
+///   envueltas (`{"$list": …}`, `{"$object": []}`); el resto escribe los
+///   mismos bytes de siempre, y la lectura conserva el orden de prueba
+///   anterior (ver `WireValue`), así que todo lo ya guardado se lee igual.
+///   Lo que se guardó mal antes de 0.9.4 no se distingue de unos bytes y
+///   sigue leyéndose como `Bytes`. Un valor envuelto no lo lee ≤ 0.9.3.
+///   Se descartó etiquetar todas las variantes: cambiaría el formato de
+///   cada valor ya escrito sin arreglar nada más.
+#[derive(Debug, Clone, PartialEq)]
 pub enum PropertyValue {
     Null,
     Bool(bool),
@@ -85,6 +91,92 @@ pub enum PropertyValue {
     Bytes(Vec<u8>),
     Object(Vec<(String, PropertyValue)>),
     List(Vec<PropertyValue>),
+}
+
+/// Lo que se lee del storage/WAL. Mismo orden de prueba que el
+/// `#[serde(untagged)]` de hasta 0.9.3, más la forma envuelta al final.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WireValue {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(String),
+    Bytes(Vec<u8>),
+    Object(Vec<(String, PropertyValue)>),
+    List(Vec<PropertyValue>),
+    Tagged(TaggedValue),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaggedValue {
+    #[serde(rename = "$list", default)]
+    list: Option<Vec<PropertyValue>>,
+    #[serde(rename = "$object", default)]
+    object: Option<Vec<(String, PropertyValue)>>,
+}
+
+/// Si una lista escrita tal cual se leería como otra variante (#300).
+fn list_reads_as_other(items: &[PropertyValue]) -> bool {
+    let as_bytes = items.iter().all(|v| matches!(v, PropertyValue::Int(i) if (0..=255).contains(i)));
+    let as_object = !items.is_empty()
+        && items.iter().all(|v| {
+            matches!(v, PropertyValue::List(pair) if pair.len() == 2 && matches!(pair[0], PropertyValue::String(_)))
+        });
+    as_bytes || as_object
+}
+
+impl Serialize for PropertyValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            PropertyValue::Null => serializer.serialize_unit(),
+            PropertyValue::Bool(b) => serializer.serialize_bool(*b),
+            PropertyValue::Int(i) => serializer.serialize_i64(*i),
+            PropertyValue::Float(f) => serializer.serialize_f64(*f),
+            PropertyValue::String(s) => serializer.serialize_str(s),
+            PropertyValue::Bytes(b) => b.serialize(serializer),
+            // El envoltorio va como mapa explícito: un struct derivado se
+            // serializaría como arreglo en el MessagePack compacto de
+            // `rmp_serde` y volvería a ser ambiguo.
+            PropertyValue::Object(fields) if fields.is_empty() => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("$object", fields)?;
+                map.end()
+            }
+            PropertyValue::Object(fields) => fields.serialize(serializer),
+            PropertyValue::List(items) if list_reads_as_other(items) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("$list", items)?;
+                map.end()
+            }
+            PropertyValue::List(items) => items.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PropertyValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        Ok(match WireValue::deserialize(deserializer)? {
+            WireValue::Null => PropertyValue::Null,
+            WireValue::Bool(b) => PropertyValue::Bool(b),
+            WireValue::Int(i) => PropertyValue::Int(i),
+            WireValue::Float(f) => PropertyValue::Float(f),
+            WireValue::String(s) => PropertyValue::String(s),
+            WireValue::Bytes(b) => PropertyValue::Bytes(b),
+            WireValue::Object(fields) => PropertyValue::Object(fields),
+            WireValue::List(items) => PropertyValue::List(items),
+            WireValue::Tagged(TaggedValue { list: Some(items), object: None }) => PropertyValue::List(items),
+            WireValue::Tagged(TaggedValue { list: None, object: Some(fields) }) => PropertyValue::Object(fields),
+            WireValue::Tagged(_) => {
+                return Err(serde::de::Error::custom(
+                    "a wrapped property value has exactly one of `$list` or `$object`",
+                ))
+            }
+        })
+    }
 }
 
 impl PropertyValue {
