@@ -10,6 +10,23 @@ permissions:
   contents: read
 
 jobs:
+  # El crate declara `rust-version` en el Cargo.toml raíz, pero la CI solo
+  # compilaba con el toolchain fijado: hasta 0.9.3 no compilaba con Rust
+  # anterior a 1.96 y nadie lo notó. Este job compila con esa versión mínima.
+  msrv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install the minimum supported Rust
+        run: |
+          MSRV=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
+          echo "MSRV=$MSRV" >> "$GITHUB_ENV"
+          rustup toolchain install "$MSRV" --profile minimal
+      - name: Check with the minimum supported Rust
+        run: cargo +"$MSRV" check -p nopaldb --features full
+
   build-test:
     runs-on: ubuntu-latest
     timeout-minutes: 45

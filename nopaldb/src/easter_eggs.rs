@@ -64,7 +64,10 @@ pub fn motivational_message() -> &'static str {
         "⚡ Velocidad de rayo en cada transacción!",
     ];
 
-    pick(&messages)
+    // Se indexa en lugar de usar `pick`: con el retorno `&'static str`,
+    // `pick` infería `T = str` en rustc anterior a 1.96 y el crate no
+    // compilaba con su MSRV (1.89).
+    messages[(uuid::Uuid::new_v4().as_u128() % messages.len() as u128) as usize]
 }
 
 

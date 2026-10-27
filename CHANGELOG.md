@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **NQL: un patrón ligaba el nodo equivocado a una variable** (#293). Ambas
+  daban filas incorrectas sin error.
+  - En un extremo anónimo, la variable se adivinaba de la proyección y podía
+    tomar el nombre que el patrón da al otro extremo:
+    `find u.name from ()-[:F]->(u)` devolvía los **orígenes**, y el "más
+    seguido" del quickstart de Python contaba mal. Ahora un extremo anónimo
+    nunca toma un nombre del patrón.
+  - Una variable repetida se re-ligaba en vez de exigir el mismo nodo:
+    `(a)-[:F]->(b)-[:F]->(a)` devolvía caminos que no cierran. Ahora la
+    segunda `a` tiene que ser la primera (también una arista repetida), y
+    `(a)-[:F]->(a)` en un salto es un self-loop.
+- **NQL: condiciones y alias que filtraban mal sin avisar** (#294).
+  - Una propiedad, variable o literal sueltos en `where`/`having`
+    (`where p.active`) se aceptaban: el `find` dejaba pasar todos los nodos y
+    `delete`/`update` no tocaban ninguno. Ahora es un error con nombre que
+    pide la comparación (`p.active = true`).
+  - Un alias de la proyección en `where`/`having` se leía como propiedad
+    inexistente. `find degree(n) as dg … where dg > 1` daba 0 filas y
+    `avg(r.w) as m … having m > 0.5`, ninguna. Ahora el alias es su
+    expresión; un alias que coincide con una variable del patrón no se
+    sustituye.
+  - Con un algoritmo proyectado (`degree(n) as dg`), `where degree(n) > 1`
+    en una consulta de un nodo se ignoraba: el camino de agregaciones no
+    aplicaba el filtro de algoritmos. Ahora lo aplica.
+  - `having avg(r.w) > 0.5` pedía `r.w` en el GROUP BY; los argumentos de
+    una agregación ya no se validan contra él.
+- **NQL: `group by … having` en una consulta de un nodo devolvía todos los
+  grupos** (#299). El camino de patrones aplicaba el `having`; el de un solo
+  nodo (`find p.town, count(*) … from (p:T) group by p.town having count(*) > 1`)
+  no lo evaluaba. Ahora lo aplica por grupo, con agregaciones, algoritmos,
+  propiedades de la clave y `and`/`or`.
+- **NQL: `at timestamp <n>` se aceptaba y se ignoraba** (#298): la consulta
+  leía el estado actual sin aviso. Ahora es un error con nombre que remite a
+  la API de time travel de Rust (`Graph::as_of`, `Graph::get_node_at`,
+  `Graph::history`), hasta que NQL lea de verdad en un instante.
+- **El crate no compilaba con Rust anterior a 1.96**, aunque declara 1.89
+  como versión mínima: `easter_eggs::motivational_message` devolvía un
+  `&&str` de un arreglo local que solo 1.96 promovía a `'static`. Corregido,
+  y la CI gana el job `msrv`, que compila con el `rust-version` del
+  `Cargo.toml` (hoy 1.89) para que no vuelva a pasar.
+- **NQL: `where false` dejaba pasar todas las filas**: los evaluadores de
+  condiciones trataban cualquier expresión que no fuera una comparación como
+  verdadera. Ahora `true`/`false` valen lo que dicen (#294).
+
 ### Added
 - **Guía de actualización a 0.9.3** desde 0.6–0.8
   ([docs/UPGRADING_0.9.md](docs/UPGRADING_0.9.md),

@@ -330,6 +330,14 @@ async fn execute_grouped_aggregation(
     let mut result = QueryResult::new(columns);
 
     for (group_key, group_nodes) in groups {
+        // HAVING por grupo, como en el camino de patrones. Hasta 0.9.3 este
+        // camino (consulta de un nodo) no lo evaluaba y devolvía todos los
+        // grupos (#299).
+        if let Some(having) = &query.having
+            && !group_passes_having(graph, &having.condition, &group_nodes, variable, ctx).await?
+        {
+            continue;
+        }
         let mut row = Row::new();
 
         // Inject the UUID of the representative node for this group so the
@@ -379,6 +387,65 @@ async fn execute_grouped_aggregation(
     }
 
     Ok(result)
+}
+
+/// Si un grupo cumple la condición del HAVING. Las agregaciones y los
+/// algoritmos se calculan sobre los nodos del grupo con el mismo
+/// `evaluate_aggregation` que las columnas; una propiedad toma el valor del
+/// primer nodo (la clave del grupo).
+async fn group_passes_having(
+    graph: &Graph,
+    expr: &Expression,
+    nodes: &[Node],
+    variable: &str,
+    ctx: &QueryContext,
+) -> Result<bool> {
+    use crate::query::nql::parser::ast::BinaryOperator;
+    match expr {
+        Expression::BinaryOp { left, op: BinaryOperator::And, right } => Ok(
+            Box::pin(group_passes_having(graph, left, nodes, variable, ctx)).await?
+                && Box::pin(group_passes_having(graph, right, nodes, variable, ctx)).await?,
+        ),
+        Expression::BinaryOp { left, op: BinaryOperator::Or, right } => Ok(
+            Box::pin(group_passes_having(graph, left, nodes, variable, ctx)).await?
+                || Box::pin(group_passes_having(graph, right, nodes, variable, ctx)).await?,
+        ),
+        Expression::BinaryOp { left, op, right } => {
+            let l = having_scalar(graph, left, nodes, variable, ctx).await?;
+            let r = having_scalar(graph, right, nodes, variable, ctx).await?;
+            Ok(match (l, r) {
+                (Some(l), Some(r)) => super::operators::compare_values(&l, op, &r),
+                _ => false,
+            })
+        }
+        Expression::Literal(PropertyValue::Bool(b)) => Ok(*b),
+        other => Err(NopalError::QueryExecutionError(format!(
+            "HAVING condition is not a comparison: {other:?}"
+        ))),
+    }
+}
+
+async fn having_scalar(
+    graph: &Graph,
+    expr: &Expression,
+    nodes: &[Node],
+    variable: &str,
+    ctx: &QueryContext,
+) -> Result<Option<PropertyValue>> {
+    Ok(match expr {
+        Expression::Literal(v) => Some(v.clone()),
+        Expression::FunctionCall { .. } => {
+            Some(evaluate_aggregation(graph, expr, nodes, variable, &None, ctx).await?.1)
+        }
+        Expression::Property { variable: v, property } if v == variable => {
+            nodes.first().and_then(|n| match property.as_str() {
+                "id" => Some(PropertyValue::String(n.id.to_string())),
+                "label" => Some(PropertyValue::String(n.label.clone())),
+                p => n.properties.get(p).cloned(),
+            })
+        }
+        _ => None,
+    })
 }
 
 /// Evaluate GROUP BY key
