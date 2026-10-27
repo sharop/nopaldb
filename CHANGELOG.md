@@ -83,6 +83,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - En Python, `NqlResult.data` expone el contenido del export (texto
     CSV/JSON, o la ruta escrita en Arrow/Parquet). Antes el export sin `path`
     no se podía leer.
+- **Serializable: descartar o revertir una transacción ya suelta sus
+  candados** (#296). Solo los soltaban un `commit` fallido y
+  `rollback_async()`. El `Drop`, el `rollback()` síncrono, un `?` que
+  propagaba un error (por ejemplo `Deadlock` en `add_node`) o un `commit`
+  cancelado dejaban los nodos tomados, y el siguiente escritor fallaba con
+  `Lock timeout` a los 5 s. El lock manager libera ahora de forma síncrona
+  (`LockManager::release_locks_sync`, nuevo; `release_locks` se conserva), así
+  que toda salida sin commit suelta los candados en el acto.
 
 ### Added
 - **Guía de actualización a 0.9.3** desde 0.6–0.8
