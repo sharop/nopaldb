@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.9.4] - unreleased
+
+Arreglos de resultados silenciosos encontrados al revisar la documentación
+contra el código: consultas NQL que devolvían filas incorrectas o ignoraban
+parte de la consulta sin error (#293, #294, #298, #299), un `export` que
+respondía éxito sin escribir (#295), candados de Serializable que no se
+soltaban (#296), `path_anomaly_score` constante (#297) y listas que volvían
+como bytes (#300). El crate vuelve a compilar con su versión mínima de Rust
+(1.89). Guía de actualización y documentación revisadas.
+
+**Para volver atrás:** una base escrita por 0.9.4 que contenga una lista de
+enteros 0–255, una lista vacía, una lista de pares `[texto, valor]` o un
+objeto vacío no la abre 0.9.3 o anterior (#300).
 
 ### Fixed
 - **NQL: un patrón ligaba el nodo equivocado a una variable** (#293). Ambas
@@ -102,6 +114,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   estaba documentado. `path_embedding_similarity` usa el mismo mensaje. Se
   corrigen el docstring de `add_path_reference_embedding` (daba otra fórmula)
   y el paso 6 del acto 2 del tutorial, que registraba la referencia a 384.
+- **Logs de candados sin el id del nodo** (#304): CodeQL marcaba el id como
+  dato sensible en los `log::debug!` de `lock_manager.rs`; bastan la
+  transacción y el tipo de candado.
 - **Documentación revisada contra el código de 0.9.4**: 57 archivos, con los
   ejemplos ejecutados. Lo que un lector copiaba y fallaba, o contradecía al
   código:
