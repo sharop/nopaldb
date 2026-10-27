@@ -366,15 +366,18 @@ impl LockManager {
                             },
                         );
 
-                        log::debug!("tx{} acquired {:?} lock on node {}", tx_id, lock_type, node_id);
+                        // Sin el id del nodo en los logs: CodeQL lo marca como dato sensible
+                        // (los ids salen de datos del usuario) y para depurar contención
+                        // bastan la tx y el tipo de candado.
+                        log::debug!("tx{} acquired {:?} lock", tx_id, lock_type);
                         return Ok(());
                     }
                 }
             };
 
             log::debug!(
-                "tx{} waiting for {:?} lock on node {} (held by tx{} with {:?})",
-                tx_id, lock_type, node_id, existing_tx_id, existing_lock_type
+                "tx{} waiting for {:?} lock (held by tx{} with {:?})",
+                tx_id, lock_type, existing_tx_id, existing_lock_type
             );
 
             // Deadlock detection
@@ -389,7 +392,7 @@ impl LockManager {
             // Cleanup
             self.cleanup_wait_for_edge(tx_id, existing_tx_id);
 
-            log::debug!("tx{} retrying {:?} lock on node {}", tx_id, lock_type, node_id);
+            log::debug!("tx{} retrying {:?} lock", tx_id, lock_type);
         }
     }
 
@@ -428,9 +431,9 @@ impl LockManager {
         let mut locks = self.node_locks();
 
         // Notificar a todos los waiters ANTES de remover
-        for (node_id, entry) in locks.iter() {
+        for entry in locks.values() {
             if entry.lock_info.tx_id == tx_id {
-                log::debug!("tx{} releasing lock on node {}", tx_id, node_id);
+                log::debug!("tx{} releasing a {:?} lock", tx_id, entry.lock_info.lock_type);
                 entry.notify.notify_waiters();
             }
         }
