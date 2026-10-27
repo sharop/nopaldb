@@ -380,15 +380,7 @@ fn infer_property_schema(nodes: &[&Node]) -> BTreeMap<String, PropertyType> {
 
     for node in nodes {
         for (key, value) in &node.properties {
-            let prop_type = match value {
-                PropertyValue::String(_) => PropertyType::String,
-                PropertyValue::Int(_) => PropertyType::Int,
-                PropertyValue::Float(_) => PropertyType::Float,
-                PropertyValue::Bool(_) => PropertyType::Bool,
-                PropertyValue::Null => continue,
-                // Sin tipo Arrow propio: van como texto JSON.
-                PropertyValue::Bytes(_) | PropertyValue::Object(_) | PropertyValue::List(_) => PropertyType::Mixed,
-            };
+            let Some(prop_type) = property_type(value) else { continue };
 
             schema.entry(key.clone())
                 .and_modify(|existing| {
@@ -402,6 +394,19 @@ fn infer_property_schema(nodes: &[&Node]) -> BTreeMap<String, PropertyType> {
     }
 
     schema
+}
+
+/// Tipo de columna de un valor; `None` para `Null` (no decide el tipo).
+fn property_type(value: &PropertyValue) -> Option<PropertyType> {
+    match value {
+        PropertyValue::String(_) => Some(PropertyType::String),
+        PropertyValue::Int(_) => Some(PropertyType::Int),
+        PropertyValue::Float(_) => Some(PropertyType::Float),
+        PropertyValue::Bool(_) => Some(PropertyType::Bool),
+        PropertyValue::Null => None,
+        // Sin tipo Arrow propio: van como texto JSON.
+        PropertyValue::Bytes(_) | PropertyValue::Object(_) | PropertyValue::List(_) => Some(PropertyType::Mixed),
+    }
 }
 
 /// Property type for schema inference
@@ -631,7 +636,80 @@ pub fn read_parquet(
     Ok(batch)
 }
 
+/// Convierte una tabla de resultados (columnas + filas) en un `RecordBatch`.
+///
+/// Lo usa `EXPORT parquet` / `EXPORT arrow` de NQL. El tipo de cada columna
+/// se infiere de sus valores con la misma regla que las propiedades de
+/// nodos (`infer_property_schema`): un solo tipo escalar da su tipo Arrow,
+/// tipos mezclados o compuestos van como texto (JSON para listas/objetos).
+/// Una columna sin valores no nulos sale como `Utf8` toda nula. Las columnas
+/// conservan el orden de `columns`.
+pub(crate) fn table_to_arrow(
+    columns: &[String],
+    rows: &[&std::collections::HashMap<String, PropertyValue>],
+) -> Result<RecordBatch> {
+    let mut fields = Vec::with_capacity(columns.len());
+    let mut arrays: Vec<ArrayRef> = Vec::with_capacity(columns.len());
 
+    for column in columns {
+        let mut column_type: Option<PropertyType> = None;
+        for row in rows {
+            if let Some(t) = row.get(column).and_then(property_type) {
+                column_type = Some(match column_type {
+                    Some(existing) if existing != t => PropertyType::Mixed,
+                    _ => t,
+                });
+            }
+        }
+        let column_type = column_type.unwrap_or(PropertyType::String);
+        let arrow_type = match column_type {
+            PropertyType::String | PropertyType::Mixed => DataType::Utf8,
+            PropertyType::Int => DataType::Int64,
+            PropertyType::Float => DataType::Float64,
+            PropertyType::Bool => DataType::Boolean,
+        };
+        fields.push(Field::new(column.as_str(), arrow_type, true));
+
+        let mut builder = PropertyBuilder::new(column_type, rows.len());
+        for row in rows {
+            match row.get(column) {
+                Some(value) => builder.append_value(value),
+                None => builder.append_null(),
+            }
+        }
+        arrays.push(builder.finish());
+    }
+
+    let schema = Arc::new(Schema::new(fields));
+    if arrays.is_empty() {
+        // Sin columnas no hay arrays de los que sacar el número de filas.
+        let options = arrow::array::RecordBatchOptions::new().with_row_count(Some(rows.len()));
+        return RecordBatch::try_new_with_options(schema, arrays, &options)
+            .map_err(|e| NopalError::Custom(format!("Failed to create RecordBatch: {}", e)));
+    }
+    RecordBatch::try_new(schema, arrays)
+        .map_err(|e| NopalError::Custom(format!("Failed to create RecordBatch: {}", e)))
+}
+
+/// Escribe un `RecordBatch` como archivo Arrow IPC (formato *file*, el de
+/// `pyarrow.ipc.open_file` / `pyarrow.feather.read_table`).
+///
+/// Formato *file* y no *stream* (el que devuelve el wrapper de Python en
+/// memoria): un archivo en disco se abre por su footer sin leerlo entero.
+pub fn write_arrow_ipc(
+    batch: &RecordBatch,
+    path: impl AsRef<std::path::Path>,
+) -> Result<()> {
+    use arrow::ipc::writer::FileWriter;
+    let err = |what: &str, e: arrow::error::ArrowError| {
+        NopalError::Custom(format!("Arrow IPC {what} error: {e}"))
+    };
+    let file = std::fs::File::create(path.as_ref()).map_err(NopalError::IoError)?;
+    let mut writer = FileWriter::try_new(file, &batch.schema()).map_err(|e| err("writer", e))?;
+    writer.write(batch).map_err(|e| err("write", e))?;
+    writer.finish().map_err(|e| err("finish", e))?;
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

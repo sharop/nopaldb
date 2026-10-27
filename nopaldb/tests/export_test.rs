@@ -105,13 +105,20 @@ async fn test_export_json() -> Result<()> {
 // ARROW EXPORT
 // ═══════════════════════════════════════════════════════════
 
+// Arrow is binary and always goes to a file (#295): inline it used to answer
+// success with a text summary. The file round-trip is checked in
+// nql_export_honest_test.rs.
+#[cfg(feature = "analytics")]
 #[tokio::test]
 async fn test_export_arrow() -> Result<()> {
     let graph = setup_graph().await?;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("people.arrow");
 
-    let result = graph.execute_statement(
-        "find p.name, p.age from (p:Person) export arrow"
-    ).await?;
+    let result = graph.execute_statement(&format!(
+        r#"find p.name, p.age from (p:Person) export arrow with path="{}""#,
+        path.display()
+    )).await?;
 
     match &result {
         NqlResult::Export { format, rows_exported, .. } => {
@@ -120,6 +127,7 @@ async fn test_export_arrow() -> Result<()> {
         }
         other => panic!("Expected Export, got: {}", other.summary()),
     }
+    assert!(path.exists());
 
     Ok(())
 }

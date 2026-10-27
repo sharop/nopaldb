@@ -65,6 +65,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sigue leyéndose como `bytes`** (en disco no se distingue de unos bytes):
   hay que reescribirlo. Una base escrita por 0.9.4 con alguno de esos valores
   no la lee 0.9.3 o anterior.
+- **NQL `export` respondía éxito por cosas que no hacía** (#295).
+  - `export parquet "ruta"` contestaba `Exported N rows as Parquet` sin
+    escribir el archivo, y `export arrow` devolvía un resumen de texto. Ahora
+    `export parquet "ruta"` escribe el Parquet (mismo escritor que
+    `Graph::export_parquet`; tipo de cada columna inferido de sus valores) y
+    `export arrow with path="…"` escribe un archivo Arrow IPC. `export arrow`
+    sin `path` es error, y sin la feature `analytics` los dos son un error con
+    nombre.
+  - Las opciones desconocidas se ignoraban: `export csv with delimiter=";"`
+    escribía comas. Ahora fallan con la lista de opciones válidas (la del
+    separador es `separator`). Una opción de texto con otro tipo (`path=3`)
+    también es error.
+  - `sketch` / `commit` en `execute_statement`/`execute_nql` contestaban un
+    mensaje OK sin hacer nada. Ahora son error; desde Rust se usa
+    `SketchManager`.
+  - En Python, `NqlResult.data` expone el contenido del export (texto
+    CSV/JSON, o la ruta escrita en Arrow/Parquet). Antes el export sin `path`
+    no se podía leer.
 
 ### Added
 - **Guía de actualización a 0.9.3** desde 0.6–0.8

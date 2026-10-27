@@ -1,12 +1,13 @@
 // src/query/nql/executor/export.rs
 //
-// Export executor: converts QueryResult to CSV, JSON, or Arrow format
+// Export executor: converts QueryResult to CSV, JSON, Arrow IPC or Parquet
 // Triggered by the EXPORT clause in NQL queries.
 //
 // Syntax:
 //   find p.name, p.age from (p:Person) export csv
 //   find p.name, p.age from (p:Person) export json
-//   find p.name, p.age from (p:Person) export arrow
+//   find p.name, p.age from (p:Person) export arrow with path="out.arrow"
+//   find p.name, p.age from (p:Person) export parquet "out.parquet"
 //   find * from (p:Person) export csv with separator="|"
 
 use crate::error::{NopalError, Result};
@@ -14,24 +15,42 @@ use crate::types::PropertyValue;
 use super::result::{QueryResult, NqlResult};
 use crate::query::nql::parser::ast::{ExportClause, ExportFormat};
 
+/// Opciones válidas de cada formato. Una opción fuera de la lista es error:
+/// hasta 0.9.3 se ignoraban en silencio, así que `delimiter=";"` (el nombre
+/// que documentaba la referencia) exportaba con comas sin avisar. No se
+/// acepta `delimiter` como alias de `separator`: dos nombres para lo mismo
+/// son superficie que hay que documentar y probar para siempre; el error
+/// sugiere el nombre bueno.
+const CSV_OPTIONS: &[&str] = &["path", "separator", "header"];
+const JSON_OPTIONS: &[&str] = &["path", "pretty", "jsonl"];
+const ARROW_OPTIONS: &[&str] = &["path"];
+/// La ruta va en la sintaxis (`export parquet "ruta"`), no como opción.
+const PARQUET_OPTIONS: &[&str] = &[];
+
 /// Execute export: convert a QueryResult into the requested format
+///
+/// Contrato (docs/NQL_SEMANTICS.md § 5e): o se hace lo pedido o es error.
+/// `Export.data` lleva el contenido exportado (CSV/JSON) o, en los formatos
+/// binarios (que siempre van a archivo), la ruta escrita.
 pub fn execute_export(result: &QueryResult, export: &ExportClause) -> Result<NqlResult> {
     let rows_exported = result.len();
 
     let (format_name, data) = match &export.format {
         ExportFormat::Csv => {
-            let sep = option_as_str(export, "separator").unwrap_or(",");
+            check_options(export, "csv", CSV_OPTIONS)?;
+            let sep = option_as_str(export, "separator")?.unwrap_or(",");
             let include_header = option_as_bool(export, "header", true);
             let csv = export_csv(result, sep, include_header);
 
-            if let Some(path) = option_as_owned_string(export, "path") {
-                std::fs::write(&path, &csv)
+            if let Some(path) = option_as_str(export, "path")? {
+                std::fs::write(path, &csv)
                     .map_err(|e| NopalError::QueryExecutionError(format!("Failed to write CSV export to '{}': {}", path, e)))?;
             }
 
             ("CSV".to_string(), csv)
         }
         ExportFormat::Json => {
+            check_options(export, "json", JSON_OPTIONS)?;
             let pretty = option_as_bool(export, "pretty", false);
             let jsonl = option_as_bool(export, "jsonl", false);
             let json = if jsonl {
@@ -40,18 +59,32 @@ pub fn execute_export(result: &QueryResult, export: &ExportClause) -> Result<Nql
                 export_json(result, pretty)
             };
 
-            if let Some(path) = option_as_owned_string(export, "path") {
-                std::fs::write(&path, &json)
+            if let Some(path) = option_as_str(export, "path")? {
+                std::fs::write(path, &json)
                     .map_err(|e| NopalError::QueryExecutionError(format!("Failed to write JSON export to '{}': {}", path, e)))?;
             }
 
             ("JSON".to_string(), json)
         }
         ExportFormat::Arrow => {
-            ("Arrow".to_string(), export_arrow_summary(result))
+            check_options(export, "arrow", ARROW_OPTIONS)?;
+            // Sin `path` no hay dónde poner el binario: `data` es texto. Hasta
+            // 0.9.3 se devolvía un resumen ("Arrow RecordBatch: …") como si
+            // fuera la exportación.
+            let path = option_as_str(export, "path")?.ok_or_else(|| {
+                NopalError::QueryExecutionError(
+                    "export arrow needs a file: use `export arrow with path=\"file.arrow\"` \
+                     (inline export is text only: use `export csv` or `export json`)"
+                        .to_string(),
+                )
+            })?;
+            write_binary(result, BinaryFormat::Arrow, path)?;
+            ("Arrow".to_string(), path.to_string())
         }
         ExportFormat::Parquet(path) => {
-            ("Parquet".to_string(), format!("Parquet export to '{}' ({} rows) — use arrow_export::write_parquet for file I/O", path, rows_exported))
+            check_options(export, "parquet", PARQUET_OPTIONS)?;
+            write_binary(result, BinaryFormat::Parquet, path)?;
+            ("Parquet".to_string(), path.clone())
         }
     };
 
@@ -60,6 +93,82 @@ pub fn execute_export(result: &QueryResult, export: &ExportClause) -> Result<Nql
         data,
         rows_exported,
     })
+}
+
+#[derive(Clone, Copy)]
+enum BinaryFormat {
+    Arrow,
+    Parquet,
+}
+
+impl BinaryFormat {
+    fn name(self) -> &'static str {
+        match self {
+            BinaryFormat::Arrow => "Arrow",
+            BinaryFormat::Parquet => "Parquet",
+        }
+    }
+}
+
+/// Escribe el resultado como Arrow IPC o Parquet con los escritores de
+/// `arrow_export` (el de Parquet es el mismo de `Graph::export_parquet`).
+#[cfg(feature = "analytics")]
+fn write_binary(result: &QueryResult, format: BinaryFormat, path: &str) -> Result<()> {
+    let rows: Vec<_> = result.rows.iter().map(|row| &row.values).collect();
+    let batch = crate::arrow_export::table_to_arrow(&result.columns, &rows)?;
+    let written = match format {
+        BinaryFormat::Arrow => crate::arrow_export::write_arrow_ipc(&batch, path),
+        BinaryFormat::Parquet => crate::arrow_export::write_parquet(&batch, path),
+    };
+    written.map_err(|e| {
+        NopalError::QueryExecutionError(format!(
+            "Failed to write {} export to '{}': {}",
+            format.name(),
+            path,
+            e
+        ))
+    })
+}
+
+/// Sin `analytics` no están las dependencias `arrow`/`parquet`: error con
+/// nombre en vez de responder "Exported N rows" sin escribir nada.
+#[cfg(not(feature = "analytics"))]
+fn write_binary(_result: &QueryResult, format: BinaryFormat, _path: &str) -> Result<()> {
+    Err(NopalError::QueryExecutionError(format!(
+        "export {} requires the `analytics` feature, which this build does not include; \
+         use `export csv` or `export json`",
+        format.name().to_lowercase()
+    )))
+}
+
+/// Rechaza las opciones que el formato no conoce, con la lista de las válidas.
+fn check_options(export: &ExportClause, format: &str, valid: &[&str]) -> Result<()> {
+    let mut unknown: Vec<&str> = export
+        .options
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !valid.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    let valid_list = if valid.is_empty() { "none".to_string() } else { valid.join(", ") };
+    let hint = if format == "csv" && unknown.contains(&"delimiter") {
+        " (the delimiter option is called `separator`)"
+    } else if format == "parquet" && unknown.contains(&"path") {
+        " (the path goes in the syntax: `export parquet \"file.parquet\"`)"
+    } else {
+        ""
+    };
+    Err(NopalError::QueryExecutionError(format!(
+        "unknown export {} option{}: {}; valid options: {}{}",
+        format,
+        if unknown.len() == 1 { "" } else { "s" },
+        unknown.join(", "),
+        valid_list,
+        hint
+    )))
 }
 
 /// Export QueryResult to CSV string
@@ -142,15 +251,6 @@ fn export_jsonl(result: &QueryResult) -> String {
     lines.join("\n")
 }
 
-/// Arrow export summary (actual Arrow RecordBatch is in arrow_export module)
-fn export_arrow_summary(result: &QueryResult) -> String {
-    format!(
-        "Arrow RecordBatch: {} columns x {} rows. Use graph.arrow_export for binary serialization.",
-        result.columns.len(),
-        result.len()
-    )
-}
-
 // ═══════════════════════════════════════════════════════════
 // PUBLIC API — called by QueryResult methods
 // ═══════════════════════════════════════════════════════════
@@ -225,18 +325,17 @@ fn json_escape(s: &str) -> String {
         .replace('\t', "\\t")
 }
 
-fn option_as_str<'a>(export: &'a ExportClause, key: &str) -> Option<&'a str> {
-    export.options.get(key).and_then(|v| {
-        if let PropertyValue::String(s) = v {
-            Some(s.as_str())
-        } else {
-            None
-        }
-    })
-}
-
-fn option_as_owned_string(export: &ExportClause, key: &str) -> Option<String> {
-    option_as_str(export, key).map(ToString::to_string)
+/// Opción de texto. Presente con otro tipo (`path=3`) es error: si no, la
+/// exportación respondería éxito sin escribir el archivo.
+fn option_as_str<'a>(export: &'a ExportClause, key: &str) -> Result<Option<&'a str>> {
+    match export.options.get(key) {
+        None => Ok(None),
+        Some(PropertyValue::String(s)) => Ok(Some(s.as_str())),
+        Some(other) => Err(NopalError::QueryExecutionError(format!(
+            "export option '{}' must be a string, got {:?}",
+            key, other
+        ))),
+    }
 }
 
 fn option_as_bool(export: &ExportClause, key: &str, default: bool) -> bool {
