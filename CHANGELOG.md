@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.9.4] - unreleased
+## [0.9.4] - 2026-10-27
 
 Arreglos de resultados silenciosos encontrados al revisar la documentación
 contra el código: consultas NQL que devolvían filas incorrectas o ignoraban
