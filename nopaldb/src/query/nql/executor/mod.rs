@@ -290,6 +290,54 @@ fn build_path_node_object(node: &Node) -> PropertyValue {
     ])
 }
 
+/// Vector E-7 de un path (`media(nodos) ‖ media(aristas)`) con la dimensión de
+/// cada mitad, para que los errores de dimensión expliquen de dónde sale el
+/// tamaño del vector.
+#[cfg(feature = "embeddings")]
+struct PathEmbeddingParts {
+    vector: Vec<f32>,
+    node_dim: usize,
+    edge_dim: usize,
+}
+
+/// Error de dimensión entre el vector del path y referencias registradas con
+/// `add_path_reference_embedding` (#297). Nombra las referencias culpables
+/// (hasta cinco), las dos dimensiones y cómo se construye el vector del path,
+/// porque el error típico es registrar la referencia a la dimensión de los
+/// nodos en vez de `node_dim + edge_dim`.
+#[cfg(feature = "embeddings")]
+fn path_reference_dimension_mismatch(
+    function: &str,
+    parts: &PathEmbeddingParts,
+    node_model: &str,
+    edge_model: &str,
+    mismatched: &[(&str, usize)],
+) -> NopalError {
+    const SHOWN: usize = 5;
+    let mut listed: Vec<String> = mismatched
+        .iter()
+        .take(SHOWN)
+        .map(|(name, len)| format!("'{}' has {}", name, len))
+        .collect();
+    if mismatched.len() > SHOWN {
+        listed.push(format!("and {} more", mismatched.len() - SHOWN));
+    }
+    NopalError::QueryExecutionError(format!(
+        "{}: dimension mismatch — the path vector has {} dimensions but path reference {} \
+         (node_model='{}', edge_model='{}'). The path vector is the concatenation \
+         [mean of node embeddings ({} dims) ‖ mean of edge embeddings ({} dims)]; \
+         register the references with add_path_reference_embedding at {} dimensions",
+        function,
+        parts.vector.len(),
+        listed.join(", "),
+        node_model,
+        edge_model,
+        parts.node_dim,
+        parts.edge_dim,
+        parts.vector.len(),
+    ))
+}
+
 /// Cosine similarity entre dos vectores de f32 (E-8).
 /// Falla explicitamente si los vectores estan vacios, tienen dimensiones
 /// distintas o alguna norma cero.
@@ -4274,6 +4322,23 @@ impl<'a> Executor<'a> {
         node_model: &str,
         edge_model: &str,
     ) -> Result<Vec<f32>> {
+        Ok(self.build_path_embedding_parts(binding, node_model, edge_model)?.vector)
+    }
+
+    /// Construye el vector E-7 del path y conserva las dimensiones de sus dos
+    /// mitades para que los errores de dimensión digan de dónde sale el tamaño.
+    ///
+    /// El vector es siempre `media(nodos) ‖ media(aristas)`: si una arista del
+    /// path no tiene embedding para `edge_model` la llamada falla (no se recorta
+    /// a la mitad de los nodos), así que para un par de modelos con dimensiones
+    /// fijas todos los paths miden lo mismo: `node_dim + edge_dim`.
+    #[cfg(feature = "embeddings")]
+    fn build_path_embedding_parts(
+        &self,
+        binding: &LinearPatternBinding,
+        node_model: &str,
+        edge_model: &str,
+    ) -> Result<PathEmbeddingParts> {
         if binding.nodes.is_empty() || binding.edges.is_empty() {
             return Err(NopalError::QueryExecutionError(
                 "PathEmbedding requires a materialized linear path with at least one relationship in E-7".into(),
@@ -4352,7 +4417,11 @@ impl<'a> Executor<'a> {
 
         let mut combined = mean_nodes;
         combined.extend(mean_edges);
-        Ok(combined)
+        Ok(PathEmbeddingParts {
+            vector: combined,
+            node_dim,
+            edge_dim,
+        })
     }
 
     #[cfg(feature = "embeddings")]
@@ -4579,15 +4648,18 @@ impl<'a> Executor<'a> {
                             "path_embedding_similarity: edge_model (arg 3) must be a string literal".into()
                         )),
                     };
-                    let path_vec = self.build_path_embedding_vector(binding, &node_model, &edge_model)?;
+                    let parts = self.build_path_embedding_parts(binding, &node_model, &edge_model)?;
                     let reference = self.graph.get_path_reference_embedding_sync(&ref_name, &node_model, &edge_model)?;
-                    if path_vec.len() != reference.vector.len() {
-                        return Err(NopalError::QueryExecutionError(format!(
-                            "path_embedding_similarity: dimension mismatch — path vector has {} dimensions, \
-                             reference '{}' has {} dimensions",
-                            path_vec.len(), ref_name, reference.vector.len()
-                        )));
+                    if parts.vector.len() != reference.vector.len() {
+                        return Err(path_reference_dimension_mismatch(
+                            "path_embedding_similarity",
+                            &parts,
+                            &node_model,
+                            &edge_model,
+                            &[(reference.name.as_str(), reference.vector.len())],
+                        ));
                     }
+                    let path_vec = parts.vector;
                     let score = cosine_similarity_f32(&path_vec, &reference.vector)?;
                     Ok(PropertyValue::Float(score as f64))
                 }
@@ -4658,8 +4730,26 @@ impl<'a> Executor<'a> {
                     // Score de anomalía = 1.0 - cosine_similarity(path_vec, centroid)
                     // El centroide es la media aritmética de todos los vectores de referencia
                     // para el par (node_model, edge_model). Score 0.0 = idéntico al centroide;
-                    // score 1.0 = completamente opuesto (máxima anomalía).
-                    // Sin referencias → retorna 1.0 (máxima anomalía por ausencia de baseline).
+                    // score 1.0 = ortogonal u opuesto (máxima anomalía; se recorta a [0, 1]).
+                    //
+                    // Casos degenerados (#297):
+                    // - Sin referencias para el par de modelos → 1.0 (máxima anomalía por
+                    //   ausencia de baseline). Es el contrato documentado y probado; la
+                    //   consulta del tutorial lo anuncia ("sin referencias, score = 1.0").
+                    // - Alguna referencia con dimensión distinta a la del vector del path →
+                    //   error con nombre. Antes se descartaba en silencio y, si ninguna
+                    //   encajaba, el score era 1.0 fijo para todos los paths: indistinguible
+                    //   de un resultado real. El vector del path mide siempre
+                    //   node_dim + edge_dim, así que una referencia de otro tamaño no puede
+                    //   compararse con ningún path: es un error de registro, no un dato.
+                    // - Path sin embeddings (algún nodo o arista) → error de
+                    //   `build_path_embedding_parts`; path de norma cero → error.
+                    // - Centroide de norma cero (referencias que se cancelan) → error: no hay
+                    //   dirección contra la que medir y 1.0 sería otra constante muda.
+                    //
+                    // La dimensión no puede validarse en `add_path_reference_embedding`:
+                    // depende de los embeddings de nodos y aristas, que pueden registrarse
+                    // después que la referencia.
                     if args.len() != 2 {
                         return Err(NopalError::QueryExecutionError(format!(
                             "path_anomaly_score requires exactly 2 arguments: \
@@ -4679,8 +4769,8 @@ impl<'a> Executor<'a> {
                             "path_anomaly_score: edge_model (arg 2) must be a string literal".into()
                         )),
                     };
-                    let path_vec = self.build_path_embedding_vector(binding, &node_model, &edge_model)?;
-                    let norm_sq: f32 = path_vec.iter().map(|x| x * x).sum();
+                    let parts = self.build_path_embedding_parts(binding, &node_model, &edge_model)?;
+                    let norm_sq: f32 = parts.vector.iter().map(|x| x * x).sum();
                     if norm_sq == 0.0 {
                         return Err(NopalError::QueryExecutionError(
                             "path_anomaly_score: path vector has zero norm — cannot compute anomaly score (PathAnomaly E-10)".into()
@@ -4688,35 +4778,48 @@ impl<'a> Executor<'a> {
                     }
                     let references = self.graph.get_all_path_references_for_models_sync(&node_model, &edge_model)?;
                     if references.is_empty() {
-                        // Sin baseline → máxima anomalía por definición
+                        // Sin baseline → máxima anomalía por definición (contrato documentado)
                         return Ok(PropertyValue::Float(1.0));
                     }
-                    // Calcular centroide: media aritmética de los vectores de referencia
-                    // Solo se incluyen referencias con la misma dimensión que el path vector.
-                    let dim = path_vec.len();
-                    let compatible: Vec<&Vec<f32>> = references
+                    let dim = parts.vector.len();
+                    let incompatible: Vec<(&str, usize)> = references
                         .iter()
-                        .filter(|r| r.vector.len() == dim)
-                        .map(|r| &r.vector)
+                        .filter(|r| r.vector.len() != dim)
+                        .map(|r| (r.name.as_str(), r.vector.len()))
                         .collect();
-                    if compatible.is_empty() {
-                        // Todas las referencias tienen dimensión distinta → máxima anomalía
-                        return Ok(PropertyValue::Float(1.0));
+                    if !incompatible.is_empty() {
+                        return Err(path_reference_dimension_mismatch(
+                            "path_anomaly_score",
+                            &parts,
+                            &node_model,
+                            &edge_model,
+                            &incompatible,
+                        ));
                     }
-                    let n = compatible.len() as f32;
+                    let path_vec = parts.vector;
+                    // Centroide: media aritmética de los vectores de referencia
+                    let n = references.len() as f32;
                     let mut centroid = vec![0.0f32; dim];
-                    for ref_vec in &compatible {
-                        for (i, v) in ref_vec.iter().enumerate() {
+                    for reference in &references {
+                        for (i, v) in reference.vector.iter().enumerate() {
                             centroid[i] += v;
                         }
                     }
                     for v in centroid.iter_mut() {
                         *v /= n;
                     }
-                    // centroide de norma cero → todos los vectores de referencia se cancelan
+                    // Centroide de norma cero → las referencias se cancelan entre sí
                     let centroid_norm: f32 = centroid.iter().map(|x| x * x).sum::<f32>().sqrt();
                     if centroid_norm == 0.0 {
-                        return Ok(PropertyValue::Float(1.0));
+                        return Err(NopalError::QueryExecutionError(format!(
+                            "path_anomaly_score: the centroid of the {} path references for \
+                             (node_model='{}', edge_model='{}') has zero norm — the references \
+                             cancel each other out, so there is no baseline to compare against \
+                             (PathAnomaly E-10)",
+                            references.len(),
+                            node_model,
+                            edge_model
+                        )));
                     }
                     // cosine similarity entre path y centroide (centroide no es cero)
                     let dot: f32 = path_vec.iter().zip(centroid.iter()).map(|(a, b)| a * b).sum();

@@ -1633,8 +1633,12 @@ impl PyGraph {
     /// Persiste un embedding de referencia de path para usar con
     /// `path_embedding_similarity`, `path_knn_references` y `path_anomaly_score`.
     ///
-    /// El vector debe tener dimensión = dim(node_model) * 2 + dim(edge_model) * 2
-    /// (concatenación media-nodos || media-aristas, formato E-7).
+    /// El vector debe tener dimensión = dim(node_model) + dim(edge_model): es la
+    /// concatenación media-nodos || media-aristas del path (formato E-7). Por
+    /// ejemplo, con nodos y aristas de 384 dimensiones la referencia mide 768.
+    /// La dimensión no se valida aquí (depende de los embeddings del grafo); una
+    /// referencia de otro tamaño hace fallar la consulta NQL con un error de
+    /// dimensión.
     ///
     /// Args:
     ///     name (str): Identificador único de la referencia (e.g. "baseline_normal").
