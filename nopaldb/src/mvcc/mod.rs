@@ -124,6 +124,22 @@ impl VersionedEdge {
         }
     }
 
+    /// Siguiente versión de la cadena: la que reemplaza a `previous` (una
+    /// re-alta con el mismo id) o la que recrea la arista tras borrarla.
+    /// Cerrar `previous` es cosa del llamador: si ya estaba cerrada (borrado)
+    /// no se re-fecha su cierre.
+    pub fn new_version(previous: &VersionedEdge, edge: Edge, timestamp: u64) -> Self {
+        Self {
+            id: previous.id,
+            version: previous.version + 1,
+            timestamp,
+            edge_data: edge,
+            valid_from: timestamp,
+            valid_to: None,
+            prev_version: Some(previous.version),
+        }
+    }
+
     /// Marca esta versión como eliminada (establece valid_to)
     pub fn with_valid_to(mut self, ts: u64) -> Self {
         self.valid_to = Some(ts);

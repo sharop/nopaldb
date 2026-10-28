@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Toda escritura deja historia MVCC** (#319). `add_node` directo versiona
+  con el mismo timestamp que va al WAL (antes la misma escritura tenía
+  historia solo si había un crash); la importación Turtle/OWL y
+  `storage_insert_*` (ahora por WAL, versión e índices) también.
+  `get_class_nodes_at` pierde el fallback al estado actual.
+- **El BulkLoader da historia a lo que carga** (#319): un id nuevo recibe una
+  marca de nacimiento —su versión es el registro mismo, válido desde el lote,
+  sin copia— y un id existente continúa su cadena. Avanza y persiste el reloj
+  y `last_commit_timestamp`. La primera escritura que toca una entidad con
+  marca escribe antes su v1 desde el registro.
+- **Las aristas encadenan versiones** (#319): reescribir una arista cierra la
+  versión vigente y escribe v+1; recrearla tras borrarla sigue desde su
+  versión más alta (antes se pisaba la v1).
+- **Reproducir el WAL entero sin la marca de progreso ya no borra** un nodo o
+  arista recreado después del borrado registrado (#319).
+- Una transacción RepeatableRead o Serializable lee los nodos del BulkLoader.
+
+### Added
+- **Adopción de historia al abrir una base anterior**, una sola vez y
+  reanudable (#319): lo escrito sin versión recibe un piso por entidad (antes
+  del piso, `HistoryUnavailable`; desde el piso, el registro actual), sin
+  copia; las cadenas desincronizadas reciben v+1 y las abiertas de entidades
+  ya borradas se cierran.
+- `Graph::history_floor`, `Graph::edge_history_floor`,
+  `VersionedEdge::new_version`, `storage::META_HISTORY_ADOPTED` y
+  `storage::META_HISTORY_ADOPTION_TS`.
+
+### Changed
+- Las primitivas sin historia de `Storage` (`insert_node`,
+  `insert_nodes_batch`, `insert_edge*`) retiran la marca de lo que pisan sin
+  cadena: esa entidad pasa a `HistoryUnavailable`.
+- Costo: BulkLoader de nodos +6 % de tiempo y disco, de aristas +23 % de
+  tiempo; el primer arranque de una base anterior tarda unos 0.26 s por 100k
+  nodos + 100k aristas.
+- `ELReasoner::from_graph_at(ts)` por debajo del piso devuelve
+  `HistoryUnavailable` en vez de usar la taxonomía actual.
+
 ## [0.10.0] - 2026-10-28
 
 Historia MVCC correcta y GC seguro (#313, #314, #315). Borrar un nodo cierra

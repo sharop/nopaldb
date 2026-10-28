@@ -185,18 +185,21 @@ async fn get_node_at_reads_the_version_of_that_moment() -> nopaldb::Result<()> {
     Ok(())
 }
 
-/// Un nodo escrito con `add_node` directo no tiene historia: su estado en
-/// el pasado no se conoce. En 0.9.4 se devolvía el actual.
+/// Un nodo sin historia: su estado en el pasado no se conoce. En 0.9.4 se
+/// devolvía el actual. Hasta 0.10.0 era lo que dejaba `add_node` directo;
+/// desde 0.10.1 este versiona, y el registro sin cadena se fabrica con la
+/// primitiva de bajo nivel `Storage::insert_node`.
 #[tokio::test]
 async fn get_node_at_without_history_is_an_error() -> nopaldb::Result<()> {
     let graph = Graph::in_memory().await?;
     let ancla = lote_con_versiones(&graph, "lote-ancla", 1).await?;
     let t_ancla = graph.history(ancla).await?[0].valid_from;
 
-    let suelto = graph
-        .add_node(Node::new("Lote").with_property("nombre", PropertyValue::String("lote-suelto".into())))
-        .await?;
-    assert!(graph.history(suelto).await?.is_empty(), "precondition: direct writes are unversioned");
+    let suelto_nodo =
+        Node::new("Lote").with_property("nombre", PropertyValue::String("lote-suelto".into()));
+    let suelto = suelto_nodo.id;
+    graph.storage().insert_node(&suelto_nodo).await?;
+    assert!(graph.history(suelto).await?.is_empty(), "precondition: low-level writes are unversioned");
 
     let err = graph.get_node_at(suelto, t_ancla).await.unwrap_err();
     assert!(matches!(err, NopalError::HistoryUnavailable(_)), "got {err:?}");

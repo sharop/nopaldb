@@ -646,6 +646,11 @@ impl Graph {
         // Índice de etiquetas (#207): también después del replay, que lo
         // mantiene al reaplicar.
         graph.migrate_label_index_if_needed().await?;
+        // Adopción de historia (0.10.1): DESPUÉS del replay a propósito —
+        // el redo reconstruye con sus timestamps reales lo que el WAL tenga;
+        // adoptar antes pondría F en su lugar y la guarda del redo saltaría
+        // esas escrituras.
+        graph.adopt_history_if_needed().await?;
 
         // Rebuild TaxonomyIndex from Class nodes + subClassOf edges (if any).
         // Needed when a DB was populated via import_turtle in a previous session.
@@ -712,60 +717,72 @@ impl Graph {
         self.index_manager.flush().await
     }
 
-    // Metodo publico: agrega nodo con indexación automática
+    /// Agrega (o sobrescribe) un nodo, con indexación automática.
+    ///
+    /// Desde 0.10.1 versiona como una transacción: la escritura deja una
+    /// versión MVCC con el timestamp que el applier le asigna (el mismo que
+    /// va a su registro del WAL), así que `history`, `get_node_at` y `as_of`
+    /// la ven; sobrescribir un id existente cierra la versión vigente y
+    /// escribe la siguiente. Hasta 0.10.0 solo escribía el registro: el
+    /// nodo no tenía historia, y sobrescribir uno que sí la tenía la dejaba
+    /// desincronizada del registro.
     pub async fn add_node(&self, node: Node) -> Result<NodeId> {
-        self.add_node_internal(node, false).await
+        self.add_node_internal(node, None).await
     }
 
-    /// Metodo INTERNO: agrega nodo con control de indexación.
-    /// Encola la aplicación física en el single-writer apply.
+    /// Metodo INTERNO: encola el alta en el single-writer apply. `timestamp`
+    /// explícito solo para el redo del WAL (ver `WriteOp::AddNode`).
     pub(crate) async fn add_node_internal(
         &self,
         node: Node,
-        skip_indexing: bool,
+        timestamp: Option<u64>,
     ) -> Result<NodeId> {
         let node_id = node.id;
-        self.submit_write(applier::WriteOp::AddNode { node, skip_indexing })
+        self.submit_write(applier::WriteOp::AddNode { node, timestamp })
             .await?;
         Ok(node_id)
     }
 
     /// Aplicación física de AddNode. Solo el single-writer apply debe llamarla.
-    async fn apply_add_node(&self, node: Node, skip_indexing: bool) -> Result<NodeId> {
+    ///
+    /// Mismo write-set que un upsert del commit transaccional
+    /// (`apply_commit_set`): retract de lo que la sobrescritura invalida,
+    /// registro + versión en UN `apply_multi` (`commit_node_version_atomic`),
+    /// índices después. Devuelve `false` si la cadena ya tenía una versión en
+    /// `>= timestamp` (redo de algo ya aplicado): entonces no toca nada.
+    async fn apply_add_node(&self, node: Node, timestamp: u64) -> Result<bool> {
         let node_id = node.id;
+        // La guarda va ANTES del retract: retractar sobre un registro ya
+        // superado borraría los valores VIGENTES.
+        let crate::storage::NodeVersionPlan::Write(write) =
+            self.storage.plan_node_version(&node, timestamp)?
+        else {
+            return Ok(false);
+        };
+
         // El esquema y el retract comparten la única lectura del nodo viejo.
         let old = self.observe_node_upsert(&node).await?;
         let existed = old.is_some();
 
         // Retirar lo que la sobrescritura invalida, mientras el nodo viejo
-        // todavía existe en storage. Solo en el camino directo: con
-        // `skip_indexing` el llamador es el commit transaccional, que ya
-        // retractó ANTES de escribir su versión MVCC (para cuando llegamos
-        // aquí el nodo viejo ya fue pisado y sería tarde).
-        if !skip_indexing {
-            self.retract_overwritten_index_entries(old.as_ref(), &node).await?;
-        }
+        // todavía existe en storage.
+        self.retract_overwritten_index_entries(old.as_ref(), &node).await?;
 
-        // Guardar en storage
-        self.storage.insert_node(&node).await?;
+        // Registro + versión (y la v1 implícita de una marca, si toca),
+        // atómicos entre sí.
+        self.storage.commit_node_write(&node, &write)?;
         self.retire_old_label_entry(old.as_ref(), &node).await?;
 
         self.register_node_in_ram(node_id, existed).await;
-
-        // Indexar propiedades SOLO si no se debe skip (el commit transaccional
-        // indexa sus nodos al final, una sola vez).
-        if !skip_indexing {
-            self.apply_index_node_properties(&node).await?;
-        }
+        self.apply_index_node_properties(&node).await?;
 
         // Visibilidad para la validación Serializable: las escrituras directas
         // también cuentan como modificación (safety net para escritores que
         // no pasan por el LockManager).
         #[cfg(feature = "full-isolation")]
-        self.mark_modified(node_id, self.next_timestamp.load(AtomicOrdering::SeqCst))
-            .await?;
+        self.mark_modified(node_id, timestamp).await?;
 
-        Ok(node_id)
+        Ok(true)
     }
 
     /// Cambio de etiqueta (#207): retira la entrada de la etiqueta vieja.
@@ -1124,6 +1141,49 @@ impl Graph {
         self.persist_clocks().await
     }
 
+    /// Adopción de historia, una vez por base (ver
+    /// `storage::history_adoption`): versiona lo que una versión ≤ 0.10.0
+    /// escribió sin versión y cierra las cadenas que dejó abiertas, con un
+    /// suelo de historia por entidad. Mismo patrón que las migraciones de
+    /// índices de arriba: O(nodos + aristas) la primera vez, una lectura de
+    /// la marca las siguientes; una base nueva hace la pasada vacía y deja la
+    /// marca. Se registra en el log (no hay campo para ella en
+    /// `OpenPhasesMs`: cuenta en `total`).
+    async fn adopt_history_if_needed(&self) -> Result<()> {
+        if self.storage.history_adopted()? {
+            return Ok(());
+        }
+        let started = Instant::now();
+        let alloc = || self.next_logical_timestamp();
+        let stats = self.storage.adopt_unversioned_history(&alloc)?;
+        if let Some(f) = stats.floor_ts {
+            // Lo adoptado es una escritura en F: `last_commit_timestamp`
+            // debe alcanzarla o `as_of(last_commit_timestamp())` no la vería.
+            self.note_applied_write(f);
+            // F avanzó el reloj después de que la migración del índice de
+            // etiquetas fijara su marca: sin re-persistir, la marca quedaría
+            // por detrás del reloj y el próximo open (p. ej. tras un
+            // `open_read_only`, que no escribe nada más) reconstruiría el
+            // índice entero.
+            self.persist_clocks().await?;
+            log::info!(
+                "Historia adoptada en ts {f}: {} nodos con suelo, {} nodos versionados, \
+                 {} cadenas de nodo cerradas, {} aristas con suelo, {} aristas versionadas, \
+                 {} versiones de arista cerradas, en {:.1?}",
+                stats.nodes_floored,
+                stats.nodes_versioned,
+                stats.node_chains_closed,
+                stats.edges_floored,
+                stats.edges_versioned,
+                stats.edge_versions_closed,
+                started.elapsed()
+            );
+        } else {
+            log::debug!("Adopción de historia: nada que adoptar ({:.1?})", started.elapsed());
+        }
+        Ok(())
+    }
+
     /// Crea un grafo en memoria (útil para tests)
     pub async fn in_memory() -> Result<Self> {
         Self::in_memory_with_options(crate::storage::StorageOptions::default()).await
@@ -1297,7 +1357,9 @@ impl Graph {
     ///
     /// Qué cuenta como escritura: los commits de transacciones y las
     /// escrituras directas (`add_node`, `add_edge`, `delete_*`) que el
-    /// applier registra en el WAL, una vez APLICADOS; no cuentan los
+    /// applier registra en el WAL, una vez APLICADOS; desde 0.10.1 también
+    /// cada lote del `BulkLoader` y la adopción de historia del open (su
+    /// timestamp F, ver [`Graph::history_floor`]); no cuentan los
     /// commits rechazados, los rollbacks, ni los ticks que consumen
     /// `begin_transaction` o el commit de una transacción vacía. Toda escritura confirmada (con su `await`
     /// terminado) antes de llamar a este método tiene timestamp `<=` al
@@ -1407,7 +1469,7 @@ impl Graph {
             Err(tokio::sync::mpsc::error::SendError(msg)) => {
                 let applier::Work::Op(op) = msg.work else { unreachable!() };
                 let _gate = self.write_gate.lock().await;
-                self.apply_write_op(op).await
+                self.apply_write_op(op, None).await
             }
         }
     }
@@ -1491,11 +1553,19 @@ impl Graph {
     /// Despacho de operaciones físicas. SOLO debe llamarse con el write-gate
     /// tomado (vía `submit_write`). Los cuerpos `apply_*` no deben volver a
     /// entrar al embudo (el Mutex no es reentrante).
-    async fn apply_write_op(&self, op: applier::WriteOp) -> Result<()> {
+    ///
+    /// `logged_ts` = el timestamp con que el applier registró la op en el WAL
+    /// (`None` si no la registró: redo, o el fallback inline sin applier).
+    /// Un `AddNode` sin timestamp propio versiona con ese; sin ninguno de los
+    /// dos (fallback inline) toma uno del reloj aquí, bajo el gate.
+    async fn apply_write_op(&self, op: applier::WriteOp, logged_ts: Option<u64>) -> Result<()> {
         use applier::WriteOp;
         match op {
-            WriteOp::AddNode { node, skip_indexing } => {
-                self.apply_add_node(node, skip_indexing).await.map(|_| ())
+            WriteOp::AddNode { node, timestamp } => {
+                let ts = timestamp
+                    .or(logged_ts)
+                    .unwrap_or_else(|| self.next_logical_timestamp());
+                self.apply_add_node(node, ts).await.map(|_| ())
             }
             WriteOp::AddEdgeAt { edge, timestamp } => {
                 self.apply_add_edge_at(edge, timestamp).await.map(|_| ())
@@ -1721,28 +1791,27 @@ impl Graph {
         self.storage.scan_nodes_batch(label, start_after, limit).await
     }
 
-    /// Re-insert a node (upsert) directly in the engine.
+    /// Re-insert a node (upsert). Desde 0.10.1 es exactamente
+    /// [`Graph::add_node`]: registro en el WAL, versión MVCC e índices.
     ///
-    /// Sin versión MVCC ni registro en el WAL: no es durable hasta el
-    /// siguiente checkpoint. NQL `update` la usaba hasta 0.9.4; ahora va por
-    /// la transacción de la sentencia. Para un upsert durable usar
-    /// `Transaction::add_node` o `upsert_node`.
-    ///
-    /// Bajo el write gate y por el observador del esquema, como toda
-    /// escritura: hasta 0.6.6 saltaba ambos y un `SET n.nueva = 1` no dejaba
-    /// rastro en el esquema.
+    /// Hasta 0.10.0 escribía directo en el motor, sin versión, sin WAL (no
+    /// era durable hasta el siguiente checkpoint) y sin mantener los
+    /// índices. Se descartó deprecarla en este parche: el nombre promete
+    /// "upsert directo" y eso es lo que sigue haciendo, ahora sin agujeros;
+    /// el código nuevo debería usar `add_node`, `upsert_node` o una
+    /// transacción.
     pub async fn storage_insert_node(&self, node: &Node) -> Result<()> {
-        let _gate = self.write_gate.lock().await;
-        self.observe_node_upsert(node).await?;
-        self.storage.insert_node(node).await
+        self.add_node(node.clone()).await.map(|_| ())
     }
 
-    /// Re-insert an edge (upsert) directly in the engine. Ver
-    /// [`Self::storage_insert_node`].
+    /// Re-insert an edge (upsert). Desde 0.10.1 es exactamente
+    /// [`Graph::add_edge`]: WAL, adyacencia, versión MVCC (continuando la
+    /// cadena si el id ya existía). Hasta 0.10.0 escribía solo el registro
+    /// de `edges` — ni adyacencia ni versión —, así que una arista nueva
+    /// escrita así no aparecía entre los vecinos de sus extremos; ahora,
+    /// como `add_edge`, falla con `NodeNotFound` si un extremo no existe.
     pub async fn storage_insert_edge(&self, edge: &Edge) -> Result<()> {
-        let _gate = self.write_gate.lock().await;
-        self.observe_edge_upsert(edge).await?;
-        self.storage.insert_edge(edge).await
+        self.add_edge(edge.clone()).await.map(|_| ())
     }
 
     /// Remove a property value from the property index.
@@ -2188,6 +2257,14 @@ impl Graph {
             return Err(NopalError::NodeNotFound(target.to_string()));
         }
 
+        // Versión que deja la escritura (continúa la cadena de la arista). Si
+        // ya hay una en `>= timestamp` — redo de algo ya aplicado — no se
+        // toca nada: ni esquema, ni disco, ni RAM.
+        let plan = self.storage.plan_edge_version(&edge, timestamp)?;
+        if matches!(plan, crate::storage::EdgeVersionPlan::Superseded) {
+            return Ok(edge_id);
+        }
+
         // Tipo internado (corre bajo el write_gate: quien asigna ids está
         // serializado; para tipos ya vistos es lookup RAM O(1)).
         let etype_id = self.storage.intern_edge_type(&edge.edge_type)?;
@@ -2205,7 +2282,7 @@ impl Graph {
         // UN apply_multi atómico: jamás edges sin su adyacencia ni sin su
         // versión, ni a medias tras un crash. Antes eran cuatro commits
         // (ver `Storage::insert_edge_full`).
-        self.storage.insert_edge_full(&edge, etype_id, timestamp).await?;
+        self.storage.insert_edge_planned(&edge, etype_id, timestamp, plan)?;
 
         // Actualizar índices RAM.
         let mut adj_out = self.adjacency_out.write().await;
@@ -3107,50 +3184,24 @@ impl Graph {
     /// Redo idempotente de un upsert de nodo commiteado, reconstruyendo la
     /// cadena MVCC con el timestamp original del commit. Retorna true si
     /// aplicó algo.
+    ///
+    /// Es el MISMO camino que la escritura original (`apply_add_node` con el
+    /// timestamp registrado), así que un `add_node` directo y un upsert
+    /// transaccional dejan tras el redo exactamente la historia que habían
+    /// mostrado. Hasta 0.10.0 el `add_node` directo no versionaba pero su
+    /// redo sí: la misma escritura tenía historia tras un crash y no sin él.
+    /// La guarda de idempotencia (la cadena ya tiene una versión en `>=
+    /// commit_ts`) la aplica el propio apply; aquí se consulta antes solo
+    /// para contar lo reaplicado.
     async fn replay_node_upsert(&self, node: Node, commit_ts: u64) -> Result<bool> {
-        match self.storage.get_current_version(node.id).await {
-            Ok(cur_num) => {
-                let cur = self.storage.get_node_version(node.id, cur_num).await?;
-                if cur.timestamp >= commit_ts {
-                    // Esta versión (o una posterior) ya fue aplicada.
-                    return Ok(false);
-                }
-                // Retractar ANTES del write, y solo si de verdad vamos a
-                // aplicar: el batch de abajo pisa al nodo viejo, y con él la
-                // única fuente de qué valores había que retirar. Va después
-                // de la guarda de idempotencia a propósito — retractar sobre
-                // un registro ya superado borraría los valores VIGENTES.
-                let old = self.observe_node_upsert(&node).await?;
-                self.retract_overwritten_index_entries(old.as_ref(), &node).await?;
-                // Versión cerrada = nodo borrado que se recrea: no se
-                // re-fecha el cierre (mismo criterio que `apply_commit_set`).
-                let alive = cur.valid_to.is_none();
-                let mut invalidated = cur.clone();
-                if alive {
-                    invalidated.invalidate(commit_ts);
-                }
-                let new_version = VersionedNode::new_version(&cur, node.clone(), commit_ts);
-                self.commit_node_atomic(&node, alive.then_some(&invalidated), &new_version)
-                    .await?;
-                self.retire_old_label_entry(old.as_ref(), &node).await?;
-                // Adyacencia + índices de propiedades (el batch no los cubre)
-                self.add_node_internal(node, false).await?;
-                Ok(true)
-            }
-            Err(_) => {
-                // Sin cadena MVCC, pero el registro legacy `entities` puede
-                // existir igual (nodo creado con `add_node` directo), y con
-                // él entradas de índice viejas que este write invalida.
-                let old = self.observe_node_upsert(&node).await?;
-                self.retract_overwritten_index_entries(old.as_ref(), &node).await?;
-                // Primera versión con el timestamp del commit
-                let first = VersionedNode::new(node.clone(), commit_ts);
-                self.commit_node_atomic(&node, None, &first).await?;
-                self.retire_old_label_entry(old.as_ref(), &node).await?;
-                self.add_node_internal(node, false).await?;
-                Ok(true)
-            }
+        if matches!(
+            self.storage.plan_node_version(&node, commit_ts)?,
+            crate::storage::NodeVersionPlan::Superseded
+        ) {
+            return Ok(false);
         }
+        self.add_node_internal(node, Some(commit_ts)).await?;
+        Ok(true)
     }
 
     /// Redo de una reescritura de propiedades de una arista que ya existe
@@ -3234,8 +3285,16 @@ impl Graph {
                 // tendría `valid_from`/`valid_to` distintos de los que el
                 // commit ya había mostrado.
                 WalRecord::DeleteNode { node_id, .. } => {
-                    // Solo borrar si existe
-                    if self.storage.node_exists(node_id).await? {
+                    // Solo borrar si existe y su versión vigente es ANTERIOR
+                    // al borrado: si es del mismo ts o posterior, el nodo se
+                    // recreó después (o en el mismo commit, tras el borrado)
+                    // y este borrado ya está aplicado. Con solo la guarda de
+                    // existencia, repetir el log entero borraba el nodo
+                    // recreado (0.10.1: ahora toda escritura versiona y la
+                    // guarda puede mirar el timestamp).
+                    if self.storage.node_exists(node_id).await?
+                        && !self.storage.node_written_since(node_id, commit_ts)?
+                    {
                         self.delete_node_at(node_id, commit_ts).await?;
                         replayed += 1;
                     }
@@ -3265,8 +3324,11 @@ impl Graph {
                 }
 
                 WalRecord::DeleteEdge { edge_id, .. } => {
-                    // Solo borrar si existe
-                    if self.storage.edge_exists(edge_id).await? {
+                    // Solo borrar si existe y no se re-escribió desde el
+                    // borrado (misma guarda que DeleteNode).
+                    if self.storage.edge_exists(edge_id).await?
+                        && !self.storage.edge_written_since(edge_id, commit_ts)?
+                    {
                         self.delete_edge_at(edge_id, commit_ts).await?;
                         replayed += 1;
                     }
@@ -3603,18 +3665,47 @@ impl Graph {
         self.storage.get_node_history(node_id).await
     }
 
+    /// Suelo de historia de un nodo: el timestamp lógico desde el que su
+    /// historia es completa, o `None` si lo es desde su creación (salvo lo
+    /// que borre el GC, ver [`Graph::gc_horizon`]).
+    ///
+    /// Solo lo tienen los nodos de una base anterior a 0.10.1 que se
+    /// escribieron sin versión (`add_node` directo, `BulkLoader`, la
+    /// importación Turtle) o cuya cadena quedó desincronizada o abierta tras
+    /// borrarlos: la adopción del primer open con 0.10.1 les puso el suelo
+    /// (sin copiar el registro: desde el suelo su versión es implícita, ver
+    /// `storage::Stamp`), o les escribió la siguiente versión, o cerró la
+    /// abierta, en ese timestamp. Persiste aunque luego tengan cadena. Por
+    /// debajo, [`Graph::get_node_at`] contesta `HistoryUnavailable`.
+    pub async fn history_floor(&self, node_id: NodeId) -> Result<Option<u64>> {
+        self.storage.node_history_floor(node_id)
+    }
+
+    /// Suelo de historia de una arista; ver [`Graph::history_floor`].
+    /// [`Graph::edge_history`] no lo aplica (devuelve las versiones que
+    /// hay): por debajo del suelo esas versiones no cuentan el pasado.
+    pub async fn edge_history_floor(&self, edge_id: EdgeId) -> Result<Option<u64>> {
+        self.storage.edge_history_floor(edge_id)
+    }
+
     /// Return all `NodeKind::Class` nodes that were valid at `timestamp`.
     ///
     /// Uses the MVCC version chain: a node is considered valid at `timestamp`
     /// if its `valid_from <= timestamp < valid_to` (or `valid_to` is None).
-    /// Falls back to the current node if no MVCC history exists for a node ID.
+    /// Same answers as [`Graph::get_node_at`] per class: a class that did not
+    /// exist at `timestamp` is left out, and one whose state then is unknown
+    /// (below its history floor or the GC horizon, or without history) makes
+    /// the whole call fail with `HistoryUnavailable` — silently dropping it
+    /// would give an incomplete taxonomy that looks complete.
     ///
-    /// Known limits (unlike [`Graph::get_node_at`], which no longer falls
-    /// back): it starts from the CURRENT nodes, so a class deleted after
-    /// `timestamp` is missing, and a class without history (written by a
-    /// direct `add_node`, as the Turtle import does) is included whatever
-    /// `timestamp` says. Kept because the reasoner's historical rebuild has
-    /// no other source for unversioned classes yet.
+    /// Until 0.10.0 a class without history (the Turtle import wrote them
+    /// with a direct `add_node`, which did not version) fell back to its
+    /// current state whatever `timestamp` said. Since 0.10.1 every write
+    /// versions and opening an older database adopts the unversioned ones,
+    /// so the fallback is gone.
+    ///
+    /// Known limit: it starts from the CURRENT nodes, so a class deleted
+    /// after `timestamp` is missing.
     #[cfg(feature = "reasoner")]
     pub async fn get_class_nodes_at(&self, timestamp: u64) -> Result<Vec<crate::types::Node>> {
         use crate::types::NodeKind;
@@ -3629,20 +3720,12 @@ impl Graph {
             if current_node.kind != NodeKind::Class {
                 continue;
             }
-            // Try to get the MVCC version valid at `timestamp`.
-            match self.storage.node_version_at(current_node.id, timestamp).await? {
-                crate::storage::NodeVersionAt::Found(versioned) => {
-                    class_nodes.push(versioned.node_data);
-                }
-                // It has history but did not exist at `timestamp` (created
-                // later, or deleted then). Until 0.9.4 this case fell into
-                // the fallback below and the class appeared in the past.
-                crate::storage::NodeVersionAt::NotValidAt => {}
-                crate::storage::NodeVersionAt::NoHistory => {
-                    // No MVCC record (direct write): only the current
-                    // snapshot exists. See the known limits above.
-                    class_nodes.push(current_node.clone());
-                }
+            match self.get_node_at(current_node.id, timestamp).await {
+                Ok(node) => class_nodes.push(node),
+                // Created later, or deleted then. Until 0.9.4 this case fell
+                // into the fallback and the class appeared in the past.
+                Err(NopalError::NodeNotFound(_)) => {}
+                Err(e) => return Err(e),
             }
         }
 
@@ -3863,15 +3946,26 @@ impl Graph {
     ///
     /// Nunca contesta con el estado actual en lugar del histórico:
     ///
-    /// - versión válida en `timestamp` ⇒ esa versión;
+    /// - `timestamp` anterior al suelo de historia del nodo
+    ///   ([`Graph::history_floor`]) ⇒ `HistoryUnavailable`: la base es
+    ///   anterior a 0.10.1 y el nodo se escribió sin versión; la adopción al
+    ///   abrir le puso el suelo, y antes de eso no se sabe si existía ni cómo
+    ///   era;
+    /// - nodo sin cadena con marca de nacimiento (cargado por el
+    ///   `BulkLoader`) y `timestamp` anterior a ella ⇒ `NodeNotFound`;
+    /// - versión válida en `timestamp` ⇒ esa versión, real o implícita (un
+    ///   nodo sin cadena con marca es su registro desde la marca; tabla de
+    ///   precedencia completa en `storage::Stamp`); se devuelve antes de
+    ///   mirar el horizonte del GC, que nunca recoge una versión implícita;
     /// - `timestamp` anterior a [`Graph::gc_horizon`] y sin versión ⇒
     ///   `HistoryUnavailable` (la de entonces pudo borrarla el GC);
     /// - el nodo tiene historia pero ninguna versión válida en `timestamp`
     ///   (se creó después, o ya estaba borrado) ⇒ `NodeNotFound`;
     /// - el nodo existe hoy pero no tiene historia ⇒ `HistoryUnavailable`.
-    ///   Hoy es el caso de los nodos escritos con `add_node` directo, que no
-    ///   versionan: no se sabe desde cuándo existe ni cómo era, así que
-    ///   devolver su estado actual sería inventar el pasado;
+    ///   Desde 0.10.1 toda escritura versiona y la adopción versiona lo
+    ///   anterior, así que solo queda un nodo escrito por un binario ≤ 0.10.0
+    ///   DESPUÉS de la adopción (o con las primitivas de bajo nivel de
+    ///   `Storage`): devolver su estado actual sería inventar el pasado;
     /// - no existe ni tiene historia ⇒ `NodeNotFound`.
     ///
     /// Hasta 0.9.4, cualquiera de los "no hay versión" caía al estado
@@ -3881,13 +3975,27 @@ impl Graph {
     /// respuesta inventada, solo que más frecuente.
     pub async fn get_node_at(&self, node_id: NodeId, timestamp: u64) -> Result<Node> {
         use crate::storage::NodeVersionAt;
+        // `node_version_at` aplica la tabla de precedencia de las marcas
+        // (`storage::Stamp`): suelo, versión implícita de un nodo sin cadena.
+        // Lo que decide va ANTES del horizonte del GC: una versión implícita
+        // es la vigente (el GC no la recoge) y un nodo sin cadena aún no
+        // nacido no tuvo nada que recoger.
         let found = self.storage.node_version_at(node_id, timestamp).await?;
-        if let NodeVersionAt::Found(versioned) = found {
-            log::debug!(
-                "Found node {} at t={} (version {})",
-                node_id, timestamp, versioned.version
-            );
-            return Ok(versioned.node_data);
+        match found {
+            NodeVersionAt::Found(versioned) => {
+                log::debug!(
+                    "Found node {} at t={} (version {})",
+                    node_id, timestamp, versioned.version
+                );
+                return Ok(versioned.node_data);
+            }
+            NodeVersionAt::NotBorn => {
+                return Err(NopalError::NodeNotFound(format!(
+                    "{node_id} (created after timestamp {timestamp})"
+                )));
+            }
+            NodeVersionAt::Unknown(why) => return Err(NopalError::HistoryUnavailable(why)),
+            NodeVersionAt::NotValidAt | NodeVersionAt::NoHistory => {}
         }
         let horizon = self.storage.gc_horizon()?;
         if timestamp < horizon {
@@ -3902,8 +4010,9 @@ impl Graph {
             ))),
             _ if self.storage.node_exists(node_id).await? => {
                 Err(NopalError::HistoryUnavailable(format!(
-                    "node {node_id} has no version history (written outside a \
-                     transaction), so its state at timestamp {timestamp} is unknown"
+                    "node {node_id} has no version history (written without a version, \
+                     by a NopalDB older than 0.10.1 or a low-level Storage primitive), \
+                     so its state at timestamp {timestamp} is unknown"
                 )))
             }
             _ => Err(NopalError::NodeNotFound(node_id.to_string())),
@@ -3916,6 +4025,12 @@ impl Graph {
     /// Tras 0.9.4 [`Graph::get_node_at`] tampoco hace fallback; esta variante
     /// queda para las lecturas de snapshot de `Transaction`, que no
     /// distinguen el motivo del "no está" (errores crudos del storage).
+    ///
+    /// Aplica la misma tabla de precedencia de las marcas que
+    /// [`Graph::get_node_at`] (`storage::Stamp`; vive en el storage), así que
+    /// una transacción RepeatableRead/Serializable ve un nodo del
+    /// `BulkLoader` por su versión implícita. Bajo un suelo devuelve
+    /// `HistoryUnavailable`.
     pub async fn get_node_at_strict(&self, node_id: NodeId, timestamp: u64) -> Result<Node> {
         let versioned = self.storage.get_node_at_timestamp(node_id, timestamp).await?;
         Ok(versioned.node_data)
@@ -3999,16 +4114,14 @@ impl Graph {
 
         // 2. Upserts de nodos: cadena MVCC en un batch atómico de storage.
         //    La clasificación update/create mira la EXISTENCIA DE LA CADENA
-        //    MVCC (get_current_version), no el registro base (`entities`):
-        //    un nodo creado con `add_node` directo existe en `entities` pero
-        //    no tiene cadena, y clasificarlo como update reventaba con
-        //    NodeNotFound en el primer commit que lo tocaba. Mismo patrón que
-        //    `replay_node_upsert` — sin cadena → primera versión con el ts
-        //    del commit (sana lazy los nodos directos preexistentes).
+        //    MVCC, no el registro base (`entities`): un nodo de una base aún
+        //    sin adoptar (escrito con `add_node` directo ≤ 0.10.0) existe en
+        //    `entities` sin cadena, y clasificarlo como update reventaba con
+        //    NodeNotFound en el primer commit que lo tocaba.
         // 2a. Retractar el índice ANTES de escribir las versiones nuevas: el
         //     write de abajo pisa el nodo viejo, y con él la única fuente de
         //     qué valores había que retirar. La inserción de los nuevos va al
-        //     final (paso 4), por eso `apply_add_node` recibe skip_indexing.
+        //     final (paso 4, una sola vez para todo el commit).
         let mut olds = Vec::with_capacity(set.pending_nodes.len());
         for node in &set.pending_nodes {
             let old = self.observe_node_upsert(node).await?;
@@ -4017,47 +4130,28 @@ impl Graph {
         }
 
         for (node, old) in set.pending_nodes.iter().zip(&olds) {
-            let existed = match self.storage.get_current_version(node.id).await {
-                Ok(current_version_num) => {
-                    let current_version = self
-                        .storage
-                        .get_node_version(node.id, current_version_num)
-                        .await?;
-                    // Última versión ya cerrada = el nodo fue borrado y se
-                    // recrea con el mismo id: la cadena continúa (v+1) sin
-                    // re-fechar el cierre del borrado.
-                    let alive = current_version.valid_to.is_none();
-                    let mut invalidated_prev = current_version.clone();
-                    if alive {
-                        invalidated_prev.invalidate(commit_timestamp);
-                    }
-                    let new_version = VersionedNode::new_version(
-                        &current_version,
-                        node.clone(),
-                        commit_timestamp,
+            // Mismo plan que la escritura directa y el redo
+            // (`Storage::plan_node_version`): sin cadena → v1 con el ts del
+            // commit; viva → se cierra y sigue v+1; cerrada (nodo borrado que
+            // se recrea con el mismo id) → v+1 sin re-fechar el cierre.
+            // `existed` es el registro previo (`olds`), no la cadena: un nodo
+            // de una base aún sin adoptar puede tener registro sin cadena.
+            let existed = old.is_some();
+            match self.storage.plan_node_version(node, commit_timestamp)? {
+                crate::storage::NodeVersionPlan::Write(write) => {
+                    self.storage.commit_node_write(node, &write)?;
+                }
+                // El commit toma su ts bajo el gate, después de todo lo
+                // aplicado: una versión en `>=` ese ts solo puede venir de un
+                // redo que ya lo aplicó (`replay_wal` no pasa por aquí, pero
+                // la guarda es la misma para todos los caminos).
+                crate::storage::NodeVersionPlan::Superseded => {
+                    log::warn!(
+                        "commit {}: node {} already has a version at or after ts {}; not rewritten",
+                        set.tx_id, node.id, commit_timestamp
                     );
-                    self.storage
-                        .commit_node_version_atomic(
-                            node,
-                            alive.then_some(&invalidated_prev),
-                            &new_version,
-                        )
-                        .await?;
-                    alive || self.storage.node_exists(node.id).await?
                 }
-                Err(_) => {
-                    // Sin cadena: primera versión con el timestamp del commit.
-                    // El registro `entities` puede existir igual (nodo creado
-                    // con add_node directo): para la topología cuenta como
-                    // existente.
-                    let existed = self.storage.node_exists(node.id).await?;
-                    let first_version = VersionedNode::new(node.clone(), commit_timestamp);
-                    self.storage
-                        .commit_node_version_atomic(node, None, &first_version)
-                        .await?;
-                    existed
-                }
-            };
+            }
 
             self.retire_old_label_entry(old.as_ref(), node).await?;
 
@@ -4080,21 +4174,6 @@ impl Graph {
         }
 
         Ok(())
-    }
-
-    /// Aplica atómicamente el write-set de versión de un nodo commiteado
-    /// (versión previa invalidada + versión nueva + current + listas + registro
-    /// legacy) en un solo batch de storage. Usado por `Transaction::commit`.
-    pub(crate) async fn commit_node_atomic(
-        &self,
-        node: &Node,
-        invalidated_prev: Option<&VersionedNode>,
-        new_version: &VersionedNode,
-    ) -> Result<()> {
-        let _gate = self.write_gate.lock().await;
-        self.storage
-            .commit_node_version_atomic(node, invalidated_prev, new_version)
-            .await
     }
 
     /// Get complete schema information
@@ -4568,6 +4647,9 @@ impl Graph {
         //    esquema no cuenta dos nodos.
         let mut seen: HashMap<NodeId, usize> = HashMap::with_capacity(nodes.len());
         let mut old_labels: Vec<(NodeId, String)> = Vec::new();
+        // Ids sin registro en la base (lo dice la lectura del esquema, que ya
+        // se hacía): candidatos a marca de nacimiento.
+        let mut no_record: HashSet<NodeId> = HashSet::new();
         for (i, node) in nodes.iter().enumerate() {
             let old = match seen.insert(node.id, i) {
                 Some(j) => {
@@ -4577,7 +4659,13 @@ impl Graph {
                         .await;
                     Some(nodes[j].clone())
                 }
-                None => self.observe_node_upsert(node).await?,
+                None => {
+                    let old = self.observe_node_upsert(node).await?;
+                    if old.is_none() {
+                        no_record.insert(node.id);
+                    }
+                    old
+                }
             };
             self.retract_overwritten_index_entries(old.as_ref(), node).await?;
             if let Some(old) = old {
@@ -4585,8 +4673,31 @@ impl Graph {
             }
         }
 
-        // 1. Batch insert en storage
-        let ids = self.storage.insert_nodes_batch(&nodes).await?;
+        // 1. Batch insert en storage, con historia (0.10.1): UN timestamp
+        //    lógico para todo el lote, tomado bajo el gate, y UN
+        //    `apply_multi` con registros, etiquetas, historia y la cota del
+        //    reloj. Un id NUEVO de verdad (sin registro, cadena ni marca)
+        //    lleva solo su marca de nacimiento: su versión implícita es el
+        //    registro, sin copiarlo en una v1 (ver `storage::Stamp`; la copia
+        //    costaba +62 % de disco). Un id existente pasa por el plan
+        //    versionado normal. Un id repetido en el lote escribe una sola
+        //    vez, su última aparición (la que gana en `entities`): dos
+        //    versiones del mismo nodo con el mismo ts no tendrían orden.
+        //    Hasta 0.10.0 el bulk no versionaba ni avanzaba el reloj: lo
+        //    cargado no existía para `as_of`/`get_node_at`.
+        let timestamp = self.next_logical_timestamp();
+        let finals: Vec<&Node> = nodes
+            .iter()
+            .enumerate()
+            .filter(|(i, node)| seen[&node.id] == *i)
+            .map(|(_, node)| node)
+            .collect();
+        let mut newborn = Vec::with_capacity(finals.len());
+        for node in &finals {
+            newborn.push(no_record.contains(&node.id) && self.storage.node_is_unborn(node.id)?);
+        }
+        self.storage.insert_nodes_batch_versioned(&finals, &newborn, timestamp).await?;
+        let ids: Vec<NodeId> = nodes.iter().map(|n| n.id).collect();
 
         // 1a. Cambios de etiqueta (#207): retirar las entradas de etiquetas
         //     que el nodo ya no tiene, con la etiqueta final de cada id.
@@ -4618,8 +4729,21 @@ impl Graph {
         }
 
         self.bump_topology_version();
+        self.note_bulk_write(timestamp).await;
 
         Ok(ids)
+    }
+
+    /// Tras un lote del bulk con timestamp `ts`: cuenta para
+    /// [`Graph::last_commit_timestamp`] y persiste los relojes (con su marca
+    /// pared → lógico para el GC por antigüedad), como el applier hace tras
+    /// cada lote suyo. El lote ya llevó la cota del reloj en su
+    /// `apply_multi`; esto es lo demás (best effort, como en el applier).
+    async fn note_bulk_write(&self, ts: u64) {
+        self.note_applied_write(ts);
+        if let Err(e) = self.persist_clocks().await {
+            log::warn!("bulk load: failed to persist logical clocks after batch: {}", e);
+        }
     }
 
     /// Inserta múltiples aristas en batch.
@@ -4637,7 +4761,9 @@ impl Graph {
         //    la base: las únicas que estrenan entrada en la adyacencia RAM.
         let mut seen: HashMap<EdgeId, usize> = HashMap::with_capacity(edges.len());
         let mut is_new = vec![false; edges.len()];
+        let mut first_seen: HashMap<EdgeId, usize> = HashMap::with_capacity(edges.len());
         for (i, edge) in edges.iter().enumerate() {
+            first_seen.entry(edge.id).or_insert(i);
             match seen.insert(edge.id, i) {
                 Some(j) => {
                     self.schema_snapshot_invalidate().await?;
@@ -4651,10 +4777,27 @@ impl Graph {
             }
         }
 
-        // 1. Batch insert en storage: aristas + adyacencia v2 en el MISMO
-        //    apply_multi (murió el hueco histórico "el bulk no persiste
-        //    adyacencia y depende de un flush_indices posterior").
-        let ids = self.storage.insert_edges_batch(&edges).await?;
+        // 1. Batch insert en storage: aristas + adyacencia v2 + historia
+        //    (0.10.1) + cota del reloj en el MISMO apply_multi (murió el
+        //    hueco histórico "el bulk no persiste adyacencia y depende de un
+        //    flush_indices posterior"). Un timestamp por lote y una escritura
+        //    por id (su última aparición), como el bulk de nodos: una arista
+        //    nueva de verdad lleva solo su marca de nacimiento; una existente
+        //    continúa su cadena.
+        let timestamp = self.next_logical_timestamp();
+        let mut finals: Vec<&Edge> = Vec::with_capacity(seen.len());
+        let mut newborn = Vec::with_capacity(seen.len());
+        for (i, edge) in edges.iter().enumerate() {
+            if seen[&edge.id] != i {
+                continue;
+            }
+            // `is_new` lo tiene la PRIMERA aparición: sin registro previo.
+            let no_record = is_new[*first_seen.get(&edge.id).unwrap_or(&i)];
+            newborn.push(no_record && self.storage.edge_is_unborn(edge.id)?);
+            finals.push(edge);
+        }
+        self.storage.insert_edges_batch_versioned(&finals, &newborn, timestamp).await?;
+        let ids: Vec<EdgeId> = edges.iter().map(|e| e.id).collect();
 
         // 2. Adyacencia en memoria: solo las aristas nuevas, como hace
         //    `apply_add_edge_at` con `already_present`. Hasta 0.6.6 se hacía
@@ -4677,6 +4820,7 @@ impl Graph {
         }
 
         self.bump_topology_version();
+        self.note_bulk_write(timestamp).await;
 
         Ok(ids)
     }

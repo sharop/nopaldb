@@ -181,6 +181,10 @@ name = "owl_import_integration_test"
 required-features = ["owl-import"]
 
 [[test]]
+name = "owl_import_history_test"
+required-features = ["owl-import"]
+
+[[test]]
 name = "rdf_roundtrip_test"
 required-features = ["owl-import"]
 

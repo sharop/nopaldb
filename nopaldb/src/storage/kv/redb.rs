@@ -341,6 +341,13 @@ fn apply_batch_in(
     name: &str,
     batch: &WriteBatch,
 ) -> Result<()> {
+    // Un lote vacío no abre la tabla: los write-sets con keyspaces que
+    // solo a veces llevan algo (la historia de una arista, que solo cambia
+    // al materializar una marca) no pagan el `open_table` cuando no toca.
+    // Las tablas ya existen desde `from_engine`, así que no se pierde nada.
+    if batch.ops().is_empty() {
+        return Ok(());
+    }
     let mut table = txn.open_table(table_def(name)).map_err(internal)?;
     for (key, value) in batch.ops() {
         match value {

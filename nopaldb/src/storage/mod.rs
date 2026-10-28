@@ -175,15 +175,138 @@ mod layout_migrate;
 #[cfg(feature = "embeddings")]
 pub const EMBEDDING_WRITE_CHUNK: usize = 10_000;
 
+/// Adopción de historia de bases anteriores al versionado total (0.10.1):
+/// pasada única al abrir. Ver la cabecera del módulo.
+mod history_adoption;
+pub use history_adoption::{META_HISTORY_ADOPTED, META_HISTORY_ADOPTION_TS};
+
+/// Marca de una entidad (nodo o arista) SIN cadena de versiones (0.10.1).
+///
+/// INVARIANTE: una entidad sin cadena y con marca tiene exactamente UNA
+/// versión implícita = su registro actual, válida desde la marca. Todo
+/// camino que cambie o borre ese registro escribe ANTES la v1 desde el
+/// registro (`valid_from` = marca, `valid_to` = el ts nuevo) en el MISMO
+/// `apply_multi`, y sigue como siempre; al materializarla se borra la marca
+/// de nacimiento ("hay cadena" gana). Un suelo, en cambio, persiste aunque
+/// ya haya cadena: sigue acotando las lecturas por debajo de F.
+///
+/// Precedencia de las lecturas en un timestamp `ts`:
+///
+/// | estado                         | `ts` < marca            | `ts` ≥ marca          |
+/// |--------------------------------|-------------------------|-----------------------|
+/// | hay cadena                     | la cadena (con suelo F: `HistoryUnavailable` bajo F) | la cadena |
+/// | sin cadena, NACIMIENTO T       | `NodeNotFound`          | el registro actual    |
+/// | sin cadena, SUELO F            | `HistoryUnavailable`    | el registro actual    |
+/// | sin cadena, sin marca          | `HistoryUnavailable`    | `HistoryUnavailable`  |
+///
+/// Sin cadena y con las dos marcas, gana el nacimiento: solo se escribe con
+/// el registro ausente, así que es posterior a cualquier suelo. Sin cadena,
+/// con marca y sin registro (lo deja una primitiva de bajo nivel que borra
+/// sin versionar), desde la marca es `HistoryUnavailable`.
+///
+/// Por qué existe: copiar cada nodo del `BulkLoader` en su v1 costaba +62 %
+/// de disco (200k nodos × 5 propiedades: 204 → 331 MiB) para guardar dos
+/// veces los mismos bytes; la marca son 8 bytes y la copia se paga solo si
+/// el nodo cambia. La adopción de bases anteriores usa el suelo por lo mismo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stamp {
+    /// Nació en ese ts (bulk de un id nuevo): antes no existía.
+    Birth(u64),
+    /// Adoptada en ese ts (base anterior a 0.10.1): antes, desconocido.
+    Floor(u64),
+}
+
+impl Stamp {
+    pub(crate) fn ts(self) -> u64 {
+        match self {
+            Stamp::Birth(t) | Stamp::Floor(t) => t,
+        }
+    }
+}
+
 /// Resultado de buscar la versión de un nodo en un timestamp lógico
-/// ([`Storage::node_version_at`]).
+/// ([`Storage::node_version_at`]); la tabla de precedencia está en [`Stamp`].
 pub(crate) enum NodeVersionAt {
-    /// La versión válida en ese timestamp.
+    /// La versión válida en ese timestamp (real o implícita).
     Found(VersionedNode),
-    /// El nodo no tiene cadena de versiones (nunca la tuvo, o el GC la vació).
+    /// El nodo no tiene cadena ni marca (nunca la tuvo, o el GC la vació).
     NoHistory,
     /// Tiene cadena, pero ninguna versión es válida en ese timestamp.
     NotValidAt,
+    /// Sin cadena, con nacimiento posterior a ese timestamp: no existía.
+    /// Nada suyo pudo recogerlo el GC, así que no depende del horizonte.
+    NotBorn,
+    /// Su estado entonces no se conoce (bajo el suelo, o marca sin registro).
+    Unknown(String),
+}
+
+/// Write-set de versión de un nodo ([`Storage::plan_node_version`]).
+pub(crate) struct NodeVersionWrite {
+    /// La versión vigente cerrada en el ts de la escritura (`None` sin
+    /// cadena ni marca, o si la última ya estaba cerrada por un borrado).
+    pub prev: Option<VersionedNode>,
+    pub new: VersionedNode,
+    /// `prev` es la v1 implícita de una marca, materializada ahora: no
+    /// existe en disco (necesita su entrada del índice ts y de la lista).
+    pub materialized: bool,
+    /// No había puntero `c|`: la lista `l|` no existe y no se lee.
+    pub fresh_chain: bool,
+    /// Borrar la marca de nacimiento en el mismo lote.
+    pub drop_birth: bool,
+}
+
+/// Qué versión deja una escritura de nodo ([`Storage::plan_node_version`]).
+///
+/// Sin `Box` en `Write` a propósito (clippy `large_enum_variant`): el plan
+/// vive lo que dura una escritura, nunca en colecciones, y `Write` es el
+/// caso de siempre; boxear sería una asignación más por escritura.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum NodeVersionPlan {
+    /// La cadena (o la marca) ya tiene una versión con timestamp `>=` al de
+    /// la escritura: ya se aplicó (redo del WAL) o la supera otra posterior.
+    /// No se escribe nada, ni el registro: registro y versión van juntos.
+    Superseded,
+    Write(NodeVersionWrite),
+}
+
+/// Write-set de versión de una arista ([`Storage::plan_edge_version`]).
+pub(crate) struct EdgeVersionWrite {
+    /// La versión vigente cerrada en el ts de la escritura, o la v1
+    /// implícita de una marca materializada ahora (`None` sin versión ni
+    /// marca, o si la última ya estaba cerrada).
+    pub prev: Option<VersionedEdge>,
+    pub new: VersionedEdge,
+    pub drop_birth: bool,
+}
+
+/// Qué versión deja una escritura de arista ([`Storage::plan_edge_version`]).
+/// Sin `Box`, por lo mismo que [`NodeVersionPlan`].
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum EdgeVersionPlan {
+    /// Ver [`NodeVersionPlan::Superseded`].
+    Superseded,
+    Write(EdgeVersionWrite),
+}
+
+/// Lotes del write-set de versión de nodos, por keyspace, para un
+/// `apply_multi`.
+#[derive(Default)]
+struct NodeWriteBatches {
+    history: kv::WriteBatch,
+    indexes: kv::WriteBatch,
+    entities: kv::WriteBatch,
+    labels: kv::WriteBatch,
+}
+
+impl NodeWriteBatches {
+    fn into_multi(self) -> Vec<(String, kv::WriteBatch)> {
+        vec![
+            (HISTORY_TREE.to_string(), self.history),
+            (INDEXES_TREE.to_string(), self.indexes),
+            (ENTITIES_TREE.to_string(), self.entities),
+            (LABEL_IDX_TREE.to_string(), self.labels),
+        ]
+    }
 }
 
 pub struct Storage {
@@ -693,14 +816,28 @@ impl Storage {
     /// La entrada del índice de etiquetas va ANTES que el registro: un crash
     /// entre las dos deja una entrada de más (las lecturas comprueban la
     /// etiqueta del nodo y la descartan), nunca un nodo sin entrada.
+    ///
+    /// Primitiva sin historia: no versiona. Si pisa un nodo SIN cadena con
+    /// marca de nacimiento o suelo (0.10.1, ver [`Stamp`]), retira la marca
+    /// en el mismo lote que el registro: si no, la versión implícita del
+    /// nodo pasaría a ser los datos nuevos desde la marca, un pasado
+    /// inventado. Sin marca queda "sin historia" (`HistoryUnavailable`). Se
+    /// descartó restringirla a `pub(crate)`: es API pública desde siempre (y
+    /// la usan los tests para fabricar bases sin versionar), y quitarla en
+    /// un parche rompería a quien la llame.
     pub async fn insert_node(&self, node: &Node) -> Result<()> {
         let key = keys::v2::node_key_v2(node.id);
         let value = serialize(node)?;
 
         self.label_idx_ks.insert(&label_index_entry_key(&node.label, node.id), EMPTY_VALUE)?;
-        self.entities_ks.insert(&key, &value)?;
-
-        Ok(())
+        let mut entities = kv::WriteBatch::default();
+        entities.insert(key, value);
+        let mut history = kv::WriteBatch::default();
+        self.stage_unstamp_node(node.id, &mut history)?;
+        self.engine.apply_multi(vec![
+            (ENTITIES_TREE.to_string(), entities),
+            (HISTORY_TREE.to_string(), history),
+        ])
     }
 
     /// Obtiene un nodo por ID
@@ -756,7 +893,10 @@ impl Storage {
     /// con el mismo id empezaría otra vez en v1 y PISARÍA la historia, y el
     /// redo perdería la guarda de idempotencia por timestamp.
     ///
-    /// Un nodo sin cadena (alta directa con `add_node`, aún sin versionar)
+    /// Un nodo sin cadena con marca de nacimiento o suelo (0.10.1, ver
+    /// [`Stamp`]) materializa en el mismo lote su v1 implícita ya cerrada
+    /// (`valid_from` = marca, `valid_to` = `timestamp`). Uno sin cadena ni
+    /// marca (escrito por una versión ≤ 0.10.0 o una primitiva sin historia)
     /// se borra igual, sin nada que cerrar. Una versión ya cerrada no se
     /// reabre ni se re-fecha.
     pub async fn delete_node_at(&self, id: NodeId, timestamp: u64) -> Result<()> {
@@ -773,6 +913,7 @@ impl Storage {
             label_batch.remove(label_index_entry_key(&label, id));
         }
         let mut history_batch = kv::WriteBatch::default();
+        let mut indexes_batch = kv::WriteBatch::default();
         if let Some(raw) = self.history_ks.get(&keys::v2::history_current_key(id))? {
             let version = u64::from_le_bytes(
                 raw.as_slice()
@@ -787,24 +928,44 @@ impl Storage {
                     history_batch.insert(keys::v2::history_version_key(id, version), serialize(&current)?);
                 }
             }
+        } else if let Some(stamp) = self.node_stamp(id)?
+            && stamp.ts() < timestamp
+        {
+            // Sin cadena y con marca (ver [`Stamp`]): la v1 implícita se
+            // materializa YA cerrada, desde el registro que este mismo lote
+            // borra, con su lista, su puntero y su entrada del índice ts.
+            let mut v1 = VersionedNode::new(deserialize::<Node>(&value)?, stamp.ts());
+            v1.invalidate(timestamp);
+            history_batch.insert(keys::v2::history_version_key(id, 1), serialize(&v1)?);
+            history_batch.insert(keys::v2::history_current_key(id), 1u64.to_le_bytes().as_ref());
+            history_batch.insert(keys::v2::history_versions_key(id), serialize(&vec![1u64])?);
+            indexes_batch.insert(keys::v2::ts_index_key(v1.timestamp, id, 1), EMPTY_VALUE);
+            if matches!(stamp, Stamp::Birth(_)) {
+                history_batch.remove(keys::v2::history_node_birth_key(id));
+            }
         }
 
         self.engine.apply_multi(vec![
             (ENTITIES_TREE.to_string(), entities_batch),
             (LABEL_IDX_TREE.to_string(), label_batch),
             (HISTORY_TREE.to_string(), history_batch),
+            (INDEXES_TREE.to_string(), indexes_batch),
         ])
     }
 
     /// Inserta una arista
+    ///
+    /// Primitiva sin historia; retira la marca de una arista sin versiones
+    /// como [`Self::insert_node`].
     pub async fn insert_edge(&self, edge: &Edge) -> Result<()> {
-        let key = edge.id.to_string();
-        let value = serialize(edge)?;
-
-        self.edges_ks.insert(key.as_bytes(), &value)?;
-
-        Ok(())
-
+        let mut edges = kv::WriteBatch::default();
+        edges.insert(edge.id.to_string().as_bytes(), serialize(edge)?);
+        let mut history = kv::WriteBatch::default();
+        self.stage_unstamp_edge(edge.id, &mut history)?;
+        self.engine.apply_multi(vec![
+            (EDGES_TREE.to_string(), edges),
+            (HISTORY_TREE.to_string(), history),
+        ])
     }
 
     /// Obtiene una arista por ID
@@ -893,7 +1054,9 @@ impl Storage {
         Ok(())
     }
 
-    /// Retorna todas las versiones de una arista, ordenadas de más antigua a más reciente.
+    /// Retorna todas las versiones de una arista, ordenadas de más antigua a
+    /// más reciente. Una arista sin versiones con marca devuelve su versión
+    /// implícita (ver [`Stamp`]).
     pub async fn get_edge_history(&self, id: EdgeId) -> Result<Vec<VersionedEdge>> {
         let prefix = keys::edge_versions_prefix(id);
 
@@ -903,13 +1066,24 @@ impl Storage {
             .filter_map(|r| r.ok())
             .filter_map(|(_, v)| deserialize::<VersionedEdge>(&v).ok())
             .collect();
+        if versions.is_empty() {
+            return Ok(self.implicit_edge(id)?.map(|(_, v)| v).into_iter().collect());
+        }
 
         versions.sort_by_key(|v| v.version);
         Ok(versions)
     }
 
     /// Retorna todas las aristas de un tipo específico válidas en `timestamp`.
-    /// Escanea el historial MVCC completo — O(total versioned edges).
+    /// Escanea el historial MVCC completo — O(total versioned edges) — más
+    /// las marcas de las aristas sin versiones (las del bulk y las adoptadas
+    /// tienen una versión implícita, ver [`Stamp`]: sin esto desaparecerían
+    /// de toda lectura en el pasado).
+    ///
+    /// `HistoryUnavailable` si alguna arista de ese tipo tiene su suelo de
+    /// historia ([`Self::edge_history_floor`]) por encima de `timestamp`: la
+    /// adopción la marcó en F, así que omitirla (o incluirla) en ese pasado
+    /// sería inventar la respuesta.
     pub async fn get_versioned_edges_of_type_at(
         &self,
         edge_type: &str,
@@ -917,17 +1091,64 @@ impl Storage {
     ) -> Result<Vec<Edge>> {
         // Track seen edge_ids to only include the best (latest valid) version per edge
         let mut best: HashMap<EdgeId, VersionedEdge> = HashMap::new();
+        let mut of_type: HashSet<EdgeId> = HashSet::new();
 
         for result in self.versioned_edges_ks.iter() {
             let (_, v) = result?;
-            if let Ok(ve) = deserialize::<VersionedEdge>(&v)
-                && ve.edge_data.edge_type == edge_type
-                && ve.is_valid_at(timestamp)
-            {
+            let Ok(ve) = deserialize::<VersionedEdge>(&v) else { continue };
+            if ve.edge_data.edge_type != edge_type {
+                continue;
+            }
+            of_type.insert(ve.id);
+            if ve.is_valid_at(timestamp) {
                 let entry = best.entry(ve.id).or_insert_with(|| ve.clone());
                 if ve.version > entry.version {
                     *entry = ve;
                 }
+            }
+        }
+
+        let below_floor = |id: EdgeId, floor: u64| {
+            NopalError::HistoryUnavailable(format!(
+                "edge {id} ({edge_type}) at timestamp {timestamp}: its history starts at {floor} \
+                 (it was written without a version before 0.10.1)"
+            ))
+        };
+        for &id in &of_type {
+            if let Some(floor) = self.edge_history_floor(id)?
+                && timestamp < floor
+            {
+                return Err(below_floor(id, floor));
+            }
+        }
+
+        // Aristas sin versiones con marca: su versión implícita.
+        let mut stamped: HashSet<EdgeId> = HashSet::new();
+        for tag in [keys::v2::HISTORY_EDGE_BIRTH_TAG, keys::v2::HISTORY_EDGE_FLOOR_TAG] {
+            for item in self.history_ks.scan_prefix(&[tag]) {
+                let (key, _) = item?;
+                let id = keys::v2::parse_history_stamp_key(&key).ok_or_else(|| malformed_key(HISTORY_TREE, &key))?;
+                if !of_type.contains(&id) {
+                    stamped.insert(id);
+                }
+            }
+        }
+        for id in stamped {
+            if self.versioned_edges_ks.contains_key(keys::edge_version_key(id, 1).as_bytes())? {
+                continue; // tiene cadena (de otro tipo): ya se miró arriba
+            }
+            let Some((stamp, implicit)) = self.implicit_edge(id)? else {
+                continue; // sin registro: no se sabe ni de qué tipo era
+            };
+            if implicit.edge_data.edge_type != edge_type {
+                continue;
+            }
+            match stamp {
+                _ if timestamp >= stamp.ts() => {
+                    best.insert(id, implicit);
+                }
+                Stamp::Birth(_) => {}
+                Stamp::Floor(f) => return Err(below_floor(id, f)),
             }
         }
 
@@ -973,9 +1194,14 @@ impl Storage {
         adj_batch.insert(keys::v2::adj_out_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
         adj_batch.insert(keys::v2::adj_in_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
 
+        // Primitiva sin historia: retira la marca (ver `insert_node`).
+        let mut history_batch = kv::WriteBatch::default();
+        self.stage_unstamp_edge(edge.id, &mut history_batch)?;
+
         self.engine.apply_multi(vec![
             (EDGES_TREE.to_string(), edges_batch),
             (ADJACENCY_TREE.to_string(), adj_batch),
+            (HISTORY_TREE.to_string(), history_batch),
         ])
     }
 
@@ -995,7 +1221,31 @@ impl Storage {
     ///
     /// Solo debe llamarse bajo el single-writer apply: el reloj se lee y
     /// se escribe sin RMW, así que el escritor tiene que ser único.
+    ///
+    /// Desde 0.10.1 la versión CONTINÚA la cadena de la arista (ver
+    /// [`Self::plan_edge_version`]): re-escribir un id existente cierra la
+    /// vigente y escribe v+1, y recrear una arista borrada sigue desde su
+    /// versión más alta. Hasta 0.10.0 escribía siempre la v1, pisando la
+    /// historia. Si la cadena ya tiene una versión en `>= timestamp` (redo
+    /// del WAL de algo ya aplicado) no escribe nada.
     pub async fn insert_edge_full(&self, edge: &Edge, etype_id: u32, timestamp: u64) -> Result<()> {
+        let plan = self.plan_edge_version(edge, timestamp)?;
+        self.insert_edge_planned(edge, etype_id, timestamp, plan)
+    }
+
+    /// Cuerpo de [`Self::insert_edge_full`] con el plan ya calculado (el
+    /// apply del grafo lo consulta antes para no tocar esquema ni RAM si la
+    /// escritura está superada).
+    pub(crate) fn insert_edge_planned(
+        &self,
+        edge: &Edge,
+        etype_id: u32,
+        timestamp: u64,
+        plan: EdgeVersionPlan,
+    ) -> Result<()> {
+        let EdgeVersionPlan::Write(write) = plan else {
+            return Ok(());
+        };
         let mut edges_batch = kv::WriteBatch::default();
         edges_batch.insert(edge.id.to_string().as_bytes(), serialize(edge)?);
 
@@ -1003,30 +1253,206 @@ impl Storage {
         adj_batch.insert(keys::v2::adj_out_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
         adj_batch.insert(keys::v2::adj_in_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
 
-        let versioned = VersionedEdge::new(edge.clone(), timestamp);
-        let value = serialize(&versioned)?;
         let mut versions_batch = kv::WriteBatch::default();
-        versions_batch.insert(keys::edge_version_key(edge.id, versioned.version).as_bytes(), value.clone());
         let mut current_batch = kv::WriteBatch::default();
-        current_batch.insert(edge.id.to_string().as_bytes(), value);
+        let mut history_batch = kv::WriteBatch::default();
+        Self::stage_edge_version(&write, &mut versions_batch, &mut current_batch, &mut history_batch)?;
 
-        // Cota del reloj (nunca retrocede): mismo cálculo que `bump_clock`,
-        // sin su transacción propia.
-        let clock_key = keys::v2::catalog_meta_key(META_NEXT_TIMESTAMP);
-        let current_clock = self.catalog_ks.get(&clock_key)?.map(|v| Self::decode_meta_u64(&v)).unwrap_or(0);
         let mut catalog_batch = kv::WriteBatch::default();
-        catalog_batch.insert(
-            clock_key,
-            current_clock.max(timestamp.saturating_add(1)).to_be_bytes().to_vec(),
-        );
+        self.stage_clock_bump(timestamp, &mut catalog_batch)?;
 
         self.engine.apply_multi(vec![
             (EDGES_TREE.to_string(), edges_batch),
             (ADJACENCY_TREE.to_string(), adj_batch),
             (VERSIONED_EDGES_TREE.to_string(), versions_batch),
             (VERSIONED_EDGES_CURRENT_TREE.to_string(), current_batch),
+            (HISTORY_TREE.to_string(), history_batch),
             (CATALOG_TREE.to_string(), catalog_batch),
         ])
+    }
+
+    /// Qué versión deja una escritura de `edge` en `timestamp`:
+    ///
+    /// - con puntero current (arista viva): la vigente se cierra en
+    ///   `timestamp` y la nueva es v+1;
+    /// - sin current pero con versiones (arista borrada que se recrea): v+1
+    ///   de la más alta, sin re-fechar su cierre. Una versión más alta que
+    ///   siguiera abierta sin current (estado que ningún camino actual deja)
+    ///   se cierra aquí;
+    /// - sin versiones, con marca y registro (ver [`Stamp`]): se materializa
+    ///   la v1 implícita (`valid_from` = marca, `valid_to` = `timestamp`) y
+    ///   la nueva es v2; la marca de nacimiento se borra en el mismo lote;
+    /// - sin versiones ni marca: v1.
+    ///
+    /// [`EdgeVersionPlan::Superseded`] si la versión más reciente (o la
+    /// marca) tiene timestamp `>= timestamp`: la guarda de idempotencia del
+    /// redo, la misma que la de los nodos. Se descartó comparar por
+    /// contenido (como hace `replay_edge_property_update` para decidir si
+    /// re-aplicar): con la cadena, un redo repetido escribiría versiones
+    /// duplicadas. Límite declarado: `add_edge` toma su timestamp antes de
+    /// encolarse, así que dos altas concurrentes del MISMO id pueden
+    /// aplicarse fuera de orden; la de timestamp menor llega superada y no se
+    /// escribe (gana la de mayor timestamp, y registro e historia siguen de
+    /// acuerdo).
+    pub(crate) fn plan_edge_version(&self, edge: &Edge, timestamp: u64) -> Result<EdgeVersionPlan> {
+        let write = |prev, new, drop_birth| Ok(EdgeVersionPlan::Write(EdgeVersionWrite { prev, new, drop_birth }));
+        if let Some(raw) = self.versioned_edges_current_ks.get(edge.id.to_string().as_bytes())? {
+            let current: VersionedEdge = deserialize(&raw)?;
+            if current.timestamp >= timestamp {
+                return Ok(EdgeVersionPlan::Superseded);
+            }
+            let new = VersionedEdge::new_version(&current, edge.clone(), timestamp);
+            let prev = current.valid_to.is_none().then(|| current.with_valid_to(timestamp));
+            return write(prev, new, false);
+        }
+        match self.highest_edge_version(edge.id)? {
+            Some(h) if h.timestamp >= timestamp => Ok(EdgeVersionPlan::Superseded),
+            Some(h) => {
+                let new = VersionedEdge::new_version(&h, edge.clone(), timestamp);
+                let prev = h.valid_to.is_none().then(|| h.with_valid_to(timestamp));
+                write(prev, new, false)
+            }
+            None => {
+                // El registro primero: sin él, una marca no tiene versión
+                // implícita que materializar (una de nacimiento huérfana,
+                // que solo deja una primitiva de bajo nivel, queda inerte
+                // bajo la cadena que nace aquí). Así una arista nueva — el
+                // caso de siempre — no paga la lectura de las marcas.
+                let Some(record) = self.edges_ks.get(edge.id.to_string().as_bytes())? else {
+                    return write(None, VersionedEdge::new(edge.clone(), timestamp), false);
+                };
+                let Some(stamp) = self.edge_stamp(edge.id)? else {
+                    return write(None, VersionedEdge::new(edge.clone(), timestamp), false);
+                };
+                if stamp.ts() >= timestamp {
+                    return Ok(EdgeVersionPlan::Superseded);
+                }
+                let v1 = Self::implicit_edge_version(deserialize(&record)?, stamp).with_valid_to(timestamp);
+                let new = VersionedEdge::new_version(&v1, edge.clone(), timestamp);
+                write(Some(v1), new, matches!(stamp, Stamp::Birth(_)))
+            }
+        }
+    }
+
+    /// La versión de número más alto de una arista, por lecturas puntuales:
+    /// las versiones de una arista son contiguas desde v1 (el GC no las
+    /// borra y toda escritura añade v+1), así que basta sondear v1 y, si
+    /// existe, buscar el final con saltos exponenciales y bisección —
+    /// O(log versiones) `get`s; una arista nueva paga uno.
+    ///
+    /// Se descartó el scan por prefijo `{id}:v`: en redb todo scan publica
+    /// antes la ventana de escritura pendiente (un commit con escritura de
+    /// páginas), y hacerlo por cada arista nueva multiplicaba por ~9 el
+    /// coste de `add_edge` (bench `writes_direct_concurrent`).
+    fn highest_edge_version(&self, id: EdgeId) -> Result<Option<VersionedEdge>> {
+        let get = |v: u64| self.versioned_edges_ks.get(keys::edge_version_key(id, v).as_bytes());
+        let Some(first) = get(1)? else {
+            return Ok(None);
+        };
+        // `lo` existe; se busca un `hi` que no exista.
+        let (mut lo, mut lo_value) = (1u64, first);
+        let mut hi = 2u64;
+        while let Some(v) = get(hi)? {
+            lo = hi;
+            lo_value = v;
+            hi = hi.saturating_mul(2);
+        }
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            match get(mid)? {
+                Some(v) => {
+                    lo = mid;
+                    lo_value = v;
+                }
+                None => hi = mid,
+            }
+        }
+        deserialize::<VersionedEdge>(&lo_value).map(Some)
+    }
+
+    /// Añade a los lotes una versión nueva de arista (y el cierre de la
+    /// anterior, o la v1 implícita materializada, si lo hay), con el puntero
+    /// current apuntando a la nueva y, si toca, la marca de nacimiento fuera.
+    fn stage_edge_version(
+        write: &EdgeVersionWrite,
+        versions_batch: &mut kv::WriteBatch,
+        current_batch: &mut kv::WriteBatch,
+        history_batch: &mut kv::WriteBatch,
+    ) -> Result<()> {
+        if let Some(prev) = &write.prev {
+            versions_batch.insert(keys::edge_version_key(prev.id, prev.version).as_bytes(), serialize(prev)?);
+        }
+        let new = &write.new;
+        let value = serialize(new)?;
+        versions_batch.insert(keys::edge_version_key(new.id, new.version).as_bytes(), value.clone());
+        current_batch.insert(new.id.to_string().as_bytes(), value);
+        if write.drop_birth {
+            history_batch.remove(keys::v2::history_edge_birth_key(new.id));
+        }
+        Ok(())
+    }
+
+    /// `true` si `id` es una arista NUEVA de verdad para el bulk: sin
+    /// versiones y sin marca (el llamador ya sabe que no tiene registro).
+    /// Basta sondear la v1: las versiones son contiguas desde 1.
+    pub(crate) fn edge_is_unborn(&self, id: EdgeId) -> Result<bool> {
+        if self.versioned_edges_ks.contains_key(keys::edge_version_key(id, 1).as_bytes())? {
+            return Ok(false);
+        }
+        Ok(self.edge_stamp(id)?.is_none())
+    }
+
+    /// Alta de un LOTE de aristas con adyacencia, todas con el mismo
+    /// `timestamp`, en UN `apply_multi` con la cota del reloj. Los ids deben
+    /// venir deduplicados (el plan de cada una lee su cadena del disco). Las
+    /// de `newborn[i] == true` (sin registro, versiones ni marca: ver
+    /// [`Self::edge_is_unborn`]) llevan solo su marca de NACIMIENTO, sin
+    /// copia en una v1 (ver [`Stamp`]); el resto pasa por el plan versionado.
+    /// Devuelve, por posición, cuáles se escribieron (las superadas no). La
+    /// primitiva pública [`Self::insert_edges_batch`] sigue sin historia.
+    pub(crate) async fn insert_edges_batch_versioned(
+        &self,
+        edges: &[&Edge],
+        newborn: &[bool],
+        timestamp: u64,
+    ) -> Result<Vec<bool>> {
+        let mut edges_batch = kv::WriteBatch::default();
+        let mut adj_batch = kv::WriteBatch::default();
+        let mut versions_batch = kv::WriteBatch::default();
+        let mut current_batch = kv::WriteBatch::default();
+        let mut history_batch = kv::WriteBatch::default();
+        let mut written = Vec::with_capacity(edges.len());
+        let stamp = timestamp.to_be_bytes();
+
+        for (edge, &born) in edges.iter().zip(newborn) {
+            if born {
+                history_batch.insert(keys::v2::history_edge_birth_key(edge.id), stamp.as_ref());
+            } else {
+                let EdgeVersionPlan::Write(write) = self.plan_edge_version(edge, timestamp)? else {
+                    written.push(false);
+                    continue;
+                };
+                Self::stage_edge_version(&write, &mut versions_batch, &mut current_batch, &mut history_batch)?;
+            }
+            let etype_id = self.intern_edge_type(&edge.edge_type)?;
+            edges_batch.insert(edge.id.to_string().as_bytes(), serialize(edge)?);
+            adj_batch.insert(keys::v2::adj_out_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
+            adj_batch.insert(keys::v2::adj_in_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
+            written.push(true);
+        }
+
+        let mut catalog_batch = kv::WriteBatch::default();
+        self.stage_clock_bump(timestamp, &mut catalog_batch)?;
+        self.engine.apply_multi(vec![
+            (EDGES_TREE.to_string(), edges_batch),
+            (ADJACENCY_TREE.to_string(), adj_batch),
+            (VERSIONED_EDGES_TREE.to_string(), versions_batch),
+            (VERSIONED_EDGES_CURRENT_TREE.to_string(), current_batch),
+            (HISTORY_TREE.to_string(), history_batch),
+            (CATALOG_TREE.to_string(), catalog_batch),
+        ])?;
+        log::debug!("Batch inserted {} edges at ts {}", edges.len(), timestamp);
+        Ok(written)
     }
 
     /// Elimina una arista Y sus dos claves de adyacencia — el espejo exacto
@@ -1044,7 +1470,8 @@ impl Storage {
     /// (`mark_edge_deleted`) era un commit aparte: un crash entre los dos
     /// dejaba la arista viva con su historia ya cerrada, y el time-travel
     /// la daba por borrada mientras el grafo actual la seguía mostrando.
-    /// Una arista sin versión (anterior al versionado) se borra igual.
+    /// Una arista sin versión (anterior al versionado) se borra igual; con
+    /// marca, su v1 implícita se materializa cerrada (ver [`Stamp`]).
     pub async fn remove_edge_closing_version(
         &self,
         edge: &Edge,
@@ -1069,25 +1496,50 @@ impl Storage {
         if let Some(timestamp) = close_at {
             let mut versions_batch = kv::WriteBatch::default();
             let mut current_batch = kv::WriteBatch::default();
-            self.stage_edge_version_close(edge.id, timestamp, &mut versions_batch, &mut current_batch)?;
+            let mut history_batch = kv::WriteBatch::default();
+            self.stage_edge_version_close(
+                edge.id,
+                timestamp,
+                &mut versions_batch,
+                &mut current_batch,
+                &mut history_batch,
+            )?;
             batches.push((VERSIONED_EDGES_TREE.to_string(), versions_batch));
             batches.push((VERSIONED_EDGES_CURRENT_TREE.to_string(), current_batch));
+            batches.push((HISTORY_TREE.to_string(), history_batch));
         }
         self.engine.apply_multi(batches)
     }
 
     /// Añade a los lotes el cierre de la versión vigente de una arista:
     /// la versión reescrita con `valid_to = timestamp` y el borrado de su
-    /// puntero current. Sin puntero current (arista anterior al versionado,
-    /// o ya cerrada por un intento previo) no añade nada: idempotente.
+    /// puntero current. Sin current ni versiones pero con marca (ver
+    /// [`Stamp`]), materializa la v1 implícita YA cerrada (`valid_from` =
+    /// marca, `valid_to` = `timestamp`) y retira la marca de nacimiento; lee
+    /// el registro, así que va antes de borrarlo en el mismo lote. Sin nada
+    /// de eso (arista anterior al versionado, o ya cerrada por un intento
+    /// previo) no añade nada: idempotente.
     fn stage_edge_version_close(
         &self,
         id: EdgeId,
         timestamp: u64,
         versions_batch: &mut kv::WriteBatch,
         current_batch: &mut kv::WriteBatch,
+        history_batch: &mut kv::WriteBatch,
     ) -> Result<()> {
         let Some(value) = self.versioned_edges_current_ks.get(id.to_string().as_bytes())? else {
+            if self.highest_edge_version(id)?.is_some() {
+                return Ok(());
+            }
+            if let Some((stamp, v1)) = self.implicit_edge(id)?
+                && stamp.ts() < timestamp
+            {
+                let closed = v1.with_valid_to(timestamp);
+                versions_batch.insert(keys::edge_version_key(id, 1).as_bytes(), serialize(&closed)?);
+                if matches!(stamp, Stamp::Birth(_)) {
+                    history_batch.remove(keys::v2::history_edge_birth_key(id));
+                }
+            }
             return Ok(());
         };
         let closed = deserialize::<VersionedEdge>(&value)?.with_valid_to(timestamp);
@@ -1189,6 +1641,7 @@ impl Storage {
         let mut adj_batch = kv::WriteBatch::default();
         let mut versions_batch = kv::WriteBatch::default();
         let mut current_batch = kv::WriteBatch::default();
+        let mut history_batch = kv::WriteBatch::default();
         // Un auto-lazo aparece dos veces (O e I del mismo nodo): su versión
         // se cierra una sola vez.
         let mut closed: HashSet<EdgeId> = HashSet::with_capacity(entries.len());
@@ -1200,7 +1653,15 @@ impl Storage {
             adj_batch.remove(keys::v2::adj_out_key(src, etype, tgt, edge));
             adj_batch.remove(keys::v2::adj_in_key(src, etype, tgt, edge));
             if closed.insert(edge) {
-                self.stage_edge_version_close(edge, close_at, &mut versions_batch, &mut current_batch)?;
+                // Con marca y sin versiones, materializa la v1 implícita
+                // cerrada (lee el registro antes de que el lote lo borre).
+                self.stage_edge_version_close(
+                    edge,
+                    close_at,
+                    &mut versions_batch,
+                    &mut current_batch,
+                    &mut history_batch,
+                )?;
             }
         }
         self.engine.apply_multi(vec![
@@ -1208,6 +1669,7 @@ impl Storage {
             (ADJACENCY_TREE.to_string(), adj_batch),
             (VERSIONED_EDGES_TREE.to_string(), versions_batch),
             (VERSIONED_EDGES_CURRENT_TREE.to_string(), current_batch),
+            (HISTORY_TREE.to_string(), history_batch),
         ])?;
 
         Ok(entries)
@@ -1859,64 +2321,417 @@ impl Storage {
         invalidated_prev: Option<&VersionedNode>,
         new_version: &VersionedNode,
     ) -> Result<()> {
-        let id = new_version.id;
-        let mut history_batch = kv::WriteBatch::default();
-        let mut indexes_batch = kv::WriteBatch::default();
-        let mut entities_batch = kv::WriteBatch::default();
-
-        // 1. Versión anterior invalidada (update)
-        if let Some(prev) = invalidated_prev {
-            history_batch.insert(keys::v2::history_version_key(id, prev.version), serialize(prev)?);
-        }
-
-        // 2. Versión nueva
-        history_batch
-            .insert(keys::v2::history_version_key(id, new_version.version), serialize(new_version)?);
-
-        // 3. Puntero current
-        history_batch
-            .insert(keys::v2::history_current_key(id), new_version.version.to_le_bytes().as_ref());
-
-        // 4. Lista de versiones (RMW bajo commit lock)
-        let versions_key = keys::v2::history_versions_key(id);
-        let mut versions: Vec<u64> = match self.history_ks.get(&versions_key)? {
-            Some(v) => deserialize(&v)?,
-            None => Vec::new(),
+        // Primitiva pública: no confía en que el llamador haya planeado la
+        // versión, así que la lista `l|` se lee siempre y no toca marcas.
+        let write = NodeVersionWrite {
+            prev: invalidated_prev.cloned(),
+            new: new_version.clone(),
+            materialized: false,
+            fresh_chain: false,
+            drop_birth: false,
         };
-        if !versions.contains(&new_version.version) {
-            versions.push(new_version.version);
-            versions.sort_unstable();
-            versions.reverse();
-        }
-        history_batch.insert(versions_key, serialize(&versions)?);
+        self.commit_node_write(node, &write)
+    }
 
-        // 5. Índice por timestamp — des-blobeado: un put con valor vacío
-        // (adiós al RMW del Vec<NodeId> bajo commit lock).
-        indexes_batch.insert(
-            keys::v2::ts_index_key(new_version.timestamp, id, new_version.version),
-            EMPTY_VALUE,
-        );
-
-        // 6. Registro base del nodo (keyspace `entities`)
-        entities_batch.insert(keys::v2::node_key_v2(node.id), serialize(node)?);
-
-        // 7. Entrada del índice de etiquetas (#207), en el mismo lote
-        let mut label_batch = kv::WriteBatch::default();
-        label_batch.insert(label_index_entry_key(&node.label, node.id), EMPTY_VALUE);
-
-        self.engine.apply_multi(vec![
-            (HISTORY_TREE.to_string(), history_batch),
-            (INDEXES_TREE.to_string(), indexes_batch),
-            (ENTITIES_TREE.to_string(), entities_batch),
-            (LABEL_IDX_TREE.to_string(), label_batch),
-        ])?;
+    /// [`Self::commit_node_version_atomic`] con el write-set que devolvió
+    /// [`Self::plan_node_version`] (incluida, si toca, la v1 implícita de
+    /// una marca y el borrado de la marca de nacimiento). Es el camino de
+    /// toda escritura de nodo: `add_node` directo, commit, redo del WAL.
+    pub(crate) fn commit_node_write(&self, node: &Node, write: &NodeVersionWrite) -> Result<()> {
+        let mut batches = NodeWriteBatches::default();
+        self.stage_node_version(node, write, &mut batches)?;
+        self.engine.apply_multi(batches.into_multi())?;
 
         // Cota del reloj: fuera del batch, con CAS-max (los escritores directos
         // concurrentes también la avanzan; un put plano podría retrocederla).
         // Si crasheamos antes de esto, el open la deriva del máximo del WAL.
-        self.bump_clock(META_NEXT_TIMESTAMP, new_version.timestamp.saturating_add(1))?;
+        self.bump_clock(META_NEXT_TIMESTAMP, write.new.timestamp.saturating_add(1))?;
 
-        log::debug!("Committed node {} v{} atomically", id, new_version.version);
+        log::debug!("Committed node {} v{} atomically", node.id, write.new.version);
+        Ok(())
+    }
+
+    /// Añade a los lotes el write-set de versión de UN nodo (ver
+    /// [`Self::commit_node_version_atomic`]): versión anterior invalidada,
+    /// versión nueva, puntero current, lista de versiones, entrada del
+    /// índice ts, registro base y entrada del índice de etiquetas.
+    ///
+    /// La lista `l|` se lee aquí (RMW bajo el single-writer apply): un lote
+    /// con dos versiones del MISMO nodo leería la lista vieja dos veces, así
+    /// que los llamadores por lotes deduplican antes (último gana).
+    fn stage_node_version(
+        &self,
+        node: &Node,
+        write: &NodeVersionWrite,
+        batches: &mut NodeWriteBatches,
+    ) -> Result<()> {
+        self.stage_node_history(write, batches)?;
+
+        // 6. Registro base del nodo (keyspace `entities`)
+        batches.entities.insert(keys::v2::node_key_v2(node.id), serialize(node)?);
+
+        // 7. Entrada del índice de etiquetas (#207), en el mismo lote
+        batches.labels.insert(label_index_entry_key(&node.label, node.id), EMPTY_VALUE);
+        Ok(())
+    }
+
+    /// Pasos 1–5 de [`Self::stage_node_version`]: solo la historia y su
+    /// índice ts, sin tocar el registro (la adopción versiona registros que
+    /// ya están escritos).
+    fn stage_node_history(&self, write: &NodeVersionWrite, batches: &mut NodeWriteBatches) -> Result<()> {
+        let new_version = &write.new;
+        let id = new_version.id;
+
+        // 1. Versión anterior invalidada (update), o la v1 implícita de una
+        //    marca materializada ahora (con su entrada del índice ts).
+        if let Some(prev) = &write.prev {
+            batches.history.insert(keys::v2::history_version_key(id, prev.version), serialize(prev)?);
+            if write.materialized {
+                batches
+                    .indexes
+                    .insert(keys::v2::ts_index_key(prev.timestamp, id, prev.version), EMPTY_VALUE);
+            }
+        }
+        if write.drop_birth {
+            batches.history.remove(keys::v2::history_node_birth_key(id));
+        }
+
+        // 2. Versión nueva
+        batches
+            .history
+            .insert(keys::v2::history_version_key(id, new_version.version), serialize(new_version)?);
+
+        // 3. Puntero current
+        batches
+            .history
+            .insert(keys::v2::history_current_key(id), new_version.version.to_le_bytes().as_ref());
+
+        // 4. Lista de versiones (RMW bajo commit lock). Con `fresh_chain`
+        // (el plan no encontró puntero `c|`: el nodo no tiene cadena; el GC
+        // borra `c|` y `l|` juntos) la lista no existe y no se lee.
+        let versions_key = keys::v2::history_versions_key(id);
+        let mut versions: Vec<u64> = match write.fresh_chain {
+            true => Vec::new(),
+            false => match self.history_ks.get(&versions_key)? {
+                Some(v) => deserialize(&v)?,
+                None => Vec::new(),
+            },
+        };
+        let materialized = write.materialized.then(|| write.prev.as_ref().map(|p| p.version)).flatten();
+        for v in materialized.into_iter().chain([new_version.version]) {
+            if !versions.contains(&v) {
+                versions.push(v);
+            }
+        }
+        versions.sort_unstable();
+        versions.reverse();
+        batches.history.insert(versions_key, serialize(&versions)?);
+
+        // 5. Índice por timestamp — des-blobeado: un put con valor vacío
+        // (adiós al RMW del Vec<NodeId> bajo commit lock).
+        batches.indexes.insert(
+            keys::v2::ts_index_key(new_version.timestamp, id, new_version.version),
+            EMPTY_VALUE,
+        );
+        Ok(())
+    }
+
+    /// Marca del nodo (ver [`Stamp`]): el nacimiento gana sobre el suelo.
+    pub(crate) fn node_stamp(&self, id: NodeId) -> Result<Option<Stamp>> {
+        let birth = keys::v2::history_node_birth_key(id);
+        let floor = keys::v2::history_node_floor_key(id);
+        let got = self.history_ks.get_many(&[&birth[..], &floor[..]])?;
+        Ok(match (&got[0], &got[1]) {
+            (Some(b), _) => Some(Stamp::Birth(Self::decode_meta_u64(b))),
+            (None, Some(f)) => Some(Stamp::Floor(Self::decode_meta_u64(f))),
+            (None, None) => None,
+        })
+    }
+
+    /// Marca de la arista; ver [`Self::node_stamp`].
+    pub(crate) fn edge_stamp(&self, id: EdgeId) -> Result<Option<Stamp>> {
+        let birth = keys::v2::history_edge_birth_key(id);
+        let floor = keys::v2::history_edge_floor_key(id);
+        let got = self.history_ks.get_many(&[&birth[..], &floor[..]])?;
+        Ok(match (&got[0], &got[1]) {
+            (Some(b), _) => Some(Stamp::Birth(Self::decode_meta_u64(b))),
+            (None, Some(f)) => Some(Stamp::Floor(Self::decode_meta_u64(f))),
+            (None, None) => None,
+        })
+    }
+
+    /// La versión implícita de un nodo sin cadena con marca: su registro,
+    /// válido desde la marca (ver [`Stamp`]).
+    fn implicit_node_version(node: Node, stamp: Stamp) -> VersionedNode {
+        VersionedNode::new(node, stamp.ts())
+    }
+
+    /// La versión implícita de una arista sin versiones con marca.
+    fn implicit_edge_version(edge: Edge, stamp: Stamp) -> VersionedEdge {
+        VersionedEdge::new(edge, stamp.ts())
+    }
+
+    /// Si `id` no tiene cadena pero sí marca y registro: su versión
+    /// implícita. Lo que leen `history`, la exportación y las lecturas en un
+    /// timestamp, y lo que los escritores materializan.
+    fn implicit_node(&self, id: NodeId) -> Result<Option<(Stamp, VersionedNode)>> {
+        let Some(stamp) = self.node_stamp(id)? else {
+            return Ok(None);
+        };
+        let Some(raw) = self.entities_ks.get(&keys::v2::node_key_v2(id))? else {
+            return Ok(None);
+        };
+        Ok(Some((stamp, Self::implicit_node_version(deserialize(&raw)?, stamp))))
+    }
+
+    /// Versión implícita de una arista sin versiones (ver [`Self::implicit_node`]).
+    fn implicit_edge(&self, id: EdgeId) -> Result<Option<(Stamp, VersionedEdge)>> {
+        let Some(stamp) = self.edge_stamp(id)? else {
+            return Ok(None);
+        };
+        let Some(raw) = self.edges_ks.get(id.to_string().as_bytes())? else {
+            return Ok(None);
+        };
+        Ok(Some((stamp, Self::implicit_edge_version(deserialize(&raw)?, stamp))))
+    }
+
+    /// Qué versión deja una escritura de `node` en `timestamp`, leyendo su
+    /// cadena: la primera (sin cadena), la siguiente cerrando la vigente
+    /// (update) o la siguiente sin re-fechar el cierre (recrear un nodo
+    /// borrado). Sin cadena pero con marca y registro, MATERIALIZA la v1
+    /// implícita (`valid_from` = marca, `valid_to` = `timestamp`) y escribe
+    /// la v2 (ver [`Stamp`]). [`NodeVersionPlan::Superseded`] si la cadena —
+    /// o la marca — ya tiene una versión con timestamp `>= timestamp`: es la
+    /// guarda de idempotencia del redo del WAL.
+    ///
+    /// Un puntero `c|` cuya versión ya no está (estado que el GC actual no
+    /// deja: borra `c|` con la última versión) continúa la numeración igual,
+    /// por defensa: la cadena no reutiliza un número de versión que aún
+    /// pudiera estar referenciado.
+    pub(crate) fn plan_node_version(&self, node: &Node, timestamp: u64) -> Result<NodeVersionPlan> {
+        let id = node.id;
+        let Some(raw) = self.history_ks.get(&keys::v2::history_current_key(id))? else {
+            // El registro primero: sin él no hay versión implícita que
+            // materializar, y un nodo nuevo (el caso de siempre) no paga la
+            // lectura de las marcas. Una marca de nacimiento huérfana (sin
+            // registro: solo la deja una primitiva de bajo nivel) queda
+            // inerte bajo la cadena que nace aquí.
+            let record = self.entities_ks.get(&keys::v2::node_key_v2(id))?;
+            let stamp = match &record {
+                Some(_) => self.node_stamp(id)?,
+                None => None,
+            };
+            let drop_birth = matches!(stamp, Some(Stamp::Birth(_)));
+            if let Some(stamp) = stamp
+                && let Some(record) = record
+            {
+                if stamp.ts() >= timestamp {
+                    return Ok(NodeVersionPlan::Superseded);
+                }
+                let mut v1 = Self::implicit_node_version(deserialize(&record)?, stamp);
+                v1.invalidate(timestamp);
+                let new = VersionedNode::new_version(&v1, node.clone(), timestamp);
+                return Ok(NodeVersionPlan::Write(NodeVersionWrite {
+                    prev: Some(v1),
+                    new,
+                    materialized: true,
+                    fresh_chain: true,
+                    drop_birth,
+                }));
+            }
+            return Ok(NodeVersionPlan::Write(NodeVersionWrite {
+                prev: None,
+                new: VersionedNode::new(node.clone(), timestamp),
+                materialized: false,
+                fresh_chain: true,
+                drop_birth,
+            }));
+        };
+        let current_num = u64::from_le_bytes(
+            raw.as_slice()
+                .try_into()
+                .map_err(|_| NopalError::Custom("Invalid version format".into()))?,
+        );
+        let Some(value) = self.history_ks.get(&keys::v2::history_version_key(id, current_num))? else {
+            return Ok(NodeVersionPlan::Write(NodeVersionWrite {
+                prev: None,
+                new: VersionedNode {
+                    id,
+                    version: current_num + 1,
+                    timestamp,
+                    node_data: node.clone(),
+                    prev_version: Some(current_num),
+                    valid_from: timestamp,
+                    valid_to: None,
+                },
+                materialized: false,
+                fresh_chain: false,
+                drop_birth: false,
+            }));
+        };
+        let current: VersionedNode = deserialize(&value)?;
+        if current.timestamp >= timestamp {
+            return Ok(NodeVersionPlan::Superseded);
+        }
+        let new = VersionedNode::new_version(&current, node.clone(), timestamp);
+        // Última versión ya cerrada = el nodo fue borrado y se recrea con el
+        // mismo id: la cadena continúa (v+1) sin re-fechar el cierre.
+        let prev = current.valid_to.is_none().then(|| {
+            let mut closed = current;
+            closed.invalidate(timestamp);
+            closed
+        });
+        Ok(NodeVersionPlan::Write(NodeVersionWrite {
+            prev,
+            new,
+            materialized: false,
+            fresh_chain: false,
+            drop_birth: false,
+        }))
+    }
+
+    /// `true` si `id` es un nodo NUEVO de verdad para el bulk: sin cadena y
+    /// sin marca (el llamador ya sabe que no tiene registro). Una sola
+    /// consulta `get_many` sobre `history` (`c|`, `b|`, `f|`).
+    pub(crate) fn node_is_unborn(&self, id: NodeId) -> Result<bool> {
+        let c = keys::v2::history_current_key(id);
+        let b = keys::v2::history_node_birth_key(id);
+        let f = keys::v2::history_node_floor_key(id);
+        Ok(self.history_ks.get_many(&[&c[..], &b[..], &f[..]])?.iter().all(Option::is_none))
+    }
+
+    /// Alta/sobrescritura de un LOTE de nodos, todos con el mismo
+    /// `timestamp` (uno por lote del `BulkLoader`), en UN `apply_multi` junto
+    /// con la cota del reloj. Los ids deben venir deduplicados (ver
+    /// [`Self::stage_node_version`]).
+    ///
+    /// Los nodos con `newborn[i] == true` (sin registro, cadena ni marca:
+    /// lo decide el llamador con [`Self::node_is_unborn`]) se escriben con
+    /// su marca de NACIMIENTO y sin copia en una v1 (ver [`Stamp`]); el resto
+    /// pasa por el plan versionado normal. Los superados no se escriben; el
+    /// resultado dice, por posición, cuáles se escribieron.
+    ///
+    /// La primitiva pública [`Self::insert_nodes_batch`] sigue sin historia:
+    /// es la capa de bajo nivel, como [`Self::insert_node`].
+    pub(crate) async fn insert_nodes_batch_versioned(
+        &self,
+        nodes: &[&Node],
+        newborn: &[bool],
+        timestamp: u64,
+    ) -> Result<Vec<bool>> {
+        let mut batches = NodeWriteBatches::default();
+        let mut written = Vec::with_capacity(nodes.len());
+        let stamp = timestamp.to_be_bytes();
+        for (node, &born) in nodes.iter().zip(newborn) {
+            if born {
+                batches.entities.insert(keys::v2::node_key_v2(node.id), serialize(node)?);
+                batches.labels.insert(label_index_entry_key(&node.label, node.id), EMPTY_VALUE);
+                batches.history.insert(keys::v2::history_node_birth_key(node.id), stamp.as_ref());
+                written.push(true);
+                continue;
+            }
+            match self.plan_node_version(node, timestamp)? {
+                NodeVersionPlan::Superseded => written.push(false),
+                NodeVersionPlan::Write(write) => {
+                    self.stage_node_version(node, &write, &mut batches)?;
+                    written.push(true);
+                }
+            }
+        }
+        let mut multi = batches.into_multi();
+        let mut catalog_batch = kv::WriteBatch::default();
+        self.stage_clock_bump(timestamp, &mut catalog_batch)?;
+        multi.push((CATALOG_TREE.to_string(), catalog_batch));
+        self.engine.apply_multi(multi)?;
+        log::debug!("Batch inserted {} nodes at ts {}", nodes.len(), timestamp);
+        Ok(written)
+    }
+
+    /// Cota del reloj (nunca retrocede) dentro de un lote ajeno: mismo
+    /// cálculo que `bump_clock`, sin su transacción propia. Solo bajo el
+    /// single-writer apply (lee y escribe sin RMW).
+    fn stage_clock_bump(&self, timestamp: u64, catalog_batch: &mut kv::WriteBatch) -> Result<()> {
+        let clock_key = keys::v2::catalog_meta_key(META_NEXT_TIMESTAMP);
+        let current_clock = self.catalog_ks.get(&clock_key)?.map(|v| Self::decode_meta_u64(&v)).unwrap_or(0);
+        catalog_batch.insert(
+            clock_key,
+            current_clock.max(timestamp.saturating_add(1)).to_be_bytes().to_vec(),
+        );
+        Ok(())
+    }
+
+    /// Suelo de historia de un nodo (0.10.1): antes de ese timestamp lógico
+    /// su historia no se conoce. Solo lo tienen los nodos de una base
+    /// anterior que la adopción tuvo que marcar (escritos sin versión),
+    /// versionar (cadena desincronizada) o cerrar; `None` = su historia es
+    /// completa (salvo GC). Persiste aunque luego tengan cadena.
+    pub fn node_history_floor(&self, id: NodeId) -> Result<Option<u64>> {
+        Ok(self
+            .history_ks
+            .get(&keys::v2::history_node_floor_key(id))?
+            .map(|v| Self::decode_meta_u64(&v)))
+    }
+
+    /// `true` si la versión vigente del nodo (o su marca, sin cadena) es de
+    /// `timestamp` o posterior: una escritura con ese timestamp (un borrado
+    /// del redo) ya quedó superada. Sin cadena ni marca, `false`.
+    pub(crate) fn node_written_since(&self, id: NodeId, timestamp: u64) -> Result<bool> {
+        let Some(raw) = self.history_ks.get(&keys::v2::history_current_key(id))? else {
+            return Ok(self.node_stamp(id)?.is_some_and(|s| s.ts() >= timestamp));
+        };
+        let Ok(bytes) = <[u8; 8]>::try_from(raw.as_slice()) else {
+            return Ok(false);
+        };
+        let version = u64::from_le_bytes(bytes);
+        let Some(value) = self.history_ks.get(&keys::v2::history_version_key(id, version))? else {
+            return Ok(false);
+        };
+        Ok(deserialize::<VersionedNode>(&value)?.timestamp >= timestamp)
+    }
+
+    /// Como [`Self::node_written_since`], para la versión vigente de una
+    /// arista.
+    pub(crate) fn edge_written_since(&self, id: EdgeId, timestamp: u64) -> Result<bool> {
+        let Some(raw) = self.versioned_edges_current_ks.get(id.to_string().as_bytes())? else {
+            if self.highest_edge_version(id)?.is_some() {
+                return Ok(false);
+            }
+            return Ok(self.edge_stamp(id)?.is_some_and(|s| s.ts() >= timestamp));
+        };
+        Ok(deserialize::<VersionedEdge>(&raw)?.timestamp >= timestamp)
+    }
+
+    /// Suelo de historia de una arista; ver [`Self::node_history_floor`].
+    pub fn edge_history_floor(&self, id: EdgeId) -> Result<Option<u64>> {
+        Ok(self
+            .history_ks
+            .get(&keys::v2::history_edge_floor_key(id))?
+            .map(|v| Self::decode_meta_u64(&v)))
+    }
+
+    /// Las primitivas públicas sin historia (`insert_node`,
+    /// `insert_nodes_batch`, `insert_edge`, …) que pisan un registro con
+    /// marca y SIN cadena convertirían en silencio su v1 implícita en los
+    /// datos nuevos desde la marca. Para que eso no pase, retiran la marca
+    /// en el mismo lote (el nodo queda "sin historia": `HistoryUnavailable`,
+    /// que es la verdad). Con cadena, la marca de nacimiento ya no existe y
+    /// el suelo se conserva: sigue acotando las lecturas bajo F.
+    fn stage_unstamp_node(&self, id: NodeId, history: &mut kv::WriteBatch) -> Result<()> {
+        if self.history_ks.contains_key(&keys::v2::history_current_key(id))? {
+            return Ok(());
+        }
+        history.remove(keys::v2::history_node_birth_key(id));
+        history.remove(keys::v2::history_node_floor_key(id));
+        Ok(())
+    }
+
+    /// Ver [`Self::stage_unstamp_node`], para aristas (con versiones, nada).
+    fn stage_unstamp_edge(&self, id: EdgeId, history: &mut kv::WriteBatch) -> Result<()> {
+        if self.versioned_edges_ks.contains_key(keys::edge_version_key(id, 1).as_bytes())? {
+            return Ok(());
+        }
+        history.remove(keys::v2::history_edge_birth_key(id));
+        history.remove(keys::v2::history_edge_floor_key(id));
         Ok(())
     }
 
@@ -1958,24 +2773,57 @@ impl Storage {
         match self.node_version_at(id, timestamp).await? {
             NodeVersionAt::Found(versioned) => Ok(versioned),
             NodeVersionAt::NoHistory => Err(NopalError::NodeNotFound(id.to_string())),
-            NodeVersionAt::NotValidAt => Err(NopalError::Custom(format!(
+            NodeVersionAt::NotValidAt | NodeVersionAt::NotBorn => Err(NopalError::Custom(format!(
                 "No version of node {} valid at timestamp {}",
                 id, timestamp
             ))),
+            NodeVersionAt::Unknown(why) => Err(NopalError::HistoryUnavailable(why)),
         }
     }
 
     /// Busca la versión de `id` válida en `timestamp` sin convertir los
     /// "no está" en errores: el llamador decide qué significa cada caso.
+    /// Aplica la tabla de precedencia de [`Stamp`] (versión implícita de un
+    /// nodo sin cadena con marca, suelo), así que todos los lectores en un
+    /// timestamp la heredan.
     pub(crate) async fn node_version_at(&self, id: NodeId, timestamp: u64) -> Result<NodeVersionAt> {
         let versions_key = keys::v2::history_versions_key(id);
 
         let versions: Vec<u64> = match self.history_ks.get(&versions_key)? {
             Some(v) => deserialize(&v)?,
-            None => return Ok(NodeVersionAt::NoHistory),
+            None => Vec::new(),
         };
         if versions.is_empty() {
-            return Ok(NodeVersionAt::NoHistory);
+            // Sin cadena: la marca decide.
+            let Some(stamp) = self.node_stamp(id)? else {
+                return Ok(NodeVersionAt::NoHistory);
+            };
+            if timestamp < stamp.ts() {
+                return Ok(match stamp {
+                    Stamp::Birth(_) => NodeVersionAt::NotBorn,
+                    Stamp::Floor(f) => NodeVersionAt::Unknown(format!(
+                        "node {id} at timestamp {timestamp}: its history starts at {f} \
+                         (written without a version before 0.10.1, adopted when the database was opened)"
+                    )),
+                });
+            }
+            return Ok(match self.entities_ks.get(&keys::v2::node_key_v2(id))? {
+                Some(raw) => NodeVersionAt::Found(Self::implicit_node_version(deserialize(&raw)?, stamp)),
+                None => NodeVersionAt::Unknown(format!(
+                    "node {id} at timestamp {timestamp}: its record was removed without a version \
+                     (low-level Storage primitive), so its state then is unknown"
+                )),
+            });
+        }
+
+        // Con cadena, el suelo sigue acotando por debajo.
+        if let Some(floor) = self.node_history_floor(id)?
+            && timestamp < floor
+        {
+            return Ok(NodeVersionAt::Unknown(format!(
+                "node {id} at timestamp {timestamp}: its history starts at {floor} \
+                 (written without a version before 0.10.1, adopted when the database was opened)"
+            )));
         }
 
         // Buscar versión válida en timestamp (más reciente primero)
@@ -1988,14 +2836,18 @@ impl Storage {
         Ok(NodeVersionAt::NotValidAt)
     }
 
-    /// Obtiene historial completo de un nodo
+    /// Obtiene historial completo de un nodo (más reciente primero). Un nodo
+    /// sin cadena con marca devuelve su versión implícita (ver [`Stamp`]).
     pub async fn get_node_history(&self, id: NodeId) -> Result<Vec<VersionedNode>> {
         let versions_key = keys::v2::history_versions_key(id);
 
         let versions: Vec<u64> = match self.history_ks.get(&versions_key)? {
             Some(v) => deserialize(&v)?,
-            None => return Ok(Vec::new()),
+            None => Vec::new(),
         };
+        if versions.is_empty() {
+            return Ok(self.implicit_node(id)?.map(|(_, v)| v).into_iter().collect());
+        }
 
         let mut history = Vec::new();
 
@@ -2410,6 +3262,27 @@ impl Storage {
             versioned_nodes.push(versioned);
         }
 
+        // Más la versión implícita de cada nodo sin cadena con marca (ver
+        // [`Stamp`]): un nodo cargado por el bulk tiene historia aunque no
+        // tenga copia en `v|`.
+        let mut stamped: HashSet<NodeId> = HashSet::new();
+        for tag in [keys::v2::HISTORY_NODE_BIRTH_TAG, keys::v2::HISTORY_NODE_FLOOR_TAG] {
+            for item in self.history_ks.scan_prefix(&[tag]) {
+                let (key, _) = item?;
+                stamped.insert(
+                    keys::v2::parse_history_stamp_key(&key).ok_or_else(|| malformed_key(HISTORY_TREE, &key))?,
+                );
+            }
+        }
+        for id in stamped {
+            if self.history_ks.contains_key(&keys::v2::history_versions_key(id))? {
+                continue; // con cadena: sus versiones ya están arriba
+            }
+            if let Some((_, implicit)) = self.implicit_node(id)? {
+                versioned_nodes.push(implicit);
+            }
+        }
+
         log::debug!("Retrieved {} versioned nodes for export", versioned_nodes.len());
 
         Ok(versioned_nodes)
@@ -2432,10 +3305,14 @@ impl Storage {
         let mut labels = kv::WriteBatch::default();
         let mut ids = Vec::with_capacity(nodes.len());
 
+        // Primitiva sin historia: retira las marcas de los nodos sin cadena
+        // que pisa (ver `insert_node`), en el mismo lote.
+        let mut history = kv::WriteBatch::default();
         for node in nodes {
             let value = serialize(node)?;
             batch.insert(keys::v2::node_key_v2(node.id), value);
             labels.insert(label_index_entry_key(&node.label, node.id), EMPTY_VALUE);
+            self.stage_unstamp_node(node.id, &mut history)?;
             ids.push(node.id);
         }
 
@@ -2444,6 +3321,7 @@ impl Storage {
         self.engine.apply_multi(vec![
             (LABEL_IDX_TREE.to_string(), labels),
             (ENTITIES_TREE.to_string(), batch),
+            (HISTORY_TREE.to_string(), history),
         ])?;
 
         log::debug!("Batch inserted {} nodes", ids.len());
@@ -2467,6 +3345,7 @@ impl Storage {
 
         let mut edges_batch = kv::WriteBatch::default();
         let mut adj_batch = kv::WriteBatch::default();
+        let mut history_batch = kv::WriteBatch::default();
         let mut ids = Vec::with_capacity(edges.len());
 
         for edge in edges {
@@ -2474,12 +3353,15 @@ impl Storage {
             edges_batch.insert(edge.id.to_string().as_bytes(), serialize(edge)?);
             adj_batch.insert(keys::v2::adj_out_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
             adj_batch.insert(keys::v2::adj_in_key(edge.source, etype_id, edge.target, edge.id), EMPTY_VALUE);
+            // Primitiva sin historia: retira la marca (ver `insert_node`).
+            self.stage_unstamp_edge(edge.id, &mut history_batch)?;
             ids.push(edge.id);
         }
 
         self.engine.apply_multi(vec![
             (EDGES_TREE.to_string(), edges_batch),
             (ADJACENCY_TREE.to_string(), adj_batch),
+            (HISTORY_TREE.to_string(), history_batch),
         ])?;
 
         log::debug!("Batch inserted {} edges (+ adjacency v2) atomically", ids.len());

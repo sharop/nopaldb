@@ -56,8 +56,12 @@ const CHANNEL_CAPACITY: usize = 256;
 /// embudo: cualquier mutación nueva de estructuras derivadas debe ir aquí.
 #[derive(Debug)]
 pub(crate) enum WriteOp {
-    /// Alta/actualización del registro current de un nodo + adyacencia + índices.
-    AddNode { node: Node, skip_indexing: bool },
+    /// Alta/actualización de un nodo: registro + versión MVCC (desde
+    /// 0.10.1) + adyacencia + índices. `timestamp`: `None` = el applier le
+    /// asigna uno al registrarla en el WAL (escritura directa); `Some` = el
+    /// registrado en el WAL, para el redo, que debe dejar la MISMA historia
+    /// que la escritura original.
+    AddNode { node: Node, timestamp: Option<u64> },
     /// Alta de arista con timestamp MVCC (current + versión + adyacencia).
     AddEdgeAt { edge: Edge, timestamp: u64 },
     /// Baja de nodo con timestamp MVCC (cierra la versión del nodo y la de
@@ -264,8 +268,10 @@ async fn direct_op_records(
         return None;
     }
     let (ts, body) = match op {
-        WriteOp::AddNode { node, .. } => (
-            graph.next_logical_timestamp(),
+        // El tick se toma aquí, bajo el gate y en orden de cola: es el que
+        // va al WAL y el que `apply_write_op` recibe para la versión.
+        WriteOp::AddNode { node, timestamp } => (
+            timestamp.unwrap_or_else(|| graph.next_logical_timestamp()),
             WalRecord::InsertNode { tx_id: 0, node: node.clone() },
         ),
         WriteOp::AddEdgeAt { edge, timestamp } => {
@@ -405,7 +411,7 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
             Work::Op(op) => match plan {
                 // Sin registro (índice de propiedades, borrado de algo que
                 // no existe): se aplica igual que siempre.
-                Plan::Op { logged: None } => msg.graph.apply_write_op(op).await,
+                Plan::Op { logged: None } => msg.graph.apply_write_op(op, None).await,
                 Plan::Op { logged: Some((tx_id, ts)) } => match &wal_ok {
                     // Si el log no se pudo escribir, la op no se aplica: un
                     // estado que el WAL no conoce no es recuperable.
@@ -416,7 +422,7 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
                             e
                         )))
                     }
-                    Ok(()) => match msg.graph.apply_write_op(op).await {
+                    Ok(()) => match msg.graph.apply_write_op(op, Some(ts)).await {
                         Ok(()) => {
                             if prefix_intact {
                                 settled_upto = Some(ts);
