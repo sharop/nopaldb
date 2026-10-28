@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.0] - unreleased
+
+Historia MVCC correcta y GC seguro (#313, #314, #315). Borrar un nodo cierra
+su historia y la de sus aristas; el redo del WAL conserva los timestamps del
+commit; el GC por antigüedad ya no borra toda la historia cerrada y guarda su
+horizonte; `get_node_at`/`as_of` no devuelven el estado actual cuando no hay
+versión; el `update` de NQL pasa por el WAL y no se pierde en un crash.
+
+**Versión menor por dos cambios incompatibles en Rust:** `GCConfig` gana el
+campo público `min_age_ms`, y `get_node_at`/`as_of` devuelven `NodeNotFound`
+o `HistoryUnavailable` donde antes daban el nodo actual. Guía:
+[docs/UPGRADING_0.10.md](docs/UPGRADING_0.10.md). El formato en disco y el
+del WAL no cambian.
 
 ### Fixed
 - **Borrar un nodo cierra su historia MVCC** (#309). Su versión vigente y la
