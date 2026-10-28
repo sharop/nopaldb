@@ -1721,7 +1721,12 @@ impl Graph {
         self.storage.scan_nodes_batch(label, start_after, limit).await
     }
 
-    /// Re-insert a node (upsert) — used by UPDATE executor.
+    /// Re-insert a node (upsert) directly in the engine.
+    ///
+    /// Sin versión MVCC ni registro en el WAL: no es durable hasta el
+    /// siguiente checkpoint. NQL `update` la usaba hasta 0.9.4; ahora va por
+    /// la transacción de la sentencia. Para un upsert durable usar
+    /// `Transaction::add_node` o `upsert_node`.
     ///
     /// Bajo el write gate y por el observador del esquema, como toda
     /// escritura: hasta 0.6.6 saltaba ambos y un `SET n.nueva = 1` no dejaba
@@ -1732,7 +1737,7 @@ impl Graph {
         self.storage.insert_node(node).await
     }
 
-    /// Re-insert an edge (upsert) — used by UPDATE executor. Ver
+    /// Re-insert an edge (upsert) directly in the engine. Ver
     /// [`Self::storage_insert_node`].
     pub async fn storage_insert_edge(&self, edge: &Edge) -> Result<()> {
         let _gate = self.write_gate.lock().await;
@@ -1740,7 +1745,7 @@ impl Graph {
         self.storage.insert_edge(edge).await
     }
 
-    /// Remove a property value from the property index — used by UPDATE executor (P1).
+    /// Remove a property value from the property index.
     /// Vía single-writer apply: las listas `idx:prop:` se actualizan RMW.
     pub async fn storage_remove_property_index(&self, property: &str, value: &PropertyValue, node_id: NodeId) -> Result<()> {
         self.submit_write(applier::WriteOp::RemovePropertyIndexEntry {
@@ -1751,7 +1756,7 @@ impl Graph {
         .await
     }
 
-    /// Add a property value to the property index — used by UPDATE executor (P1).
+    /// Add a property value to the property index.
     /// Vía single-writer apply: las listas `idx:prop:` se actualizan RMW.
     pub async fn storage_add_property_index(&self, property: &str, value: &PropertyValue, node_id: NodeId) -> Result<()> {
         self.submit_write(applier::WriteOp::AddPropertyIndexEntry {
@@ -3148,6 +3153,32 @@ impl Graph {
         }
     }
 
+    /// Redo de una reescritura de propiedades de una arista que ya existe
+    /// (NQL `update (a)-[r]->(b) set r.x = …`, o `tx.add_edge` con un id
+    /// existente). Sin esto el brazo `InsertEdge` del redo veía la arista
+    /// presente y se saltaba el registro: el cambio commiteado se perdía.
+    ///
+    /// Solo re-aplica si los extremos y el tipo coinciden (misma adyacencia)
+    /// y las propiedades difieren; mover una arista de extremos con el mismo
+    /// id no es una operación soportada y se sigue saltando como antes. Se
+    /// compara por contenido y no por timestamp: el alta de la arista en el
+    /// mismo sufijo del WAL se re-aplica con un ts nuevo, posterior al del
+    /// commit de la reescritura. Los registros se reproducen en orden de log,
+    /// así que el último en ganar es el último commiteado.
+    async fn replay_edge_property_update(&self, edge: &Edge, commit_ts: u64) -> Result<bool> {
+        let Ok(current) = self.storage.get_edge(edge.id).await else {
+            return Ok(false);
+        };
+        let same_shape = current.source == edge.source
+            && current.target == edge.target
+            && current.edge_type == edge.edge_type;
+        if !same_shape || current.properties == edge.properties {
+            return Ok(false);
+        }
+        self.add_edge_at(edge.clone(), commit_ts).await?;
+        Ok(true)
+    }
+
     /// Reproduce lo commiteado del WAL. Devuelve cuántas operaciones hubo
     /// que volver a aplicar (las ya aplicadas se saltan y no cuentan).
     async fn replay_wal(&self) -> Result<usize> {
@@ -3228,6 +3259,8 @@ impl Graph {
                                 edge.id
                             );
                         }
+                    } else if self.replay_edge_property_update(&edge, commit_ts).await? {
+                        replayed += 1;
                     }
                 }
 

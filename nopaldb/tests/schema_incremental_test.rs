@@ -98,7 +98,7 @@ async fn every_write_path_updates_the_schema_without_rebuilding() {
     g.add_node(moved).await.unwrap();
     assert_eq!(labels(&g).await, vec!["Arbol", "Bulk"]);
 
-    // NQL UPDATE (camino `storage_insert_node`) añade una propiedad.
+    // NQL UPDATE (camino transaccional) añade una propiedad.
     g.execute_statement("update (b:Bulk) set b.riego = true where b.i = 1").await.unwrap();
     assert!(g.get_label_properties("Bulk").await.unwrap().contains(&"riego".to_string()));
 

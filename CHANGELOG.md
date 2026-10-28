@@ -39,6 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bajo el horizonte del GC da el error nuevo `NopalError::HistoryUnavailable`.
   `GraphSnapshot::get_nodes` solo omite los `NodeNotFound`.
   `get_class_nodes_at` (reasoner) ya no incluye clases que aún no existían.
+- **NQL `update … set` escribe por la transacción de la sentencia** (#312),
+  como `add` y `delete`: va al WAL, deja versión MVCC y mantiene también los
+  índices hash/btree/full-text de usuario, y es atómico por sentencia. Hasta
+  0.9.4 escribía directo en el motor: un crash antes del siguiente checkpoint
+  perdía un `update` ya confirmado, un índice hash seguía encontrando el nodo
+  por el valor viejo y un fallo a media sentencia dejaba la mitad escrita.
+- **El redo del WAL ya no se salta la reescritura de propiedades de una arista
+  existente** (#312): NQL `update (a)-[r]->(b) set r.x = …` o `tx.add_edge` con
+  un id existente se perdían en un crash. Reescribir una arista todavía
+  reemplaza su versión en lugar de encadenar otra.
 
 ### Added
 - `Graph::last_commit_timestamp()` (Rust y Python, #311): el timestamp
