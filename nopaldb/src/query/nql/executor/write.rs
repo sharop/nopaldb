@@ -280,10 +280,17 @@ impl<'a> WriteExecutor<'a> {
     // ═══════════════════════════════════════════════════════════
 
     /// Execute UPDATE statement
+    ///
+    /// Los cambios van al write-set de `tx`, como ADD y DELETE: el commit del
+    /// llamador los escribe con versión MVCC, registro en el WAL y
+    /// mantenimiento de índices. Hasta 0.9.4 se escribían directo en el
+    /// motor (`storage_insert_node`/`storage_insert_edge`), sin versión ni
+    /// WAL: un crash antes del siguiente checkpoint perdía el UPDATE ya
+    /// confirmado y el redo no tenía con qué restaurarlo.
     pub async fn execute_update(
         &self,
         update: &UpdateStmt,
-        _tx: &mut Transaction,
+        tx: &mut Transaction,
     ) -> Result<UpdateResult> {
         log::info!("Executing UPDATE statement");
         if let Some(filter) = &update.filter {
@@ -294,14 +301,18 @@ impl<'a> WriteExecutor<'a> {
             .any(|e| matches!(e, PatternElement::Relationship(_)));
 
         if has_relationships {
-            self.execute_update_pattern(update).await
+            self.execute_update_pattern(update, tx).await
         } else {
-            self.execute_update_simple(update).await
+            self.execute_update_simple(update, tx).await
         }
     }
 
     /// UPDATE with simple node pattern
-    async fn execute_update_simple(&self, update: &UpdateStmt) -> Result<UpdateResult> {
+    async fn execute_update_simple(
+        &self,
+        update: &UpdateStmt,
+        tx: &mut Transaction,
+    ) -> Result<UpdateResult> {
         let nodes = self.match_nodes_by_pattern(&update.pattern).await?;
 
         let filtered = if let Some(filter) = &update.filter {
@@ -324,11 +335,15 @@ impl<'a> WriteExecutor<'a> {
             _ => None,
         }).unwrap_or_else(|| "n".to_string());
 
-        self.apply_updates(to_update, Vec::new(), &update.assignments, &[root_var.as_str()], None).await
+        self.apply_updates(tx, to_update, Vec::new(), &update.assignments, &[root_var.as_str()], None).await
     }
 
     /// UPDATE with relationship pattern (P0-B)
-    async fn execute_update_pattern(&self, update: &UpdateStmt) -> Result<UpdateResult> {
+    async fn execute_update_pattern(
+        &self,
+        update: &UpdateStmt,
+        tx: &mut Transaction,
+    ) -> Result<UpdateResult> {
         let (source, rel, target, source_var, target_var) =
             self.extract_pattern_parts(&update.pattern)?;
 
@@ -379,6 +394,7 @@ impl<'a> WriteExecutor<'a> {
         }
 
         self.apply_updates(
+            tx,
             nodes_to_update,
             edges_to_update,
             &update.assignments,
@@ -388,8 +404,23 @@ impl<'a> WriteExecutor<'a> {
     }
 
     /// Apply property updates to matched nodes and edges.
+    ///
+    /// Solo arma el write-set: cada nodo o arista cambiado se re-agrega a
+    /// `tx` con su mismo id (upsert). El commit hace lo demás:
+    /// - nodos: invalida la versión vigente y escribe una nueva con el ts del
+    ///   commit (`history()` / `as_of()` ven el cambio), y mantiene las dos
+    ///   capas de índice (el de propiedades del storage y los hash/btree/
+    ///   full-text de usuario) retractando los valores que el SET pisó. Por
+    ///   eso aquí ya no se toca el índice a mano: antes se mantenía solo la
+    ///   capa del storage y un índice hash de usuario seguía devolviendo el
+    ///   nodo por el valor viejo.
+    /// - aristas: se reescriben por el WAL con el ts del commit, misma
+    ///   adyacencia (el SET no cambia extremos ni tipo). Las aristas aún no
+    ///   tienen cadena de versiones: la reescritura reemplaza su versión en
+    ///   vez de encadenar una nueva.
     async fn apply_updates(
         &self,
+        tx: &mut Transaction,
         nodes: Vec<Node>,
         edges: Vec<Edge>,
         assignments: &[Assignment],
@@ -402,46 +433,20 @@ impl<'a> WriteExecutor<'a> {
 
         for mut node in nodes {
             let mut changed = false;
-            // Valores que el índice de propiedades gana y pierde con este SET.
-            let mut added: Vec<(String, PropertyValue)> = Vec::new();
-            let mut retired: Vec<(String, PropertyValue)> = Vec::new();
             for assignment in assignments {
                 if !node_vars.iter().any(|var| *var == assignment.variable) {
                     continue;
                 }
                 let new_value = self.evaluate_assignment_value(&assignment.value);
                 if let Some(val) = new_value {
-                    let old = node.properties.insert(assignment.property.clone(), val.clone());
-                    if old.as_ref() != Some(&val) {
-                        if let Some(old) = old {
-                            retired.push((assignment.property.clone(), old));
-                        }
-                        added.push((assignment.property.clone(), val));
-                    }
+                    node.properties.insert(assignment.property.clone(), val);
                     properties_changed += 1;
                     changed = true;
                 }
             }
 
             if changed {
-                // Orden seguro (#214 fase 2): entrada nueva → nodo → retirar
-                // la vieja, con los errores propagados. Un fallo o un corte a
-                // medias deja a lo sumo una entrada de MÁS (inocua: quien usa
-                // el índice confirma sobre el nodo), nunca un nodo sin la suya.
-                // Antes se retiraba primero y los errores se tragaban con
-                // `let _`: un corte dejaba el nodo invisible para los filtros
-                // por propiedad de `search_hybrid` y del WHERE de NQL.
-                for (prop, val) in &added {
-                    if node.properties.get(prop) == Some(val) {
-                        self.graph.storage_add_property_index(prop, val, node.id).await?;
-                    }
-                }
-                self.graph.storage_insert_node(&node).await?;
-                for (prop, val) in &retired {
-                    if node.properties.get(prop) != Some(val) {
-                        self.graph.storage_remove_property_index(prop, val, node.id).await?;
-                    }
-                }
+                tx.add_node(node).await?;
                 nodes_updated += 1;
             }
         }
@@ -461,7 +466,7 @@ impl<'a> WriteExecutor<'a> {
             }
 
             if changed {
-                self.graph.storage_insert_edge(&edge).await?;
+                tx.add_edge(edge)?;
                 edges_updated += 1;
             }
         }
