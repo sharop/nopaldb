@@ -101,7 +101,7 @@ Cada escritura crea un `VersionedNode` nuevo en lugar de sobreescribir el anteri
 VersionedNode {
     id:           NodeId,
     version:      u64,          // contador monotono
-    timestamp:    u64,          // unix seconds al momento del commit
+    timestamp:    u64,          // reloj lógico: el commit_ts de la escritura
     node_data:    Node,
     valid_from:   u64,
     valid_to:     Option<u64>,  // None = version actual
@@ -110,6 +110,39 @@ VersionedNode {
 ```
 
 `is_valid_at(t)` → `valid_from <= t && valid_to.map(|to| t < to).unwrap_or(true)`.
+
+### Versiones implícitas: marca de nacimiento y suelo (0.10.1)
+
+Desde 0.10.1 toda escritura deja historia, pero no toda escritura copia el
+registro en una versión. Una entidad (nodo o arista) **sin cadena** puede
+tener una marca de 8 bytes en el keyspace `history`:
+
+- **nacimiento T** (`b|` nodos, `a|` aristas): la escribe el `BulkLoader`
+  para un id nuevo, con el timestamp del flush;
+- **suelo F** (`f|` nodos, `e|` aristas): lo escribe la adopción del primer
+  open en lo que una versión anterior dejó sin versión, cadenas
+  desincronizadas o cerradas por un borrado viejo.
+
+Invariante: una entidad sin cadena y con marca tiene exactamente una versión
+implícita, su registro actual, válida desde la marca. Todo camino que cambie
+o borre ese registro escribe antes la v1 desde él (`valid_from` = marca) en
+el mismo `apply_multi`. Al materializarla se borra el nacimiento; el suelo
+persiste y sigue acotando las lecturas.
+
+| estado | `ts` < marca | `ts` ≥ marca |
+|---|---|---|
+| hay cadena | la cadena (con suelo F: `HistoryUnavailable` bajo F) | la cadena |
+| sin cadena, nacimiento T | `NodeNotFound` | el registro actual |
+| sin cadena, suelo F | `HistoryUnavailable` | el registro actual |
+| sin cadena, sin marca | `HistoryUnavailable` | `HistoryUnavailable` |
+
+La lectura de bajo nivel es `Storage::node_version_at`; `get_node_at`,
+`as_of`, las lecturas de snapshot de una transacción, `history()`,
+`edge_history()`, `get_versioned_edges_of_type_at` y `history_to_arrow` ven
+la versión implícita. El GC no la toca: no es una versión cerrada. Se
+descartó copiar cada nodo del bulk en una v1: +62 % de disco (200k nodos × 5
+propiedades) para guardar dos veces los mismos bytes. Detalle en el doc
+comment de `storage::Stamp` y en `storage/history_adoption.rs`.
 
 ### Time-travel
 
@@ -130,7 +163,7 @@ let node = graph.get_node_at(node_id, timestamp).await?;
 let history = graph.history(node_id).await?;
 ```
 
-Las aristas tienen versión MVCC via `VersionedEdge` (tree `"versioned_edges"`): se abre al crearlas y se cierra al borrarlas (también en cascada al borrar un nodo, desde 0.10). Reescribir una arista con el mismo id todavía reemplaza su versión en lugar de encadenar otra. `get_edges_of_type_at(edge_type, timestamp)` consulta el historial; `graph.edge_history(id)` retorna todas las versiones.
+Las aristas tienen versión MVCC via `VersionedEdge` (tree `"versioned_edges"`): se abre al crearlas y se cierra al borrarlas (también en cascada al borrar un nodo, desde 0.10). Desde 0.10.1 las aristas tienen cadena: reescribir una arista con el mismo id escribe la versión siguiente, y volver a crear una arista borrada continúa desde su última versión (hasta 0.10.0 las dos cosas pisaban la v1). `get_edges_of_type_at(edge_type, timestamp)` consulta el historial; `graph.edge_history(id)` retorna todas las versiones.
 
 ### Niveles de aislamiento (feature `full-isolation`)
 

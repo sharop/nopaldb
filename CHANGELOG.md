@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ELReasoner::from_graph_at(ts)` por debajo del piso devuelve
   `HistoryUnavailable` en vez de usar la taxonomía actual.
 
+### Docs
+- Guía de actualización a 0.10 (EN/ES): adopción de historia en el primer
+  open, marca de nacimiento y suelo, cadena de aristas, cómo volver a 0.10.0
+  o 0.9.4 y una sección "de 0.10.0 a 0.10.1". Al día también la referencia
+  NQL (time travel), DURABILITY, ARCHITECTURE (versiones implícitas) y
+  BACKUP_AND_READ_ONLY (el primer open adopta).
+
 ## [0.10.0] - 2026-10-28
 
 Historia MVCC correcta y GC seguro (#313, #314, #315). Borrar un nodo cierra

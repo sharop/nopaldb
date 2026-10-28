@@ -28,7 +28,9 @@ the copy. That is the section below.
 
 One more thing worth knowing: **opening does write.** Pending layout
 migrations run and the WAL is replayed, because a half-recovered database is
-not coherently readable. The read-only seal closes as soon as that finishes,
+not coherently readable. Since 0.10.1 the first open of a database written by
+an earlier version also adopts its history once (see
+[UPGRADING_0.10.md](UPGRADING_0.10.md#3-behaviour-that-changed)). The read-only seal closes as soon as that finishes,
 so nothing you do afterwards can change anything.
 
 ## Cold backup

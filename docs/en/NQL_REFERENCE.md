@@ -644,9 +644,12 @@ with commits), not Unix time. **NQL does not apply the clause yet.** Since
 current state with no warning, #298). Point-in-time reads are
 the Rust API: `graph.get_node_at(id, ts)` and the snapshot `graph.as_of(ts)`
 read the version of a node valid at `ts`. Since 0.10 they never return the
-current state instead: a node that did not exist at `ts` (created later or
-already deleted) is `NodeNotFound`, and a node with no history (written with
-direct `add_node`) or a `ts` below the GC horizon is `HistoryUnavailable`.
+current state instead: a node that did not exist at `ts` (created or
+bulk-loaded later, or already deleted) is `NodeNotFound`, and a `ts` below
+the node's history floor (data written before 0.10.1 and adopted on the
+first open) or below the GC horizon is `HistoryUnavailable`. Since 0.10.1
+every write leaves history, including direct `add_node`, the BulkLoader and
+the Turtle/OWL import.
 `graph.last_commit_timestamp()` gives the timestamp of the latest write (Rust
 and Python) and `graph.gc_horizon()` how far the GC collected. Python has no
 point-in-time read yet.

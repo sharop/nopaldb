@@ -649,11 +649,13 @@ el estado actual sin aviso, #298). Las lecturas en un instante
 son de la API Rust: `graph.get_node_at(id, ts)` y el snapshot
 `graph.as_of(ts)` leen la versión de un nodo válida en `ts`. Desde 0.10 nunca
 devuelven el estado actual en su lugar: un nodo que no existía en `ts` (creado
-después o ya borrado) es `NodeNotFound`, y un nodo sin historia (escrito con
-`add_node` directo) o un `ts` bajo el horizonte del GC es
-`HistoryUnavailable`. `graph.last_commit_timestamp()` da el timestamp de la
-última escritura (Rust y Python) y `graph.gc_horizon()` hasta dónde recolectó
-el GC. Python todavía no tiene lecturas en un instante.
+o cargado con el BulkLoader después, o ya borrado) es `NodeNotFound`, y un
+`ts` bajo el suelo de historia del nodo (datos escritos antes de 0.10.1 y
+adoptados en el primer open) o bajo el horizonte del GC es
+`HistoryUnavailable`. Desde 0.10.1 toda escritura deja historia, incluidos
+`add_node` directo, el BulkLoader y la importación Turtle/OWL.
+`graph.last_commit_timestamp()` da el timestamp de la última escritura (Rust
+y Python) y `graph.gc_horizon()` hasta dónde recolectó el GC. Python todavía no tiene lecturas en un instante.
 
 ---
 
