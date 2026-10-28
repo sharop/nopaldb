@@ -41,6 +41,7 @@ async fn test_p2_gc_deletes_old_versions_keep_one() -> nopaldb::Result<()> {
 
     let config = GCConfig {
         cutoff_timestamp: u64::MAX,
+        min_age_ms: None,
         min_versions_to_keep: 1,
         max_nodes_per_cycle: 0,
         dry_run: false,
@@ -69,6 +70,7 @@ async fn test_p2_gc_dry_run_does_not_delete_versions() -> nopaldb::Result<()> {
 
     let config = GCConfig {
         cutoff_timestamp: u64::MAX,
+        min_age_ms: None,
         min_versions_to_keep: 1,
         max_nodes_per_cycle: 0,
         dry_run: true,
@@ -92,6 +94,7 @@ async fn test_p2_gc_respects_keep_at_least() -> nopaldb::Result<()> {
 
     let config = GCConfig {
         cutoff_timestamp: u64::MAX,
+        min_age_ms: None,
         min_versions_to_keep: 2,
         max_nodes_per_cycle: 0,
         dry_run: false,
@@ -136,6 +139,7 @@ async fn test_gc_respects_active_transaction_horizon() -> nopaldb::Result<()> {
     // Versiones tienen valid_to > sentinel_ts → NO son gc-eligible → no se borran
     let config = GCConfig {
         cutoff_timestamp: u64::MAX,
+        min_age_ms: None,
         min_versions_to_keep: 1,
         max_nodes_per_cycle: 0,
         dry_run: false,
@@ -155,6 +159,7 @@ async fn test_gc_respects_active_transaction_horizon() -> nopaldb::Result<()> {
 
     let config2 = GCConfig {
         cutoff_timestamp: u64::MAX,
+        min_age_ms: None,
         min_versions_to_keep: 1,
         max_nodes_per_cycle: 0,
         dry_run: false,
@@ -222,10 +227,9 @@ async fn test_gc_default_conservative() -> nopaldb::Result<()> {
     // Seeding: crea versiones con valid_to > horizon_ts
     let node_id = seed_versioned_person(&graph).await?;
 
-    // gc_default: cutoff = min(horizon_ts, now-7días)
-    // horizon_ts es un timestamp lógico pequeño (ej. 1)
-    // now-7días en ms es ~1.74T >> 1 → cutoff = horizon_ts = 1
-    // Ninguna versión tiene valid_to < 1 → nada se borra
+    // gc_default = older_than_days(7) + horizonte activo: el corte es el
+    // menor entre horizon_ts y lo cerrado hace 7 días (nada, en una base
+    // recién creada). Ninguna versión es elegible → nada se borra.
     let stats = graph.gc_default().await?;
 
     let history = graph.history(node_id).await?;

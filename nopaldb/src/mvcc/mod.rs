@@ -159,10 +159,37 @@ pub struct GCStats {
 }
 
 /// Configuración de Garbage Collection
+///
+/// Dos límites, ambos en la escala del RELOJ LÓGICO de la base (el de
+/// `valid_from`/`valid_to`, no milisegundos Unix):
+///
+/// - `cutoff_timestamp`: corte lógico explícito ([`GCConfig::before_timestamp`]).
+/// - `min_age_ms`: corte por antigüedad de pared ([`GCConfig::older_than_ms`]
+///   y familia). El GC lo traduce a un corte lógico con las marcas
+///   reloj-de-pared → reloj-lógico que la base registra al persistir sus
+///   relojes; ver [`crate::graph::Graph::gc`].
+///
+/// Si están los dos, manda el más restrictivo (el menor).
 #[derive(Debug, Clone)]
 pub struct GCConfig {
-    /// Timestamp de corte: versiones invalidadas antes de este tiempo serán eliminadas
+    /// Corte lógico: versiones con `valid_to < cutoff_timestamp` son
+    /// elegibles. Es un timestamp del reloj lógico de la base, NO un instante
+    /// Unix. `u64::MAX` = sin límite lógico (el que ponen los constructores
+    /// por antigüedad, que dejan el límite a `min_age_ms`).
     pub cutoff_timestamp: u64,
+
+    /// Antigüedad mínima de pared (ms) que debe tener una versión cerrada
+    /// para ser elegible. `None` = sin límite por antigüedad.
+    ///
+    /// Hasta 0.9.4 `older_than_ms` restaba la edad a `now()` en ms Unix y
+    /// comparaba ese número con los `valid_to` LÓGICOS: el corte quedaba
+    /// por encima de toda versión y `older_than_days(7)` borraba TODA la
+    /// historia cerrada. Se descartó convertir la edad en timestamp lógico al
+    /// construir la config (no hay base a mano para traducirla) y también
+    /// quitar los cortes por edad (es lo que pide un scheduler de GC); la
+    /// traducción se hace al ejecutar, con las marcas de reloj persistidas,
+    /// y es conservadora: ante la duda, conserva.
+    pub min_age_ms: Option<u64>,
 
     /// Número mínimo de versiones a mantener por nodo (incluso si son elegibles para GC)
     /// Default: 1 (siempre mantener al menos la versión actual)
@@ -184,6 +211,7 @@ impl Default for GCConfig {
     fn default() -> Self {
         Self {
             cutoff_timestamp: 0,
+            min_age_ms: None,
             min_versions_to_keep: 1,
             max_nodes_per_cycle: 0,
             dry_run: false,
@@ -193,27 +221,41 @@ impl Default for GCConfig {
 }
 
 impl GCConfig {
-    /// Crea configuración para eliminar versiones más viejas que `age_ms` milisegundos
-    pub fn older_than_ms(age_ms: u64) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or(std::time::Duration::from_secs(0))
-            .as_millis() as u64;
-
+    /// Elimina versiones cerradas ANTES del timestamp lógico `ts`
+    /// (`valid_to < ts`). `ts` es del reloj lógico de la base: por ejemplo,
+    /// un valor obtenido con [`crate::graph::Graph::last_commit_timestamp`].
+    pub fn before_timestamp(ts: u64) -> Self {
         Self {
-            cutoff_timestamp: now.saturating_sub(age_ms),
+            cutoff_timestamp: ts,
             ..Default::default()
         }
     }
 
-    /// Crea configuración para eliminar versiones más viejas que `hours` horas
-    pub fn older_than_hours(hours: u64) -> Self {
-        Self::older_than_ms(hours * 60 * 60 * 1000)
+    /// Elimina versiones que se cerraron hace al menos `age_ms` milisegundos
+    /// de reloj de pared.
+    ///
+    /// La edad se traduce al reloj lógico al ejecutar el GC (ver
+    /// [`GCConfig::min_age_ms`]). La traducción es conservadora: una versión
+    /// solo se borra si la base puede probar que se cerró antes de
+    /// `now - age_ms`; una base sin marcas de reloj suficientemente viejas
+    /// (recién creada, o escrita por ≤ 0.9.4 hasta que pase `age_ms` desde
+    /// la primera escritura con esta versión) no borra nada.
+    pub fn older_than_ms(age_ms: u64) -> Self {
+        Self {
+            cutoff_timestamp: u64::MAX,
+            min_age_ms: Some(age_ms),
+            ..Default::default()
+        }
     }
 
-    /// Crea configuración para eliminar versiones más viejas que `days` días
+    /// Como [`GCConfig::older_than_ms`], en horas.
+    pub fn older_than_hours(hours: u64) -> Self {
+        Self::older_than_ms(hours.saturating_mul(60 * 60 * 1000))
+    }
+
+    /// Como [`GCConfig::older_than_ms`], en días.
     pub fn older_than_days(days: u64) -> Self {
-        Self::older_than_ms(days * 24 * 60 * 60 * 1000)
+        Self::older_than_ms(days.saturating_mul(24 * 60 * 60 * 1000))
     }
 
     /// Modo dry-run (solo reportar, no eliminar)
@@ -318,7 +360,9 @@ mod tests {
     #[test]
     fn test_gc_config() {
         let config = GCConfig::older_than_hours(24);
-        assert!(config.cutoff_timestamp > 0);
+        assert_eq!(config.min_age_ms, Some(24 * 60 * 60 * 1000));
+        // Sin límite lógico propio: la edad se traduce al ejecutar.
+        assert_eq!(config.cutoff_timestamp, u64::MAX);
         assert_eq!(config.min_versions_to_keep, 1);
         assert!(!config.dry_run);
 

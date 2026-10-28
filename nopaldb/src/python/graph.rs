@@ -1230,10 +1230,11 @@ impl PyGraph {
     ///               persisted, loaded_from_disk_ms}] per model whose index
     ///               is in cache (built or loaded on the first search)
     ///     gc:       auto_running, auto (None or {interval_secs,
-    ///               cutoff_timestamp, min_versions_to_keep,
+    ///               cutoff_timestamp, min_age_ms, min_versions_to_keep,
     ///               max_nodes_per_cycle, dry_run, use_active_horizon}),
     ///               last_run (None or {unix_ms, nodes_scanned,
-    ///               versions_removed, bytes_freed, duration_ms, dry_run})
+    ///               versions_removed, bytes_freed, duration_ms, dry_run}),
+    ///               horizon (logical ts, 0 = GC never removed anything)
     ///
     /// Deprecated flat keys, kept at the top level for one more minor so
     /// 0.6.x readers keep working — all of them strings, as before:
@@ -1319,6 +1320,7 @@ impl PyGraph {
                 let d = PyDict::new(py);
                 d.set_item("interval_secs", a.interval_secs)?;
                 d.set_item("cutoff_timestamp", a.cutoff_timestamp)?;
+                d.set_item("min_age_ms", a.min_age_ms)?;
                 d.set_item("min_versions_to_keep", a.min_versions_to_keep)?;
                 d.set_item("max_nodes_per_cycle", a.max_nodes_per_cycle)?;
                 d.set_item("dry_run", a.dry_run)?;
@@ -1340,6 +1342,7 @@ impl PyGraph {
             }
             None => gc.set_item("last_run", py.None())?,
         }
+        gc.set_item("horizon", report.gc.horizon)?;
         out.set_item("gc", gc)?;
 
         // Claves planas de 0.6.x (strings, como siempre fueron). Un minor más.
@@ -1497,6 +1500,37 @@ impl PyGraph {
     fn checkpoint(&self, py: Python<'_>) -> PyResult<()> {
         let graph = self.graph()?;
         to_py_result(crate::python::runtime::block_on(py, async move { graph.checkpoint().await }))
+    }
+
+    /// Logical timestamp of the latest applied write (a transaction commit
+    /// or a direct write such as `upsert`), as an int.
+    ///
+    /// Every write whose call returned before this one has a timestamp
+    /// `<=` the value. It is the database's logical clock (the one MVCC
+    /// versions use), not Unix time; `begin_transaction()`, rollbacks,
+    /// empty commits and rejected commits do not move it. Right after open it is the restored
+    /// clock minus one; 0 on a new database.
+    ///
+    /// Example:
+    ///     >>> tx = graph.begin_transaction()
+    ///     >>> tx.add_node("Sensor", {"zone": "north"})
+    ///     >>> tx.commit()
+    ///     >>> ts = graph.last_commit_timestamp()
+    fn last_commit_timestamp(&self) -> PyResult<u64> {
+        Ok(self.graph()?.last_commit_timestamp())
+    }
+
+    /// GC horizon: the largest `valid_to` among the MVCC versions the
+    /// garbage collector removed, persisted across reopen; 0 if it never
+    /// removed anything. Historical reads at a logical timestamp below it
+    /// may find the version of that moment collected (and say so).
+    /// Also in `get_stats()["gc"]["horizon"]`.
+    ///
+    /// Example:
+    ///     >>> graph.gc_horizon()
+    ///     0
+    fn gc_horizon(&self) -> PyResult<u64> {
+        to_py_result(self.graph()?.gc_horizon())
     }
 
     /// Close the database

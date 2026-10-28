@@ -95,6 +95,16 @@ pub(crate) struct CommitSet {
 }
 
 impl CommitSet {
+    /// `true` si el commit no cambia nada (transacción vacía): consume un
+    /// timestamp y deja Begin/Commit en el WAL, pero no es una escritura
+    /// para `Graph::last_commit_timestamp`.
+    pub(crate) fn writes_nothing(&self) -> bool {
+        self.deleted_nodes.is_empty()
+            && self.deleted_edges.is_empty()
+            && self.pending_nodes.is_empty()
+            && self.pending_edges.is_empty()
+    }
+
     /// Registros WAL del commit con el timestamp asignado por el applier.
     /// El orden es ESPEJO del apply (`apply_commit_set`): DeleteNode →
     /// DeleteEdge → InsertNode → InsertEdge — así el redo en orden-de-log
@@ -411,6 +421,7 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
                             if prefix_intact {
                                 settled_upto = Some(ts);
                             }
+                            msg.graph.note_applied_write(ts);
                             Ok(())
                         }
                         Err(apply_err) => {
@@ -455,6 +466,9 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
                         Ok(()) => {
                             if prefix_intact {
                                 settled_upto = Some(ts);
+                            }
+                            if !set.writes_nothing() {
+                                msg.graph.note_applied_write(ts);
                             }
                             Ok(())
                         }

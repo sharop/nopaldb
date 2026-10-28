@@ -46,6 +46,7 @@ async fn test_p2_auto_gc_scheduler_runs_and_stops() -> nopaldb::Result<()> {
             interval_secs: 1,
             gc_config: GCConfig {
                 cutoff_timestamp: u64::MAX,
+                min_age_ms: None,
                 min_versions_to_keep: 1,
                 max_nodes_per_cycle: 0,
                 dry_run: false,
@@ -80,6 +81,7 @@ async fn test_p2_auto_gc_scheduler_dry_run_keeps_versions() -> nopaldb::Result<(
             interval_secs: 1,
             gc_config: GCConfig {
                 cutoff_timestamp: u64::MAX,
+                min_age_ms: None,
                 min_versions_to_keep: 1,
                 max_nodes_per_cycle: 0,
                 dry_run: true,

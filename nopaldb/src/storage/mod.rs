@@ -105,6 +105,18 @@ pub const META_NEXT_TX_ID: &str = "next_tx_id";
 /// heurísticas históricas de `replay_wal`.
 pub const META_WAL_APPLIED_UPTO: &str = "wal_applied_upto";
 
+/// Horizonte de GC persistido: el mayor `valid_to` de las versiones que un
+/// GC borró de verdad (no dry-run). Una lectura de viaje en el tiempo a un
+/// `ts` menor puede encontrar historia incompleta; en `ts >= horizonte`
+/// ninguna versión borrada era visible (lo era en `valid_from <= ts <
+/// valid_to`). Siempre es `<=` que el corte lógico aplicado, y es exacto
+/// aunque el corte pedido fuera `u64::MAX` (guardar el corte haría inútil el
+/// horizonte justo en el caso "borra todo lo cerrado"). Semántica de máximo
+/// (`put_meta_u64_max`); se escribe ANTES de borrar las versiones de cada
+/// nodo, así que un crash a mitad deja el horizonte por delante de lo
+/// borrado, nunca por detrás.
+pub const META_GC_HORIZON: &str = "gc_horizon";
+
 /// Esquema derivado persistido (`schema::SchemaSnapshot`, MessagePack con
 /// versión de formato). Lo escribe `checkpoint_locked` cuando el esquema en
 /// memoria es válido y lo borra la PRIMERA escritura posterior (antes del
@@ -125,6 +137,10 @@ pub(crate) mod kv;
 mod keys;
 #[cfg(feature = "owl-import")]
 pub(crate) use keys::v2::META_RDF_PREFIXES;
+
+/// Marcas reloj-de-pared → reloj-lógico para los cortes de GC por
+/// antigüedad (`GCConfig::older_than_ms`).
+pub(crate) mod clock_marks;
 
 /// Interning de tipos de arista string↔u32 (layout v2, F5), persistido en el
 /// keyspace `catalog`. Consumidor: la adyacencia v2 — el tipo viaja como
@@ -158,6 +174,17 @@ mod layout_migrate;
 /// memoria del lote (10k vectores de 384 dims ≈ 15 MB serializados).
 #[cfg(feature = "embeddings")]
 pub const EMBEDDING_WRITE_CHUNK: usize = 10_000;
+
+/// Resultado de buscar la versión de un nodo en un timestamp lógico
+/// ([`Storage::node_version_at`]).
+pub(crate) enum NodeVersionAt {
+    /// La versión válida en ese timestamp.
+    Found(VersionedNode),
+    /// El nodo no tiene cadena de versiones (nunca la tuvo, o el GC la vació).
+    NoHistory,
+    /// Tiene cadena, pero ninguna versión es válida en ese timestamp.
+    NotValidAt,
+}
 
 pub struct Storage {
     engine: Arc<dyn kv::KvEngine>,
@@ -587,6 +614,42 @@ impl Storage {
     /// Lee una meta opaca escrita con [`Self::put_meta_bytes`].
     pub async fn get_meta_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
         Ok(self.catalog_ks.get(&keys::v2::catalog_meta_key(key))?.map(|v| v.to_vec()))
+    }
+
+    /// Registra la marca de reloj `(unix_ms, ts)` (ver `clock_marks`): "todo
+    /// timestamp lógico < `ts` se asignó a más tardar en `unix_ms`". El
+    /// llamador lee el reloj lógico ANTES que el de pared. RMW atómico sobre
+    /// `catalog`.
+    pub(crate) fn record_clock_mark(&self, unix_ms: u64, ts: u64) -> Result<()> {
+        self.catalog_ks.rmw(
+            &keys::v2::catalog_meta_key(clock_marks::META_CLOCK_MARKS),
+            &mut |old| {
+                let mut marks = old.map(clock_marks::decode).unwrap_or_default();
+                clock_marks::push(&mut marks, unix_ms, ts);
+                Some(clock_marks::encode(&marks))
+            },
+        )
+    }
+
+    /// Corte lógico efectivo de una configuración de GC: el menor entre
+    /// `cutoff_timestamp` y la traducción de `min_age_ms` con las marcas de
+    /// reloj persistidas (0 si ninguna marca es tan vieja: no se borra nada).
+    pub(crate) fn resolve_gc_cutoff(&self, config: &crate::mvcc::GCConfig) -> Result<u64> {
+        let Some(age_ms) = config.min_age_ms else {
+            return Ok(config.cutoff_timestamp);
+        };
+        let wall_cutoff = crate::graph::stats::unix_ms_now().saturating_sub(age_ms);
+        let marks = self
+            .catalog_ks
+            .get(&keys::v2::catalog_meta_key(clock_marks::META_CLOCK_MARKS))?
+            .map(|v| clock_marks::decode(&v))
+            .unwrap_or_default();
+        Ok(config.cutoff_timestamp.min(clock_marks::logical_cutoff(&marks, wall_cutoff)))
+    }
+
+    /// Horizonte de GC persistido (`META_GC_HORIZON`); 0 si nunca borró.
+    pub(crate) fn gc_horizon(&self) -> Result<u64> {
+        Ok(self.get_meta_u64_sync(META_GC_HORIZON)?.unwrap_or(0))
     }
 
     /// Elimina una key meta. Existe para pruebas de migración (simular una base
@@ -1887,45 +1950,42 @@ impl Storage {
     }
 
     /// Obtiene nodo en un timestamp específico (MVCC as_of)
+    ///
+    /// Errores: `NodeNotFound` si el nodo no tiene cadena de versiones;
+    /// `Custom` si la tiene pero ninguna versión es válida en `timestamp`.
+    /// `Graph::get_node_at` distingue esos casos con [`Self::node_version_at`].
     pub async fn get_node_at_timestamp(&self, id: NodeId, timestamp: u64) -> Result<VersionedNode> {
-        // Obtener lista de versiones
+        match self.node_version_at(id, timestamp).await? {
+            NodeVersionAt::Found(versioned) => Ok(versioned),
+            NodeVersionAt::NoHistory => Err(NopalError::NodeNotFound(id.to_string())),
+            NodeVersionAt::NotValidAt => Err(NopalError::Custom(format!(
+                "No version of node {} valid at timestamp {}",
+                id, timestamp
+            ))),
+        }
+    }
+
+    /// Busca la versión de `id` válida en `timestamp` sin convertir los
+    /// "no está" en errores: el llamador decide qué significa cada caso.
+    pub(crate) async fn node_version_at(&self, id: NodeId, timestamp: u64) -> Result<NodeVersionAt> {
         let versions_key = keys::v2::history_versions_key(id);
 
         let versions: Vec<u64> = match self.history_ks.get(&versions_key)? {
             Some(v) => deserialize(&v)?,
-            None => {
-                log::debug!("No versions found for node {}", id);
-                return Err(NopalError::NodeNotFound(id.to_string()));
-            }
+            None => return Ok(NodeVersionAt::NoHistory),
         };
-
-        log::debug!(
-            "Searching version for node {} at t={}, available versions: {:?}",
-            id, timestamp, versions
-        );
+        if versions.is_empty() {
+            return Ok(NodeVersionAt::NoHistory);
+        }
 
         // Buscar versión válida en timestamp (más reciente primero)
         for &version in &versions {
             let versioned = self.get_node_version(id, version).await?;
-
-            log::debug!(
-                "  Checking v{}: valid_from={}, valid_to={:?}, is_valid={}",
-                version,
-                versioned.valid_from,
-                versioned.valid_to,
-                versioned.is_valid_at(timestamp)
-            );
-
             if versioned.is_valid_at(timestamp) {
-                log::debug!("  ✓ Found valid version: v{}", version);
-                return Ok(versioned);
+                return Ok(NodeVersionAt::Found(versioned));
             }
         }
-
-        Err(NopalError::Custom(format!(
-            "No version of node {} valid at timestamp {}",
-            id, timestamp
-        )))
+        Ok(NodeVersionAt::NotValidAt)
     }
 
     /// Obtiene historial completo de un nodo
@@ -1975,9 +2035,12 @@ impl Storage {
     /// # Returns
     /// Estadísticas de la operación de GC
     ///
+    /// Con borrados reales avanza el horizonte persistido
+    /// (`META_GC_HORIZON`) al mayor `valid_to` borrado.
+    ///
     /// # Example
     /// ```ignore
-    /// // Eliminar versiones más viejas de 7 días
+    /// // Eliminar versiones cerradas hace más de 7 días
     /// let config = GCConfig::older_than_days(7);
     /// let stats = storage.gc_old_versions(&config).await?;
     /// println!("Deleted {} versions", stats.versions_deleted);
@@ -1987,6 +2050,14 @@ impl Storage {
 
         let start = std::time::Instant::now();
         let mut stats = GCStats::default();
+
+        // 0. Corte lógico efectivo: `cutoff_timestamp` y, si la config pide
+        // antigüedad de pared, su traducción con las marcas de reloj. Se
+        // resuelve AQUÍ y no solo en `Graph::gc` para que quien llame al
+        // storage directamente tampoco compare milisegundos Unix con
+        // timestamps lógicos (el bug de ≤ 0.9.4).
+        let cutoff = self.resolve_gc_cutoff(config)?;
+        let mut horizon_noted = 0u64;
 
         // 1. Encontrar todos los nodos con versiones: el namespace `l|` del
         // keyspace `history` ES esa lista (una clave `l|{uuid16}` por nodo
@@ -2025,6 +2096,7 @@ impl Storage {
             // Identificar versiones a eliminar (mantener las más recientes)
             let versions_to_keep = config.min_versions_to_keep;
             let mut versions_to_delete: Vec<u64> = Vec::new();
+            let mut max_valid_to = 0u64;
 
             for (idx, versioned) in history.iter().enumerate() {
                 // Siempre mantener las N versiones más recientes
@@ -2033,8 +2105,9 @@ impl Storage {
                 }
 
                 // Verificar si es elegible para GC
-                if versioned.is_gc_eligible(config.cutoff_timestamp) {
+                if versioned.is_gc_eligible(cutoff) {
                     versions_to_delete.push(versioned.version);
+                    max_valid_to = max_valid_to.max(versioned.valid_to.unwrap_or(0));
                 }
             }
 
@@ -2048,6 +2121,12 @@ impl Storage {
             );
 
             if !config.dry_run {
+                // Horizonte ANTES de borrar (ver `META_GC_HORIZON`); solo se
+                // escribe cuando sube.
+                if max_valid_to > horizon_noted {
+                    self.bump_clock(META_GC_HORIZON, max_valid_to)?;
+                    horizon_noted = max_valid_to;
+                }
                 // Eliminar las versiones
                 let (deleted, bytes_freed) =
                     self.delete_node_versions(node_id, &versions_to_delete).await?;
