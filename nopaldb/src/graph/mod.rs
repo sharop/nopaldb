@@ -80,6 +80,12 @@ pub struct Graph {
     adjacency_in: Arc<RwLock<HashMap<NodeId, Vec<EdgeId>>>>,
     next_tx_id: Arc<AtomicU64>,
     next_timestamp: Arc<AtomicU64>,
+    /// Timestamp lógico de la última escritura APLICADA (commit o escritura
+    /// directa registrada en el WAL). Ver [`Graph::last_commit_timestamp`].
+    last_commit_ts: Arc<AtomicU64>,
+    /// Reloj de pared (ms Unix) de la última marca de reloj registrada (ver
+    /// `storage::clock_marks`). Solo en memoria: acota la frecuencia.
+    last_clock_mark_ms: Arc<AtomicU64>,
 
     #[cfg(feature = "full-isolation")]
     last_modified: Arc<RwLock<HashMap<NodeId, u64>>>, // Mapa de última modificación por nodo
@@ -238,19 +244,25 @@ struct CommunityPartitionCache {
 }
 
 impl GraphSnapshot {
-    /// Obtiene un nodo del snapshot
+    /// Obtiene un nodo del snapshot. Misma semántica (y errores) que
+    /// [`Graph::get_node_at`]: sin fallback al estado actual.
     pub async fn get_node(&self, id: NodeId) -> Result<Node> {
         self.graph.get_node_at(id, self.timestamp).await
     }
 
-    /// Obtiene múltiples nodos del snapshot
+    /// Obtiene múltiples nodos del snapshot. Omite los que no existían en
+    /// el timestamp (`NodeNotFound`); cualquier otro error se propaga, en
+    /// particular `HistoryUnavailable`: omitir en silencio un nodo cuya
+    /// historia no se conoce daría un resultado incompleto que parece
+    /// completo.
     pub async fn get_nodes(&self, ids: &[NodeId]) -> Result<Vec<Node>> {
         let mut nodes = Vec::new();
 
         for &id in ids {
             match self.get_node(id).await {
                 Ok(node) => nodes.push(node),
-                Err(_) => continue, // Skip nodos que no existen en este timestamp
+                Err(NopalError::NodeNotFound(_)) => continue,
+                Err(e) => return Err(e),
             }
         }
 
@@ -544,6 +556,10 @@ impl Graph {
             adjacency_in: Arc::new(RwLock::new(adjacency_in)),
             next_tx_id: Arc::new(AtomicU64::new(next_tx_id_init)),
             next_timestamp: Arc::new(AtomicU64::new(next_timestamp_init)),
+            // Al abrir no hay nada en vuelo: todo lo anterior al reloj
+            // restaurado está aplicado (o descartado por el redo).
+            last_commit_ts: Arc::new(AtomicU64::new(next_timestamp_init.saturating_sub(1))),
+            last_clock_mark_ms: Arc::new(AtomicU64::new(0)),
 
             #[cfg(feature = "full-isolation")]
             last_modified: Arc::new(RwLock::new(HashMap::new())),
@@ -1162,6 +1178,10 @@ impl Graph {
             adjacency_in: Arc::new(RwLock::new(HashMap::new())),
             next_tx_id: Arc::new(AtomicU64::new(next_tx_id_init)),
             next_timestamp: Arc::new(AtomicU64::new(next_timestamp_init)),
+            // Al abrir no hay nada en vuelo: todo lo anterior al reloj
+            // restaurado está aplicado (o descartado por el redo).
+            last_commit_ts: Arc::new(AtomicU64::new(next_timestamp_init.saturating_sub(1))),
+            last_clock_mark_ms: Arc::new(AtomicU64::new(0)),
 
             #[cfg(feature = "full-isolation")]
             last_modified: Arc::new(RwLock::new(HashMap::new())),
@@ -1271,6 +1291,80 @@ impl Graph {
         self.next_timestamp.fetch_add(1, AtomicOrdering::SeqCst)
     }
 
+    /// Timestamp lógico de la última escritura aplicada: el valor que hay que
+    /// pasar a [`Graph::as_of`] / [`Graph::get_node_at`] para leer "el estado
+    /// de ahora" más tarde.
+    ///
+    /// Qué cuenta como escritura: los commits de transacciones y las
+    /// escrituras directas (`add_node`, `add_edge`, `delete_*`) que el
+    /// applier registra en el WAL, una vez APLICADOS; no cuentan los
+    /// commits rechazados, los rollbacks, ni los ticks que consumen
+    /// `begin_transaction` o el commit de una transacción vacía. Toda escritura confirmada (con su `await`
+    /// terminado) antes de llamar a este método tiene timestamp `<=` al
+    /// devuelto. Justo después de abrir la base vale el reloj restaurado
+    /// menos uno (todo lo anterior está aplicado); 0 en una base nueva.
+    ///
+    /// Se descartó devolver `next_timestamp - 1` sin más: incluye ticks de
+    /// transacciones aún abiertas y de commits todavía en cola, así que una
+    /// lectura `as_of` en ese valor podía cambiar al aplicarse el commit.
+    /// Límite declarado: las aristas directas reciben su timestamp antes de
+    /// encolarse (fuera del write-gate), así que con escritores concurrentes
+    /// una arista con timestamp `<=` al devuelto puede aplicarse después; la
+    /// historia de NODOS en ese timestamp es estable.
+    pub fn last_commit_timestamp(&self) -> u64 {
+        self.last_commit_ts.load(AtomicOrdering::SeqCst)
+    }
+
+    /// Anota una escritura aplicada con timestamp `ts` (ver
+    /// [`Graph::last_commit_timestamp`]). Solo crece.
+    pub(crate) fn note_applied_write(&self, ts: u64) {
+        self.last_commit_ts.fetch_max(ts, AtomicOrdering::SeqCst);
+    }
+
+    /// Horizonte del GC: el mayor `valid_to` de las versiones que un GC
+    /// borró en esta base, persistido (sobrevive a reinicios); 0 si el GC
+    /// nunca borró nada. Una lectura de viaje en el tiempo a un timestamp
+    /// MENOR puede no encontrar la versión que existía entonces, y
+    /// [`Graph::get_node_at`] lo dice con `HistoryUnavailable` en vez de
+    /// contestar otra cosa; desde el horizonte en adelante la historia está
+    /// completa respecto del GC.
+    pub fn gc_horizon(&self) -> Result<u64> {
+        self.storage.gc_horizon()
+    }
+
+    /// Registra la marca de reloj pared → lógico `(ahora, ts)` (ver
+    /// `storage::clock_marks`) si pasó `MARK_INTERVAL_MS` desde la última, o
+    /// siempre con `force`. Contrato del llamador: `ts` se leyó del reloj
+    /// lógico ANTES de llamar (lo que hace cierta la marca) y ya está
+    /// persistido como cota (`META_NEXT_TIMESTAMP >= ts`). Sin lo segundo,
+    /// un crash podía restaurar el reloj por debajo de la marca y los ticks
+    /// nuevos parecerían viejos al GC. Best effort: perder una marca solo
+    /// vuelve más conservador el GC por antigüedad.
+    pub(crate) fn record_clock_mark(&self, ts: u64, force: bool) {
+        if self.is_read_only() {
+            return;
+        }
+        let now = stats::unix_ms_now();
+        let last = self.last_clock_mark_ms.load(AtomicOrdering::SeqCst);
+        if !force {
+            if now < last.saturating_add(crate::storage::clock_marks::MARK_INTERVAL_MS) {
+                return;
+            }
+            if self
+                .last_clock_mark_ms
+                .compare_exchange(last, now, AtomicOrdering::SeqCst, AtomicOrdering::SeqCst)
+                .is_err()
+            {
+                return; // otro hilo la está registrando
+            }
+        } else {
+            self.last_clock_mark_ms.fetch_max(now, AtomicOrdering::SeqCst);
+        }
+        if let Err(e) = self.storage.record_clock_mark(now, ts) {
+            log::warn!("failed to record clock mark (age-based GC stays conservative): {}", e);
+        }
+    }
+
     // ─── Single-writer apply ────────────────────────────────────────────────
     //
     // Único punto de entrada para la aplicación física de escrituras. El
@@ -1346,6 +1440,9 @@ impl Graph {
                 self.wal().append_batch(&set.wal_records(commit_timestamp)).await?;
                 match self.apply_commit_set(&set, commit_timestamp).await {
                     Ok(()) => {
+                        if !set.writes_nothing() {
+                            self.note_applied_write(commit_timestamp);
+                        }
                         // Marca de progreso del redo (H4), best effort: si no
                         // se persiste, las guardas de `replay_wal` cubren.
                         if let Err(e) = self
@@ -1441,7 +1538,11 @@ impl Graph {
                 crate::storage::META_NEXT_TX_ID,
                 self.next_tx_id.load(AtomicOrdering::SeqCst),
             )
-            .await
+            .await?;
+        // Marca pared → lógico para el GC por antigüedad, como mucho una por
+        // segundo, con el valor del reloj YA persistido arriba.
+        self.record_clock_mark(next_timestamp, false);
+        Ok(())
     }
 
     #[cfg(feature = "algorithms")]
@@ -3243,21 +3344,36 @@ impl Graph {
 
     /// Ejecuta garbage collection de versiones MVCC antiguas.
     ///
-    /// Elimina versiones que han sido invalidadas y son más viejas que el timestamp de corte.
-    /// Siempre mantiene al menos `min_versions_to_keep` versiones por nodo.
+    /// Elimina versiones cerradas (`valid_to`) antes del corte efectivo y
+    /// siempre mantiene al menos `min_versions_to_keep` versiones por nodo.
+    /// El corte efectivo es el menor entre:
+    ///
+    /// - `cutoff_timestamp` (reloj LÓGICO, ver [`GCConfig::before_timestamp`]);
+    /// - la traducción de `min_age_ms` ([`GCConfig::older_than_ms`] y
+    ///   familia): el mayor timestamp lógico que la base puede probar que se
+    ///   asignó hace al menos esa edad, con las marcas de reloj que registra
+    ///   al persistir sus relojes (una por segundo como mucho, más una al
+    ///   empezar cada GC). Conservadora: sin marcas tan viejas no borra nada;
+    /// - con `use_active_horizon`, [`Graph::safe_gc_horizon`].
+    ///
+    /// Con borrados reales avanza el horizonte persistido
+    /// ([`Graph::gc_horizon`]).
+    ///
+    /// [`GCConfig::before_timestamp`]: crate::mvcc::GCConfig::before_timestamp
+    /// [`GCConfig::older_than_ms`]: crate::mvcc::GCConfig::older_than_ms
     ///
     /// # Example
     /// ```ignore
     /// use nopaldb::mvcc::GCConfig;
     ///
-    /// // Eliminar versiones más viejas de 7 días
+    /// // Eliminar versiones cerradas hace más de 7 días
     /// let config = GCConfig::older_than_days(7);
     /// let stats = graph.gc(config).await?;
     /// println!("Freed {} versions", stats.versions_deleted);
     ///
-    /// // Dry run (solo reportar)
-    /// let config = GCConfig::older_than_hours(24).dry_run();
-    /// let stats = graph.gc(config).await?;
+    /// // Eliminar todo lo cerrado antes de un timestamp lógico conocido
+    /// let ts = graph.last_commit_timestamp();
+    /// let stats = graph.gc(GCConfig::before_timestamp(ts).dry_run()).await?;
     /// println!("Would delete {} versions", stats.versions_deleted);
     /// ```
     pub async fn gc(&self, mut config: crate::mvcc::GCConfig) -> Result<crate::mvcc::GCStats> {
@@ -3271,9 +3387,22 @@ impl Graph {
             }
         }
 
+        // Corte por antigüedad: una marca fresca de "ahora" antes de
+        // traducir, para que `older_than_ms(0)` signifique "todo lo cerrado
+        // hasta este instante" aunque la última marca periódica tenga un
+        // segundo. El reloj se persiste antes (contrato de la marca).
+        if config.min_age_ms.is_some() && !self.is_read_only() {
+            let ts = self.next_timestamp.load(AtomicOrdering::SeqCst);
+            self.storage
+                .put_meta_u64_max(crate::storage::META_NEXT_TIMESTAMP, ts)
+                .await?;
+            self.record_clock_mark(ts, true);
+        }
+
         log::info!(
-            "Starting MVCC garbage collection (cutoff: {}, keep: {}, dry_run: {})",
+            "Starting MVCC garbage collection (cutoff: {}, min_age_ms: {:?}, keep: {}, dry_run: {})",
             config.cutoff_timestamp,
+            config.min_age_ms,
             config.min_versions_to_keep,
             config.dry_run
         );
@@ -3295,18 +3424,17 @@ impl Graph {
         Ok(stats)
     }
 
-    /// Ejecuta garbage collection con configuración por defecto.
-    /// Usa un cutoff conservador: el mínimo entre safe_gc_horizon() y now-7días.
+    /// Ejecuta garbage collection con configuración por defecto: versiones
+    /// cerradas hace más de 7 días, sin tocar lo que vea una transacción en
+    /// vuelo ([`Graph::safe_gc_horizon`]).
+    ///
+    /// Hasta 0.9.4 tomaba `min(safe_gc_horizon(), now - 7 días en ms Unix)`:
+    /// el segundo término, comparado con timestamps lógicos, siempre era el
+    /// mayor, así que el corte real era el horizonte y borraba TODA la
+    /// historia cerrada.
     pub async fn gc_default(&self) -> Result<crate::mvcc::GCStats> {
-        let horizon = self.safe_gc_horizon();
-        let seven_days_ago = crate::mvcc::GCConfig::older_than_days(7).cutoff_timestamp;
-        let safe_cutoff = horizon.min(seven_days_ago);
-        let config = crate::mvcc::GCConfig {
-            cutoff_timestamp: safe_cutoff,
-            use_active_horizon: false, // ya aplicamos el horizonte manualmente
-            ..Default::default()
-        };
-        self.gc(config).await
+        self.gc(crate::mvcc::GCConfig::older_than_days(7).with_active_horizon())
+            .await
     }
 
     /// Inicia GC automático en background.
@@ -3427,7 +3555,9 @@ impl Graph {
     // METODOS MVCC - TIME TRAVEL
     // ═════════════════════════════════════════════════════════
 
-    /// Obtiene un snapshot del grafo en un timestamp específico (Datomic-style)
+    /// Obtiene un snapshot del grafo en un timestamp LÓGICO (Datomic-style).
+    /// Para "el estado de ahora" usar [`Graph::last_commit_timestamp`]; las
+    /// lecturas siguen [`Graph::get_node_at`].
     pub fn as_of(&self, timestamp: u64) -> GraphSnapshot {
         GraphSnapshot {
             graph: self.clone(),
@@ -3445,6 +3575,13 @@ impl Graph {
     /// Uses the MVCC version chain: a node is considered valid at `timestamp`
     /// if its `valid_from <= timestamp < valid_to` (or `valid_to` is None).
     /// Falls back to the current node if no MVCC history exists for a node ID.
+    ///
+    /// Known limits (unlike [`Graph::get_node_at`], which no longer falls
+    /// back): it starts from the CURRENT nodes, so a class deleted after
+    /// `timestamp` is missing, and a class without history (written by a
+    /// direct `add_node`, as the Turtle import does) is included whatever
+    /// `timestamp` says. Kept because the reasoner's historical rebuild has
+    /// no other source for unversioned classes yet.
     #[cfg(feature = "reasoner")]
     pub async fn get_class_nodes_at(&self, timestamp: u64) -> Result<Vec<crate::types::Node>> {
         use crate::types::NodeKind;
@@ -3460,15 +3597,17 @@ impl Graph {
                 continue;
             }
             // Try to get the MVCC version valid at `timestamp`.
-            match self.storage.get_node_at_timestamp(current_node.id, timestamp).await {
-                Ok(versioned) => {
-                    if versioned.is_valid_at(timestamp) {
-                        class_nodes.push(versioned.node_data);
-                    }
+            match self.storage.node_version_at(current_node.id, timestamp).await? {
+                crate::storage::NodeVersionAt::Found(versioned) => {
+                    class_nodes.push(versioned.node_data);
                 }
-                Err(_) => {
-                    // No MVCC record — node was added in the same transaction and
-                    // has only a current snapshot. Include if it was before timestamp.
+                // It has history but did not exist at `timestamp` (created
+                // later, or deleted then). Until 0.9.4 this case fell into
+                // the fallback below and the class appeared in the past.
+                crate::storage::NodeVersionAt::NotValidAt => {}
+                crate::storage::NodeVersionAt::NoHistory => {
+                    // No MVCC record (direct write): only the current
+                    // snapshot exists. See the known limits above.
                     class_nodes.push(current_node.clone());
                 }
             }
@@ -3685,30 +3824,65 @@ impl Graph {
         Ok(export.report)
     }
 
-    /// Obtiene un nodo en un timestamp específico
+    /// Obtiene un nodo tal como era en el timestamp LÓGICO `timestamp` (el
+    /// reloj de `valid_from`/`valid_to`; ver
+    /// [`Graph::last_commit_timestamp`]), leyendo su cadena de versiones.
+    ///
+    /// Nunca contesta con el estado actual en lugar del histórico:
+    ///
+    /// - versión válida en `timestamp` ⇒ esa versión;
+    /// - `timestamp` anterior a [`Graph::gc_horizon`] y sin versión ⇒
+    ///   `HistoryUnavailable` (la de entonces pudo borrarla el GC);
+    /// - el nodo tiene historia pero ninguna versión válida en `timestamp`
+    ///   (se creó después, o ya estaba borrado) ⇒ `NodeNotFound`;
+    /// - el nodo existe hoy pero no tiene historia ⇒ `HistoryUnavailable`.
+    ///   Hoy es el caso de los nodos escritos con `add_node` directo, que no
+    ///   versionan: no se sabe desde cuándo existe ni cómo era, así que
+    ///   devolver su estado actual sería inventar el pasado;
+    /// - no existe ni tiene historia ⇒ `NodeNotFound`.
+    ///
+    /// Hasta 0.9.4, cualquiera de los "no hay versión" caía al estado
+    /// ACTUAL (un nodo creado después aparecía en el pasado; uno con
+    /// historia recolectada mostraba sus valores de hoy). Se descartó
+    /// conservar ese fallback para los nodos sin historia: es la misma
+    /// respuesta inventada, solo que más frecuente.
     pub async fn get_node_at(&self, node_id: NodeId, timestamp: u64) -> Result<Node> {
-        // Primero intentar obtener versión por timestamp
-        match self.storage.get_node_at_timestamp(node_id, timestamp).await {
-            Ok(versioned) => {
-                log::debug!(
-                    "Found node {} at t={} (version {})",
-                    node_id, timestamp, versioned.version
-                );
-                Ok(versioned.node_data)
+        use crate::storage::NodeVersionAt;
+        let found = self.storage.node_version_at(node_id, timestamp).await?;
+        if let NodeVersionAt::Found(versioned) = found {
+            log::debug!(
+                "Found node {} at t={} (version {})",
+                node_id, timestamp, versioned.version
+            );
+            return Ok(versioned.node_data);
+        }
+        let horizon = self.storage.gc_horizon()?;
+        if timestamp < horizon {
+            return Err(NopalError::HistoryUnavailable(format!(
+                "node {node_id} at timestamp {timestamp}: older than the GC horizon \
+                 ({horizon}); the version valid then may have been garbage-collected"
+            )));
+        }
+        match found {
+            NodeVersionAt::NotValidAt => Err(NopalError::NodeNotFound(format!(
+                "{node_id} (no version valid at timestamp {timestamp})"
+            ))),
+            _ if self.storage.node_exists(node_id).await? => {
+                Err(NopalError::HistoryUnavailable(format!(
+                    "node {node_id} has no version history (written outside a \
+                     transaction), so its state at timestamp {timestamp} is unknown"
+                )))
             }
-            Err(_) => {
-                // Fallback: intentar obtener nodo actual (sin MVCC)
-                log::debug!(
-                    "No MVCC version found for {} at t={}, trying current",
-                    node_id, timestamp
-                );
-                self.get_node(node_id).await
-            }
+            _ => Err(NopalError::NodeNotFound(node_id.to_string())),
         }
     }
 
     /// Obtiene un nodo estrictamente desde MVCC en un timestamp específico.
     /// No hace fallback al estado actual, para preservar semántica de snapshot isolation.
+    ///
+    /// Tras 0.9.4 [`Graph::get_node_at`] tampoco hace fallback; esta variante
+    /// queda para las lecturas de snapshot de `Transaction`, que no
+    /// distinguen el motivo del "no está" (errores crudos del storage).
     pub async fn get_node_at_strict(&self, node_id: NodeId, timestamp: u64) -> Result<Node> {
         let versioned = self.storage.get_node_at_timestamp(node_id, timestamp).await?;
         Ok(versioned.node_data)
@@ -4853,6 +5027,7 @@ impl Graph {
             auto_running: auto.running,
             auto: auto.config.as_ref().map(GcAutoSummary::from),
             last_run: self.ops.last_gc.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            horizon: self.storage.gc_horizon()?,
         };
 
         Ok(StatsReport { graph, storage, wal, recovery, indexes, hnsw, gc })

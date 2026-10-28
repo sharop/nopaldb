@@ -5,6 +5,8 @@
 - After 30 commits and no close(), reopening reports the WAL it read and a
   crash recovery; after checkpoint() + close() it reports one record and none.
 - `indexes` carries size and analyzer; `hnsw` and `gc` are present.
+- `last_commit_timestamp()` grows with each commit and ignores an empty
+  transaction; `gc_horizon()` is 0 before any GC.
 - The progress callback sees `upsert_batch` and `index_build` start to end,
   and an open with `on_progress` sees `wal_replay`.
 """
@@ -18,10 +20,14 @@ with tempfile.TemporaryDirectory() as tmp:
     g = nopaldb.Graph.open(d)
     # The schema cache must follow writes (until 0.6.5 the first read froze it).
     assert g.get_stats()["graph"]["total_nodes"] == 0
+    last_ts = g.last_commit_timestamp()
     for i in range(30):
         tx = g.begin_transaction()
         tx.add_node("Planta", {"nombre": f"planta-{i}", "n": i})
         tx.commit()
+        # Logical clock of the latest applied write: grows with every commit.
+        assert g.last_commit_timestamp() > last_ts, (g.last_commit_timestamp(), last_ts)
+        last_ts = g.last_commit_timestamp()
         if i == 9:
             assert g.get_stats()["graph"]["nodes_per_label"] == {"Planta": 10}
 
@@ -36,7 +42,11 @@ with tempfile.TemporaryDirectory() as tmp:
     assert s["recovery"]["operations_replayed"] == 0 and s["recovery"]["crash_recovery"] is False, s["recovery"]
     assert s["recovery"]["open_ms"]["total"] >= s["recovery"]["open_ms"]["wal_replay"]
     assert s["indexes"] == [] and s["hnsw"] == [], (s["indexes"], s["hnsw"])
-    assert s["gc"] == {"auto_running": False, "auto": None, "last_run": None}, s["gc"]
+    assert s["gc"] == {"auto_running": False, "auto": None, "last_run": None, "horizon": 0}, s["gc"]
+    assert g.gc_horizon() == 0
+    # begin_transaction alone is not a write: the timestamp does not move.
+    g.begin_transaction().rollback()
+    assert g.last_commit_timestamp() == last_ts
     # Flat 0.6.x keys: still strings.
     assert s["total_nodes"] == "30" and s["wal_bytes"] == str(s["wal"]["bytes"]), (s["total_nodes"], s["wal_bytes"])
     assert s["storage_engine"] == s["storage"]["engine"] and s["avg_degree"] == "0.00"

@@ -83,6 +83,16 @@ pub enum NopalError {
     #[error("Edge not found: {0}")]
     EdgeNotFound(String),
 
+    /// La lectura de viaje en el tiempo no puede contestar con honestidad:
+    /// el nodo existe pero no tiene historia de versiones (escrito fuera de
+    /// transacciones), o el timestamp pedido es anterior al horizonte del GC
+    /// y la versión de entonces pudo haberse borrado. Distinta de
+    /// `NodeNotFound` ("no existía en ese timestamp") a propósito: hasta
+    /// 0.9.4 estos casos devolvían el estado ACTUAL del nodo como si fuera el
+    /// histórico.
+    #[error("History unavailable: {0}")]
+    HistoryUnavailable(String),
+
     // ═══════════════════════════════════════════════════════════════
     // ERRORES DE STORAGE
     // ═══════════════════════════════════════════════════════════════

@@ -93,10 +93,10 @@ async fn test_snapshot_queries() {
     };
 
     // Capturar timestamps
-    let t1 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    // Timestamp LÓGICO (el reloj de valid_from/valid_to). Hasta 0.9.4 este
+    // test usaba segundos Unix: as_of(segundos) caía siempre después de toda
+    // la historia y las aserciones débiles lo ocultaban.
+    let t1 = graph.last_commit_timestamp();
 
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
@@ -109,10 +109,7 @@ async fn test_snapshot_queries() {
         tx.commit().await.unwrap();
     }
 
-    let t2 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let t2 = graph.last_commit_timestamp();
 
     // Crear snapshot en t1 (antes del cambio)
     let snapshot1 = graph.as_of(t1);
@@ -126,12 +123,9 @@ async fn test_snapshot_queries() {
     println!("Snapshot 2 (t={}): Reading node...", t2);
     let node2 = snapshot2.get_node(node_id).await;
 
-    // Al menos uno debe tener el nodo
-    assert!(node1.is_ok() || node2.is_ok(), "At least one snapshot should have the node");
-
-    if let Ok(n) = node2 {
-        println!("  Value in snapshot 2: {:?}", n.properties.get("value"));
-    }
+    assert!(t1 < t2, "the update must advance the logical clock ({t1} -> {t2})");
+    assert_eq!(node1.unwrap().properties.get("value"), Some(&PropertyValue::Int(0)));
+    assert_eq!(node2.unwrap().properties.get("value"), Some(&PropertyValue::Int(100)));
 
     println!("\n✅ Snapshot test PASSED!");
 }
@@ -152,10 +146,8 @@ async fn test_as_of_datomic_style() {
         id
     };
 
-    let t1 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    // Timestamp lógico (ver test_snapshot_queries).
+    let t1 = graph.last_commit_timestamp();
 
     println!("t1: Document is 'draft'");
 
@@ -170,10 +162,7 @@ async fn test_as_of_datomic_style() {
         tx.commit().await.unwrap();
     }
 
-    let t2 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let t2 = graph.last_commit_timestamp();
 
     println!("t2: Document is 'published' {t2}");
 
@@ -181,15 +170,12 @@ async fn test_as_of_datomic_style() {
     let past = graph.as_of(t1);
 
     println!("\n🔍 Querying past state (as_of t1)...");
-    match past.get_node(node_id).await {
-        Ok(node) => {
-            let status = node.properties.get("status").unwrap();
-            println!("  Status was: {:?}", status);
-        }
-        Err(e) => {
-            println!("  Node not found in past: {:?}", e);
-        }
-    }
+    let node = past.get_node(node_id).await.unwrap();
+    assert_eq!(
+        node.properties.get("status"),
+        Some(&PropertyValue::String("draft".into())),
+        "as_of(t1) must show the state before publication"
+    );
 
     // Query: "Show me current state"
     println!("\n🔍 Querying current state...");

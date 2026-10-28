@@ -125,7 +125,8 @@ class HnswStats(TypedDict):
 
 class GcAutoStats(TypedDict):
     interval_secs: int
-    cutoff_timestamp: int
+    cutoff_timestamp: int  # logical clock; 2**64-1 = no logical limit
+    min_age_ms: int | None
     min_versions_to_keep: int
     max_nodes_per_cycle: int
     dry_run: bool
@@ -143,6 +144,7 @@ class GcStats(TypedDict):
     auto_running: bool
     auto: GcAutoStats | None
     last_run: GcRunStats | None
+    horizon: int  # logical ts; 0 = GC never removed anything
 
 class Stats(TypedDict):
     graph: GraphStats
@@ -376,6 +378,9 @@ class Graph:
     # ── Lifecycle ───────────────────────────────────────────────────
     def storage_engine(self) -> str: ...
     def checkpoint(self) -> None: ...
+    # Logical clock (MVCC timestamps), not Unix time.
+    def last_commit_timestamp(self) -> int: ...
+    def gc_horizon(self) -> int: ...
     def close(self) -> None: ...
     def __enter__(self) -> "Graph": ...
     def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool: ...

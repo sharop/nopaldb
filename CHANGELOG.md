@@ -25,6 +25,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   formato del WAL no cambia: un WAL pendiente de 0.9.4 se reproduce bien.
 - **Borrar una arista cierra su versión en el mismo lote atómico** que el
   registro y la adyacencia; antes eran dos escrituras.
+- **GC: `GCConfig::older_than_ms/hours/days` y `Graph::gc_default` borraban
+  toda la historia cerrada** (#310). Comparaban milisegundos Unix con los
+  timestamps lógicos de las versiones. Ahora la edad se traduce al reloj
+  lógico con marcas reloj-de-pared → lógico que la base guarda (a lo sumo una
+  por segundo); la traducción es conservadora: solo se borra lo que la base
+  puede probar que se cerró hace al menos esa edad. **En una base escrita por
+  ≤ 0.9.4 el GC por edad no borra nada hasta que pase esa edad desde la
+  primera escritura con esta versión.**
+- **`Graph::get_node_at` y `as_of(ts)` ya no devuelven el estado actual**
+  cuando no hay versión en `ts` (#311): un nodo que no existía entonces da
+  `NodeNotFound`; uno sin historia (escrito con `add_node` directo) o un `ts`
+  bajo el horizonte del GC da el error nuevo `NopalError::HistoryUnavailable`.
+  `GraphSnapshot::get_nodes` solo omite los `NodeNotFound`.
+  `get_class_nodes_at` (reasoner) ya no incluye clases que aún no existían.
+
+### Added
+- `Graph::last_commit_timestamp()` (Rust y Python, #311): el timestamp
+  lógico de la última escritura aplicada, el que se pasa a
+  `as_of`/`get_node_at`. No lo mueven `begin_transaction`, los rollbacks ni
+  los commits vacíos.
+- `Graph::gc_horizon()` (Rust y Python; también en `stats().gc.horizon` /
+  `get_stats()["gc"]["horizon"]`, #310): hasta dónde recolectó el GC,
+  persistido.
+- `GCConfig::before_timestamp(ts)` para cortes lógicos explícitos.
+
+### Changed
+- **Incompatible: `GCConfig` tiene un campo nuevo, `min_age_ms`** (#310). Un
+  literal que nombre todos los campos sin `..Default::default()` deja de
+  compilar; también `GcAutoSummary` y `GcSection` ganan campos.
+  `older_than_*` deja `cutoff_timestamp = u64::MAX` y pone `min_age_ms`.
+- **`get_node_at` / `as_of` devuelven errores** donde antes devolvían el nodo
+  actual (#311).
 
 ## [0.9.4] - 2026-10-27
 

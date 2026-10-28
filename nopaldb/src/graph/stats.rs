@@ -265,13 +265,19 @@ pub struct GcSection {
     pub auto: Option<GcAutoSummary>,
     /// Último ciclo (manual o automático); `None` si no hubo ninguno.
     pub last_run: Option<GcRun>,
+    /// Horizonte persistido del GC (`Graph::gc_horizon`): timestamp lógico
+    /// por debajo del cual la historia pudo recolectarse; 0 = nunca.
+    pub horizon: u64,
 }
 
 /// `AutoGcConfig` aplanada.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GcAutoSummary {
     pub interval_secs: u64,
+    /// Corte lógico (`GCConfig::cutoff_timestamp`; `u64::MAX` = sin límite).
     pub cutoff_timestamp: u64,
+    /// Antigüedad mínima de pared en ms (`GCConfig::min_age_ms`).
+    pub min_age_ms: Option<u64>,
     pub min_versions_to_keep: usize,
     pub max_nodes_per_cycle: usize,
     pub dry_run: bool,
@@ -283,6 +289,7 @@ impl From<&AutoGcConfig> for GcAutoSummary {
         Self {
             interval_secs: c.interval_secs,
             cutoff_timestamp: c.gc_config.cutoff_timestamp,
+            min_age_ms: c.gc_config.min_age_ms,
             min_versions_to_keep: c.gc_config.min_versions_to_keep,
             max_nodes_per_cycle: c.gc_config.max_nodes_per_cycle,
             dry_run: c.gc_config.dry_run,
@@ -389,9 +396,10 @@ pub fn render(r: &StatsReport) -> String {
     out.push_str(&format!("\nGC: automático {}", if r.gc.auto_running { "corriendo" } else { "parado" }));
     if let Some(a) = &r.gc.auto {
         out.push_str(&format!(
-            " (cada {} s, cutoff {}, conserva {} versiones, máx {} nodos/ciclo{}{})",
+            " (cada {} s, cutoff {}{}, conserva {} versiones, máx {} nodos/ciclo{}{})",
             a.interval_secs,
-            a.cutoff_timestamp,
+            if a.cutoff_timestamp == u64::MAX { "sin límite lógico".to_string() } else { a.cutoff_timestamp.to_string() },
+            a.min_age_ms.map(|ms| format!(", edad ≥ {ms} ms")).unwrap_or_default(),
             a.min_versions_to_keep,
             a.max_nodes_per_cycle,
             if a.dry_run { ", dry run" } else { "" },
@@ -410,6 +418,12 @@ pub fn render(r: &StatsReport) -> String {
             run.duration_ms
         )),
         None => out.push_str("  ningún ciclo todavía\n"),
+    }
+    if r.gc.horizon > 0 {
+        out.push_str(&format!(
+            "  horizonte: ts lógico {} (historia anterior posiblemente recolectada)\n",
+            r.gc.horizon
+        ));
     }
     out
 }

@@ -162,6 +162,7 @@ async fn gc_preserves_versions_readable_by_open_snapshots() -> nopaldb::Result<(
     let stats = graph
         .gc(GCConfig {
             cutoff_timestamp: u64::MAX,
+            min_age_ms: None,
             min_versions_to_keep: 1,
             max_nodes_per_cycle: 0,
             dry_run: false,
@@ -203,6 +204,7 @@ async fn gc_concurrent_with_commits_keeps_chain_consistent() -> nopaldb::Result<
             let _ = gc_graph
                 .gc(GCConfig {
                     cutoff_timestamp: u64::MAX,
+                    min_age_ms: None,
                     min_versions_to_keep: 1,
                     max_nodes_per_cycle: 0,
                     dry_run: false,
