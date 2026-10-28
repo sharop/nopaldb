@@ -286,6 +286,75 @@ pub(crate) mod v2 {
         Some(NodeId::from_bytes(key[1..17].try_into().ok()?))
     }
 
+    /// Discriminador del suelo de historia de un NODO (0.10.1): `f` + uuid16
+    /// → u64 BE. Antes de ese timestamp lógico la historia del nodo no se
+    /// conoce (la adopción de bases anteriores al versionado total le dio su
+    /// primera versión en ese ts, o cerró en él una cadena que quedó abierta).
+    ///
+    /// Vive en `history` con un tag propio, y no como campo de
+    /// `VersionedNode` ni en un keyspace nuevo: `VersionedNode` es
+    /// MessagePack posicional (un campo más cambia lo que lee un binario
+    /// anterior), y un keyspace nuevo no lo copiaría el `copy_database` de
+    /// 0.10.0. Ningún lector de 0.10.0 recorre `history` entero en runtime
+    /// (el GC va por `l|`, la exportación por `v|`); el único recorrido
+    /// completo es la verificación de la migración de layout v1→v2, que
+    /// corre antes de que exista ningún suelo.
+    pub(crate) const HISTORY_NODE_FLOOR_TAG: u8 = b'f';
+    /// Discriminador del suelo de historia de una ARISTA: `e` + uuid16 → u64
+    /// BE. Mismo keyspace y mismas razones que [`HISTORY_NODE_FLOOR_TAG`];
+    /// el tag distinto evita que un nodo y una arista con el mismo uuid
+    /// compartan suelo.
+    pub(crate) const HISTORY_EDGE_FLOOR_TAG: u8 = b'e';
+
+    /// Discriminador de la marca de NACIMIENTO de un nodo (0.10.1): `b` +
+    /// uuid16 → u64 BE. La escribe el `BulkLoader` para un nodo nuevo en
+    /// lugar de copiar sus datos en una v1: el nodo sin cadena con marca
+    /// tiene UNA versión implícita, su registro actual, válida desde la
+    /// marca. Mismo keyspace y mismas razones que el suelo.
+    pub(crate) const HISTORY_NODE_BIRTH_TAG: u8 = b'b';
+    /// Marca de nacimiento de una arista: `a` + uuid16 → u64 BE.
+    pub(crate) const HISTORY_EDGE_BIRTH_TAG: u8 = b'a';
+
+    /// Marca de nacimiento de un nodo: `b` + uuid16 (17 bytes).
+    pub(crate) fn history_node_birth_key(id: NodeId) -> [u8; 17] {
+        let mut key = [0u8; 17];
+        key[0] = HISTORY_NODE_BIRTH_TAG;
+        key[1..17].copy_from_slice(id.as_bytes());
+        key
+    }
+
+    /// Marca de nacimiento de una arista: `a` + uuid16 (17 bytes).
+    pub(crate) fn history_edge_birth_key(id: EdgeId) -> [u8; 17] {
+        let mut key = [0u8; 17];
+        key[0] = HISTORY_EDGE_BIRTH_TAG;
+        key[1..17].copy_from_slice(id.as_bytes());
+        key
+    }
+
+    /// El uuid de una clave de marca (`b|`/`a|`/`f|`/`e|` + uuid16).
+    pub(crate) fn parse_history_stamp_key(key: &[u8]) -> Option<uuid::Uuid> {
+        if key.len() != 17 {
+            return None;
+        }
+        Some(uuid::Uuid::from_bytes(key[1..17].try_into().ok()?))
+    }
+
+    /// Suelo de historia de un nodo: `f` + uuid16 (17 bytes).
+    pub(crate) fn history_node_floor_key(id: NodeId) -> [u8; 17] {
+        let mut key = [0u8; 17];
+        key[0] = HISTORY_NODE_FLOOR_TAG;
+        key[1..17].copy_from_slice(id.as_bytes());
+        key
+    }
+
+    /// Suelo de historia de una arista: `e` + uuid16 (17 bytes).
+    pub(crate) fn history_edge_floor_key(id: EdgeId) -> [u8; 17] {
+        let mut key = [0u8; 17];
+        key[0] = HISTORY_EDGE_FLOOR_TAG;
+        key[1..17].copy_from_slice(id.as_bytes());
+        key
+    }
+
     // ─── Keyspace `adjacency`: contrato de 53 bytes ─────────────────────────
     //
     // `O|{node16}|{etype4 BE}|{other16}|{edge16}` y espejo `I|...`:

@@ -10,20 +10,27 @@
 // commit. El estado pre-transaccional del nodo directo NO se materializa
 // retroactivamente en la historia — la cadena nace en el primer commit que
 // toca el nodo (saneo lazy), igual que en el redo del WAL.
+//
+// Desde 0.10.1 `graph.add_node()` directo SÍ versiona (v1 en su propio ts),
+// así que el registro sin cadena del issue solo se fabrica con la primitiva
+// de bajo nivel `Storage::insert_node` (o lo deja una base ≤ 0.10.0 antes
+// de su adopción): los dos primeros tests la usan para seguir cubriendo
+// #60; los dos últimos pinnean la cadena nueva del `add_node` directo.
 
 use nopaldb::{Graph, Node, PropertyValue};
 
-/// Caso 1 del issue: add_node directo → update transaccional → commit Ok,
+/// Caso 1 del issue: registro sin cadena → update transaccional → commit Ok,
 /// con cadena MVCC coherente y semántica de primera versión pinneada.
 #[tokio::test]
 async fn test_direct_node_then_tx_update_commits() {
     let graph = Graph::in_memory().await.unwrap();
 
-    // Nodo directo: existe en `entities` pero SIN cadena MVCC
+    // Registro sin versión: existe en `entities` pero SIN cadena MVCC
     let node = Node::new("Device")
         .with_property("name", PropertyValue::String("sensor-a".into()))
         .with_property("state", PropertyValue::String("new".into()));
-    let node_id = graph.add_node(node).await.unwrap();
+    let node_id = node.id;
+    graph.storage().insert_node(&node).await.unwrap();
 
     // Antes del fix esto fallaba con NodeNotFound en apply_commit_set
     {
@@ -90,14 +97,15 @@ async fn test_direct_node_then_tx_update_commits() {
     );
 }
 
-/// Corolario del issue: time-travel sobre un nodo directo actualizado.
+/// Corolario del issue: time-travel sobre un registro sin cadena actualizado.
 /// `get_node_at_timestamp` fallaba porque no existía lista de versiones.
 #[tokio::test]
 async fn test_direct_node_time_travel_after_fix() {
     let graph = Graph::in_memory().await.unwrap();
 
     let node = Node::new("Device").with_property("v", PropertyValue::Int(0));
-    let node_id = graph.add_node(node).await.unwrap();
+    let node_id = node.id;
+    graph.storage().insert_node(&node).await.unwrap();
 
     {
         let mut tx = graph.begin_transaction().await.unwrap();
@@ -189,11 +197,12 @@ async fn test_mixed_direct_and_tx_nodes_commit_loop() {
         }
     }
 
-    // Coherencia de cadenas: los directos tienen 5 versiones (la cadena nace
-    // en el primer update), los transaccionales 6 (create + 5 updates).
+    // Coherencia de cadenas: desde 0.10.1 el alta directa también versiona,
+    // así que todos tienen 6 versiones (alta + 5 updates). Hasta 0.10.0 los
+    // directos tenían 5: la cadena nacía en el primer update.
     for (idx, id) in ids.iter().enumerate() {
         let history = graph.history(*id).await.unwrap();
-        let expected = if idx % 2 == 0 { 5 } else { 6 };
+        let expected = 6;
         assert_eq!(
             history.len(),
             expected,
@@ -248,14 +257,15 @@ async fn test_gc_bench_scenario_direct_nodes_tx_versions() {
         }
     }
 
-    // Cadenas coherentes: la cadena nace en el primer update → `versions`
-    // versiones por nodo, current = la última
+    // Cadenas coherentes: el alta directa es v1 (0.10.1; antes la cadena
+    // nacía en el primer update) → `versions + 1` versiones por nodo,
+    // current = la última
     for id in &ids {
         let history = graph.history(*id).await.unwrap();
-        assert_eq!(history.len(), versions);
+        assert_eq!(history.len(), versions + 1);
         assert_eq!(
             graph.get_current_version(*id).await.unwrap() as usize,
-            versions
+            versions + 1
         );
         assert_eq!(
             history[0].node_data.properties.get("v"),

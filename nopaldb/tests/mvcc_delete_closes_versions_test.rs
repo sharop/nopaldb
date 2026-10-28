@@ -132,12 +132,15 @@ async fn borrado_por_clave_cierra_nodo_y_aristas() {
     assert_cerrado(&graph, a, &aristas).await;
 }
 
-/// Un nodo sin cadena MVCC (alta directa) se borra sin error y sin historia
-/// que cerrar; su arista versionada sí se cierra.
+/// Un nodo sin cadena MVCC se borra sin error y sin historia que cerrar; su
+/// arista versionada sí se cierra. Desde 0.10.1 el alta directa versiona, así
+/// que el registro sin cadena se fabrica con la primitiva de bajo nivel
+/// `Storage::insert_node` (lo que dejaba `add_node` en ≤ 0.10.0).
 #[tokio::test]
 async fn borrar_nodo_sin_cadena_no_falla() {
     let graph = Graph::in_memory().await.unwrap();
-    let a = graph.add_node(planta(0x1, "nopal")).await.unwrap();
+    let a = nid(0x1);
+    graph.storage().insert_node(&planta(0x1, "nopal")).await.unwrap();
     let b = graph.add_node(planta(0x2, "maguey")).await.unwrap();
     let e = graph.add_edge(Edge::new(a, b, "acompaña")).await.unwrap();
 
