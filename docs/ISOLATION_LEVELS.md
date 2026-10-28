@@ -148,7 +148,7 @@ rechaza el commit si el conjunto leído cambió.
 ```toml
 # Cargo.toml
 [dependencies]
-nopaldb = { version = "0.9", features = ["full-isolation"] }
+nopaldb = { version = "0.10", features = ["full-isolation"] }
 ```
 
 ### Uso

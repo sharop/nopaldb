@@ -642,10 +642,14 @@ find p.name from (p:Person) limit 10 at timestamp 42
 with commits), not Unix time. **NQL does not apply the clause yet.** Since
 0.9.4 a query with `at timestamp` is a named error (until 0.9.3 it read the
 current state with no warning, #298). Point-in-time reads are
-the Rust API: `graph.get_node_at_strict(id, ts)` reads the version of a node
-visible at `ts` (an error if there is none); `graph.get_node_at(id, ts)` and
-the snapshot `graph.as_of(ts)` fall back to the current node when no version
-is found. Python has no time-travel API.
+the Rust API: `graph.get_node_at(id, ts)` and the snapshot `graph.as_of(ts)`
+read the version of a node valid at `ts`. Since 0.10 they never return the
+current state instead: a node that did not exist at `ts` (created later or
+already deleted) is `NodeNotFound`, and a node with no history (written with
+direct `add_node`) or a `ts` below the GC horizon is `HistoryUnavailable`.
+`graph.last_commit_timestamp()` gives the timestamp of the latest write (Rust
+and Python) and `graph.gc_horizon()` how far the GC collected. Python has no
+point-in-time read yet.
 
 ---
 

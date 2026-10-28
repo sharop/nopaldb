@@ -24,7 +24,7 @@ logs; the `log::info!` lines still exist for whoever reads them.
 | `recovery` | `wal_records_read`, `operations_replayed`, `uncommitted_txs_discarded`, `crash_recovery`, `adjacency_rebuilt`, `open_ms` (`storage`, `wal_replay`, `adjacency`, `indexes`, `total`) | what did the last open do and how long each phase took |
 | `indexes`  | list of `name`, `label`, `property`, `type`, `size`, `analyzer` | which user indexes are loaded, how full, tokenized how |
 | `hnsw`     | list of `model`, `size`, `tombstones`, `dimension`, `needs_rebuild`, `persisted`, `loaded_from_disk_ms` | state of each vector index in cache |
-| `gc`       | `auto_running`, `auto` (config), `last_run` (`unix_ms`, `nodes_scanned`, `versions_removed`, `bytes_freed`, `duration_ms`, `dry_run`) | is MVCC garbage collection running, when did it last run |
+| `gc`       | `auto_running`, `auto` (config, with `min_age_ms`), `last_run` (`unix_ms`, `nodes_scanned`, `versions_removed`, `bytes_freed`, `duration_ms`, `dry_run`), `horizon` | is MVCC garbage collection running, when did it last run, how far back history is complete (`horizon`, persisted; also `gc_horizon()`) |
 
 `recovery` is filled once, by the open that created the handle; in memory it
 is all zeros. Everything else is read live and costs nothing: counters that
