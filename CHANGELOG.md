@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.10.0] - unreleased
+## [0.10.0] - 2026-10-28
 
 Historia MVCC correcta y GC seguro (#313, #314, #315). Borrar un nodo cierra
 su historia y la de sus aristas; el redo del WAL conserva los timestamps del
