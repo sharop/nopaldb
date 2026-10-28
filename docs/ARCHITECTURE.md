@@ -114,18 +114,23 @@ VersionedNode {
 ### Time-travel
 
 ```rust
+// El timestamp es del reloj lógico: el de la última escritura, por ejemplo.
+let timestamp = graph.last_commit_timestamp();
+
 // Snapshot Datomic-style
 let snapshot = graph.as_of(timestamp);
 let node = snapshot.get_node(node_id).await?;
 
-// Consulta directa
+// Consulta directa. Desde 0.10 no cae al estado actual: NodeNotFound si el
+// nodo no existía en `timestamp`, HistoryUnavailable si no tiene historia o
+// `timestamp` está bajo el horizonte del GC (`graph.gc_horizon()`).
 let node = graph.get_node_at(node_id, timestamp).await?;
 
 // Historial completo
 let history = graph.history(node_id).await?;
 ```
 
-Las aristas tienen cadena MVCC completa via `VersionedEdge` (tree `"versioned_edges"`). `get_edges_of_type_at(edge_type, timestamp)` consulta el historial; `graph.edge_history(id)` retorna todas las versiones.
+Las aristas tienen versión MVCC via `VersionedEdge` (tree `"versioned_edges"`): se abre al crearlas y se cierra al borrarlas (también en cascada al borrar un nodo, desde 0.10). Reescribir una arista con el mismo id todavía reemplaza su versión en lugar de encadenar otra. `get_edges_of_type_at(edge_type, timestamp)` consulta el historial; `graph.edge_history(id)` retorna todas las versiones.
 
 ### Niveles de aislamiento (feature `full-isolation`)
 

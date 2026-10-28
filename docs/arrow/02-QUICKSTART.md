@@ -8,7 +8,7 @@ Este tutorial te enseña a usar Arrow en NopalDB en menos de 5 minutos.
 ```toml
 # Cargo.toml
 [dependencies]
-nopaldb = { version = "0.9", features = ["analytics"] }
+nopaldb = { version = "0.10", features = ["analytics"] }
 tokio = { version = "1", features = ["full"] }
 arrow = "59"   # solo si lees columnas (traits AsArray / Array)
 ```
@@ -339,11 +339,11 @@ println!("📸 Snapshot saved: {}", filename);
 ```toml
 # ❌ INCORRECTO
 [dependencies]
-nopaldb = "0.9"
+nopaldb = "0.10"
 
 # ✅ CORRECTO
 [dependencies]
-nopaldb = { version = "0.9", features = ["analytics"] }
+nopaldb = { version = "0.10", features = ["analytics"] }
 ```
 
 ### Error 2: Grafo vacío

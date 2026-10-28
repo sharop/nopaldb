@@ -92,7 +92,7 @@ El deadlock y el timeout se devuelven **en la operación que pide el lock**
 Deadlock detection requiere la feature **`full-isolation`**:
 ```toml
 [dependencies]
-nopaldb = { version = "0.9", features = ["full-isolation"] }
+nopaldb = { version = "0.10", features = ["full-isolation"] }
 ```
 
 ### Timeout

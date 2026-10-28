@@ -51,6 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reemplaza su versión en lugar de encadenar otra.
 
 ### Added
+- **Guía de actualización a 0.10** desde 0.9.4
+  ([docs/UPGRADING_0.10.md](docs/UPGRADING_0.10.md),
+  [docs/es/ACTUALIZAR_0.10.md](docs/es/ACTUALIZAR_0.10.md)): los cambios
+  incompatibles de `GCConfig` y de `get_node_at`/`as_of`, el arranque del GC
+  por antigüedad, la historia que se cierra al borrar y el `update`
+  transaccional. Ejemplos de instalación en `"0.10"`; referencia NQL (time
+  travel), `DURABILITY`, `OPERATIONS`, `ARCHITECTURE` y el cheat sheet al día.
 - `Graph::last_commit_timestamp()` (Rust y Python, #311): el timestamp
   lógico de la última escritura aplicada, el que se pasa a
   `as_of`/`get_node_at`. No lo mueven `begin_transaction`, los rollbacks ni

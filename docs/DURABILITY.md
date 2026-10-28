@@ -73,10 +73,13 @@ The same guarantees, by call:
 |---|---|---|---|
 | `graph.begin_transaction()` … `tx.add_node(...)` / `tx.add_edge(...)` … `tx.commit()` | yes: the whole write-set is fsynced in the WAL before `commit()` returns | yes | reopen: committed transactions are replayed |
 | `graph.upsert(...)`, `graph.upsert_many(...)` | yes: each upsert (each chunk of 1 024 for `upsert_many`) is a transaction | yes | reopen; re-running the same upserts is a no-op for what already landed |
+| `graph.execute_nql("add …" / "update … set …" / "delete …")` | yes: each statement is one transaction, fsynced in the WAL before it returns. `update … set` only since 0.10; until 0.9.4 it wrote straight to the engine and a crash before the next checkpoint could lose it (#312) | yes | reopen: committed statements are replayed |
 | `graph.delete(label, key, value)` (direct write: the delete itself does not go through a transaction) | to process death, immediately; to power loss after the next syncer tick (`flush_every_ms`), `checkpoint()` or `close()` | up to the last sync interval may be lost | reopen: acknowledged direct writes are replayed |
 | `graph.bulk_loader(...)` … `loader.finish()` | when `finish()` returns: it ends with a durable engine checkpoint | yes, once `finish()` returned; a load killed before `finish()` keeps the batches the engine already made durable and loses the rest (bulk batches do not go through the WAL) | rerun the load; the bulk path is not idempotent by key, so start from an empty directory or use `upsert_many` for reruns |
 | `graph.checkpoint()` | n/a | makes everything above power-loss safe and empties the WAL | shortens the next open |
 | `graph.close()` | n/a | same as `checkpoint()`, then releases the directory | a database not closed is reopened by `Graph.open()` with automatic replay; no manual step |
+
+Replay re-applies every write with the timestamp recorded in the WAL (since 0.10 also edge inserts and deletes, edge property rewrites and node deletes; until 0.9.4 they got new timestamps, so the history rebuilt after a crash had other dates). A node delete closes the history of the node and of its cascade-deleted edges atomically with the delete.
 
 Recovering an interrupted load is always the same action: `Graph.open()` the directory again. Replay runs before `open` returns, torn WAL tails are discarded, adjacency is rebuilt from the edges, and the indexes are rebuilt from their catalog. Nothing acknowledged as durable above is lost; nothing needs to be repaired by hand.
 
