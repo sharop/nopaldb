@@ -107,9 +107,13 @@ async fn el_bulk_marca_el_nacimiento_sin_copiar() {
     assert_eq!(storage.get_versioned_edges_of_type_at("acompaña", te).await.unwrap().len(), 1);
     assert!(storage.get_versioned_edges_of_type_at("acompaña", te - 1).await.unwrap().is_empty());
 
-    // La exportación de historia también la ve.
-    let batch = graph.history_to_arrow().await.unwrap();
-    assert_eq!(batch.num_rows(), 2);
+    // La exportación de historia también la ve (`history_to_arrow` es de
+    // la feature `analytics`).
+    #[cfg(feature = "analytics")]
+    {
+        let batch = graph.history_to_arrow().await.unwrap();
+        assert_eq!(batch.num_rows(), 2);
+    }
 }
 
 /// Cada escritor materializa la v1 implícita desde el registro, en el mismo
