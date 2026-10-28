@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Borrar un nodo cierra su historia MVCC** (#309). Su versión vigente y la
+  de cada arista borrada en cascada reciben `valid_to` = timestamp del
+  borrado, en el mismo lote atómico que el borrado, por todos los caminos
+  (`delete_node`, transacción, NQL `delete`, `delete_node_by_key` / Python
+  `delete` y el redo del WAL). Antes la historia quedaba abierta y
+  `as_of`/`get_node_at` posteriores seguían mostrando el nodo y sus aristas.
+  El pasado sigue legible, y volver a crear un nodo con el mismo id continúa
+  su cadena (v2…) sin pisar la anterior. Los nodos borrados antes de esta
+  versión conservan su historia abierta.
+- **El redo del WAL usa el timestamp registrado del commit** (#309) para
+  altas y bajas de aristas y borrados de nodos. Antes tomaba timestamps
+  nuevos y, tras un crash, la historia reconstruida tenía otras fechas. El
+  formato del WAL no cambia: un WAL pendiente de 0.9.4 se reproduce bien.
+- **Borrar una arista cierra su versión en el mismo lote atómico** que el
+  registro y la adyacencia; antes eran dos escrituras.
+
 ## [0.9.4] - 2026-10-27
 
 Arreglos de resultados silenciosos encontrados al revisar la documentación

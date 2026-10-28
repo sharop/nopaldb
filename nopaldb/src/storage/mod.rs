@@ -4,7 +4,7 @@ pub mod backend;
 
 use std::sync::Arc;
 use std::path::Path;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use crate::error::{NopalError, Result};
 use crate::types::{Node, Edge, NodeId, EdgeId, PropertyValue};
 use crate::mvcc::{VersionedNode, VersionedEdge};
@@ -653,6 +653,9 @@ impl Storage {
     }
 
     /// Elimina un nodo
+    ///
+    /// Primitiva de bajo nivel: no toca la historia MVCC. El borrado del
+    /// grafo usa [`Self::delete_node_at`], que además cierra la versión.
     pub async fn delete_node(&self, id: NodeId) -> Result<()> {
         let key = keys::v2::node_key_v2(id);
 
@@ -672,6 +675,62 @@ impl Storage {
         }
 
         Ok(())
+    }
+
+    /// Borra un nodo cerrando su versión MVCC vigente con `timestamp`, en
+    /// UN `apply_multi`: el registro (`entities`), su entrada del índice de
+    /// etiquetas y la versión reescrita con `valid_to = timestamp`. Un crash
+    /// no puede dejar el nodo borrado con la historia abierta (ni al revés):
+    /// o se aplica todo, o el nodo sigue vivo y el redo del WAL repite el
+    /// borrado.
+    ///
+    /// La historia se CONSERVA (`v|`, `l|`): el pasado sigue legible con
+    /// `as_of`/`get_node_at_strict`. El puntero current `c|` sigue apuntando
+    /// a la última versión, ahora cerrada: `c|` significa "última versión
+    /// de la cadena", no "versión viva" — la vida la da `valid_to`. Se
+    /// descartó borrarlo (como hace la arista con su current) porque el
+    /// commit y el redo usan `c|` para encadenar: sin él, recrear el nodo
+    /// con el mismo id empezaría otra vez en v1 y PISARÍA la historia, y el
+    /// redo perdería la guarda de idempotencia por timestamp.
+    ///
+    /// Un nodo sin cadena (alta directa con `add_node`, aún sin versionar)
+    /// se borra igual, sin nada que cerrar. Una versión ya cerrada no se
+    /// reabre ni se re-fecha.
+    pub async fn delete_node_at(&self, id: NodeId, timestamp: u64) -> Result<()> {
+        let key = keys::v2::node_key_v2(id);
+        let Some(value) = self.entities_ks.get(&key)? else {
+            return Err(NopalError::NodeNotFound(id.to_string()));
+        };
+        let label = deserialize::<Node>(&value).map(|n| n.label).ok();
+
+        let mut entities_batch = kv::WriteBatch::default();
+        entities_batch.remove(key);
+        let mut label_batch = kv::WriteBatch::default();
+        if let Some(label) = label {
+            label_batch.remove(label_index_entry_key(&label, id));
+        }
+        let mut history_batch = kv::WriteBatch::default();
+        if let Some(raw) = self.history_ks.get(&keys::v2::history_current_key(id))? {
+            let version = u64::from_le_bytes(
+                raw.as_slice()
+                    .try_into()
+                    .map_err(|_| NopalError::Custom("Invalid version format".into()))?,
+            );
+            // Un puntero sin versión (GC agresivo) no impide el borrado.
+            if let Some(v) = self.history_ks.get(&keys::v2::history_version_key(id, version))? {
+                let mut current: VersionedNode = deserialize(&v)?;
+                if current.valid_to.is_none() {
+                    current.invalidate(timestamp);
+                    history_batch.insert(keys::v2::history_version_key(id, version), serialize(&current)?);
+                }
+            }
+        }
+
+        self.engine.apply_multi(vec![
+            (ENTITIES_TREE.to_string(), entities_batch),
+            (LABEL_IDX_TREE.to_string(), label_batch),
+            (HISTORY_TREE.to_string(), history_batch),
+        ])
     }
 
     /// Inserta una arista
@@ -909,7 +968,30 @@ impl Storage {
 
     /// Elimina una arista Y sus dos claves de adyacencia — el espejo exacto
     /// de `insert_edge_with_adjacency`: 3 removes en un `apply_multi`.
+    ///
+    /// No toca la historia MVCC de la arista; el borrado del grafo usa
+    /// [`Self::remove_edge_closing_version`], que la cierra en el mismo lote.
     pub async fn remove_edge_with_adjacency(&self, edge: &Edge, etype_id: u32) -> Result<()> {
+        self.remove_edge_batches(edge, etype_id, None)
+    }
+
+    /// Como [`Self::remove_edge_with_adjacency`], pero cerrando ADEMÁS la
+    /// versión MVCC vigente de la arista (`valid_to = timestamp`, fuera el
+    /// puntero current) en el MISMO `apply_multi`. Antes el cierre
+    /// (`mark_edge_deleted`) era un commit aparte: un crash entre los dos
+    /// dejaba la arista viva con su historia ya cerrada, y el time-travel
+    /// la daba por borrada mientras el grafo actual la seguía mostrando.
+    /// Una arista sin versión (anterior al versionado) se borra igual.
+    pub async fn remove_edge_closing_version(
+        &self,
+        edge: &Edge,
+        etype_id: u32,
+        timestamp: u64,
+    ) -> Result<()> {
+        self.remove_edge_batches(edge, etype_id, Some(timestamp))
+    }
+
+    fn remove_edge_batches(&self, edge: &Edge, etype_id: u32, close_at: Option<u64>) -> Result<()> {
         let mut edges_batch = kv::WriteBatch::default();
         edges_batch.remove(edge.id.to_string().as_bytes());
 
@@ -917,10 +999,38 @@ impl Storage {
         adj_batch.remove(keys::v2::adj_out_key(edge.source, etype_id, edge.target, edge.id));
         adj_batch.remove(keys::v2::adj_in_key(edge.source, etype_id, edge.target, edge.id));
 
-        self.engine.apply_multi(vec![
+        let mut batches = vec![
             (EDGES_TREE.to_string(), edges_batch),
             (ADJACENCY_TREE.to_string(), adj_batch),
-        ])
+        ];
+        if let Some(timestamp) = close_at {
+            let mut versions_batch = kv::WriteBatch::default();
+            let mut current_batch = kv::WriteBatch::default();
+            self.stage_edge_version_close(edge.id, timestamp, &mut versions_batch, &mut current_batch)?;
+            batches.push((VERSIONED_EDGES_TREE.to_string(), versions_batch));
+            batches.push((VERSIONED_EDGES_CURRENT_TREE.to_string(), current_batch));
+        }
+        self.engine.apply_multi(batches)
+    }
+
+    /// Añade a los lotes el cierre de la versión vigente de una arista:
+    /// la versión reescrita con `valid_to = timestamp` y el borrado de su
+    /// puntero current. Sin puntero current (arista anterior al versionado,
+    /// o ya cerrada por un intento previo) no añade nada: idempotente.
+    fn stage_edge_version_close(
+        &self,
+        id: EdgeId,
+        timestamp: u64,
+        versions_batch: &mut kv::WriteBatch,
+        current_batch: &mut kv::WriteBatch,
+    ) -> Result<()> {
+        let Some(value) = self.versioned_edges_current_ks.get(id.to_string().as_bytes())? else {
+            return Ok(());
+        };
+        let closed = deserialize::<VersionedEdge>(&value)?.with_valid_to(timestamp);
+        versions_batch.insert(keys::edge_version_key(id, closed.version).as_bytes(), serialize(&closed)?);
+        current_batch.remove(id.to_string().as_bytes());
+        Ok(())
     }
 
     /// Adyacencia saliente de un nodo leída de DISCO: `(etype, target,
@@ -977,10 +1087,17 @@ impl Storage {
     /// nodo en disco. Idempotente: cada chunk re-escanea desde el prefijo y
     /// las claves ya purgadas no reaparecen — un crash intermedio deja
     /// aristas completas de menos, jamás pares rotos.
+    ///
+    /// En el mismo lote se CIERRA la versión MVCC vigente de cada arista
+    /// purgada con `close_at` (el timestamp del borrado del nodo): una
+    /// arista purgada nunca queda con su historia abierta, y el time-travel
+    /// posterior al borrado no la ve viva. Antes la purga no tocaba la
+    /// historia y `as_of` mostraba las aristas del nodo borrado para siempre.
     pub(crate) async fn purge_node_adjacency_chunk(
         &self,
         node: NodeId,
         max_edges: usize,
+        close_at: u64,
     ) -> Result<Vec<(bool, u32, NodeId, EdgeId)>> {
         debug_assert!(max_edges > 0);
         // (saliente?, etype, otro, edge)
@@ -1007,6 +1124,11 @@ impl Storage {
 
         let mut edges_batch = kv::WriteBatch::default();
         let mut adj_batch = kv::WriteBatch::default();
+        let mut versions_batch = kv::WriteBatch::default();
+        let mut current_batch = kv::WriteBatch::default();
+        // Un auto-lazo aparece dos veces (O e I del mismo nodo): su versión
+        // se cierra una sola vez.
+        let mut closed: HashSet<EdgeId> = HashSet::with_capacity(entries.len());
         for &(is_out, etype, other, edge) in &entries {
             edges_batch.remove(edge.to_string().as_bytes());
             // Los constructores reciben SIEMPRE (src, etype, tgt, edge) y
@@ -1014,10 +1136,15 @@ impl Storage {
             let (src, tgt) = if is_out { (node, other) } else { (other, node) };
             adj_batch.remove(keys::v2::adj_out_key(src, etype, tgt, edge));
             adj_batch.remove(keys::v2::adj_in_key(src, etype, tgt, edge));
+            if closed.insert(edge) {
+                self.stage_edge_version_close(edge, close_at, &mut versions_batch, &mut current_batch)?;
+            }
         }
         self.engine.apply_multi(vec![
             (EDGES_TREE.to_string(), edges_batch),
             (ADJACENCY_TREE.to_string(), adj_batch),
+            (VERSIONED_EDGES_TREE.to_string(), versions_batch),
+            (VERSIONED_EDGES_CURRENT_TREE.to_string(), current_batch),
         ])?;
 
         Ok(entries)
@@ -1985,6 +2112,11 @@ impl Storage {
 
             if version_list.is_empty() {
                 batch.remove(versions_key);
+                // Sin versiones, el puntero current colgaría: el siguiente
+                // commit del mismo id lo seguiría y fallaría al leer la
+                // versión. Solo pasa con un nodo borrado (su última versión
+                // está cerrada) y `min_versions_to_keep = 0`.
+                batch.remove(keys::v2::history_current_key(node_id));
             } else {
                 batch.insert(versions_key, serialize(&version_list)?);
             }

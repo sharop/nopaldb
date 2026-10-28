@@ -1403,7 +1403,9 @@ impl Graph {
             WriteOp::AddEdgeAt { edge, timestamp } => {
                 self.apply_add_edge_at(edge, timestamp).await.map(|_| ())
             }
-            WriteOp::DeleteNode { id } => self.apply_delete_node(id).await,
+            WriteOp::DeleteNode { id, timestamp } => {
+                self.apply_delete_node(id, timestamp).await
+            }
             WriteOp::DeleteEdgeAt { id, timestamp } => {
                 self.apply_delete_edge_at(id, timestamp).await
             }
@@ -1928,8 +1930,20 @@ impl Graph {
 
 
     /// Elimina un nodo (y sus aristas)
+    ///
+    /// El borrado tiene timestamp MVCC propio, como `delete_edge`: cierra la
+    /// versión vigente del nodo y la de cada arista que cae en cascada, así
+    /// que `as_of` posterior ya no los ve y el anterior sí.
     pub async fn delete_node(&self, id: NodeId) -> Result<()> {
-        self.submit_write(applier::WriteOp::DeleteNode { id }).await
+        let timestamp = self.next_logical_timestamp();
+        self.delete_node_at(id, timestamp).await
+    }
+
+    /// Variante interna: elimina un nodo con timestamp MVCC explícito (el
+    /// redo del WAL reaplica con el timestamp registrado, no con uno nuevo).
+    pub(crate) async fn delete_node_at(&self, id: NodeId, timestamp: u64) -> Result<()> {
+        self.submit_write(applier::WriteOp::DeleteNode { id, timestamp })
+            .await
     }
 
     /// Aplicación física de DeleteNode. Solo el single-writer apply debe llamarla.
@@ -1941,14 +1955,20 @@ impl Graph {
     ///      ESPEJO del otro extremo van en el MISMO batch atómico. O(deg) sí,
     ///      transacción gigante no.
     ///   2. El índice de propiedades del nodo.
-    ///   3. La entidad del nodo AL FINAL (su historia MVCC sigue en layout v1
-    ///      en este commit y no se toca aquí, igual que antes).
+    ///   3. La entidad del nodo AL FINAL, con su versión MVCC cerrada en el
+    ///      mismo lote (`Storage::delete_node_at`).
+    ///
+    /// Todas las versiones se cierran con `timestamp`, el del borrado: el
+    /// del applier en el borrado directo, el de commit en una transacción y
+    /// el registrado en el WAL durante el redo. Cada chunk cierra las
+    /// versiones de SUS aristas en su propio lote, así que un crash
+    /// intermedio no deja aristas borradas con la historia abierta.
     ///
     /// Un crash intermedio deja un nodo VÁLIDO con menos aristas — jamás
     /// adyacencia colgante, pares O/I rotos ni huérfanas del v1 (las claves
     /// del nodo se purgan del keyspace, no quedan "para siempre") — y
     /// re-ejecutar el delete retoma la purga donde quedó.
-    async fn apply_delete_node(&self, id: NodeId) -> Result<()> {
+    async fn apply_delete_node(&self, id: NodeId, timestamp: u64) -> Result<()> {
         // Obtener nodo antes de borrar (si no existe: NodeNotFound, como antes)
         let node = self.get_node(id).await?;
         self.observe_node_delete(&node).await?;
@@ -1961,7 +1981,7 @@ impl Graph {
         loop {
             let purged = self
                 .storage
-                .purge_node_adjacency_chunk(id, DELETE_NODE_CHUNK_EDGES)
+                .purge_node_adjacency_chunk(id, DELETE_NODE_CHUNK_EDGES, timestamp)
                 .await?;
             if purged.is_empty() {
                 break;
@@ -2014,8 +2034,8 @@ impl Graph {
             }
         }
 
-        // 4. La entidad, al final.
-        self.storage.delete_node(id).await?;
+        // 4. La entidad, al final, cerrando su versión en el mismo lote.
+        self.storage.delete_node_at(id, timestamp).await?;
 
         #[cfg(feature = "full-isolation")]
         self.mark_modified(id, self.next_timestamp.load(AtomicOrdering::SeqCst))
@@ -2171,22 +2191,15 @@ impl Graph {
         let source = edge.source;
         let target = edge.target;
 
-        // 2. Cerrar la versión MVCC (valid_to = timestamp).
-        // Solo se tolera EdgeNotFound (aristas antiguas pre-versioning);
-        // cualquier otro error debe abortar la operación.
-        match self.storage.mark_edge_deleted(id, timestamp).await {
-            Ok(()) => {}
-            Err(NopalError::EdgeNotFound(_)) => {
-                log::debug!("mark_edge_deleted: no MVCC record for edge {} (legacy)", id);
-            }
-            Err(e) => return Err(e),
-        }
-
-        // 3. Disco: registro "edges" + ambas claves O/I en UN apply_multi
-        // atómico (espejo exacto del alta). El tipo ya está internado — la
-        // arista entró por el path v2 — así que intern es lookup O(1).
+        // 2-3. Disco: registro "edges" + ambas claves O/I + cierre de la
+        // versión MVCC (valid_to = timestamp) en UN apply_multi atómico
+        // (espejo exacto del alta). Una arista sin versión (anterior al
+        // versionado) se borra igual. El tipo ya está internado — la arista
+        // entró por el path v2 — así que intern es lookup O(1).
         let etype_id = self.storage.intern_edge_type(&edge.edge_type)?;
-        self.storage.remove_edge_with_adjacency(&edge, etype_id).await?;
+        self.storage
+            .remove_edge_closing_version(&edge, etype_id, timestamp)
+            .await?;
 
         // 4. Actualizar índices RAM.
         let mut adj_out = self.adjacency_out.write().await;
@@ -3003,10 +3016,15 @@ impl Graph {
                 // un registro ya superado borraría los valores VIGENTES.
                 let old = self.observe_node_upsert(&node).await?;
                 self.retract_overwritten_index_entries(old.as_ref(), &node).await?;
+                // Versión cerrada = nodo borrado que se recrea: no se
+                // re-fecha el cierre (mismo criterio que `apply_commit_set`).
+                let alive = cur.valid_to.is_none();
                 let mut invalidated = cur.clone();
-                invalidated.invalidate(commit_ts);
+                if alive {
+                    invalidated.invalidate(commit_ts);
+                }
                 let new_version = VersionedNode::new_version(&cur, node.clone(), commit_ts);
-                self.commit_node_atomic(&node, Some(&invalidated), &new_version)
+                self.commit_node_atomic(&node, alive.then_some(&invalidated), &new_version)
                     .await?;
                 self.retire_old_label_entry(old.as_ref(), &node).await?;
                 // Adyacencia + índices de propiedades (el batch no los cubre)
@@ -3078,10 +3096,15 @@ impl Graph {
                     }
                 }
 
+                // Los brazos de borrado y de arista reaplican con el
+                // timestamp REGISTRADO del commit, no con uno nuevo del
+                // reloj: si no, la historia MVCC reconstruida tras un crash
+                // tendría `valid_from`/`valid_to` distintos de los que el
+                // commit ya había mostrado.
                 WalRecord::DeleteNode { node_id, .. } => {
                     // Solo borrar si existe
                     if self.storage.node_exists(node_id).await? {
-                        self.delete_node(node_id).await?;
+                        self.delete_node_at(node_id, commit_ts).await?;
                         replayed += 1;
                     }
                 }
@@ -3096,7 +3119,7 @@ impl Graph {
                         let endpoints_exist = self.storage.node_exists(edge.source).await?
                             && self.storage.node_exists(edge.target).await?;
                         if endpoints_exist {
-                            self.add_edge(edge).await?;
+                            self.add_edge_at(edge, commit_ts).await?;
                             replayed += 1;
                         } else {
                             log::debug!(
@@ -3110,7 +3133,7 @@ impl Graph {
                 WalRecord::DeleteEdge { edge_id, .. } => {
                     // Solo borrar si existe
                     if self.storage.edge_exists(edge_id).await? {
-                        self.delete_edge(edge_id).await?;
+                        self.delete_edge_at(edge_id, commit_ts).await?;
                         replayed += 1;
                     }
                 }
@@ -3751,7 +3774,7 @@ impl Graph {
     ) -> Result<()> {
         // 1. Borrados de nodos
         for (node_id, _node) in &set.deleted_nodes {
-            self.apply_delete_node(*node_id).await?;
+            self.apply_delete_node(*node_id, commit_timestamp).await?;
             #[cfg(feature = "full-isolation")]
             self.mark_modified(*node_id, commit_timestamp).await?;
         }
@@ -3793,17 +3816,27 @@ impl Graph {
                         .storage
                         .get_node_version(node.id, current_version_num)
                         .await?;
+                    // Última versión ya cerrada = el nodo fue borrado y se
+                    // recrea con el mismo id: la cadena continúa (v+1) sin
+                    // re-fechar el cierre del borrado.
+                    let alive = current_version.valid_to.is_none();
                     let mut invalidated_prev = current_version.clone();
-                    invalidated_prev.invalidate(commit_timestamp);
+                    if alive {
+                        invalidated_prev.invalidate(commit_timestamp);
+                    }
                     let new_version = VersionedNode::new_version(
                         &current_version,
                         node.clone(),
                         commit_timestamp,
                     );
                     self.storage
-                        .commit_node_version_atomic(node, Some(&invalidated_prev), &new_version)
+                        .commit_node_version_atomic(
+                            node,
+                            alive.then_some(&invalidated_prev),
+                            &new_version,
+                        )
                         .await?;
-                    true
+                    alive || self.storage.node_exists(node.id).await?
                 }
                 Err(_) => {
                     // Sin cadena: primera versión con el timestamp del commit.

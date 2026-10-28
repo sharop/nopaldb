@@ -60,8 +60,9 @@ pub(crate) enum WriteOp {
     AddNode { node: Node, skip_indexing: bool },
     /// Alta de arista con timestamp MVCC (current + versión + adyacencia).
     AddEdgeAt { edge: Edge, timestamp: u64 },
-    /// Baja de nodo (limpia índices, aristas incidentes y adyacencia).
-    DeleteNode { id: NodeId },
+    /// Baja de nodo con timestamp MVCC (cierra la versión del nodo y la de
+    /// cada arista incidente; limpia índices y adyacencia).
+    DeleteNode { id: NodeId, timestamp: u64 },
     /// Baja de arista con timestamp MVCC (cierra versión + adyacencia).
     DeleteEdgeAt { id: EdgeId, timestamp: u64 },
     /// Alta puntual en el índice de propiedades (usada por NQL UPDATE).
@@ -260,12 +261,9 @@ async fn direct_op_records(
         WriteOp::AddEdgeAt { edge, timestamp } => {
             (*timestamp, WalRecord::InsertEdge { tx_id: 0, edge: edge.clone() })
         }
-        WriteOp::DeleteNode { id } => {
+        WriteOp::DeleteNode { id, timestamp } => {
             let node = graph.storage.get_node(*id).await.ok()?;
-            (
-                graph.next_logical_timestamp(),
-                WalRecord::DeleteNode { tx_id: 0, node_id: *id, node },
-            )
+            (*timestamp, WalRecord::DeleteNode { tx_id: 0, node_id: *id, node })
         }
         WriteOp::DeleteEdgeAt { id, timestamp } => {
             let edge = graph.storage.get_edge(*id).await.ok()?;
