@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.10.4] - unreleased
+## [0.10.4] - 2026-10-29
 
 El esquema del resultado NQL es un contrato (#335): columnas en el orden del
 `find`, nombradas por el alias o el texto de la expresión (`count(*)`, no
