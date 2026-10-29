@@ -632,27 +632,53 @@ export csv with path="./users.csv", header=true
 
 ## Time travel (AT TIMESTAMP)
 
-The grammar accepts `at timestamp <n>` after `limit` and before `export`:
+Since 0.10.2 a query can read the graph as it was at a past moment.
+`at timestamp <ts>` goes after `limit` and before `export`:
 
 ```nql
 find p.name from (p:Person) limit 10 at timestamp 42
+find a.name, b.name from (a:Person)-[k:KNOWS]->(b:Person) where k.since > 2020 at timestamp 42
 ```
 
-`<n>` would be a value of the database's logical clock (a counter that grows
-with commits), not Unix time. **NQL does not apply the clause yet.** Since
-0.9.4 a query with `at timestamp` is a named error (until 0.9.3 it read the
-current state with no warning, #298). Point-in-time reads are
-the Rust API: `graph.get_node_at(id, ts)` and the snapshot `graph.as_of(ts)`
-read the version of a node valid at `ts`. Since 0.10 they never return the
-current state instead: a node that did not exist at `ts` (created or
-bulk-loaded later, or already deleted) is `NodeNotFound`, and a `ts` below
-the node's history floor (data written before 0.10.1 and adopted on the
-first open) or below the GC horizon is `HistoryUnavailable`. Since 0.10.1
-every write leaves history, including direct `add_node`, the BulkLoader and
-the Turtle/OWL import.
-`graph.last_commit_timestamp()` gives the timestamp of the latest write (Rust
-and Python) and `graph.gc_horizon()` how far the GC collected. Python has no
-point-in-time read yet.
+`<ts>` is a value of the database's logical clock, which grows with every
+commit; it is not Unix time. `graph.last_commit_timestamp()` (Rust and
+Python) gives the timestamp of the latest write: keep it next to whatever you
+want to read again later.
+
+The query runs on the graph that was valid at `ts`: every node and edge in
+its version of that moment, nothing created later, and nodes and edges
+deleted later still present. Patterns, `where`, aggregations, `order by`,
+graph algorithms (`degree`, `pagerank`, `community`…), `instanceOf` /
+`subClassOf` and `export` all work on that graph. At the latest commit, or
+later, the answer is the current one. This is also the first point-in-time
+read in Python (`graph.execute_nql(...)`).
+
+What it cannot answer:
+- **`ts` below the GC horizon** (`graph.gc_horizon()`): the garbage collector
+  removed that history. `HistoryUnavailable`.
+- **`ts` below a history floor**: data written without a version before
+  0.10.1 has history only from the floor F set the first time 0.10.1 opened
+  the database ([UPGRADING_0.10.md](../UPGRADING_0.10.md)).
+  `HistoryUnavailable`, which names the entity and F.
+- **Data with no history**: `similar_to`, `hybrid`, `in_community`, the
+  search scores (`score`, `rank`, `text_score`, `vector_score`),
+  `has_embedding` and the path and pattern embedding functions read vectors,
+  full-text and saved communities, which only exist in their current state.
+  They are a named error with `at timestamp`.
+
+**Cost.** Each query reads the whole history and builds the graph at `ts` in
+memory before running: O(all versions) time, and memory for everything valid
+at `ts`. `explain` shows it:
+
+```
+Time travel: graph materialized at timestamp 42 (1200 nodes, 3400 edges), reading the whole history; the plan below runs on that copy
+```
+
+Indexes created with `create index` are not copied: on the past graph the
+query scans. For many reads of single nodes, the Rust API is cheaper:
+`graph.get_node_at(id, ts)` and the snapshot `graph.as_of(ts)`. Until 0.10.1
+`at timestamp` was a named error, and until 0.9.3 it read the current state
+with no warning.
 
 ---
 

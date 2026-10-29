@@ -92,10 +92,11 @@ df = batch.to_pandas()   # zero-copy into Pandas / Polars / PyTorch pipelines
 - **One process per data directory** (embedded file lock). Threads within the
   process run in parallel — the bindings release the GIL during database calls.
 - Use `graph.bulk_loader(batch_size)` for large ingestions.
-- Time travel (reading the graph as of an earlier commit) is a Rust API
-  (`Graph::as_of`, `Graph::get_node_at`, `Graph::history`); Python has no
-  time-travel API. Garbage collection of old versions (`start_auto_gc`) is
-  Rust-only too.
+- Time travel: since 0.10.2 an NQL query reads the graph as of an earlier
+  commit with `at timestamp <ts>`, where `ts` comes from
+  `graph.last_commit_timestamp()`. Each such query rebuilds the past graph
+  from the whole history, so it is for occasional reads. Garbage collection
+  of old versions (`start_auto_gc`) is Rust-only.
 
 ## Links
 

@@ -4,7 +4,7 @@
 
 pub mod parser;
 pub mod executor;
-mod validator;
+pub(crate) mod validator;
 
 // Re-exports
 pub use parser::ast::{Query, Statement};

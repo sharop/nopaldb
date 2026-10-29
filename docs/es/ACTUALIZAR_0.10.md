@@ -172,9 +172,11 @@ más por arista para distinguir una arista nueva de una existente.
   siguen sin escribir versión.** Si sobrescriben un nodo o una arista que
   solo tiene marca de nacimiento o suelo, borran la marca, y esa entidad
   responde `HistoryUnavailable` desde entonces. Usa la API de `Graph`.
-- **`find … at timestamp <n>` de NQL sigue siendo un error con nombre**
-  ([#298](https://github.com/sharop/nopaldb/issues/298)). Las lecturas en un
-  instante son la API de Rust de arriba; Python todavía no tiene ninguna.
+- **`find … at timestamp <n>` de NQL** era un error con nombre hasta 0.10.1.
+  Desde 0.10.2 lee el grafo como era en ese timestamp, también desde Python,
+  salvo las búsquedas vectoriales, de texto completo y de comunidades
+  ([#298](https://github.com/sharop/nopaldb/issues/298),
+  [referencia NQL § Viaje en el tiempo](NQL_REFERENCIA.md#viaje-en-el-tiempo-at-timestamp)).
 
 ## 6. Volver a 0.10.0 o a 0.9.4
 

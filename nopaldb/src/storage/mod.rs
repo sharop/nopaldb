@@ -178,6 +178,8 @@ pub const EMBEDDING_WRITE_CHUNK: usize = 10_000;
 /// Adopción de historia de bases anteriores al versionado total (0.10.1):
 /// pasada única al abrir. Ver la cabecera del módulo.
 mod history_adoption;
+/// El grafo válido en un timestamp, para NQL `at timestamp` (#298).
+mod graph_at;
 pub use history_adoption::{META_HISTORY_ADOPTED, META_HISTORY_ADOPTION_TS};
 
 /// Marca de una entidad (nodo o arista) SIN cadena de versiones (0.10.1).

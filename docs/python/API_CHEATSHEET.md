@@ -72,7 +72,7 @@ g = nopaldb.Graph.open("./data")
 | method | what it does |
 |---|---|
 | `get_stats() -> Stats` | Structured stats of storage, WAL, indexes, graph. |
-| `last_commit_timestamp() -> int` | Logical timestamp of the latest applied write (0.10). |
+| `last_commit_timestamp() -> int` | Logical timestamp of the latest applied write (0.10). Pass it to NQL `find … at timestamp <ts>` to read the graph as it was then (0.10.2). |
 | `gc_horizon() -> int` | How far the MVCC GC collected; history from here on is complete (0.10). |
 | `get_schema() -> dict[str, Any]` | Labels, edge types and their properties. |
 | `to_arrow(label: str | None = None) -> bytes` | Nodes as an Arrow IPC stream; properties only with `label` ([ARROW_EXPORT.md](ARROW_EXPORT.md)). |

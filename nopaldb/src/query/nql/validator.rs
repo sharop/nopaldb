@@ -79,19 +79,104 @@ impl SemanticValidator {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// TIME TRAVEL (#298)
+// ═══════════════════════════════════════════════════════════════
+
+/// Funciones que leen datos SIN versión: los vectores y el índice HNSW, el
+/// texto completo y las comunidades guardadas. En una consulta `at
+/// timestamp` contestarían con el estado actual, así que son un error con
+/// nombre. `score`/`rank`/`text_score`/`vector_score` salen de esas
+/// búsquedas.
+const UNVERSIONED_FUNCTIONS: &[&str] = &[
+    "similar_to",
+    "hybrid",
+    "in_community",
+    "score",
+    "rank",
+    "text_score",
+    "vector_score",
+    "has_embedding",
+    "path_has_embeddings",
+    "path_embedding",
+    "path_embedding_similarity",
+    "path_knn_references",
+    "path_anomaly_score",
+    "pattern_has_embeddings",
+    "pattern_embedding",
+    "pattern_embedding_similarity",
+];
+
+/// Lo que una consulta `at timestamp` no puede usar (ver
+/// [`UNVERSIONED_FUNCTIONS`]). La llama `Graph` antes de materializar.
+pub(crate) fn check_time_travel_query(query: &Query) -> Result<()> {
+    fn found(expr: &Expression) -> Option<&str> {
+        match expr {
+            Expression::FunctionCall { name, args } => UNVERSIONED_FUNCTIONS
+                .iter()
+                .find(|f| name.eq_ignore_ascii_case(f))
+                .copied()
+                .or_else(|| args.iter().find_map(found)),
+            Expression::BinaryOp { left, right, .. } => found(left).or_else(|| found(right)),
+            Expression::UnaryOp { expr, .. } => found(expr),
+            Expression::NamedArg { value, .. } => found(value),
+            Expression::Literal(_) | Expression::Property { .. } | Expression::Wildcard => None,
+        }
+    }
+    let mut exprs: Vec<&Expression> = Vec::new();
+    for p in &query.find.projections {
+        if let Projection::Expression { expr, .. } = p {
+            exprs.push(expr);
+        }
+    }
+    exprs.extend(query.filter.iter().map(|w| &w.condition));
+    exprs.extend(query.having.iter().map(|h| &h.condition));
+    exprs.extend(query.group_by.iter().flat_map(|g| g.expressions.iter()));
+    exprs.extend(query.order_by.iter().flat_map(|o| o.items.iter().map(|i| &i.expression)));
+    let mut culprit = exprs.into_iter().find_map(found).map(str::to_string);
+
+    // `init`/`gather`/`return` de las consultas de caminos son expresiones
+    // de la VM en texto.
+    if culprit.is_none() {
+        let texts = query.init.iter().chain(query.gather.iter()).chain(query.return_expr.iter());
+        for text in texts {
+            let lower = text.to_lowercase();
+            if let Some(f) = UNVERSIONED_FUNCTIONS.iter().find(|f| {
+                lower.match_indices(*f).any(|(i, _)| {
+                    let before_ok = i == 0 || !lower.as_bytes()[i - 1].is_ascii_alphanumeric() && lower.as_bytes()[i - 1] != b'_';
+                    let rest = lower[i + f.len()..].trim_start();
+                    before_ok && rest.starts_with('(')
+                })
+            }) {
+                culprit = Some(f.to_string());
+                break;
+            }
+        }
+    }
+
+    match culprit {
+        Some(f) => Err(NopalError::SemanticError(format!(
+            "{f}(...) is not available with AT TIMESTAMP: it reads vectors, full-text or saved \
+             communities, which have no history, so it would answer with the current state"
+        ))),
+        None => Ok(()),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // QUERY VALIDATION
 // ═══════════════════════════════════════════════════════════════
 
 impl SemanticValidator {
     /// Validate a query
     fn validate_query(&self, query: &Query) -> Result<()> {
-        // `at timestamp <n>` se parsea pero ningún ejecutor lo aplica: hasta
-        // 0.9.3 la consulta devolvía el estado actual sin aviso (#298). Error
-        // con nombre hasta que NQL lea de verdad en un instante.
+        // `at timestamp <n>` lo aplica `Graph` (execute_nql/execute_statement),
+        // que materializa el grafo en ese instante y quita la cláusula antes
+        // de llegar aquí (#298). Un `Executor` corre sobre un solo grafo, el
+        // actual: con la cláusula puesta devolvería el presente sin aviso.
         if query.time_travel.is_some() {
             return Err(NopalError::SemanticError(
-                "AT TIMESTAMP is not applied by NQL yet: the query would read the current state. \
-                 Read past versions with the Rust API (Graph::as_of, Graph::get_node_at, Graph::history)"
+                "AT TIMESTAMP is applied by Graph::execute_nql / Graph::execute_statement; \
+                 an Executor alone reads the current graph"
                     .to_string(),
             ));
         }

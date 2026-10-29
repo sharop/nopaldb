@@ -168,9 +168,11 @@ new edge from an existing one.
   write no version.** Overwriting a node or edge that only has a birth mark
   or a floor with them removes the mark, so that entity reads
   `HistoryUnavailable` from then on. Use the `Graph` API.
-- **NQL `find … at timestamp <n>` is still a named error**
-  ([#298](https://github.com/sharop/nopaldb/issues/298)). Point-in-time
-  reads are the Rust API above; Python has none yet.
+- **NQL `find … at timestamp <n>`** was a named error until 0.10.1. Since
+  0.10.2 it reads the graph as it was at that timestamp, also from Python,
+  except for vector, full-text and community searches
+  ([#298](https://github.com/sharop/nopaldb/issues/298),
+  [NQL reference § Time travel](en/NQL_REFERENCE.md#time-travel-at-timestamp)).
 
 ## 6. Going back to 0.10.0 or 0.9.4
 
