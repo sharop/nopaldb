@@ -283,6 +283,8 @@ set r.since = 2024, b.city = "CDMX"
 where a.name = "Alice" and b.name = "Bob"
 ```
 
+El valor de `set` es un literal: texto, número, booleano, `null` o lista. Leer una propiedad (`set b.city = a.city`) o llamar a una función es un error (desde 0.10.3; hasta 0.10.2 respondía OK y no actualizaba nada).
+
 ### DELETE
 ```nql
 // Borra solo la relación matched
