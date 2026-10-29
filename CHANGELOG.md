@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.2] - unreleased
+
+NQL `at timestamp` lee el pasado (#298, #326): fase 3 del plan MVCC. Sin
+cambios incompatibles de API ni de formato en disco.
 
 ### Added
 - **NQL `find … at timestamp <ts>` lee el grafo de entonces** (#298). La
