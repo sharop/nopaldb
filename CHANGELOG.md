@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.1] - unreleased
+
+Toda escritura deja historia MVCC (#319, #320). `add_node` directo y la
+importación Turtle/OWL versionan; el BulkLoader guarda una marca de
+nacimiento sin copiar el registro; las aristas encadenan versiones. El primer
+open de una base anterior adopta, una vez y de forma reanudable, lo escrito
+sin versión con un suelo de historia por entidad. Sin cambios incompatibles
+de API; formato en disco compatible (0.10.0 y 0.9.4 abren la base, pero no
+deben escribir en ella: ver §6 de
+[docs/UPGRADING_0.10.md](docs/UPGRADING_0.10.md)).
 
 ### Fixed
 - **Toda escritura deja historia MVCC** (#319). `add_node` directo versiona
