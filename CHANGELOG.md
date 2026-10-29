@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.3] - unreleased
+
+NQL deja de descartar en silencio: funciones desconocidas (#328), `set` con
+valores que no son literales (#330), columnas de más o vacías en el resultado
+(#331) y algoritmos por nodo que daban el promedio (#336). Quien leía el
+promedio con `find degree(n)` escribe ahora `find avg(degree(n))`; la tabla
+completa está en la §9 de `docs/UPGRADING_0.10.md`. Sin cambios de API Rust
+ni de formato en disco.
 
 ### Fixed
 - **Una función que NQL no conoce es un error con nombre** (#328). Hasta
