@@ -44,7 +44,7 @@ print("   ✅ Star created (1 hub + 3 spokes)")
 print("\n3️⃣  Computing Clustering Coefficient...")
 
 result = graph.execute_nql("""
-    find clustering(n) as cc
+    find avg(clustering(n)) as cc
     from (n:Person)
 """)
 
@@ -55,7 +55,7 @@ for row in result:
 print("\n4️⃣  Testing with GROUP BY (by network type)...")
 
 result = graph.execute_nql("""
-    find n.group, clustering(n) as cc
+    find n.group, avg(clustering(n)) as cc
     from (n:Person)
     group by n.group
 """)
@@ -68,13 +68,13 @@ for row in result:
 print("\n5️⃣  Individual node analysis...")
 
 result = graph.execute_nql("""
-    find n.name
+    find n.name, clustering(n) as cc
     from (n:Person)
 """)
 
-# Note: To get individual clustering coefficients, we'd need to extend NQL
-# For now, we can only get averages per group
-print("   (Individual clustering requires per-node projections)")
+# Un algoritmo sin agregar es por nodo (0.10.3): una fila por persona.
+for row in result:
+    print(f"   {row.get('n.name'):12} → {row.get('cc'):.3f}")
 print("   Triangle nodes should have ~1.0 (complete triangle)")
 print("   Star center should have ~0.0 (neighbors not connected)")
 print("   Star spokes should have ~0.0 (only 1 neighbor each)")

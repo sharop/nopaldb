@@ -57,7 +57,7 @@ print("="*70)
 print("\n1️⃣  PAGERANK")
 print("   " + "-"*60)
 result = graph.execute_nql("""
-    find n.community, pagerank(n) as rank
+    find n.community, avg(pagerank(n)) as rank
     from (n:Person)
     group by n.community
 """)
@@ -70,7 +70,7 @@ for row in result:
 print("\n2️⃣  BETWEENNESS CENTRALITY")
 print("   " + "-"*60)
 result = graph.execute_nql("""
-    find n.community, betweenness(n) as bc
+    find n.community, avg(betweenness(n)) as bc
     from (n:Person)
     group by n.community
 """)
@@ -84,7 +84,7 @@ print("   💡 Bridge should have highest betweenness")
 print("\n3️⃣  CLUSTERING COEFFICIENT")
 print("   " + "-"*60)
 result = graph.execute_nql("""
-    find n.community, clustering(n) as cc
+    find n.community, avg(clustering(n)) as cc
     from (n:Person)
     group by n.community
 """)
@@ -98,7 +98,7 @@ print("   💡 Triangles should have clustering ≈ 1.0")
 print("\n4️⃣  DEGREE CENTRALITY")
 print("   " + "-"*60)
 result = graph.execute_nql("""
-    find n.community, degree(n) as deg, count(n) as num
+    find n.community, avg(degree(n)) as deg, count(n) as num
     from (n:Person)
     group by n.community
 """)
@@ -114,10 +114,10 @@ print("   " + "-"*60)
 result = graph.execute_nql("""
     find n.community,
           count(n) as nodes,
-          degree(n) as avg_deg,
-          pagerank(n) as avg_pr,
-          betweenness(n) as avg_bc,
-          clustering(n) as avg_cc
+          avg(degree(n)) as avg_deg,
+          avg(pagerank(n)) as avg_pr,
+          avg(betweenness(n)) as avg_bc,
+          avg(clustering(n)) as avg_cc
     from (n:Person)
     group by n.community
 """)
@@ -138,8 +138,8 @@ print("\n6️⃣  OVERALL GRAPH STATISTICS")
 print("   " + "-"*60)
 result = graph.execute_nql("""
     find count(n) as total_nodes,
-          degree(n) as avg_degree,
-          clustering(n) as avg_clustering
+          avg(degree(n)) as avg_degree,
+          avg(clustering(n)) as avg_clustering
     from (n:Person)
 """)
 

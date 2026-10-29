@@ -32,7 +32,7 @@ print("   ✅ Network created (1 hub + 5 spokes)")
 print("\n2️⃣  Computing Degree Centrality...")
 
 result = graph.execute_nql("""
-    find degree(n) as deg
+    find avg(degree(n)) as deg
     from (n:Person)
 """)
 
@@ -43,7 +43,7 @@ for row in result:
 print("\n3️⃣  Testing with GROUP BY (by role)...")
 
 result = graph.execute_nql("""
-    find n.role, degree(n) as deg
+    find n.role, avg(degree(n)) as deg
     from (n:Person)
     group by n.role
 """)
@@ -56,7 +56,7 @@ for row in result:
 print("\n4️⃣  Comparing with count...")
 
 result = graph.execute_nql("""
-    find n.role, count(n) as num, degree(n) as deg
+    find n.role, count(n) as num, avg(degree(n)) as deg
     from (n:Person)
     group by n.role
 """)

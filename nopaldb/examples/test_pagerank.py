@@ -17,7 +17,7 @@ tx.commit()
 # Test PageRank
 print("Testing PageRank in NQL:")
 result = graph.execute_nql("""
-    find pagerank(n) as rank
+    find avg(pagerank(n)) as rank
     from (n:Person)
 """)
 
