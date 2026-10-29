@@ -1244,9 +1244,8 @@ impl SemanticValidator {
 impl SemanticValidator {
     /// Validate UPDATE statement
     fn validate_update(&self, update: &UpdateStmt) -> Result<()> {
-        check_known_functions(
-            update.filter.iter().map(|w| &w.condition).chain(update.assignments.iter().map(|a| &a.value)),
-        )?;
+        check_known_functions(update.filter.iter().map(|w| &w.condition))?;
+        check_update_values(update)?;
         // Rule 1: Must have at least one assignment
         if update.assignments.is_empty() {
             return Err(NopalError::SemanticError(
@@ -2825,6 +2824,27 @@ mod tests {
 /// no tocaban ninguno (#294). Se rechazan con un error con nombre en lugar
 /// de dar a la propiedad suelta un valor de verdad: cinco evaluadores
 /// tendrían que acordarlo, y la comparación explícita no es ambigua.
+/// `set var.prop = <value>` only writes literals (#330). Until 0.10.2 any
+/// other value (`n.nombre`, `now()`) was dropped with a log line and the
+/// UPDATE answered OK with nothing updated.
+///
+/// Reading a property of the pattern (`set b.city = a.city`) needs the
+/// values of each match, and one node can take part in several matches with
+/// different values: that comes with expressions in NQL (#269), not here.
+pub(crate) fn check_update_values(update: &UpdateStmt) -> Result<()> {
+    check_known_functions(update.assignments.iter().map(|a| &a.value))?;
+    for a in &update.assignments {
+        if !matches!(a.value, Expression::Literal(_)) {
+            return Err(NopalError::SemanticError(format!(
+                "SET {}.{} only accepts a literal value (a string, number, boolean, null or \
+                 list); reading properties or calling functions in SET is not supported yet",
+                a.variable, a.property
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn check_condition(expr: &Expression, clause: &str) -> Result<()> {
     match expr {
         Expression::BinaryOp { left, op: BinaryOperator::And | BinaryOperator::Or, right } => {

@@ -295,9 +295,8 @@ impl<'a> WriteExecutor<'a> {
         tx: &mut Transaction,
     ) -> Result<UpdateResult> {
         log::info!("Executing UPDATE statement");
-        crate::query::nql::validator::check_known_functions(
-            update.filter.iter().map(|w| &w.condition).chain(update.assignments.iter().map(|a| &a.value)),
-        )?;
+        crate::query::nql::validator::check_known_functions(update.filter.iter().map(|w| &w.condition))?;
+        crate::query::nql::validator::check_update_values(update)?;
         if let Some(filter) = &update.filter {
             crate::query::nql::validator::check_condition(&filter.condition, "WHERE")?;
         }

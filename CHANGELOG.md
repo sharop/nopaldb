@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `n.id`.
 - **Los nombres de funciones no distinguen mayúsculas** (#328): `COUNT(*)` y
   `DEGREE(n)` devolvían una fila vacía; ahora son `count(*)` y `degree(n)`.
+- **`update … set` con un valor que no es literal es un error** (#330). Hasta
+  0.10.2 `set n.x = n.nombre` (o una función) se descartaba con una línea de
+  log y el UPDATE respondía OK sin actualizar nada. Leer propiedades en `set`
+  llegará con las expresiones de NQL (#269).
 
 ## [0.10.2] - 2026-10-29
 
