@@ -525,6 +525,8 @@ sin búsqueda, escribe ese patrón.
 
 NQL soporta funciones para resumir datos, ideales para análisis estadístico.
 
+Los nombres de las funciones no distinguen mayúsculas (`COUNT(*)` es `count(*)`). Un nombre que no es una función de NQL es un error en toda cláusula (desde 0.10.3; hasta 0.10.2 se descartaba sin error). No hay `id(n)`: el id es la propiedad `n.id`.
+
 - `count(*)`: Cuenta el total de coincidencias.
 - `sum(p.monto)`: Suma los valores de una propiedad numérica.
 - `avg(p.edad)`: Calcula el promedio.

@@ -53,6 +53,7 @@ impl SemanticValidator {
                 // Commits are validated when the sketch is defined
             }
             Statement::Delete(delete) => {
+                check_known_functions(delete.filter.iter().map(|w| &w.condition))?;
                 warnings.extend(self.check_delete_warnings(delete));
             }
             Statement::Update(update) => {
@@ -76,6 +77,63 @@ impl SemanticValidator {
 
         Ok(warnings)
     }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// KNOWN FUNCTIONS (#328)
+// ═══════════════════════════════════════════════════════════════
+
+/// The expressions of a query that the executor evaluates: projections,
+/// `where`, `having`, `group by` and `order by`.
+pub(crate) fn query_expressions(query: &Query) -> Vec<&Expression> {
+    let mut exprs: Vec<&Expression> = Vec::new();
+    for p in &query.find.projections {
+        if let Projection::Expression { expr, .. } = p {
+            exprs.push(expr);
+        }
+    }
+    exprs.extend(query.filter.iter().map(|w| &w.condition));
+    exprs.extend(query.having.iter().map(|h| &h.condition));
+    exprs.extend(query.group_by.iter().flat_map(|g| g.expressions.iter()));
+    exprs.extend(query.order_by.iter().flat_map(|o| o.items.iter().map(|i| &i.expression)));
+    exprs
+}
+
+/// Every function call must be one of [`NQL_FUNCTIONS`]; see its doc
+/// comment. The parser already wrote known names in their documented
+/// spelling, so an exact match is enough here.
+pub(crate) fn check_known_functions<'e>(exprs: impl IntoIterator<Item = &'e Expression>) -> Result<()> {
+    fn unknown(expr: &Expression) -> Option<(&str, &[Expression])> {
+        match expr {
+            Expression::FunctionCall { name, args } => {
+                if NQL_FUNCTIONS.contains(&name.as_str()) {
+                    args.iter().find_map(unknown)
+                } else {
+                    Some((name.as_str(), args.as_slice()))
+                }
+            }
+            Expression::BinaryOp { left, right, .. } => unknown(left).or_else(|| unknown(right)),
+            Expression::UnaryOp { expr, .. } => unknown(expr),
+            Expression::NamedArg { value, .. } => unknown(value),
+            Expression::Literal(_) | Expression::Property { .. } | Expression::Wildcard => None,
+        }
+    }
+    let Some((name, args)) = exprs.into_iter().find_map(unknown) else {
+        return Ok(());
+    };
+    if name.eq_ignore_ascii_case("id") {
+        let var = match args {
+            [Expression::Property { variable, property }] if property.is_empty() => variable.as_str(),
+            _ => "n",
+        };
+        return Err(NopalError::SemanticError(format!(
+            "id(...) is not an NQL function: the id is a property, write {var}.id"
+        )));
+    }
+    Err(NopalError::SemanticError(format!(
+        "unknown function {name}(...): NQL functions are listed in the NQL reference \
+         (docs/en/NQL_REFERENCE.md)"
+    )))
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -122,16 +180,9 @@ pub(crate) fn check_time_travel_query(query: &Query) -> Result<()> {
             Expression::Literal(_) | Expression::Property { .. } | Expression::Wildcard => None,
         }
     }
-    let mut exprs: Vec<&Expression> = Vec::new();
-    for p in &query.find.projections {
-        if let Projection::Expression { expr, .. } = p {
-            exprs.push(expr);
-        }
-    }
-    exprs.extend(query.filter.iter().map(|w| &w.condition));
-    exprs.extend(query.having.iter().map(|h| &h.condition));
-    exprs.extend(query.group_by.iter().flat_map(|g| g.expressions.iter()));
-    exprs.extend(query.order_by.iter().flat_map(|o| o.items.iter().map(|i| &i.expression)));
+    // Antes de materializar: un nombre desconocido es error igual.
+    let exprs = query_expressions(query);
+    check_known_functions(exprs.iter().copied())?;
     let mut culprit = exprs.into_iter().find_map(found).map(str::to_string);
 
     // `init`/`gather`/`return` de las consultas de caminos son expresiones
@@ -180,6 +231,7 @@ impl SemanticValidator {
                     .to_string(),
             ));
         }
+        check_known_functions(query_expressions(query))?;
         // Rule 1: HAVING normalmente requiere GROUP BY, EXCEPTO cuando sólo
         // referencia funciones algorítmicas (degree, pagerank, etc.) que son
         // per-node y no necesitan agrupación.
@@ -1192,6 +1244,9 @@ impl SemanticValidator {
 impl SemanticValidator {
     /// Validate UPDATE statement
     fn validate_update(&self, update: &UpdateStmt) -> Result<()> {
+        check_known_functions(
+            update.filter.iter().map(|w| &w.condition).chain(update.assignments.iter().map(|a| &a.value)),
+        )?;
         // Rule 1: Must have at least one assignment
         if update.assignments.is_empty() {
             return Err(NopalError::SemanticError(
@@ -1680,6 +1735,45 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use crate::types::PropertyValue;
+
+    /// `NQL_FUNCTIONS` is the one list of names (#328). Each name the
+    /// evaluators classify must be in it, or a working query would become
+    /// an "unknown function" error.
+    #[test]
+    fn every_evaluated_function_is_a_known_name() {
+        let known = |n: &str| canonical_function_name(n).is_some();
+        let mut names: Vec<&str> = Vec::new();
+        names.extend(UNVERSIONED_FUNCTIONS);
+        names.extend(PATH_SEMANTIC_FILTERS);
+        names.extend(["count", "sum", "avg", "min", "max", "embedding_similarity", "knn_nodes"]);
+        names.extend(["pagerank", "betweenness", "clustering", "degree", "community", "community_fast", "leiden", "shortestpath"]);
+        names.extend(["path_sum", "path_min", "path_max", "path_avg", "path_eval"]);
+        names.extend(["instanceof", "subclassof", "all"]);
+        for n in names {
+            assert!(known(n), "{n} is evaluated but missing from NQL_FUNCTIONS");
+        }
+        assert!(["count", "sum", "avg", "min", "max"].iter().all(|n| is_aggregation_function(n)));
+        assert!(["path_sum", "path_min", "path_max", "path_avg"].iter().all(|n| is_path_reducer_fn(n)));
+        #[cfg(feature = "algorithms")]
+        assert!(["pagerank", "betweenness", "clustering", "degree", "community", "community_fast", "leiden", "shortestPath"]
+            .iter()
+            .all(|n| is_algorithm_function(n)));
+    }
+
+    /// Each known name parses in any case to its documented spelling.
+    #[test]
+    fn known_functions_parse_to_their_documented_spelling() {
+        for f in NQL_FUNCTIONS {
+            let q = format!("find {}(n) as x from (n:Fruta)", f.to_uppercase());
+            let stmt = crate::query::nql::parser::parse(&q).unwrap_or_else(|e| panic!("{q}: {e}"));
+            let Statement::Query(query) = stmt else { panic!("{q}") };
+            match &query.find.projections[0] {
+                Projection::Expression { expr: Expression::FunctionCall { name, .. }, .. } => assert_eq!(name, f, "{q}"),
+                Projection::All(_) => assert_eq!(*f, "all"),
+                other => panic!("{q}: {other:?}"),
+            }
+        }
+    }
 
     #[test]
     fn test_having_without_group_by() {

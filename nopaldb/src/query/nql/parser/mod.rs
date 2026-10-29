@@ -1295,10 +1295,12 @@ impl AstBuilder {
             }
         }
 
-        Ok(Expression::FunctionCall {
-            name: name.ok_or_else(|| NopalError::QueryParseError("Missing function name".into()))?,
-            args,
-        })
+        let name = name.ok_or_else(|| NopalError::QueryParseError("Missing function name".into()))?;
+        // `COUNT(*)` es `count(*)`: los evaluadores comparan el nombre de
+        // formas distintas (#328). Uno desconocido queda como está y el
+        // validador lo rechaza con su nombre.
+        let name = canonical_function_name(&name).map_or(name, str::to_string);
+        Ok(Expression::FunctionCall { name, args })
     }
 
     fn parse_comparison_op(&self, op: &str) -> Result<BinaryOperator> {

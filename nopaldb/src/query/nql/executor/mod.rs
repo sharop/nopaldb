@@ -5624,6 +5624,10 @@ impl<'a> Executor<'a> {
     pub async fn execute_explain(&self, stmt: Statement) -> Result<String> {
         match stmt {
             Statement::Query(query) => {
+                // El plan de una consulta que no correría es un error (#328).
+                crate::query::nql::validator::check_known_functions(
+                    crate::query::nql::validator::query_expressions(&query),
+                )?;
                 let decision = self.index_fast_path_decision(&query).await?;
                 let mut explanation = self.render_decision_plan(&query, &decision).await?;
                 if self.query_uses_function(&query, &["community", "community_fast"]) {

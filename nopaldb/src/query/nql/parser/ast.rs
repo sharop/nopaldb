@@ -194,7 +194,7 @@ pub struct DeleteStmt {
 /// Example:
 /// ```nql
 /// update (u:User)
-/// set u.verified = true, u.verified_at = now()
+/// set u.verified = true, u.verified_at = "2026-10-29"
 /// where u.email_confirmed = true
 /// ```
 #[derive(Debug, Clone, PartialEq)]
@@ -740,6 +740,50 @@ impl Expression {
 }
 
 
+
+/// Every function NQL knows, in its documented spelling (#328).
+///
+/// The parser rewrites a known name to this spelling whatever its case
+/// (`COUNT(*)` → `count`), and the validator rejects any other name. Until
+/// 0.10.2 an unknown name, or a known one in another case, was dropped
+/// without an error: the column vanished, `where foo(n)` let every row
+/// through, `order by foo(n)` did nothing.
+///
+/// One list here instead of a check in each evaluator: the names are matched
+/// in a dozen places (aggregations, algorithms, path functions, search),
+/// each with its own fallback, and a list per evaluator is what let unknown
+/// names through. The list does not depend on features: a function whose
+/// feature is off is still a known name, and its own check says what is
+/// missing. `validator::tests` keeps it in sync with the evaluators.
+///
+/// `id(n)` is not here on purpose: the id is a property (`n.id`), and the
+/// validator says so instead of adding a second spelling to every evaluator.
+pub(crate) const NQL_FUNCTIONS: &[&str] = &[
+    // Aggregations (N rows → 1).
+    "count", "sum", "avg", "min", "max", "embedding_similarity", "knn_nodes",
+    // Per-node algorithms.
+    "pagerank", "betweenness", "clustering", "degree", "community", "community_fast", "leiden",
+    "shortestPath",
+    // Ontology.
+    "instanceOf", "subClassOf",
+    // Search and communities.
+    "similar_to", "hybrid", "in_community", "has_embedding", "score", "rank", "text_score",
+    "vector_score",
+    // Path queries.
+    "path_sum", "path_min", "path_max", "path_avg", "path_eval",
+    "path_start_instanceOf", "path_end_instanceOf", "path_any_instanceOf", "path_all_instanceOf",
+    "path_start_subClassOf", "path_end_subClassOf", "path_any_subClassOf", "path_all_subClassOf",
+    "path_has_embeddings", "path_embedding", "path_embedding_similarity", "path_knn_references",
+    "path_anomaly_score", "pattern_has_embeddings", "pattern_embedding",
+    "pattern_embedding_similarity",
+    // Projection of every property of a variable: `find all(p)`.
+    "all",
+];
+
+/// The documented spelling of a known NQL function, matched without case.
+pub(crate) fn canonical_function_name(name: &str) -> Option<&'static str> {
+    NQL_FUNCTIONS.iter().find(|f| f.eq_ignore_ascii_case(name)).copied()
+}
 
 // ═══════════════════════════════════════════════════════════════
 // DISPLAY IMPLEMENTATIONS (for debugging and error messages)
