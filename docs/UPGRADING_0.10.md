@@ -238,14 +238,14 @@ error, and some queries return different rows or columns:
 | `update … set n.x = n.name` | OK, nothing updated | `SemanticError` ([#330](https://github.com/sharop/nopaldb/issues/330)) | only literals in `set` for now |
 | `find all(n)`, `find *` with an indexed `where` | empty rows; only `n.id`, `n.label` in Python | every property | — |
 
-## 10. After 0.10.3: the columns of a result
+## 10. From 0.10.3 to 0.10.4: the columns of a result
 
 The columns of a result come from `find`, the same whatever path runs the
 query ([#335](https://github.com/sharop/nopaldb/issues/335)). No API or
 disk format changes; names and order change in Rust, Python and `export`,
 and some queries that answered are now errors:
 
-| Query | 0.10.3 | Now | What to do |
+| Query | 0.10.3 | 0.10.4 | What to do |
 |---|---|---|---|
 | `find count(*), sum(n.age) …` | columns `count`, `sum` | `count(*)`, `sum(n.age)` | give an alias (`count(*) as c`) if you read the column by name |
 | `find degree(n), n.name …` | column `degree` | `degree(n)` | same |
