@@ -521,6 +521,8 @@ a search, write that pattern.
 
 NQL supports functions for data summarization, ideal for statistical analysis.
 
+Function names are matched without case (`COUNT(*)` is `count(*)`). A name that is not an NQL function is an error in every clause (since 0.10.3; until 0.10.2 it was dropped without one). There is no `id(n)`: the id is the property `n.id`.
+
 - `count(*)`: Counts total matches.
 - `sum(p.amount)`: Sums numeric property values.
 - `avg(p.age)`: Calculates average.

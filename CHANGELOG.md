@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Una función que NQL no conoce es un error con nombre** (#328). Hasta
+  0.10.2 se descartaba sin aviso: `find foo(n) as x` devolvía la fila sin la
+  columna, `where foo(n)` dejaba pasar todas las filas, `order by foo(n)` no
+  hacía nada, y en `delete`/`update` el `where` no tocaba nada. Ahora es
+  `SemanticError` en proyección, `where`, `having`, `group by`, `order by`,
+  `delete`, `update` y `explain`. `id(n)`, que no existe en NQL, remite a
+  `n.id`.
+- **Los nombres de funciones no distinguen mayúsculas** (#328): `COUNT(*)` y
+  `DEGREE(n)` devolvían una fila vacía; ahora son `count(*)` y `degree(n)`.
+
 ## [0.10.2] - 2026-10-29
 
 NQL `at timestamp` lee el pasado (#298, #326): fase 3 del plan MVCC. Sin

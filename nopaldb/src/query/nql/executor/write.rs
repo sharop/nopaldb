@@ -176,6 +176,8 @@ impl<'a> WriteExecutor<'a> {
         tx: &mut Transaction,
     ) -> Result<DeleteResult> {
         log::info!("Executing DELETE statement (transactional)");
+        // Una función desconocida en el `where` no borraba nada, sin error (#328).
+        crate::query::nql::validator::check_known_functions(delete.filter.iter().map(|w| &w.condition))?;
         if let Some(filter) = &delete.filter {
             crate::query::nql::validator::check_condition(&filter.condition, "WHERE")?;
         }
@@ -293,6 +295,9 @@ impl<'a> WriteExecutor<'a> {
         tx: &mut Transaction,
     ) -> Result<UpdateResult> {
         log::info!("Executing UPDATE statement");
+        crate::query::nql::validator::check_known_functions(
+            update.filter.iter().map(|w| &w.condition).chain(update.assignments.iter().map(|a| &a.value)),
+        )?;
         if let Some(filter) = &update.filter {
             crate::query::nql::validator::check_condition(&filter.condition, "WHERE")?;
         }
