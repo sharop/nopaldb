@@ -75,6 +75,12 @@ jobs:
       - name: Benches compile-check
         run: cargo check -p nopaldb --features core --benches
 
+      # Los tests de integración solo se compilaban con `core` o `full`, que
+      # traen `analytics`: un test que usaba `history_to_arrow` sin su `cfg`
+      # llegó a main sin compilar con `hybrid` (#322).
+      - name: Tests compile-check without analytics (hybrid)
+        run: cargo check -p nopaldb --features hybrid --tests
+
       - name: Clippy (semantic)
         run: cargo clippy -p nopaldb --features semantic -- -D warnings
 
