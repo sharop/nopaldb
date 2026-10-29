@@ -165,6 +165,8 @@ let history = graph.history(node_id).await?;
 
 Las aristas tienen versión MVCC via `VersionedEdge` (tree `"versioned_edges"`): se abre al crearlas y se cierra al borrarlas (también en cascada al borrar un nodo, desde 0.10). Desde 0.10.1 las aristas tienen cadena: reescribir una arista con el mismo id escribe la versión siguiente, y volver a crear una arista borrada continúa desde su última versión (hasta 0.10.0 las dos cosas pisaban la v1). `get_edges_of_type_at(edge_type, timestamp)` consulta el historial; `graph.edge_history(id)` retorna todas las versiones.
 
+NQL `find … at timestamp <ts>` (0.10.2, #298) no enseña a cada lector del ejecutor a leer en un timestamp: `Storage::graph_at` (`storage/graph_at.rs`) enumera los nodos y aristas válidos en `ts` con las mismas reglas (cadena, marca, suelo, horizonte del GC), `Graph` los carga en un `Graph::in_memory()` con la taxonomía reconstruida, y el ejecutor normal corre sobre esa copia. Se descartó la alternativa de leer en `ts` desde cada camino (índices de etiqueta y propiedades, adyacencia en RAM, `GraphView` de los algoritmos): un camino olvidado devolvería el presente sin aviso. El coste es O(historia) por consulta.
+
 ### Niveles de aislamiento (feature `full-isolation`)
 
 Disponibles compilando con la feature `full-isolation` (incluida en el tier `full`). Sin la feature, las transacciones operan en modo ReadCommitted.

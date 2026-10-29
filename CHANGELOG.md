@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **NQL `find … at timestamp <ts>` lee el grafo de entonces** (#298). La
+  consulta corre sobre el grafo válido en `ts`, materializado desde la
+  historia MVCC: patrones, `where`, agregaciones, algoritmos, `instanceOf`,
+  `explain`/`profile` y `export`. Es también la primera lectura en el pasado
+  desde Python. Bajo el horizonte del GC o bajo el suelo de historia de una
+  base adoptada es `HistoryUnavailable`; `similar_to`, `hybrid`,
+  `in_community`, los scores de búsqueda y las funciones de embeddings son un
+  error con nombre (leen datos sin historia). Coste: O(historia entera) por
+  consulta, y `explain` lo dice. Hasta 0.10.1 la cláusula era un error con
+  nombre.
+
+### Changed
+- Un `Executor` usado directamente con una consulta `at timestamp` da error
+  (la cláusula la aplica `Graph::execute_nql`/`execute_statement`).
+
 ## [0.10.1] - 2026-10-29
 
 Toda escritura deja historia MVCC (#319, #320). `add_node` directo y la

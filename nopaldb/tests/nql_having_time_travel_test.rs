@@ -3,8 +3,8 @@
 // Two NQL clauses that were accepted and then ignored until 0.9.3:
 // - `group by … having …` on a single-node query returned every group
 //   (#299); the pattern path applied it;
-// - `at timestamp <n>` returned the current state (#298). It is a named
-//   error until NQL reads past versions.
+// - `at timestamp <n>` returned the current state (#298). Since 0.10.2 it
+//   reads the graph as it was then (full coverage in nql_at_timestamp_test).
 //
 // Fictional domain: gardeners and their towns.
 
@@ -65,11 +65,14 @@ async fn having_filters_the_groups_of_a_single_node_query() {
 }
 
 #[tokio::test]
-async fn at_timestamp_is_a_named_error_instead_of_the_current_state() {
+async fn at_timestamp_reads_the_past_instead_of_the_current_state() {
     let g = towns().await;
-    let err = match g.execute_nql("find p.name from (p:Gardener) at timestamp 1").await {
-        Ok(r) => panic!("should fail, got {} rows", r.rows().len()),
-        Err(e) => e.to_string(),
-    };
-    assert!(err.contains("AT TIMESTAMP") && err.contains("as_of"), "{err}");
+    let before = g.last_commit_timestamp();
+    g.add_node(Node::new("Gardener").with_property("name", s("eva")).with_property("town", s("Puebla")))
+        .await
+        .unwrap();
+    let q = format!("find p.town, count(*) as n from (p:Gardener) group by p.town having count(*) > 1 at timestamp {before}");
+    assert_eq!(town_set(&g, &q).await, set(&["Oaxaca"]), "{q}");
+    let q = "find p.town, count(*) as n from (p:Gardener) group by p.town having count(*) > 1";
+    assert_eq!(town_set(&g, q).await, set(&["Oaxaca", "Puebla"]), "{q}");
 }

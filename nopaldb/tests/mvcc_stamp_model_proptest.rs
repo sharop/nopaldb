@@ -9,7 +9,8 @@
 //
 //   get_node_at, as_of().get_node, get_node_at_strict, history(),
 //   get_class_nodes_at, edge_history(), get_versioned_edges_of_type_at,
-//   get_all_versioned_nodes (contra history()).
+//   get_all_versioned_nodes (contra history()), y NQL `find … at timestamp`
+//   (#298) con un patrón de nodos y otro de aristas.
 //
 // Se repite tras cerrar y reabrir la base (las marcas son persistentes).
 // Dominio ficticio: ingredientes de un recetario (nodos) y maridajes
@@ -205,6 +206,24 @@ async fn aplicar(graph: &Graph, modelo: &mut Modelo, op: &Op) {
     }
 }
 
+/// Filas `(id, v)` de una consulta NQL.
+async fn filas_id_v(graph: &Graph, nql: &str) -> BTreeMap<String, i64> {
+    let result = graph.execute_nql(nql).await.unwrap_or_else(|e| panic!("{nql}: {e}"));
+    let mut out = BTreeMap::new();
+    for row in result.rows() {
+        let id = match row.get("id") {
+            Some(PropertyValue::String(s)) => s.clone(),
+            other => panic!("{nql}: id = {other:?}"),
+        };
+        let v = match row.get("v") {
+            Some(PropertyValue::Int(v)) => *v,
+            other => panic!("{nql}: v = {other:?}"),
+        };
+        assert!(out.insert(id, v).is_none(), "{nql}: repeated row");
+    }
+    out
+}
+
 /// Compara cada lector con el modelo en todo timestamp `0..=hasta`.
 async fn comparar(graph: &Graph, modelo: &Modelo, hasta: u64, fase: &str) {
     let storage = graph.storage();
@@ -270,6 +289,17 @@ async fn comparar(graph: &Graph, modelo: &Modelo, hasta: u64, fase: &str) {
             .map(|e| (e.id, valor(&e.properties).unwrap()))
             .collect();
         assert_eq!(por_tipo, esperado_tipo, "[{fase}] get_versioned_edges_of_type_at({ts})");
+
+        // NQL `at timestamp` (#298): el grafo entero en `ts`.
+        let esperado_nodos: BTreeMap<String, i64> = (0..N)
+            .filter_map(|x| modelo.nodo(x, ts).map(|v| (nid(x).to_string(), v)))
+            .collect();
+        let nql = format!("find n.id as id, n.v as v from (n:Ingrediente) at timestamp {ts}");
+        assert_eq!(filas_id_v(graph, &nql).await, esperado_nodos, "[{fase}] {nql}");
+        let esperado_aristas: BTreeMap<String, i64> =
+            esperado_tipo.iter().map(|(id, v)| (id.to_string(), *v)).collect();
+        let nql = format!("find e.id as id, e.v as v from (a)-[e:{TIPO}]->(b) at timestamp {ts}");
+        assert_eq!(filas_id_v(graph, &nql).await, esperado_aristas, "[{fase}] {nql}");
     }
 
     // La exportación de versiones = la unión de history() de cada nodo.

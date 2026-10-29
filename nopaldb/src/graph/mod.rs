@@ -1943,9 +1943,13 @@ impl Graph {
         let executor = Executor::new(self);
 
         match stmt {
-            Statement::Query(q) => {
+            Statement::Query(mut q) => {
                 let export_clause = q.export.clone();
-                let result = executor.execute(q).await?;
+                let past = self.past_graph_for(&mut q).await?;
+                let result = match &past {
+                    Some(p) => Executor::new(&p.graph).execute(q).await?,
+                    None => executor.execute(q).await?,
+                };
 
                 // If query has EXPORT clause, convert result to requested format
                 if let Some(export) = export_clause {
@@ -1982,17 +1986,36 @@ impl Graph {
                 Ok(NqlResult::Index(format!("Index dropped: {}", name)))
             }
             Statement::Explain(inner) => {
-                let plan = executor.execute_explain(*inner).await?;
+                let plan = match *inner {
+                    Statement::Query(mut q) => match self.past_graph_for(&mut q).await? {
+                        Some(p) => {
+                            let plan = Executor::new(&p.graph).execute_explain(Statement::Query(q)).await?;
+                            format!("{}\n{plan}", p.explain_line())
+                        }
+                        None => executor.execute_explain(Statement::Query(q)).await?,
+                    },
+                    other => executor.execute_explain(other).await?,
+                };
                 Ok(NqlResult::Explain(plan))
             }
             Statement::Profile(inner) => match *inner {
-                Statement::Query(q) => {
-                    let plan = executor
+                Statement::Query(mut q) => {
+                    // La materialización cuenta en `execution_ms`: es parte
+                    // del coste de la consulta (el EXPLAIN no).
+                    let materialize_started = Instant::now();
+                    let past = self.past_graph_for(&mut q).await?;
+                    let materialize = materialize_started.elapsed();
+                    let past_executor = past.as_ref().map(|p| Executor::new(&p.graph));
+                    let executor = past_executor.as_ref().unwrap_or(&executor);
+                    let mut plan = executor
                         .execute_explain(Statement::Query(q.clone()))
                         .await?;
+                    if let Some(p) = &past {
+                        plan = format!("{}\n{plan}", p.explain_line());
+                    }
                     let started = Instant::now();
                     let result = executor.execute(q).await?;
-                    let execution_ms = started.elapsed().as_secs_f64() * 1000.0;
+                    let execution_ms = (started.elapsed() + materialize).as_secs_f64() * 1000.0;
                     let path_metrics = executor.take_path_profile_value();
                     let path_query = path_metrics.is_some();
 
@@ -2027,6 +2050,44 @@ impl Graph {
         }
     }
 
+    /// NQL `find … at timestamp <ts>` (#298): si la consulta lleva la
+    /// cláusula, la quita y devuelve el grafo válido en `ts` materializado en
+    /// memoria, donde corre el ejecutor normal (patrones, agregaciones,
+    /// algoritmos, export). Las funciones que leen datos sin versión
+    /// (vectores, texto completo, comunidades guardadas) son un error con
+    /// nombre: responderían con el estado actual.
+    ///
+    /// Se descartó enseñar a cada lector del ejecutor a leer en un
+    /// timestamp: son decenas de caminos (índices de etiqueta y propiedades,
+    /// adyacencia en RAM, `GraphView` de los algoritmos) y uno olvidado
+    /// devolvería el presente sin aviso. Materializar cuesta O(historia) por
+    /// consulta, y EXPLAIN lo dice.
+    async fn past_graph_for(&self, query: &mut crate::query::nql::parser::ast::Query) -> Result<Option<PastGraph>> {
+        let Some(clause) = query.time_travel.take() else {
+            return Ok(None);
+        };
+        crate::query::nql::validator::check_time_travel_query(query)?;
+        let timestamp = clause.timestamp;
+        let at = self.storage.graph_at(timestamp).await?;
+        let (nodes, edges) = (at.nodes.len(), at.edges.len());
+        let graph = Graph::in_memory().await?;
+        graph.add_nodes_batch(at.nodes).await?;
+        graph.add_edges_batch(at.edges).await?;
+        // `instanceof`/`subclassof` leen la taxonomía en memoria: sin
+        // reconstruirla aquí darían `false` en el pasado sin aviso. Los
+        // prefijos RDF (para nombrar clases como `prefijo:Local`) no tienen
+        // versión, pero el import solo los añade: los actuales sirven.
+        #[cfg(feature = "reasoner")]
+        {
+            use crate::storage::META_RDF_PREFIXES;
+            if let Some(bytes) = self.storage.get_meta_bytes(META_RDF_PREFIXES).await? {
+                graph.storage.put_meta_bytes(META_RDF_PREFIXES, &bytes).await?;
+            }
+            graph.rebuild_taxonomy_from_graph().await?;
+        }
+        Ok(Some(PastGraph { graph, timestamp, nodes, edges }))
+    }
+
     /// Execute NQL query string (backward-compatible, FIND queries only)
     ///
     /// For full statement support (ADD, DELETE, UPDATE, CREATE INDEX, etc.),
@@ -2039,9 +2100,10 @@ impl Graph {
         let stmt = parse(query_string)?;
 
         match stmt {
-            Statement::Query(q) => {
+            Statement::Query(mut q) => {
                 let export_clause = q.export.clone();
-                let executor = Executor::new(self);
+                let past = self.past_graph_for(&mut q).await?;
+                let executor = Executor::new(past.as_ref().map_or(self, |p| &p.graph));
                 let result = executor.execute(q).await?;
 
                 // Backward-compatible behavior: execute_nql can return export summaries
@@ -5250,6 +5312,25 @@ impl Graph {
         Ok(QueryPlanner::new(stats))
     }
 
+}
+
+/// El grafo de una consulta `at timestamp`, materializado en memoria.
+struct PastGraph {
+    graph: Graph,
+    timestamp: u64,
+    nodes: usize,
+    edges: usize,
+}
+
+impl PastGraph {
+    /// La línea de EXPLAIN/PROFILE que dice qué se materializó.
+    fn explain_line(&self) -> String {
+        format!(
+            "Time travel: graph materialized at timestamp {} ({} nodes, {} edges), reading the whole \
+             history; the plan below runs on that copy",
+            self.timestamp, self.nodes, self.edges
+        )
+    }
 }
 
 /// BulkLoader - Cargador de alto rendimiento para importación masiva
