@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.10.3] - unreleased
+## [0.10.3] - 2026-10-29
 
 NQL deja de descartar en silencio: funciones desconocidas (#328), `set` con
 valores que no son literales (#330), columnas de más o vacías en el resultado
