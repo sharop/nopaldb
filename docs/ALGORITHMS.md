@@ -93,7 +93,7 @@ order by bc desc
 ### Example
 ```sql
 // Find tightly-knit groups
-find n.community, clustering(n) as cohesion
+find n.community, avg(clustering(n)) as cohesion
 from (n:Person)
 group by n.community
 ```
@@ -579,8 +579,8 @@ limit 20
 
 ### 1. Use GROUP BY for Aggregations
 ```sql
-// With GROUP BY, an algorithm column is the average over the group
-find n.city, pagerank(n) as avg_rank
+// In a group, aggregate the algorithm: avg, min, max or sum
+find n.city, avg(pagerank(n)) as avg_rank
 from (n:Person)
 group by n.city
 ```

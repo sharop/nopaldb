@@ -816,6 +816,116 @@ impl std::fmt::Display for DangerLevel {
     }
 }
 
+/// The text of an expression in NQL, normalized: `count(*)`, `sum(n.peso)`,
+/// `degree(n)`, `n.fruta`, `"mango"`. It is the default name of a column
+/// (#335): the same in every execution path, because the paths no longer
+/// pick a name of their own (`count`, `sum`, `degree` until 0.10.3).
+///
+/// Normalized means one spelling per expression, not the spelling the user
+/// typed: function names in their documented case, one space around binary
+/// operators, a nested binary operation in parentheses.
+impl std::fmt::Display for Expression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Expression::Literal(v) => write_literal(f, v),
+            Expression::Property { variable, property } if property.is_empty() => write!(f, "{variable}"),
+            Expression::Property { variable, property } => write!(f, "{variable}.{property}"),
+            Expression::BinaryOp { left, op, right } => {
+                let side = |e: &Expression| match e {
+                    Expression::BinaryOp { .. } => format!("({e})"),
+                    _ => e.to_string(),
+                };
+                write!(f, "{} {op} {}", side(left), side(right))
+            }
+            Expression::UnaryOp { op: UnaryOperator::Not, expr } => write!(f, "!{expr}"),
+            Expression::UnaryOp { op: UnaryOperator::Neg, expr } => write!(f, "-{expr}"),
+            Expression::FunctionCall { name, args } => {
+                write!(f, "{name}(")?;
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{a}")?;
+                }
+                write!(f, ")")
+            }
+            Expression::Wildcard => write!(f, "*"),
+            Expression::NamedArg { name, value } => write!(f, "{name} = {value}"),
+        }
+    }
+}
+
+fn write_literal(f: &mut std::fmt::Formatter<'_>, v: &PropertyValue) -> std::fmt::Result {
+    match v {
+        PropertyValue::Null => write!(f, "null"),
+        PropertyValue::Bool(b) => write!(f, "{b}"),
+        PropertyValue::Int(i) => write!(f, "{i}"),
+        PropertyValue::Float(x) => write!(f, "{x:?}"),
+        PropertyValue::String(s) => write!(f, "{s:?}"),
+        PropertyValue::List(items) => {
+            write!(f, "[")?;
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write_literal(f, item)?;
+            }
+            write!(f, "]")
+        }
+        other => write!(f, "{other:?}"),
+    }
+}
+
+impl std::fmt::Display for BinaryOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            BinaryOperator::Eq => "=",
+            BinaryOperator::NotEq => "!=",
+            BinaryOperator::Lt => "<",
+            BinaryOperator::Gt => ">",
+            BinaryOperator::LtEq => "<=",
+            BinaryOperator::GtEq => ">=",
+            BinaryOperator::In => "in",
+            BinaryOperator::NotIn => "not in",
+            BinaryOperator::And => "and",
+            BinaryOperator::Or => "or",
+            BinaryOperator::Add => "+",
+            BinaryOperator::Sub => "-",
+            BinaryOperator::Mul => "*",
+            BinaryOperator::Div => "/",
+            BinaryOperator::Mod => "%",
+        };
+        write!(f, "{s}")
+    }
+}
+
+impl Projection {
+    /// The name of the column this projection gives (#335): the alias, or
+    /// the text of the expression. `None` for `*` and `all(var)`, which give
+    /// one column per key of the variables and are expanded from the rows.
+    pub fn column_name(&self) -> Option<String> {
+        match self {
+            Projection::Wildcard | Projection::All(_) => None,
+            Projection::Expression { expr, .. } if expr.all_of_variable().is_some() => None,
+            Projection::Expression { alias: Some(a), .. } => Some(a.clone()),
+            Projection::Expression { expr, alias: None } => Some(expr.to_string()),
+        }
+    }
+}
+
+impl Expression {
+    /// The variable of `all(var)`, if the expression is that.
+    pub fn all_of_variable(&self) -> Option<&str> {
+        match self {
+            Expression::FunctionCall { name, args } if name == "all" => match args.as_slice() {
+                [Expression::Property { variable, property }] if property.is_empty() => Some(variable.as_str()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
 impl std::fmt::Display for SortOrder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

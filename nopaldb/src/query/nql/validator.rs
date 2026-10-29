@@ -99,6 +99,100 @@ pub(crate) fn query_expressions(query: &Query) -> Vec<&Expression> {
     exprs
 }
 
+/// Aggregations: N rows give one value.
+pub(crate) const AGGREGATIONS: &[&str] = &["count", "sum", "avg", "min", "max", "embedding_similarity", "knn_nodes"];
+
+/// Algorithms that give one value per node.
+pub(crate) const PER_NODE_ALGORITHMS: &[&str] =
+    &["pagerank", "betweenness", "clustering", "degree", "community", "community_fast", "leiden"];
+
+fn call_name(expr: &Expression) -> Option<&str> {
+    match expr {
+        Expression::FunctionCall { name, .. } => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+/// The schema rules of a `find` that the validator can check (#335); the
+/// executor builds the columns from the projection (`OutputShape`).
+///
+/// - Two columns with one name are an error. Until 0.10.3 the second value
+///   overwrote the first in the row and one column was lost without a word.
+/// - With `group by`, a projection is a group key or an aggregate. Until
+///   0.10.3 any other one was dropped (`find n.peso, count(*) … group by
+///   n.nombre` gave `n.nombre` and `count`), and a per-node algorithm gave
+///   the average of the group. The SQL rule, not Cypher's implicit grouping,
+///   because NQL already has an explicit `group by`.
+/// - `order by` on an aggregate or an algorithm sorts by a column of `find`.
+///   Until 0.10.3 it did nothing; a column that is not projected has no
+///   value to sort by.
+pub(crate) fn check_result_schema(query: &Query) -> Result<()> {
+    let mut names: HashSet<String> = HashSet::new();
+    for p in &query.find.projections {
+        if let Some(name) = p.column_name()
+            && !names.insert(name.clone())
+        {
+            return Err(NopalError::SemanticError(format!(
+                "two columns of find are named `{name}`: give one of them another alias"
+            )));
+        }
+    }
+    if let Some(group_by) = &query.group_by {
+        for p in &query.find.projections {
+            let (expr, alias) = match p {
+                Projection::Expression { expr, alias } if expr.all_of_variable().is_none() => (expr, alias),
+                _ => {
+                    return Err(NopalError::SemanticError(
+                        "find * and all(var) cannot be used with group by: list the columns, each one \
+                         in group by or inside an aggregate (count, sum, avg, min, max)"
+                            .to_string(),
+                    ))
+                }
+            };
+            let in_group_by = group_by.expressions.iter().any(|g| {
+                g == expr
+                    || matches!((g, alias), (Expression::Property { variable, property }, Some(a))
+                        if property.is_empty() && variable == a)
+            });
+            if in_group_by || matches!(expr, Expression::Literal(_)) {
+                continue;
+            }
+            match call_name(expr) {
+                Some(name) if AGGREGATIONS.contains(&name) => {}
+                Some(name) if PER_NODE_ALGORITHMS.contains(&name) => {
+                    return Err(NopalError::SemanticError(format!(
+                        "{expr} gives one value per node, not per group: write avg({expr}) \
+                         (or min, max, sum), or add {expr} to group by"
+                    )))
+                }
+                _ => {
+                    return Err(NopalError::SemanticError(format!(
+                        "{expr} is not in group by: add it to group by or put it inside an aggregate \
+                         (count, sum, avg, min, max)"
+                    )))
+                }
+            }
+        }
+    }
+    if let Some(order_by) = &query.order_by {
+        for item in &order_by.items {
+            let e = &item.expression;
+            let sortable = call_name(e).is_none_or(|n| !AGGREGATIONS.contains(&n) && !PER_NODE_ALGORITHMS.contains(&n));
+            let projected = query
+                .find
+                .projections
+                .iter()
+                .any(|p| matches!(p, Projection::Expression { expr, .. } if expr == e));
+            if !sortable && !projected {
+                return Err(NopalError::SemanticError(format!(
+                    "order by {e}: it is not a column of find; add it (`{e} as x`) and order by x"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Every function call must be one of [`NQL_FUNCTIONS`]; see its doc
 /// comment. The parser already wrote known names in their documented
 /// spelling, so an exact match is enough here.
@@ -232,6 +326,7 @@ impl SemanticValidator {
             ));
         }
         check_known_functions(query_expressions(query))?;
+        check_result_schema(query)?;
         // Rule 1: HAVING normalmente requiere GROUP BY, EXCEPTO cuando sólo
         // referencia funciones algorítmicas (degree, pagerank, etc.) que son
         // per-node y no necesitan agrupación.

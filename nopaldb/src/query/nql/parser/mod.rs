@@ -1586,6 +1586,28 @@ fn unsupported_in_expression(what: &str, text: &str) -> NopalError {
 mod tests {
     use super::*;
 
+    /// The default column name is the text of the expression (#335), one
+    /// spelling whatever the user typed.
+    #[test]
+    fn column_names_are_the_normalized_text() {
+        let q = r#"find n.fruta, COUNT( * ), sum(n.edad), avg(degree(n)), all(n), 1, "x", 2.5, n.a as k
+                   from (n:Arbol)"#;
+        let Statement::Query(query) = parse(q).unwrap() else { panic!() };
+        let names: Vec<_> = query.find.projections.iter().map(|p| p.column_name()).collect();
+        let expected = [
+            Some("n.fruta"),
+            Some("count(*)"),
+            Some("sum(n.edad)"),
+            Some("avg(degree(n))"),
+            None,
+            Some("1"),
+            Some("\"x\""),
+            Some("2.5"),
+            Some("k"),
+        ];
+        assert_eq!(names, expected.map(|n| n.map(str::to_string)));
+    }
+
     #[test]
     fn test_simple_query() {
         let query = r#"

@@ -45,7 +45,7 @@ fn degrees(rows: &[nopaldb::query::nql::Row], key: &str) -> Vec<f64> {
 #[tokio::test]
 async fn an_algorithm_alone_gives_one_row_per_node() {
     let g = orchard().await;
-    for (q, key) in [("find degree(n) from (n:Arbol)", "degree"), ("find degree(n) as d from (n:Arbol)", "d")] {
+    for (q, key) in [("find degree(n) from (n:Arbol)", "degree(n)"), ("find degree(n) as d from (n:Arbol)", "d")] {
         let r = rows(&g, q).await;
         assert_eq!(r.len(), 3, "{q}");
         assert_eq!(degrees(&r, key), vec![0.0, 1.0, 1.0], "{q}");

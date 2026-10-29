@@ -157,12 +157,14 @@ async fn test_degree_in_where_single_node_query() -> Result<()> {
 }
 
 /// Bug 3 fix: `degree(e)` should be permitted in HAVING when GROUP BY exists.
+/// In `find`, a per-node algorithm inside a group is an aggregate of it
+/// (#335): `max(degree(e))`.
 #[tokio::test]
 async fn test_degree_in_having_with_group_by() -> Result<()> {
     let g = setup_graph().await?;
 
     let result = g.execute_nql(r#"
-        find e.name, e.industry, degree(e) as conexiones
+        find e.name, e.industry, max(degree(e)) as conexiones
         from (e:ShellCompany) -[:REGISTERED_IN]-> (j:Jurisdiction)
         where j.name = "Harbor Cay"
         group by e.name, e.industry
@@ -196,7 +198,7 @@ async fn test_validator_accepts_degree_in_where() -> Result<()> {
 async fn test_validator_accepts_degree_in_having() -> Result<()> {
     let g = setup_graph().await?;
     let res = g.execute_nql(r#"
-        find e.name, degree(e) as d
+        find e.name, max(degree(e)) as d
         from (e:ShellCompany)
         group by e.name
         having degree(e) > 0

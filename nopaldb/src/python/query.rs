@@ -283,19 +283,12 @@ fn row_to_pydict<'py>(
     let row = &result.rows()[index];
     let dict = PyDict::new(py);
 
-    if result.columns.len() == 1 && result.columns[0] == "*" {
-        for key in row.keys() {
-            if let Some(value) = row.get(key) {
-                let py_value = property_to_py(py, value)?;
-                dict.set_item(key, py_value)?;
-            }
-        }
-    } else {
-        for column in &result.columns {
-            if let Some(value) = row.get(column) {
-                let py_value = property_to_py(py, value)?;
-                dict.set_item(column, py_value)?;
-            }
+    // The columns are the schema, `find *` expanded too (#335): no symbolic
+    // `*` to resolve from the row keys.
+    for column in &result.columns {
+        if let Some(value) = row.get(column) {
+            let py_value = property_to_py(py, value)?;
+            dict.set_item(column, py_value)?;
         }
     }
 

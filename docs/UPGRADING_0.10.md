@@ -237,3 +237,23 @@ error, and some queries return different rows or columns:
 | `find foo(n) …`, `id(n)`, `COUNT(*)` | column dropped, `where` passed every row, empty row | `SemanticError`; `COUNT(*)` is `count(*)` ([#328](https://github.com/sharop/nopaldb/issues/328)) | use `n.id` instead of `id(n)` |
 | `update … set n.x = n.name` | OK, nothing updated | `SemanticError` ([#330](https://github.com/sharop/nopaldb/issues/330)) | only literals in `set` for now |
 | `find all(n)`, `find *` with an indexed `where` | empty rows; only `n.id`, `n.label` in Python | every property | — |
+
+## 10. After 0.10.3: the columns of a result
+
+The columns of a result come from `find`, the same whatever path runs the
+query ([#335](https://github.com/sharop/nopaldb/issues/335)). No API or
+disk format changes; names and order change in Rust, Python and `export`,
+and some queries that answered are now errors:
+
+| Query | 0.10.3 | Now | What to do |
+|---|---|---|---|
+| `find count(*), sum(n.age) …` | columns `count`, `sum` | `count(*)`, `sum(n.age)` | give an alias (`count(*) as c`) if you read the column by name |
+| `find degree(n), n.name …` | column `degree` | `degree(n)` | same |
+| `find count(*) as c, n.city … group by n.city` | `n.city`, `c` | `c`, `n.city`: the order of `find` | read by name, or write `find` in the order you want |
+| `find *` (Rust; Python already gave every key) | columns `["*"]` | `n.id`, `n.label`, then the properties sorted | — |
+| `find n.a as x, n.b as x` | one `x`, the other value lost | `SemanticError` | give different aliases |
+| `find n.age, count(*) … group by n.city` | `n.city` and `count`, `n.age` lost | `SemanticError` | add `n.age` to `group by` or aggregate it (`avg(n.age)`) |
+| `find n.city, pagerank(n) … group by n.city` | average of the group | `SemanticError` | write `avg(pagerank(n))` |
+| `find n.name … order by degree(n)` | not sorted | `SemanticError` | project it (`degree(n) as d`) and `order by d` |
+| `find … order by count(*)` with `count(*)` in `find` | not sorted | sorted | — |
+| `find n.name, 1 …` | column dropped | constant column `1` | — |

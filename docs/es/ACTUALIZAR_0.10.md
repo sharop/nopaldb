@@ -244,3 +244,23 @@ error, y algunas consultas devuelven otras filas o columnas:
 | `find foo(n) …`, `id(n)`, `COUNT(*)` | columna perdida, `where` dejaba pasar todo, fila vacía | `SemanticError`; `COUNT(*)` es `count(*)` ([#328](https://github.com/sharop/nopaldb/issues/328)) | usa `n.id` en vez de `id(n)` |
 | `update … set n.x = n.nombre` | OK sin actualizar nada | `SemanticError` ([#330](https://github.com/sharop/nopaldb/issues/330)) | por ahora solo literales en `set` |
 | `find all(n)`, `find *` con un `where` por índice | filas vacías; en Python solo `n.id`, `n.label` | todas las propiedades | — |
+
+## 10. Después de 0.10.3: las columnas del resultado
+
+Las columnas del resultado salen del `find`, iguales sea cual sea la ruta
+que ejecuta la consulta ([#335](https://github.com/sharop/nopaldb/issues/335)).
+Sin cambios de API ni de formato en disco; cambian nombres y orden en Rust,
+Python y `export`, y algunas consultas que respondían ahora son error:
+
+| Consulta | 0.10.3 | Ahora | Qué hacer |
+|---|---|---|---|
+| `find count(*), sum(n.edad) …` | columnas `count`, `sum` | `count(*)`, `sum(n.edad)` | pon un alias (`count(*) as c`) si lees la columna por nombre |
+| `find degree(n), n.nombre …` | columna `degree` | `degree(n)` | igual |
+| `find count(*) as c, n.ciudad … group by n.ciudad` | `n.ciudad`, `c` | `c`, `n.ciudad`: el orden del `find` | lee por nombre, o escribe el `find` en el orden que quieras |
+| `find *` (Rust; Python ya daba todas las claves) | columnas `["*"]` | `n.id`, `n.label` y luego las propiedades ordenadas | — |
+| `find n.a as x, n.b as x` | una sola `x`, el otro valor perdido | `SemanticError` | usa alias distintos |
+| `find n.edad, count(*) … group by n.ciudad` | `n.ciudad` y `count`, `n.edad` perdida | `SemanticError` | añade `n.edad` al `group by` o agrégala (`avg(n.edad)`) |
+| `find n.ciudad, pagerank(n) … group by n.ciudad` | promedio del grupo | `SemanticError` | escribe `avg(pagerank(n))` |
+| `find n.nombre … order by degree(n)` | sin ordenar | `SemanticError` | proyéctalo (`degree(n) as d`) y `order by d` |
+| `find … order by count(*)` con `count(*)` en el `find` | sin ordenar | ordenado | — |
+| `find n.nombre, 1 …` | columna perdida | columna constante `1` | — |

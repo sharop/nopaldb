@@ -96,7 +96,8 @@ async fn all_of_a_variable_gives_its_properties() {
 async fn the_wildcard_keeps_every_key() {
     let g = orchard().await;
     let r = g.execute_nql("find * from (n:Arbol) where n.fruta = \"mango\"").await.unwrap();
-    assert_eq!(r.columns, cols(&["*"]));
+    // Expanded since #335; until then the columns were a symbolic `*`.
+    assert_eq!(r.columns, cols(&["n.id", "n.label", "n.edad", "n.fruta"]));
     let keys: BTreeSet<&str> = r.rows()[0].values.keys().map(String::as_str).collect();
     assert_eq!(keys, BTreeSet::from(["n.edad", "n.fruta", "n.id", "n.label"]));
 }
