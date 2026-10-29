@@ -173,6 +173,14 @@ impl<'a> RowStream for ProjectNodesStream<'a> {
                         if prop.is_empty() {
                             // `find n from (n)` — bare variable, devolver id del nodo
                             row.set(proj, PropertyValue::String(node.id.to_string()));
+                        } else if prop == "*" {
+                            // `find all(n)`: buscaba una propiedad llamada `*` y
+                            // la fila salía vacía (#331).
+                            row.set(format!("{}.id", self.variable), PropertyValue::String(node.id.to_string()));
+                            row.set(format!("{}.label", self.variable), PropertyValue::String(node.label.clone()));
+                            for (key, val) in &node.properties {
+                                row.set(format!("{}.{}", self.variable, key), val.clone());
+                            }
                         } else if prop == "label" {
                              row.set(proj, PropertyValue::String(node.label.clone()));
                         } else if prop == "id" {

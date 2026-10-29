@@ -11,6 +11,7 @@ Un patrón `(a:L1)-[r:T]->(b:L2)` produce una **vinculación** por cada coincide
 - Dos caminos distintos dan dos filas, aunque terminen en el mismo nodo. `c1 -MENTIONS-> e1 -RELATED-> f` y `c1 -MENTIONS-> e2 -RELATED-> f` son dos filas `(c1, f)`.
 - Las aristas paralelas dan una fila cada una.
 - `distinct` quita filas **proyectadas** repetidas. Compara las columnas del `find`, no los nodos que hay detrás.
+- Una fila tiene exactamente las columnas del `find` (desde 0.10.3, #331): el alias cuando lo hay (`find n.nombre as j` es solo la columna `j`), `var.id`, `var.label` y cada propiedad con `all(var)`, todas las claves con `*`. Hasta 0.10.2 una propiedad con alias conservaba también su clave original, `group by` y los algoritmos por nodo añadían `n.id`, y `all(n)` en una consulta de un solo nodo daba filas vacías. Lo prueba `nql_projection_columns_test`.
 - Un *conjunto de nodos*, donde cada nodo aparece una vez a su profundidad mínima, es otra operación: `Graph.neighborhood(...)` / `Graph::neighborhood`. NQL no convierte caminos en vecindad de forma implícita.
 - Una semilla sin expansiones válidas no produce filas. Los patrones son *inner joins*; no hay `OPTIONAL`.
 

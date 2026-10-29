@@ -107,6 +107,8 @@ Especifica qué información recuperar de los patrones encontrados.
 ### Sintaxis
 - `find p.nombre`: Devuelve la propiedad `nombre` del nodo `p`.
 - `find *`: Devuelve **todas** las propiedades de los elementos encontrados.
+- `find all(p)`: Devuelve `p.id`, `p.label` y cada propiedad de `p`.
+- `find p.nombre as nombre`: La columna es solo el alias (desde 0.10.3; hasta 0.10.2 la fila conservaba también `p.nombre`).
 - `find count(*)`: Cuenta cuántos resultados coinciden.
 
 ### Ejemplos
