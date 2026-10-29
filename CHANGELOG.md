@@ -23,6 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.10.2 `set n.x = n.nombre` (o una función) se descartaba con una línea de
   log y el UPDATE respondía OK sin actualizar nada. Leer propiedades en `set`
   llegará con las expresiones de NQL (#269).
+- **`find all(n)` devuelve las propiedades del nodo** (#331): en una consulta
+  de un solo nodo las filas salían vacías.
+- **`find *` con un `where` que usa índice devuelve todas las propiedades**
+  (#331): sus columnas eran `[n.id, n.label]` y Python y `export` perdían el
+  resto.
+- **Una fila tiene exactamente las columnas del `find`** (#331). Una propiedad
+  con alias ya no conserva su clave original (`find n.nombre as j` da solo
+  `j`; antes la fila de Rust traía también `n.nombre`), y `group by` y los
+  algoritmos por nodo ya no añaden `n.id` a las columnas (Python y `export`
+  lo mostraban). Si leías la clave original de una propiedad con alias, lee
+  el alias.
 
 ## [0.10.2] - 2026-10-29
 

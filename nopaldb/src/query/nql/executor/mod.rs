@@ -386,6 +386,115 @@ fn projections_contain_path_eval(projections: &[Projection]) -> bool {
     })
 }
 
+/// The columns a query asked for, to trim what the execution paths add for
+/// their own use (#331). Until 0.10.2 a row kept the original key of an
+/// aliased property (`find n.name as j` gave `n.name` and `j`), and the
+/// aggregation and algorithm paths added `n.id` to the columns too.
+///
+/// One pass at the end of `execute` instead of a fix in each path: there
+/// are five projection paths, and each one leaked in its own way. Only those
+/// two kinds of keys are removed, and only when no projection asks for them;
+/// `find *` keeps everything. `var.*` (`all(var)`) is expanded to the keys
+/// of `var` in the rows: `id`, `label`, then the properties in order.
+struct OutputShape {
+    wildcard: bool,
+    asked: HashSet<String>,
+    all_of: Vec<String>,
+    internal: HashSet<String>,
+}
+
+impl OutputShape {
+    fn of(query: &Query) -> Self {
+        let mut wildcard = false;
+        let mut asked = HashSet::new();
+        let mut all_of = Vec::new();
+        let mut aliased_from = Vec::new();
+        for p in &query.find.projections {
+            match p {
+                Projection::Wildcard => wildcard = true,
+                Projection::All(var) => all_of.push(var.clone()),
+                Projection::Expression { expr, .. } if all_of_variable(expr).is_some() => {
+                    all_of.extend(all_of_variable(expr).map(str::to_string));
+                }
+                Projection::Expression { expr, alias } => {
+                    let key = match expr {
+                        Expression::Property { variable, property } => Some(property_projection_key(variable, property)),
+                        _ => None,
+                    };
+                    match (alias, key) {
+                        (Some(a), Some(k)) => {
+                            asked.insert(a.clone());
+                            aliased_from.push(k);
+                        }
+                        (Some(a), None) => {
+                            asked.insert(a.clone());
+                        }
+                        (None, Some(k)) => {
+                            asked.insert(k);
+                        }
+                        (None, None) => {}
+                    }
+                }
+            }
+        }
+        let mut internal: HashSet<String> = aliased_from.into_iter().collect();
+        for pattern in &query.from.patterns {
+            for var in pattern.variables() {
+                internal.insert(format!("{var}.id"));
+            }
+        }
+        internal.retain(|k| !asked.contains(k) && !all_of.iter().any(|v| k.starts_with(&format!("{v}."))));
+        OutputShape { wildcard, asked, all_of, internal }
+    }
+
+    fn apply(&self, result: &mut QueryResult) {
+        if self.wildcard {
+            return;
+        }
+        if !self.internal.is_empty() {
+            result.columns.retain(|c| !self.internal.contains(c));
+            for row in &mut result.rows {
+                row.values.retain(|k, _| !self.internal.contains(k));
+            }
+        }
+        for var in &self.all_of {
+            let star = format!("{var}.*");
+            let Some(at) = result.columns.iter().position(|c| *c == star) else { continue };
+            let prefix = format!("{var}.");
+            let mut props: Vec<String> = result
+                .rows
+                .iter()
+                .flat_map(|r| r.values.keys())
+                .filter(|k| k.starts_with(&prefix) && !self.asked.contains(*k))
+                .cloned()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            if props.is_empty() {
+                continue;
+            }
+            let rank = |k: &String| match &k[prefix.len()..] {
+                "id" => 0,
+                "label" => 1,
+                _ => 2,
+            };
+            props.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.cmp(b)));
+            result.columns.splice(at..=at, props);
+        }
+    }
+}
+
+/// La variable de `all(var)`, si la expresión es eso.
+fn all_of_variable(expr: &Expression) -> Option<&str> {
+    match expr {
+        Expression::FunctionCall { name, args } if name == "all" => match args.as_slice() {
+            [Expression::Property { variable, property }] if property.is_empty() => Some(variable.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn property_projection_key(variable: &str, property: &str) -> String {
     if property.is_empty() {
         variable.to_string()
@@ -644,6 +753,13 @@ impl<'a> Executor<'a> {
 
     /// Execute NQL query
     pub async fn execute(&self, query: Query) -> Result<QueryResult> {
+        let shape = OutputShape::of(&query);
+        let mut result = self.execute_inner(query).await?;
+        shape.apply(&mut result);
+        Ok(result)
+    }
+
+    async fn execute_inner(&self, query: Query) -> Result<QueryResult> {
         // Un alias de la proyección en `where`/`having` es su expresión (#294).
         let query = crate::query::nql::validator::resolve_projection_aliases(query);
         // F4-C: Run semantic validation (path.result, return rules, etc.)
@@ -5442,10 +5558,10 @@ impl<'a> Executor<'a> {
 
     /// Project wildcard (all properties)
     fn project_wildcard(&self, nodes: Vec<crate::types::Node>, variable: &str) -> Result<QueryResult> {
-        let mut result = QueryResult::new(vec![
-            format!("{}.id", variable),
-            format!("{}.label", variable),
-        ]);
+        // `*` como en las demás rutas: las columnas son las claves de cada
+        // fila. Con `[id, label]` Python y `export` perdían las propiedades
+        // cuando la consulta usaba un índice (#331).
+        let mut result = QueryResult::new(vec!["*".to_string()]);
 
         for node in nodes {
             let mut row = Row::new();
@@ -5476,7 +5592,9 @@ impl<'a> Executor<'a> {
             .map(|(idx, p)| {
                 match p {
                     Projection::Expression { expr, alias } => {
-                        if let Some(a) = alias {
+                        if let Some(var) = all_of_variable(expr) {
+                            format!("{var}.*")
+                        } else if let Some(a) = alias {
                             a.clone()
                         } else if let Expression::Property { variable: v, property: prop } = expr {
                             property_projection_key(v, prop)
@@ -5485,7 +5603,7 @@ impl<'a> Executor<'a> {
                         }
                     }
                     Projection::Wildcard => "*".to_string(),
-                    Projection::All(var) => format!("all({})", var),
+                    Projection::All(var) => format!("{var}.*"),
                 }
             })
             .collect();
@@ -5498,6 +5616,22 @@ impl<'a> Executor<'a> {
             for (i, projection) in query.find.projections.iter().enumerate() {
                 let col_name = &columns[i];
 
+                let all_of = match projection {
+                    Projection::All(var) => Some(var.as_str()),
+                    Projection::Expression { expr, .. } => all_of_variable(expr),
+                    Projection::Wildcard => None,
+                };
+                if let Some(var) = all_of {
+                    // `all(n)`: daba la columna `expr_0` vacía (#331).
+                    if variable == var {
+                        row.set(format!("{var}.id"), PropertyValue::String(node.id.to_string()));
+                        row.set(format!("{var}.label"), PropertyValue::String(node.label.clone()));
+                        for (key, value) in &node.properties {
+                            row.set(format!("{var}.{key}"), value.clone());
+                        }
+                    }
+                    continue;
+                }
                 match projection {
                     Projection::Expression { expr, .. } => {
                         match expr {
@@ -5525,14 +5659,7 @@ impl<'a> Executor<'a> {
                             row.set(key.clone(), value.clone());
                         }
                     }
-                    Projection::All(var) => {
-                        // Add all properties of specific variable
-                        if variable == var {
-                            for (key, value) in &node.properties {
-                                row.set(format!("{}.{}", var, key), value.clone());
-                            }
-                        }
-                    }
+                    Projection::All(_) => {}
                 }
             }
 

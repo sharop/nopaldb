@@ -11,6 +11,7 @@ A pattern `(a:L1)-[r:T]->(b:L2)` produces one **binding** per match. A binding i
 - Two different paths give two rows, even if they end on the same node. `c1 -MENTIONS-> e1 -RELATED-> f` and `c1 -MENTIONS-> e2 -RELATED-> f` are two rows `(c1, f)`.
 - Parallel edges give one row each.
 - `distinct` removes duplicate **projected** rows. It compares the columns of `find`, not the nodes behind them.
+- A row has exactly the columns of `find` (since 0.10.3, #331): the alias when there is one (`find n.name as j` is the column `j` alone), `var.id`, `var.label` and each property for `all(var)`, every key for `*`. Until 0.10.2 an aliased property kept its original key too, `group by` and per-node algorithms added `n.id`, and `all(n)` on a single-node query gave empty rows. Tested by `nql_projection_columns_test`.
 - A *set of nodes*, where each node appears once at its minimum depth, is a different operation: `Graph.neighborhood(...)` / `Graph::neighborhood`. NQL does not turn paths into a neighbourhood implicitly.
 - A seed with no valid expansion produces no row. Patterns are inner joins; there is no `OPTIONAL`.
 

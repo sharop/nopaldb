@@ -107,6 +107,8 @@ Specifies what information to retrieve from the matched patterns.
 ### Syntax
 - `find p.name`: Returns property `name` of node `p`.
 - `find *`: Returns **all** properties of matched elements.
+- `find all(p)`: Returns `p.id`, `p.label` and every property of `p`.
+- `find p.name as name`: The column is the alias alone (since 0.10.3; until 0.10.2 the row also kept `p.name`).
 - `find count(*)`: Counts how many matches were found.
 
 ### Examples
