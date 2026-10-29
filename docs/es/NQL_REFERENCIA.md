@@ -111,6 +111,20 @@ Especifica qué información recuperar de los patrones encontrados.
 - `find p.nombre as nombre`: La columna es solo el alias (desde 0.10.3; hasta 0.10.2 la fila conservaba también `p.nombre`).
 - `find count(*)`: Cuenta cuántos resultados coinciden.
 
+### Columnas del resultado
+
+Las columnas salen del `find`, iguales sea cual sea la ruta que ejecuta la consulta (índice o recorrido, un nodo o un patrón, ahora o `at timestamp`) ([#335](https://github.com/sharop/nopaldb/issues/335)):
+
+- Una columna por proyección, en el orden del `find`.
+- El alias es el nombre. Sin alias, el nombre es el texto de la expresión: `count(*)`, `sum(n.edad)`, `degree(n)`, `n.nombre`.
+- `*` y `all(p)` se expanden: por cada variable, `p.id`, `p.label` (`r.type` en una relación) y luego las propiedades ordenadas.
+- Un literal es una columna constante: `find n.nombre, 1 as uno`.
+- Dos columnas con el mismo nombre son un error: `find n.a as x, n.b as x`.
+- Con `group by`, cada columna es una clave del grupo o un agregado: `find n.edad, count(*) … group by n.ciudad` es un error, y también un algoritmo por nodo (`pagerank(n)`): escribe `avg(pagerank(n))`. `*` y `all(p)` no se pueden usar con `group by`.
+- `order by count(*)` ordena por la columna `count(*)` del `find`. Un agregado o algoritmo en `order by` que no está en el `find` es un error.
+
+Hasta 0.10.3 los nombres, el orden y las columnas de `*` dependían de la ruta: `count(*)` era la columna `count`, `group by` ponía primero las claves del grupo, un alias repetido o una columna fuera del `group by` se perdían sin error, y `order by count(*)` no hacía nada.
+
 ### Ejemplos
 ```nql
 find p.nombre, p.email

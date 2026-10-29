@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **Las columnas del resultado NQL salen del `find`** (#335). Una columna
+  por proyección, en el orden del `find`, con el alias o el texto de la
+  expresión como nombre (`count(*)`, `sum(n.edad)`, `degree(n)`), igual por
+  cualquier ruta (índice o recorrido, un nodo o patrón, `at timestamp`).
+  `find *` y `all(var)` se expanden a `var.id`, `var.label` y las
+  propiedades ordenadas, en vez de declarar un `*` simbólico. Hasta 0.10.3
+  `count(*)` era la columna `count`, `group by` ponía primero las claves del
+  grupo y cada ruta ordenaba a su manera. Migración: pon alias a los
+  agregados y algoritmos que leas por nombre; la tabla está en la §10 de
+  `docs/UPGRADING_0.10.md`.
+- **Con `group by`, cada columna es clave del grupo o agregado** (#335).
+  `find n.edad, count(*) … group by n.ciudad` es un `SemanticError`; hasta
+  0.10.3 `n.edad` se perdía sin aviso. Un algoritmo por nodo dentro de un
+  grupo se escribe `avg(pagerank(n))`; hasta 0.10.3 daba el promedio.
+
+### Fixed
+- **Dos columnas con el mismo nombre son un error** (#335): `find n.a as x,
+  n.b as x` perdía una columna sin aviso.
+- **`order by count(*)` ordena** por la columna `count(*)` del `find`; no
+  hacía nada (#335). Un agregado o algoritmo en `order by` que no está en el
+  `find` es un error con nombre.
+- **Un literal en `find` es una columna constante**: `find n.nombre, 1` la
+  descartaba.
+
 ## [0.10.3] - 2026-10-29
 
 NQL deja de descartar en silencio: funciones desconocidas (#328), `set` con

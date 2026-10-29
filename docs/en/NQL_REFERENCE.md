@@ -111,6 +111,20 @@ Specifies what information to retrieve from the matched patterns.
 - `find p.name as name`: The column is the alias alone (since 0.10.3; until 0.10.2 the row also kept `p.name`).
 - `find count(*)`: Counts how many matches were found.
 
+### Columns of the result
+
+The columns come from `find`, the same whatever path runs the query (index or scan, one node or a pattern, now or `at timestamp`) ([#335](https://github.com/sharop/nopaldb/issues/335)):
+
+- One column per projection, in the order of `find`.
+- The alias is the name. Without one, the name is the text of the expression: `count(*)`, `sum(n.age)`, `degree(n)`, `n.name`.
+- `*` and `all(p)` are expanded: for each variable, `p.id`, `p.label` (`r.type` for a relationship), then the properties sorted.
+- A literal is a constant column: `find n.name, 1 as one`.
+- Two columns with one name are an error: `find n.a as x, n.b as x`.
+- With `group by`, every column is a group key or an aggregate: `find n.age, count(*) … group by n.city` is an error, and so is a per-node algorithm (`pagerank(n)`): write `avg(pagerank(n))`. `*` and `all(p)` cannot be used with `group by`.
+- `order by count(*)` sorts by the column `count(*)` of `find`. An aggregate or algorithm in `order by` that is not in `find` is an error.
+
+Until 0.10.3 the names, the order and the columns of `*` depended on the path: `count(*)` was the column `count`, `group by` put the group keys first, a repeated alias or a column outside `group by` was lost without an error, and `order by count(*)` did nothing.
+
 ### Examples
 ```nql
 find p.name, p.email

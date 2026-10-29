@@ -11,7 +11,7 @@ from (a:Alert) -> [:ON_SERVICE] -> (s:Service)
 group by s.name
 order by alerts desc
 
-find u.team, degree(u) as deg, pagerank(u) as pr
+find u.team, avg(degree(u)) as deg, avg(pagerank(u)) as pr
 from (u:User)
 group by u.team
 order by u.team asc
