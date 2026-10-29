@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.10.1] - unreleased
+## [0.10.1] - 2026-10-29
 
 Toda escritura deja historia MVCC (#319, #320). `add_node` directo y la
 importación Turtle/OWL versionan; el BulkLoader guarda una marca de
