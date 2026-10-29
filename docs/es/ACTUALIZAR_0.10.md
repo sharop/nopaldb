@@ -245,14 +245,14 @@ error, y algunas consultas devuelven otras filas o columnas:
 | `update … set n.x = n.nombre` | OK sin actualizar nada | `SemanticError` ([#330](https://github.com/sharop/nopaldb/issues/330)) | por ahora solo literales en `set` |
 | `find all(n)`, `find *` con un `where` por índice | filas vacías; en Python solo `n.id`, `n.label` | todas las propiedades | — |
 
-## 10. Después de 0.10.3: las columnas del resultado
+## 10. De 0.10.3 a 0.10.4: las columnas del resultado
 
 Las columnas del resultado salen del `find`, iguales sea cual sea la ruta
 que ejecuta la consulta ([#335](https://github.com/sharop/nopaldb/issues/335)).
 Sin cambios de API ni de formato en disco; cambian nombres y orden en Rust,
 Python y `export`, y algunas consultas que respondían ahora son error:
 
-| Consulta | 0.10.3 | Ahora | Qué hacer |
+| Consulta | 0.10.3 | 0.10.4 | Qué hacer |
 |---|---|---|---|
 | `find count(*), sum(n.edad) …` | columnas `count`, `sum` | `count(*)`, `sum(n.edad)` | pon un alias (`count(*) as c`) si lees la columna por nombre |
 | `find degree(n), n.nombre …` | columna `degree` | `degree(n)` | igual |

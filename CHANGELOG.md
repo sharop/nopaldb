@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.4] - unreleased
+
+El esquema del resultado NQL es un contrato (#335): columnas en el orden del
+`find`, nombradas por el alias o el texto de la expresión (`count(*)`, no
+`count`), `find *` expandido, y errores con nombre donde antes se perdía una
+columna. Quien lea agregados o algoritmos por su nombre por defecto pone un
+alias; la tabla completa está en la §10 de `docs/UPGRADING_0.10.md`. Sin
+cambios de API Rust ni de formato en disco.
 
 ### Changed
 - **Las columnas del resultado NQL salen del `find`** (#335). Una columna
