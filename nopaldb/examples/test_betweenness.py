@@ -28,7 +28,7 @@ print("   ✅ Network created (1 center + 4 periphery)")
 print("\n2️⃣  Computing Betweenness Centrality...")
 
 result = graph.execute_nql("""
-    find betweenness(n) as bc
+    find avg(betweenness(n)) as bc
     from (n:Person)
 """)
 
@@ -39,7 +39,7 @@ for row in result:
 print("\n3️⃣  Testing with GROUP BY...")
 
 result = graph.execute_nql("""
-    find n.role, betweenness(n) as bc
+    find n.role, avg(betweenness(n)) as bc
     from (n:Person)
     group by n.role
 """)

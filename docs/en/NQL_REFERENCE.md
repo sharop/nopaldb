@@ -531,7 +531,7 @@ Function names are matched without case (`COUNT(*)` is `count(*)`). A name that 
 - `sum(p.amount)`: Sums numeric property values.
 - `avg(p.age)`: Calculates average.
 - `min(p.score)`, `max(p.score)`: Finds minimum and maximum values.
-- `degree(n)`, `pagerank(n)`, `betweenness(n)`, `clustering(n)`: Graph analytics aggregations.
+- `degree(n)`, `pagerank(n)`, `betweenness(n)`, `clustering(n)`: Graph analytics, one value per node: `find n.name, degree(n) as d` gives one row per node. The average or the extremes are aggregations over them: `avg(degree(n))`, `max(pagerank(n))`, also per group with `group by`. Until 0.10.2 `find degree(n)` without grouping gave one row with the average.
 - `community(n)`: Exact global community detection (Louvain, modularity-based).
 - `community_fast(n)`: Approximate local community detection for low-latency exploration.
 - `leiden(n)`: Exact global community detection using **Leiden / CPM** (Traag et al. 2019). Guarantees internally well-connected communities. Uses a separate cache from `community()` — both can coexist in the same query. Options (0.6.11): `leiden(n, labels = ["Entity"], edge_types = ["RELATED"], weight = "w", gamma = 0.2)` — scope the partition to those labels and edge types (nodes outside get `null`), weight pairs by the sum of the numeric edge property `w`, and set the CPM resolution (default 0.1). One configuration per query; details in [ALGORITHMS.md](../ALGORITHMS.md).

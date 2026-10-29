@@ -212,6 +212,14 @@ pub async fn execute_aggregations(
         }
     }
 
+    // Solo algoritmos por nodo (y propiedades): una fila por nodo, sin
+    // agrupar (#336). Hasta 0.10.2 caían en la agregación: `find degree(n)`
+    // daba una fila para todo el grafo y `find degree(n) as d, n.nombre`
+    // agrupaba por nombre, fundiendo nodos distintos.
+    if query.group_by.is_none() && only_per_node_algorithms(&query.find.projections) {
+        return execute_per_node_algorithms(graph, nodes, query, variable, &ctx).await;
+    }
+
     // Check if there's a GROUP BY clause
     if let Some(group_by) = &query.group_by {
         execute_grouped_aggregation(graph, nodes, query, variable, group_by, &ctx).await
@@ -238,6 +246,96 @@ pub async fn execute_aggregations(
             execute_grouped_aggregation(graph, nodes, query, variable, &implicit_group_by, &ctx).await
         }
     }
+}
+
+/// `degree(n)`, `pagerank(n)`… : un valor por nodo.
+fn is_per_node_algorithm(expr: &Expression) -> bool {
+    matches!(
+        expr,
+        Expression::FunctionCall { name, .. }
+            if matches!(
+                name.to_lowercase().as_str(),
+                "pagerank" | "betweenness" | "clustering" | "degree" | "community" | "community_fast" | "leiden"
+            )
+    )
+}
+
+/// Las proyecciones son algoritmos por nodo y propiedades, y nada más.
+/// `shortestPath` y las funciones de embeddings no son por nodo: siguen por
+/// la agregación.
+fn only_per_node_algorithms(projections: &[Projection]) -> bool {
+    let mut any_algorithm = false;
+    for p in projections {
+        match p {
+            Projection::Expression { expr: Expression::Property { .. }, .. } => {}
+            Projection::Expression { expr, .. } if is_per_node_algorithm(expr) => {
+                any_algorithm = true;
+            }
+            _ => return false,
+        }
+    }
+    any_algorithm
+}
+
+/// Una fila por nodo con el valor de cada algoritmo para ese nodo. Lleva
+/// `var.id`, como la agregación agrupada: el post-filtro de un `where` con
+/// algoritmos busca el nodo por esa clave.
+async fn execute_per_node_algorithms(
+    graph: &Graph,
+    nodes: Vec<Node>,
+    query: &Query,
+    variable: &str,
+    ctx: &QueryContext,
+) -> Result<QueryResult> {
+    let id_key = format!("{variable}.id");
+    let mut columns = vec![id_key.clone()];
+    for projection in &query.find.projections {
+        let Projection::Expression { expr, alias } = projection else { continue };
+        let key = match (alias, expr) {
+            (Some(a), _) => a.clone(),
+            (None, Expression::Property { variable: v, property }) if property.is_empty() => v.clone(),
+            (None, Expression::Property { variable: v, property }) => format!("{v}.{property}"),
+            (None, Expression::FunctionCall { name, .. }) => name.clone(),
+            (None, _) => continue,
+        };
+        if !columns.contains(&key) {
+            columns.push(key);
+        }
+    }
+    let mut result = QueryResult::new(columns);
+    for node in &nodes {
+        let mut row = Row::new();
+        row.set(id_key.clone(), PropertyValue::String(node.id.to_string()));
+        for projection in &query.find.projections {
+            let Projection::Expression { expr, alias } = projection else { continue };
+            match expr {
+                Expression::Property { variable: v, property } => {
+                    let key = alias.clone().unwrap_or_else(|| {
+                        if property.is_empty() { v.clone() } else { format!("{v}.{property}") }
+                    });
+                    let value = if v != variable {
+                        None
+                    } else {
+                        match property.as_str() {
+                            "id" | "" => Some(PropertyValue::String(node.id.to_string())),
+                            "label" => Some(PropertyValue::String(node.label.clone())),
+                            p => node.properties.get(p).cloned(),
+                        }
+                    };
+                    if let Some(value) = value {
+                        row.set(key, value);
+                    }
+                }
+                _ => {
+                    let (key, value) =
+                        evaluate_aggregation(graph, expr, std::slice::from_ref(node), variable, alias, ctx).await?;
+                    row.set(key, value);
+                }
+            }
+        }
+        result.add_row(row);
+    }
+    Ok(result)
 }
 
 /// Execute simple aggregation (no GROUP BY)
@@ -506,6 +604,38 @@ async fn evaluate_aggregation(
                 "count" => {
                     let count = nodes.len() as i64;
                     Ok((result_key, PropertyValue::Int(count)))
+                }
+                // `avg(degree(n))`: el promedio que hasta 0.10.2 daba
+                // `find degree(n)` sin agrupar, ahora pedido de forma
+                // explícita (#336).
+                "sum" | "avg" | "min" | "max" if args.first().is_some_and(is_per_node_algorithm) => {
+                    if let Some(Expression::FunctionCall { name: inner, .. }) = args.first()
+                        && matches!(inner.to_lowercase().as_str(), "community" | "community_fast" | "leiden")
+                    {
+                        return Err(NopalError::QueryExecutionError(format!(
+                            "{name}({inner}(...)) is not supported: a community id is a label, not a quantity"
+                        )));
+                    }
+                    let mut values = Vec::with_capacity(nodes.len());
+                    for node in nodes {
+                        let (_, v) = Box::pin(evaluate_aggregation(
+                            graph, &args[0], std::slice::from_ref(node), variable, &None, ctx,
+                        ))
+                        .await?;
+                        match v {
+                            PropertyValue::Float(f) => values.push(f),
+                            PropertyValue::Int(i) => values.push(i as f64),
+                            _ => {}
+                        }
+                    }
+                    let value = match (name.as_str(), values.is_empty()) {
+                        ("sum", _) => PropertyValue::Float(values.iter().sum()),
+                        (_, true) => PropertyValue::Null,
+                        ("avg", false) => PropertyValue::Float(values.iter().sum::<f64>() / values.len() as f64),
+                        ("min", false) => PropertyValue::Float(values.iter().copied().fold(f64::INFINITY, f64::min)),
+                        _ => PropertyValue::Float(values.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
+                    };
+                    Ok((result_key, value))
                 }
                 "sum" => {
                     if args.is_empty() {

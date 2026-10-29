@@ -610,9 +610,9 @@ from (n:Person)
 # ✅ GOOD: One query, multiple algorithms
 result = graph.execute_nql("""
     find n.type,
-          degree(n) as deg,
-          pagerank(n) as pr,
-          clustering(n) as cc
+          avg(degree(n)) as deg,
+          avg(pagerank(n)) as pr,
+          avg(clustering(n)) as cc
     from (n)
     group by n.type
 """)

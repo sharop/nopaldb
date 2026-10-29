@@ -222,3 +222,18 @@ if it has none). What changes:
   `HistoryUnavailable` instead of using the current taxonomy;
 - do not write to the database with 0.10.0 after opening it with 0.10.1
   (section 6).
+
+## 9. From 0.10.2 to 0.10.3
+
+No API or disk format changes. NQL stops dropping things without an
+error, and some queries return different rows or columns:
+
+| Query | 0.10.2 | 0.10.3 | What to do |
+|---|---|---|---|
+| `find degree(n) as d from (n:L)` (also `pagerank`, `betweenness`, `clustering`, `community`, `leiden`) | one row with the average | one row per node ([#336](https://github.com/sharop/nopaldb/issues/336)) | for the average write `find avg(degree(n)) as d` |
+| `find degree(n) as d, n.name from (n:L)` | grouped by `n.name`: nodes with the same name merged | one row per node | add `group by n.name` and `avg(...)` if you meant the group |
+| `find n.name as j …` (Rust) | the row had `j` and `n.name` | `j` only ([#331](https://github.com/sharop/nopaldb/issues/331)) | read `j`; Python and `export` already gave `j` only |
+| `find n.name, count(*) as c … group by n.name` | columns `n.id`, `n.name`, `c` | `n.name`, `c` | ask for `n.id` if you used it |
+| `find foo(n) …`, `id(n)`, `COUNT(*)` | column dropped, `where` passed every row, empty row | `SemanticError`; `COUNT(*)` is `count(*)` ([#328](https://github.com/sharop/nopaldb/issues/328)) | use `n.id` instead of `id(n)` |
+| `update … set n.x = n.name` | OK, nothing updated | `SemanticError` ([#330](https://github.com/sharop/nopaldb/issues/330)) | only literals in `set` for now |
+| `find all(n)`, `find *` with an indexed `where` | empty rows; only `n.id`, `n.label` in Python | every property | — |

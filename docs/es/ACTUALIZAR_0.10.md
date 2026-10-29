@@ -229,3 +229,18 @@ y `Graph::edge_history_floor(id)` devuelven el suelo de un nodo o una arista
   `HistoryUnavailable` en vez de usar la taxonomía actual;
 - no escribas en la base con 0.10.0 después de abrirla con 0.10.1
   (sección 6).
+
+## 9. De 0.10.2 a 0.10.3
+
+Sin cambios de API ni de formato en disco. NQL deja de descartar cosas sin
+error, y algunas consultas devuelven otras filas o columnas:
+
+| Consulta | 0.10.2 | 0.10.3 | Qué hacer |
+|---|---|---|---|
+| `find degree(n) as d from (n:L)` (también `pagerank`, `betweenness`, `clustering`, `community`, `leiden`) | una fila con el promedio | una fila por nodo ([#336](https://github.com/sharop/nopaldb/issues/336)) | para el promedio escribe `find avg(degree(n)) as d` |
+| `find degree(n) as d, n.nombre from (n:L)` | agrupado por `n.nombre`: los nodos con el mismo nombre se fundían | una fila por nodo | añade `group by n.nombre` y `avg(...)` si querías el grupo |
+| `find n.nombre as j …` (Rust) | la fila traía `j` y `n.nombre` | solo `j` ([#331](https://github.com/sharop/nopaldb/issues/331)) | lee `j`; Python y `export` ya daban solo `j` |
+| `find n.nombre, count(*) as c … group by n.nombre` | columnas `n.id`, `n.nombre`, `c` | `n.nombre`, `c` | pide `n.id` si lo usabas |
+| `find foo(n) …`, `id(n)`, `COUNT(*)` | columna perdida, `where` dejaba pasar todo, fila vacía | `SemanticError`; `COUNT(*)` es `count(*)` ([#328](https://github.com/sharop/nopaldb/issues/328)) | usa `n.id` en vez de `id(n)` |
+| `update … set n.x = n.nombre` | OK sin actualizar nada | `SemanticError` ([#330](https://github.com/sharop/nopaldb/issues/330)) | por ahora solo literales en `set` |
+| `find all(n)`, `find *` con un `where` por índice | filas vacías; en Python solo `n.id`, `n.label` | todas las propiedades | — |

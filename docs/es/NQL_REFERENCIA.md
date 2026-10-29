@@ -535,7 +535,7 @@ Los nombres de las funciones no distinguen mayúsculas (`COUNT(*)` es `count(*)`
 - `sum(p.monto)`: Suma los valores de una propiedad numérica.
 - `avg(p.edad)`: Calcula el promedio.
 - `min(p.score)`, `max(p.score)`: Encuentra valores mínimos y máximos.
-- `degree(n)`, `pagerank(n)`, `betweenness(n)`, `clustering(n)`: Agregaciones de analítica de grafos.
+- `degree(n)`, `pagerank(n)`, `betweenness(n)`, `clustering(n)`: Analítica de grafos, un valor por nodo: `find n.nombre, degree(n) as d` da una fila por nodo. El promedio o los extremos son agregaciones sobre ellos: `avg(degree(n))`, `max(pagerank(n))`, también por grupo con `group by`. Hasta 0.10.2 `find degree(n)` sin agrupar daba una fila con el promedio.
 - `community(n)`: Detección exacta global de comunidades (basada en Louvain).
 - `community_fast(n)`: Detección aproximada local de comunidades para exploración de baja latencia.
 - `leiden(n)`: Detección exacta global de comunidades con **Leiden / CPM** (Traag et al. 2019). Garantiza comunidades bien conectadas internamente. Usa un caché distinto al de `community()`, así que ambas pueden convivir en la misma consulta. Opciones (0.6.11): `leiden(n, labels = ["Entity"], edge_types = ["RELATED"], weight = "w", gamma = 0.2)` acota la partición a esas etiquetas y tipos de arista (los nodos de fuera reciben `null`), pondera cada par con la suma de la propiedad numérica `w` de sus aristas y fija la resolución CPM (0.1 por defecto). Una configuración por consulta; detalle en [ALGORITHMS.md](../ALGORITHMS.md).

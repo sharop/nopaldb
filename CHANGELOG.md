@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   algoritmos por nodo ya no añaden `n.id` a las columnas (Python y `export`
   lo mostraban). Si leías la clave original de una propiedad con alias, lee
   el alias.
+- **Un algoritmo por nodo da una fila por nodo** (#336). En una consulta de
+  un solo nodo, `find degree(n)` daba una fila con el promedio de todo el
+  grafo y `find degree(n) as d, n.nombre` agrupaba por `n.nombre`,
+  fundiendo nodos con el mismo nombre; en `where` y en patrones ya era por
+  nodo. Igual con `pagerank`, `betweenness`, `clustering`, `community`,
+  `community_fast` y `leiden`. **Si usabas `find degree(n)` para el
+  promedio, escribe `find avg(degree(n))`**: `sum`, `avg`, `min` y `max`
+  aceptan ahora un algoritmo por nodo (con o sin `group by`); sobre
+  `community`/`leiden` son un error, porque un id de comunidad no es una
+  cantidad. Con `group by` o con agregados, un algoritmo suelto sigue dando
+  el promedio del grupo (lo ordena #335).
 
 ## [0.10.2] - 2026-10-29
 

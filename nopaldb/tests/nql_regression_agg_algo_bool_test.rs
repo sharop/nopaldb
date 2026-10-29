@@ -53,13 +53,23 @@ async fn test_algorithms_are_materialized_not_null() -> Result<()> {
         "find degree(u) as deg, pagerank(u) as pr, betweenness(u) as bc, clustering(u) as cc from (u:User)"
     ).await?;
 
-    assert_eq!(result.len(), 1, "non-grouped algorithm query should return one aggregated row");
-    let row = &result.rows()[0];
+    // Un algoritmo es por nodo: una fila por usuario (#336). Hasta 0.10.2
+    // daba una fila con el promedio.
+    assert_eq!(result.len(), 24, "one row per node");
+    for row in result.rows() {
+        assert!(matches!(row.get("deg"), Some(PropertyValue::Float(_))));
+        assert!(matches!(row.get("pr"), Some(PropertyValue::Float(_))));
+        assert!(matches!(row.get("bc"), Some(PropertyValue::Float(_))));
+        assert!(matches!(row.get("cc"), Some(PropertyValue::Float(_))));
+    }
 
-    assert!(matches!(row.get("deg"), Some(PropertyValue::Float(_))));
-    assert!(matches!(row.get("pr"), Some(PropertyValue::Float(_))));
-    assert!(matches!(row.get("bc"), Some(PropertyValue::Float(_))));
-    assert!(matches!(row.get("cc"), Some(PropertyValue::Float(_))));
+    // El promedio se pide con avg(...): en un anillo, cada nodo tiene grado 2.
+    let result = graph.execute_nql(
+        "find avg(degree(u)) as deg, max(pagerank(u)) as pr from (u:User)"
+    ).await?;
+    assert_eq!(result.len(), 1);
+    assert_eq!(result.rows()[0].get("deg"), Some(&PropertyValue::Float(2.0)));
+    assert!(matches!(result.rows()[0].get("pr"), Some(PropertyValue::Float(_))));
 
     Ok(())
 }
@@ -71,12 +81,13 @@ async fn test_community_returns_float_aggregation() -> Result<()> {
         "find community(u) as comm from (u:User)"
     ).await?;
 
-    assert_eq!(result.len(), 1, "community() debe devolver un row agregado");
-    let row = &result.rows()[0];
-    assert!(
-        matches!(row.get("comm"), Some(PropertyValue::Float(_))),
-        "community() debe devolver Float"
-    );
+    assert_eq!(result.len(), 24, "community() es por nodo (#336)");
+    for row in result.rows() {
+        assert!(
+            matches!(row.get("comm"), Some(PropertyValue::Float(_))),
+            "community() debe devolver Float"
+        );
+    }
 
     Ok(())
 }
@@ -88,12 +99,13 @@ async fn test_community_fast_returns_float_aggregation() -> Result<()> {
         "find community_fast(u) as comm_fast from (u:User)"
     ).await?;
 
-    assert_eq!(result.len(), 1, "community_fast() debe devolver un row agregado");
-    let row = &result.rows()[0];
-    assert!(
-        matches!(row.get("comm_fast"), Some(PropertyValue::Float(_))),
-        "community_fast() debe devolver Float"
-    );
+    assert_eq!(result.len(), 24, "community_fast() es por nodo (#336)");
+    for row in result.rows() {
+        assert!(
+            matches!(row.get("comm_fast"), Some(PropertyValue::Float(_))),
+            "community_fast() debe devolver Float"
+        );
+    }
 
     Ok(())
 }
