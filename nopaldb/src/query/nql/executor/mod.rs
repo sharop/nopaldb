@@ -1075,8 +1075,11 @@ impl<'a> Executor<'a> {
 
         log::info!("📊 Using full scan (no index used)");
 
-        if has_relationships {
-            // Use pattern matching executor
+        // Varios patrones van al pipeline de patrones aunque ninguno tenga
+        // aristas: la ruta de un nodo solo lee el primer patrón. Hasta 0.10.4
+        // `from (a:X), (b:Y)` devolvía las filas de `a` con `b` vacío, en vez
+        // del producto cruzado que ya daba `(a)-[:R]->(c), (b:Y)` (#345).
+        if has_relationships || query.from.patterns.len() > 1 {
             return self.execute_pattern_query(query).await;
         }
 
@@ -1483,6 +1486,13 @@ impl<'a> Executor<'a> {
         &self,
         query: &Query,
     ) -> Result<FastPathDecision> {
+        // Varios patrones se combinan en el pipeline de patrones (#345); la
+        // ruta rápida solo mira el primero y perdería los demás.
+        if query.from.patterns.len() > 1 {
+            return Ok(FastPathDecision::Scan {
+                reason: "varios patrones en FROM (pipeline de patrones)",
+            });
+        }
         let has_relationships = query.from.patterns.iter().any(|p| {
             p.elements.iter().any(|e| matches!(e, PatternElement::Relationship(_)))
         });

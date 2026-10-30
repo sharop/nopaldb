@@ -97,6 +97,15 @@ from (author1:Researcher)<-[:COLLABORATES]->(author2:Researcher)
   `find u.name from ()-[:FOLLOWS]->(u)`, `u` is the target and `()` stays
   anonymous. Until 0.9.3 the anonymous node could be bound to `u`, and the
   query returned the sources.
+- **Several patterns are joined by their shared variables** (0.10.5).
+  `from (r:Recipe)-[:USES]->(i), (o:Recipe)-[:USES]->(i)` gives the pairs
+  of recipes that share an ingredient. Patterns that share no variable give
+  the cross product, as `MATCH (a), (b)` in openCypher and `FROM a, b` in
+  SQL: `from (a:Recipe), (b:Recipe) where a.servings < b.servings` compares
+  every pair. The product of N and M rows has N·M rows; relate the patterns
+  in `where` to keep it small. Until 0.10.4 a `from` whose patterns were all
+  single nodes read only the first one (#345). Aggregations over several
+  patterns are not supported yet: a named error.
 
 ---
 
