@@ -265,7 +265,7 @@ Python y `export`, y algunas consultas que respondían ahora son error:
 | `find … order by count(*)` con `count(*)` en el `find` | sin ordenar | ordenado | — |
 | `find n.nombre, 1 …` | columna perdida | columna constante `1` | — |
 
-## 11. De 0.10.4 a 0.10.5: aritmética y negación
+## 11. De 0.10.4 a 0.10.5: aritmética, negación y varios patrones
 
 NQL evalúa `+ - * / %`, el menos unario, `not` y `!`
 ([#269](https://github.com/sharop/nopaldb/issues/269)). Consultas que daban
@@ -283,3 +283,13 @@ error de parseo ahora responden; unas pocas que respondían cambian:
 | `where r.porciones + 1` (aritmética como condición) | error de parseo | `SemanticError`: compárala | `where r.porciones + 1 > 0` |
 | `find distinct r.porciones % 2`, o `distinct` con `order by` de una expresión | error de parseo | error: todavía no se soporta | — |
 | `delete (n:L) where true` (también `update`) | no borraba nada: el WHERE de las escrituras leía como `false` lo que no fuera comparación | borra todos los `L`, como lo lee el `find` | revisa scripts que dependieran de eso |
+
+Varios patrones en el `from` que son todos nodos solos se unen
+([#345](https://github.com/sharop/nopaldb/issues/345)), como ya pasaba
+cuando un patrón tenía una arista:
+
+| Consulta | 0.10.4 | 0.10.5 | Qué hacer |
+|---|---|---|---|
+| `find a.nombre, b.nombre from (a:Receta), (b:Receta)` | las filas de `a`, `b` vacío | el producto cruzado (N·M filas) | relaciona los patrones en el `where` si esperas menos filas |
+| `… where a.porciones < b.porciones` (condición sobre los dos) | sin filas | los pares que la cumplen | — |
+| `find count(*) from (a:Receta), (b:Receta)` | contaba solo `a` | error con nombre: las agregaciones sobre varios patrones todavía no se soportan | cuenta sobre un patrón |

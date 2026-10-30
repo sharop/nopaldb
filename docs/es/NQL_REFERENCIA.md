@@ -97,6 +97,16 @@ from (autor1:Investigador)<-[:COLABORA]->(autor2:Investigador)
   `find u.nombre from ()-[:SIGUE]->(u)`, `u` es el destino y `()` sigue
   anónimo. Hasta 0.9.3 el nodo anónimo podía ligarse a `u`, y la consulta
   devolvía los orígenes.
+- **Varios patrones se unen por sus variables comunes** (0.10.5).
+  `from (r:Receta)-[:LLEVA]->(i), (o:Receta)-[:LLEVA]->(i)` da los pares de
+  recetas que comparten un ingrediente. Los patrones sin variable común dan
+  el producto cruzado, como `MATCH (a), (b)` en openCypher y `FROM a, b` en
+  SQL: `from (a:Receta), (b:Receta) where a.porciones < b.porciones` compara
+  cada par. El producto de N y M filas tiene N·M filas; relaciona los
+  patrones en el `where` para acotarlo. Hasta 0.10.4 un `from` cuyos
+  patrones eran todos nodos solos leía solo el primero (#345). Las
+  agregaciones sobre varios patrones todavía no se soportan: error con
+  nombre.
 
 ---
 

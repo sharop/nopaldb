@@ -258,7 +258,7 @@ and some queries that answered are now errors:
 | `find … order by count(*)` with `count(*)` in `find` | not sorted | sorted | — |
 | `find n.name, 1 …` | column dropped | constant column `1` | — |
 
-## 11. From 0.10.4 to 0.10.5: arithmetic and negation
+## 11. From 0.10.4 to 0.10.5: arithmetic, negation and several patterns
 
 NQL evaluates `+ - * / %`, unary minus, `not` and `!`
 ([#269](https://github.com/sharop/nopaldb/issues/269)). Queries that were a
@@ -276,3 +276,13 @@ parse error now answer; a few that answered change:
 | `where r.servings + 1` (arithmetic as a condition) | parse error | `SemanticError`: compare it | `where r.servings + 1 > 0` |
 | `find distinct r.servings % 2`, or `distinct` with `order by` an expression | parse error | error: not supported yet | — |
 | `delete (n:L) where true` (also `update`) | deleted nothing: the write WHERE read anything but a comparison as `false` | deletes every `L`, as `find` reads it | check scripts that relied on it |
+
+Several patterns in `from` that are all single nodes are joined
+([#345](https://github.com/sharop/nopaldb/issues/345)), as they already were
+when a pattern had an edge:
+
+| Query | 0.10.4 | 0.10.5 | What to do |
+|---|---|---|---|
+| `find a.name, b.name from (a:Recipe), (b:Recipe)` | the rows of `a`, `b` empty | the cross product (N·M rows) | relate the patterns in `where` if you expect fewer rows |
+| `… where a.servings < b.servings` (a condition on both) | no rows | the pairs that pass | — |
+| `find count(*) from (a:Recipe), (b:Recipe)` | counted `a` only | named error: aggregations over several patterns are not supported yet | count over one pattern |

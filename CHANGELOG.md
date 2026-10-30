@@ -32,6 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leídas del elemento antes del `update`. Leer otra variable del patrón o
   llamar a una función sigue siendo error.
 
+### Fixed
+- **Varios patrones de un solo nodo en el `from` se unen** (#345):
+  `from (a:Receta), (b:Receta)` da el producto cruzado y
+  `where a.porciones < b.porciones` compara cada par, como ya pasaba cuando
+  un patrón tenía una arista. Hasta 0.10.4 la consulta tomaba la ruta de un
+  nodo, que lee solo el primer patrón: devolvía las filas de `a` con `b`
+  vacío, y `count(*)` contaba solo `a` (ahora es el error con nombre de las
+  agregaciones sobre varios patrones).
+
 ## [0.10.4] - 2026-10-29
 
 El esquema del resultado NQL es un contrato (#335): columnas en el orden del
