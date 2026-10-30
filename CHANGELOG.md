@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.5] - unreleased
+
+NQL evalúa aritmética (`+ - * / %`, menos unario) y negación (`not`, `!`)
+en todas las cláusulas y por todas las rutas (#269), y varios patrones de un
+solo nodo en el `from` se unen en vez de leer solo el primero (#345). Sin
+cambios de API Rust ni de formato en disco. Algunas consultas que respondían
+cambian (`7 / 2` entero en `path_eval`, `3 = 3.0` verdadero, `not` palabra
+clave, `delete … where true`): la tabla completa está en la §11 de
+`docs/UPGRADING_0.10.md`.
 
 ### Added
 - **Aritmética y negación en NQL** (#269): `+ - * / %`, el menos unario,
