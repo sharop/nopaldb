@@ -1,9 +1,10 @@
 // tests/nql_update_set_values_test.rs
 //
-// `update … set var.prop = <value>` only writes literals. Until 0.10.2 any
-// other value (`n.nombre`, a function) was dropped and the UPDATE answered
-// OK with nothing updated (#330). Now it is a named error, and literals of
-// every kind still write.
+// `update … set var.prop = <value>`: until 0.10.2 any value that was not a
+// literal (`n.nombre`, a function) was dropped and the UPDATE answered OK
+// with nothing updated (#330). Since then what SET cannot evaluate is a
+// named error, and literals of every kind write; since #269 properties of
+// the same variable and arithmetic write too.
 //
 // Fictional domain: an orchard and its trees.
 
@@ -27,20 +28,23 @@ async fn riego(g: &Graph) -> Vec<Option<PropertyValue>> {
     r.rows().iter().map(|row| row.get("n.riego").cloned()).collect()
 }
 
+/// What SET cannot evaluate is an error and writes nothing. Since #269 it
+/// also takes properties of its own variable and arithmetic (see
+/// nql_arithmetic_test); another variable of the pattern or a function is
+/// still an error.
 #[tokio::test]
-async fn a_value_that_is_not_a_literal_is_an_error_and_writes_nothing() {
+async fn a_value_it_cannot_evaluate_is_an_error_and_writes_nothing() {
     let g = orchard().await;
     for q in [
-        "update (n:Arbol) set n.riego = n.fruta",
-        "update (n:Arbol) set n.riego = 1, n.copia = n.fruta",
         "update (a:Arbol)-[r:JUNTO_A]->(b:Arbol) set b.riego = a.fruta",
         "update (n:Arbol) set n.riego = degree(n)",
+        "update (n:Arbol) set n.riego = 1, n.copia = degree(n)",
     ] {
         let err = match g.execute_nql(q).await {
             Ok(r) => panic!("{q}: should fail, got {:?}", r.rows().first().map(|r| &r.values)),
             Err(e) => e.to_string(),
         };
-        assert!(err.contains("only accepts a literal value"), "{q}: {err}");
+        assert!(err.contains("only accepts literals, properties of"), "{q}: {err}");
     }
     assert_eq!(riego(&g).await, vec![None, None]);
 }

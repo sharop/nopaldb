@@ -157,6 +157,27 @@ pub(crate) fn check_result_schema(query: &Query) -> Result<()> {
             if in_group_by || matches!(expr, Expression::Literal(_)) {
                 continue;
             }
+            // An expression with operators (#269): each of its leaves is a
+            // group key or an aggregate (`count(*) * 2`, `n.ciudad + "!"`).
+            if matches!(expr, Expression::BinaryOp { .. } | Expression::UnaryOp { .. }) {
+                fn bad_leaf<'e>(e: &'e Expression, keys: &[Expression]) -> Option<&'e Expression> {
+                    match e {
+                        Expression::BinaryOp { left, right, .. } => bad_leaf(left, keys).or_else(|| bad_leaf(right, keys)),
+                        Expression::UnaryOp { expr, .. } => bad_leaf(expr, keys),
+                        Expression::Literal(_) => None,
+                        leaf if keys.contains(leaf) => None,
+                        leaf if call_name(leaf).is_some_and(|n| AGGREGATIONS.contains(&n)) => None,
+                        leaf => Some(leaf),
+                    }
+                }
+                if let Some(leaf) = bad_leaf(expr, &group_by.expressions) {
+                    return Err(NopalError::SemanticError(format!(
+                        "{leaf} in `{expr}` is not in group by: add it to group by or put it inside an \
+                         aggregate (count, sum, avg, min, max)"
+                    )));
+                }
+                continue;
+            }
             match call_name(expr) {
                 Some(name) if AGGREGATIONS.contains(&name) => {}
                 Some(name) if PER_NODE_ALGORITHMS.contains(&name) => {
@@ -2919,25 +2940,54 @@ mod tests {
 /// no tocaban ninguno (#294). Se rechazan con un error con nombre en lugar
 /// de dar a la propiedad suelta un valor de verdad: cinco evaluadores
 /// tendrían que acordarlo, y la comparación explícita no es ambigua.
-/// `set var.prop = <value>` only writes literals (#330). Until 0.10.2 any
-/// other value (`n.nombre`, `now()`) was dropped with a log line and the
-/// UPDATE answered OK with nothing updated.
+/// What `set var.prop = <value>` can write (#330, #269): literals, the
+/// properties of `var` itself and NQL's operators over them
+/// (`set n.porciones = n.porciones + 1`). Until 0.10.2 any other value was
+/// dropped with a log line and the UPDATE answered OK with nothing updated;
+/// until 0.10.4 only literals were accepted.
 ///
-/// Reading a property of the pattern (`set b.city = a.city`) needs the
-/// values of each match, and one node can take part in several matches with
-/// different values: that comes with expressions in NQL (#269), not here.
+/// Reading another variable of the pattern (`set b.city = a.city`) stays an
+/// error: one node can take part in several matches with different values.
+/// Functions (`degree(n)`) are not evaluated in SET.
 pub(crate) fn check_update_values(update: &UpdateStmt) -> Result<()> {
     check_known_functions(update.assignments.iter().map(|a| &a.value))?;
-    for a in &update.assignments {
-        if !matches!(a.value, Expression::Literal(_)) {
-            return Err(NopalError::SemanticError(format!(
-                "SET {}.{} only accepts a literal value (a string, number, boolean, null or \
-                 list); reading properties or calling functions in SET is not supported yet",
-                a.variable, a.property
-            )));
+    fn first_unsupported<'e>(expr: &'e Expression, var: &str) -> Option<&'e Expression> {
+        match expr {
+            Expression::Literal(_) => None,
+            Expression::Property { variable, .. } if variable == var => None,
+            Expression::BinaryOp { left, right, .. } => {
+                first_unsupported(left, var).or_else(|| first_unsupported(right, var))
+            }
+            Expression::UnaryOp { expr, .. } => first_unsupported(expr, var),
+            other => Some(other),
         }
     }
+    for a in &update.assignments {
+        let Some(bad) = first_unsupported(&a.value, &a.variable) else { continue };
+        let why = match bad {
+            Expression::Property { variable, .. } => format!(
+                "it reads `{variable}`, another variable of the pattern (one node can take part in \
+                 several matches with different values)"
+            ),
+            _ => format!("`{bad}` cannot be evaluated in SET"),
+        };
+        return Err(NopalError::SemanticError(format!(
+            "SET {}.{} only accepts literals, properties of {} and arithmetic: {why}",
+            a.variable, a.property, a.variable
+        )));
+    }
     Ok(())
+}
+
+fn seeded_search(expr: &Expression) -> Option<&Expression> {
+    match expr {
+        Expression::FunctionCall { name, .. } if matches!(name.as_str(), "similar_to" | "hybrid" | "in_community") => {
+            Some(expr)
+        }
+        Expression::BinaryOp { left, right, .. } => seeded_search(left).or_else(|| seeded_search(right)),
+        Expression::UnaryOp { expr, .. } => seeded_search(expr),
+        _ => None,
+    }
 }
 
 pub(crate) fn check_condition(expr: &Expression, clause: &str) -> Result<()> {
@@ -2946,7 +2996,31 @@ pub(crate) fn check_condition(expr: &Expression, clause: &str) -> Result<()> {
             check_condition(left, clause)?;
             check_condition(right, clause)
         }
-        Expression::BinaryOp { .. } | Expression::UnaryOp { .. } | Expression::FunctionCall { .. } => Ok(()),
+        // `not <condición>` / `!(…)`: lo de dentro también es condición. Las
+        // búsquedas (`similar_to`, `hybrid`, `in_community`) siembran los
+        // candidatos antes de evaluar: negarlas pediría las filas que dejaron
+        // fuera, y daría vacío sin aviso.
+        Expression::UnaryOp { op: UnaryOperator::Not, expr: inner } => {
+            if let Some(search) = seeded_search(inner) {
+                return Err(NopalError::SemanticError(format!(
+                    "{clause}: `not {search}` is not supported: {search} picks candidates, it cannot \
+                     be negated"
+                )));
+            }
+            check_condition(inner, clause)
+        }
+        Expression::BinaryOp {
+            op: BinaryOperator::Add | BinaryOperator::Sub | BinaryOperator::Mul | BinaryOperator::Div | BinaryOperator::Mod,
+            ..
+        } => {
+            Err(NopalError::SemanticError(format!(
+                "{clause} condition `{expr}` is arithmetic, not a comparison: compare it (`{expr} > 0`)"
+            )))
+        }
+        Expression::UnaryOp { .. } => Err(NopalError::SemanticError(format!(
+            "{clause} condition `{expr}` is a number, not a comparison"
+        ))),
+        Expression::BinaryOp { .. } | Expression::FunctionCall { .. } => Ok(()),
         Expression::NamedArg { .. } => Ok(()),
         Expression::Property { variable, property } => {
             let shown = if property.is_empty() { variable.clone() } else { format!("{variable}.{property}") };

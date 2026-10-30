@@ -264,3 +264,22 @@ Python y `export`, y algunas consultas que respondían ahora son error:
 | `find n.nombre … order by degree(n)` | sin ordenar | `SemanticError` | proyéctalo (`degree(n) as d`) y `order by d` |
 | `find … order by count(*)` con `count(*)` en el `find` | sin ordenar | ordenado | — |
 | `find n.nombre, 1 …` | columna perdida | columna constante `1` | — |
+
+## 11. De 0.10.4 a 0.10.5: aritmética y negación
+
+NQL evalúa `+ - * / %`, el menos unario, `not` y `!`
+([#269](https://github.com/sharop/nopaldb/issues/269)). Consultas que daban
+error de parseo ahora responden; unas pocas que respondían cambian:
+
+| Consulta | 0.10.4 | 0.10.5 | Qué hacer |
+|---|---|---|---|
+| `where r.porciones * 2 = 6`, `find r.porciones * 2 as d`, `order by -r.porciones`, `having count(*) * 2 > 3`, `where not r.region = "sur"`, `where !(…)` | error de parseo | se evalúan | — |
+| `set r.porciones = r.porciones + 1` | `SemanticError` | escribe el valor nuevo | — |
+| `path_eval` / `gather "x = a / b"` con dos enteros | decimal (`7 / 2` = `3.5`) | entero (`3`) | escribe un operando como decimal: `a / 100.0`, o `init "x = 100.0"` |
+| `where n.x = 3.0` sobre una propiedad entera (también `in [3.0]`) | sin coincidencia | coincide: los números se comparan por valor | — |
+| desbordamiento de enteros, `/ 0`, `% 0` en un `gather` | pánico en debug, valor que da la vuelta en release / error con nombre | error con nombre | — |
+| una variable llamada `not` | permitida | `not` es palabra clave | renombra la variable |
+| `where not similar_to(…)` (también `hybrid`, `in_community`) | error de parseo | `SemanticError`: una búsqueda elige candidatos, no se puede negar | — |
+| `where r.porciones + 1` (aritmética como condición) | error de parseo | `SemanticError`: compárala | `where r.porciones + 1 > 0` |
+| `find distinct r.porciones % 2`, o `distinct` con `order by` de una expresión | error de parseo | error: todavía no se soporta | — |
+| `delete (n:L) where true` (también `update`) | no borraba nada: el WHERE de las escrituras leía como `false` lo que no fuera comparación | borra todos los `L`, como lo lee el `find` | revisa scripts que dependieran de eso |

@@ -539,109 +539,100 @@ impl<'a> RowStream for ProjectPatternStream<'a> {
 // EVALUATORS
 // ================================================================================================
 
-pub fn eval_condition(node: &Node, expr: &Expression, variable: &str) -> bool {
+/// Whether `expr` holds for `node`. The operators are NQL's
+/// (`value_ops`): arithmetic, `not`/`!`, comparisons (#269).
+pub fn eval_condition(node: &Node, expr: &Expression, variable: &str) -> crate::error::Result<bool> {
+    super::value_ops::condition(expr, &mut |e| node_leaf(node, e, variable))
+}
+
+/// The value of `expr` for `node`; `Ok(None)` when it has none (a missing
+/// property, another variable).
+pub fn eval_expression(node: &Node, expr: &Expression, expected_var: &str) -> crate::error::Result<Option<PropertyValue>> {
+    super::value_ops::scalar(expr, &mut |e| node_leaf(node, e, expected_var))
+}
+
+fn node_leaf(node: &Node, expr: &Expression, expected_var: &str) -> crate::error::Result<Option<PropertyValue>> {
     match expr {
-        Expression::BinaryOp { left, op, right } => match op {
-            BinaryOperator::And => eval_condition(node, left, variable) && eval_condition(node, right, variable),
-            BinaryOperator::Or => eval_condition(node, left, variable) || eval_condition(node, right, variable),
-            _ => {
-                let lv = eval_expression(node, left, variable);
-                let rv = eval_expression(node, right, variable);
-                match (lv, rv) {
-                    (Some(l), Some(r)) => compare_values(&l, op, &r),
-                    _ => false,
-                }
-            }
-        },
+        Expression::Literal(val) => Ok(Some(val.clone())),
+        Expression::Property { variable, property } => {
+            if variable != expected_var { return Ok(None); }
+            if property.is_empty() { return Ok(Some(PropertyValue::String(node.id.to_string()))); }
+            if property == "label" { return Ok(Some(PropertyValue::String(node.label.clone()))); }
+            if property == "id" { return Ok(Some(PropertyValue::String(node.id.to_string()))); }
+            Ok(node.properties.get(property).cloned())
+        }
         // Las ontology predicates (instanceOf/subClassOf) requieren acceso al grafo.
         // Sin él, retornar false para evitar que todos los nodos pasen el filtro.
         Expression::FunctionCall { name, .. }
             if matches!(name.to_lowercase().as_str(), "instanceof" | "subclassof") =>
         {
-            false
+            Ok(Some(PropertyValue::Bool(false)))
         }
-        Expression::Literal(PropertyValue::Bool(b)) => *b,
-        _ => true,
+        e if is_seeded_predicate(e) => Ok(Some(PropertyValue::Bool(true))),
+        other => Err(unsupported_here(other)),
     }
 }
 
-pub fn eval_expression(node: &Node, expr: &Expression, expected_var: &str) -> Option<PropertyValue> {
-    match expr {
-        Expression::Literal(val) => Some(val.clone()),
-        Expression::Property { variable, property } => {
-            if variable != expected_var { return None; }
-            if property.is_empty() { return Some(PropertyValue::String(node.id.to_string())); }
-            if property == "label" { return Some(PropertyValue::String(node.label.clone())); }
-            if property == "id" { return Some(PropertyValue::String(node.id.to_string())); }
-            node.properties.get(property).cloned()
-        },
-        _ => None,
-    }
+/// `similar_to`, `hybrid` and `in_community` are resolved before the
+/// evaluators run: the executor seeds the stream with their candidates
+/// (`vector_search_candidates`, the community universe), so for a row that
+/// reached an evaluator they hold. The validator rejects negating them,
+/// which would need the rows they left out.
+pub(crate) fn is_seeded_predicate(expr: &Expression) -> bool {
+    matches!(expr, Expression::FunctionCall { name, .. }
+        if matches!(name.as_str(), "similar_to" | "hybrid" | "in_community"))
 }
 
-pub fn eval_pattern_condition(m: &PatternMatch, expr: &Expression, source_var: &str, target_var: &str) -> bool {
-    match expr {
-        Expression::BinaryOp { left, op, right } => match op {
-            BinaryOperator::And => eval_pattern_condition(m, left, source_var, target_var) && eval_pattern_condition(m, right, source_var, target_var),
-            BinaryOperator::Or => eval_pattern_condition(m, left, source_var, target_var) || eval_pattern_condition(m, right, source_var, target_var),
-            _ => {
-                let lv = eval_pattern_expression(m, left, source_var, target_var);
-                let rv = eval_pattern_expression(m, right, source_var, target_var);
-                match (lv, rv) {
-                    (Some(l), Some(r)) => compare_values(&l, op, &r),
-                    _ => false,
-                }
-            }
-        },
-        Expression::Literal(PropertyValue::Bool(b)) => *b,
-        _ => true,
-    }
+/// An expression this evaluator cannot compute. Until 0.10.4 it was `true`
+/// in a condition and "no value" in a comparison, without a word (#269).
+pub(crate) fn unsupported_here(expr: &Expression) -> crate::error::NopalError {
+    crate::error::NopalError::QueryExecutionError(format!("`{expr}` cannot be evaluated in this part of the query"))
 }
 
-pub fn eval_pattern_expression(m: &PatternMatch, expr: &Expression, source_var: &str, target_var: &str) -> Option<PropertyValue> {
-    match expr {
+/// Whether `expr` holds for the match `m`.
+pub fn eval_pattern_condition(m: &PatternMatch, expr: &Expression, source_var: &str, target_var: &str) -> crate::error::Result<bool> {
+    super::value_ops::condition(expr, &mut |e| pattern_leaf(m, e, source_var, target_var))
+}
+
+pub fn eval_pattern_expression(m: &PatternMatch, expr: &Expression, source_var: &str, target_var: &str) -> crate::error::Result<Option<PropertyValue>> {
+    super::value_ops::scalar(expr, &mut |e| pattern_leaf(m, e, source_var, target_var))
+}
+
+fn pattern_leaf(m: &PatternMatch, expr: &Expression, source_var: &str, target_var: &str) -> crate::error::Result<Option<PropertyValue>> {
+    let value = match expr {
         Expression::Literal(val) => Some(val.clone()),
         Expression::Property { variable, property } => {
             if property.is_empty() {
-                if variable == source_var { return Some(PropertyValue::String(m.source.id.to_string())); }
-                if variable == target_var { return Some(PropertyValue::String(m.target.id.to_string())); }
-                if let Some(e) = &m.edge { return Some(PropertyValue::String(e.id.to_string())); }
-                return None;
+                if variable == source_var { return Ok(Some(PropertyValue::String(m.source.id.to_string()))); }
+                if variable == target_var { return Ok(Some(PropertyValue::String(m.target.id.to_string()))); }
+                if let Some(e) = &m.edge { return Ok(Some(PropertyValue::String(e.id.to_string()))); }
+                return Ok(None);
             }
             let node = if variable == source_var { &m.source } else if variable == target_var { &m.target } else {
                 if let Some(e) = &m.edge {
-                    if property == "type" || property == "edge_type" { return Some(PropertyValue::String(e.edge_type.clone())); }
-                    if property == "id" { return Some(PropertyValue::String(e.id.to_string())); }
-                    return e.properties.get(property).cloned();
+                    if property == "type" || property == "edge_type" { return Ok(Some(PropertyValue::String(e.edge_type.clone()))); }
+                    if property == "id" { return Ok(Some(PropertyValue::String(e.id.to_string()))); }
+                    return Ok(e.properties.get(property).cloned());
                 }
-                return None;
+                return Ok(None);
             };
-            if property == "label" { return Some(PropertyValue::String(node.label.clone())); }
-            if property == "id" { return Some(PropertyValue::String(node.id.to_string())); }
+            if property == "label" { return Ok(Some(PropertyValue::String(node.label.clone()))); }
+            if property == "id" { return Ok(Some(PropertyValue::String(node.id.to_string()))); }
             node.properties.get(property).cloned()
-        },
-        _ => None,
-    }
+        }
+        e if is_seeded_predicate(e) => Some(PropertyValue::Bool(true)),
+        other => return Err(unsupported_here(other)),
+    };
+    Ok(value)
 }
 
+/// Comparison with NQL's equality (#269): see `value_ops::compare`.
 pub fn compare_values(left: &PropertyValue, op: &BinaryOperator, right: &PropertyValue) -> bool {
-    match op {
-        BinaryOperator::Eq => left == right,
-        BinaryOperator::NotEq => left != right,
-        BinaryOperator::Gt => left > right,
-        BinaryOperator::Lt => left < right,
-        BinaryOperator::GtEq => left >= right,
-        BinaryOperator::LtEq => left <= right,
-        // `x in [..]`: pertenencia con la misma igualdad estricta que `=`. Un
-        // RHS que no es lista es `false` (el parser no lo produce).
-        BinaryOperator::In => matches!(right, PropertyValue::List(xs) if xs.contains(left)),
-        BinaryOperator::NotIn => !matches!(right, PropertyValue::List(xs) if xs.contains(left)),
-        _ => false,
-    }
+    super::value_ops::compare(left, op, right)
 }
 
 pub fn filter_stream_from_expr<'a>(input: Box<dyn NodeStream + 'a>, expr: Arc<Expression>, variable: String) -> Box<dyn NodeStream + 'a> {
-    Box::new(FilterNodesStream::new(input, move |node| Ok(eval_condition(node, &expr, &variable))))
+    Box::new(FilterNodesStream::new(input, move |node| eval_condition(node, &expr, &variable)))
 }
 
 /// Graph-aware variant of `eval_condition` that resolves ontology predicates
@@ -671,8 +662,11 @@ pub fn eval_condition_with_graph(
                         || eval_condition_with_graph(node, right, variable, graph)?,
                 )
             }
-            _ => Ok(eval_condition(node, expr, variable)),
+            _ => eval_condition(node, expr, variable),
         },
+        Expression::UnaryOp { op: crate::query::nql::parser::ast::UnaryOperator::Not, expr: inner } => {
+            Ok(!eval_condition_with_graph(node, inner, variable, graph)?)
+        }
         #[cfg(feature = "embeddings")]
         Expression::FunctionCall { name, args } if name.to_lowercase() == "has_embedding" => {
             if args.len() != 2 {
@@ -724,7 +718,7 @@ pub fn eval_condition_with_graph(
             };
             Ok(result)
         }
-        _ => Ok(eval_condition(node, expr, variable)),
+        _ => eval_condition(node, expr, variable),
     }
 }
 
@@ -743,7 +737,7 @@ pub fn filter_stream_from_expr_with_graph<'a>(
 }
 
 pub fn filter_pattern_stream_from_expr<'a>(input: Box<dyn PatternMatchStream + 'a>, expr: Arc<Expression>, source_var: String, target_var: String) -> Box<dyn PatternMatchStream + 'a> {
-    Box::new(FilterPatternStream::new(input, move |m| Ok(eval_pattern_condition(m, &expr, &source_var, &target_var))))
+    Box::new(FilterPatternStream::new(input, move |m| eval_pattern_condition(m, &expr, &source_var, &target_var)))
 }
 
 // ================================================================================================

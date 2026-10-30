@@ -7,9 +7,9 @@
 // worse: the builder kept the first operand of `+ - * / %` and dropped the
 // operator, and the `-` of a negative number lost its sign. So
 // `where m.temp = -5` matched `temp = 5` and `set m.temp = -7` wrote 7.
-// Now parentheses group, negative numbers are literals, and what NQL does
-// not evaluate yet (arithmetic, `!`, unary minus on an expression) is a
-// parse error that names it.
+// Now parentheses group and negative numbers are literals. Arithmetic, `!`
+// and `not` were a parse error from 0.8.3 to 0.10.4 and are evaluated since
+// #269 (see also nql_arithmetic_test).
 //
 // Fictional domain: recipes and temperature readings.
 
@@ -123,26 +123,26 @@ async fn negative_numbers_in_writes() {
     assert_eq!(keys(&g, "m", "find m.key from (m:Medida)").await, set(&["b", "c", "f"]));
 }
 
+/// From 0.8.3 to 0.10.4 these were a parse error that named them; since
+/// #269 they are evaluated, and the answer is checked here by hand.
 #[tokio::test]
-async fn what_is_not_evaluated_yet_is_an_error_not_a_wrong_result() {
+async fn arithmetic_and_negation_are_evaluated() {
     let g = recipes().await;
-    for (q, what) in [
-        ("find r.key from (r:Receta) where r.porciones * 2 = 6", "arithmetic"),
-        ("find r.key from (r:Receta) where r.porciones + 10 > 4", "arithmetic"),
-        ("find r.key from (r:Receta) where r.porciones - 1 = 2", "arithmetic"),
-        ("find r.key from (r:Receta) where r.porciones % 2 = 1", "arithmetic"),
-        ("find r.key, r.porciones * 2 from (r:Receta)", "arithmetic"),
-        ("find r.key from (r:Receta) where -r.porciones < -2", "unary minus"),
-        ("find r.key from (r:Receta) where !(r.porciones = 3)", "negation"),
-        // `not (…)` se leía como una función desconocida que dejaba pasar todo.
-        ("find r.key from (r:Receta) where not (r.porciones = 3)", "negation"),
-        (r#"update (r:Receta) set r.porciones = r.porciones + 1 where r.key = "a""#, "arithmetic"),
+    for (q, expected) in [
+        ("find r.key from (r:Receta) where r.porciones * 2 = 6", &["a"][..]),
+        ("find r.key from (r:Receta) where r.porciones + 10 > 4", &["a", "b", "c", "d"][..]),
+        ("find r.key from (r:Receta) where r.porciones - 1 = 2", &["a"][..]),
+        ("find r.key from (r:Receta) where r.porciones % 2 = 1", &["a", "b", "c"][..]),
+        ("find r.key from (r:Receta) where -r.porciones < -2", &["a", "c", "d"][..]),
+        ("find r.key from (r:Receta) where !(r.porciones = 3)", &["b", "c", "d"][..]),
+        ("find r.key from (r:Receta) where not (r.porciones = 3)", &["b", "c", "d"][..]),
     ] {
-        let err = parse_error(&g, q).await;
-        assert!(err.contains(what) && err.contains("not supported"), "{q}\n{err}");
+        assert_eq!(keys(&g, "r", q).await, set(expected), "{q}");
     }
-    // Nada se escribió.
-    assert_eq!(keys(&g, "r", "find r.key from (r:Receta) where r.porciones = 3").await, set(&["a"]));
+    let r = g.execute_nql("find r.key, r.porciones * 2 from (r:Receta)").await.unwrap();
+    assert_eq!(r.columns, ["r.key", "r.porciones * 2"]);
+    g.execute_nql(r#"update (r:Receta) set r.porciones = r.porciones + 1 where r.key = "a""#).await.unwrap();
+    assert_eq!(keys(&g, "r", "find r.key from (r:Receta) where r.porciones = 4").await, set(&["a", "d"]));
 }
 
 /// `hybrid(c, …) and (c.p = 1 or c.p = 2)`: the search ranks inside the

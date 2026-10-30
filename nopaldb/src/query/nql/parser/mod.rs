@@ -1048,7 +1048,7 @@ impl AstBuilder {
     fn build_and_expression(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
         let mut children: Vec<pest::iterators::Pair<Rule>> = pair
             .into_inner()
-            .filter(|p| p.as_rule() == Rule::comparison_expression)
+            .filter(|p| p.as_rule() == Rule::not_expression)
             .collect();
 
         if children.is_empty() {
@@ -1057,11 +1057,11 @@ impl AstBuilder {
 
         // Build first child
         let first = children.remove(0);
-        let mut result = self.build_comparison_expression(first)?;
+        let mut result = self.build_not_expression(first)?;
 
         // Chain remaining children with AND
         for child in children {
-            let right = self.build_comparison_expression(child)?;
+            let right = self.build_not_expression(child)?;
             result = Expression::BinaryOp {
                 left: Box::new(result),
                 op: BinaryOperator::And,
@@ -1070,6 +1070,27 @@ impl AstBuilder {
         }
 
         Ok(result)
+    }
+
+    /// `not <condición>` (#269): la negación de la comparación entera.
+    fn build_not_expression(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
+        let mut negated = false;
+        for inner in pair.into_inner() {
+            match inner.as_rule() {
+                Rule::not_kw => negated = true,
+                Rule::not_expression => {
+                    let inner = self.build_not_expression(inner)?;
+                    return Ok(if negated {
+                        Expression::UnaryOp { op: UnaryOperator::Not, expr: Box::new(inner) }
+                    } else {
+                        inner
+                    });
+                }
+                Rule::comparison_expression => return self.build_comparison_expression(inner),
+                _ => {}
+            }
+        }
+        Err(NopalError::QueryParseError("Invalid expression".into()))
     }
 
     fn build_comparison_expression(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
@@ -1111,62 +1132,80 @@ impl AstBuilder {
         }
     }
 
-    // Aritmética y negación en expresiones generales: la gramática las
-    // acepta y el AST tiene los nodos, pero los evaluadores de condiciones,
-    // proyecciones, HAVING, ORDER BY y escrituras no los evalúan (casi todos
-    // caen en `_ => true` o `_ => None`). Hasta 0.8.2 estos constructores se
-    // quedaban con el primer operando y tiraban el operador, así que
-    // `r.p * 2 = 6` se evaluaba como `r.p = 6` sin aviso, y `-5` perdía el
-    // signo (`set x = -7` escribía 7). Ahora un número negativo se pliega en
-    // su literal y todo lo demás es un error con nombre: mejor que un
-    // resultado plausible pero mal calculado.
+    // Aritmética y negación (#269). Hasta 0.8.2 estos constructores se
+    // quedaban con el primer operando y tiraban el operador (`r.p * 2 = 6`
+    // se evaluaba como `r.p = 6`); de 0.8.3 a 0.10.4 eran un error con
+    // nombre, porque los evaluadores no los conocían. Ahora construyen el
+    // árbol, asociativo a la izquierda (`a - b - c` es `(a - b) - c`), y los
+    // evaluadores comparten la semántica de `executor::value_ops`.
 
     fn build_primary_from_additive(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
-        let text = pair.as_str().trim().to_string();
-        let mut operands = pair.into_inner().filter(|p| p.as_rule() == Rule::multiplicative_expression);
-        let first = operands.next().ok_or_else(|| NopalError::QueryParseError("Invalid expression".into()))?;
-        if operands.next().is_some() {
-            return Err(unsupported_in_expression("arithmetic (`+`, `-`)", &text));
-        }
-        self.build_primary_from_multiplicative(first)
-    }
-
-    fn build_primary_from_multiplicative(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
-        let text = pair.as_str().trim().to_string();
-        let mut operands = pair.into_inner().filter(|p| p.as_rule() == Rule::unary_expression);
-        let first = operands.next().ok_or_else(|| NopalError::QueryParseError("Invalid expression".into()))?;
-        if operands.next().is_some() {
-            return Err(unsupported_in_expression("arithmetic (`*`, `/`, `%`)", &text));
-        }
-        self.build_primary_from_unary(first)
-    }
-
-    fn build_primary_from_unary(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
-        let text = pair.as_str().trim().to_string();
-        // `!` es un literal sin nombre en la gramática: no aparece en el árbol.
-        if text.starts_with('!') {
-            return Err(unsupported_in_expression("negation (`!`)", &text));
-        }
-        let mut negate = false;
-        let mut primary = None;
+        let mut result: Option<Expression> = None;
+        let mut op = None;
         for inner in pair.into_inner() {
             match inner.as_rule() {
-                Rule::neg_op => negate = true,
-                Rule::primary_expression => primary = Some(self.build_primary_expression(inner)?),
+                Rule::add_op => op = Some(BinaryOperator::Add),
+                Rule::sub_op => op = Some(BinaryOperator::Sub),
+                Rule::multiplicative_expression => {
+                    let right = self.build_primary_from_multiplicative(inner)?;
+                    result = Some(match (result, op.take()) {
+                        (Some(left), Some(op)) => Expression::BinaryOp { left: Box::new(left), op, right: Box::new(right) },
+                        _ => right,
+                    });
+                }
                 _ => {}
             }
         }
-        let primary = primary.ok_or_else(|| NopalError::QueryParseError("Invalid expression".into()))?;
-        if !negate {
-            return Ok(primary);
+        result.ok_or_else(|| NopalError::QueryParseError("Invalid expression".into()))
+    }
+
+    fn build_primary_from_multiplicative(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
+        let mut result: Option<Expression> = None;
+        let mut op = None;
+        for inner in pair.into_inner() {
+            match inner.as_rule() {
+                Rule::mul_op => op = Some(BinaryOperator::Mul),
+                Rule::div_op => op = Some(BinaryOperator::Div),
+                Rule::mod_op => op = Some(BinaryOperator::Mod),
+                Rule::unary_expression => {
+                    let right = self.build_primary_from_unary(inner)?;
+                    result = Some(match (result, op.take()) {
+                        (Some(left), Some(op)) => Expression::BinaryOp { left: Box::new(left), op, right: Box::new(right) },
+                        _ => right,
+                    });
+                }
+                _ => {}
+            }
         }
-        // `-5`: el `neg_op` gana a la regla `number`, así que el signo llega
-        // aquí y se pliega en el literal, como en listas y mapas.
-        match primary {
-            Expression::Literal(PropertyValue::Int(n)) => Ok(Expression::Literal(PropertyValue::Int(-n))),
-            Expression::Literal(PropertyValue::Float(f)) => Ok(Expression::Literal(PropertyValue::Float(-f))),
-            _ => Err(unsupported_in_expression("unary minus on a non-literal", &text)),
+        result.ok_or_else(|| NopalError::QueryParseError("Invalid expression".into()))
+    }
+
+    fn build_primary_from_unary(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
+        let mut op = None;
+        for inner in pair.into_inner() {
+            match inner.as_rule() {
+                Rule::bang_op => op = Some(UnaryOperator::Not),
+                Rule::neg_op => op = Some(UnaryOperator::Neg),
+                Rule::unary_expression => {
+                    let operand = self.build_primary_from_unary(inner)?;
+                    return Ok(match (op, operand) {
+                        // `-5` se pliega en su literal, como en listas y mapas:
+                        // `set x = -7` sigue siendo un literal.
+                        (Some(UnaryOperator::Neg), Expression::Literal(PropertyValue::Int(n))) if n != i64::MIN => {
+                            Expression::Literal(PropertyValue::Int(-n))
+                        }
+                        (Some(UnaryOperator::Neg), Expression::Literal(PropertyValue::Float(f))) => {
+                            Expression::Literal(PropertyValue::Float(-f))
+                        }
+                        (Some(op), operand) => Expression::UnaryOp { op, expr: Box::new(operand) },
+                        (None, operand) => operand,
+                    });
+                }
+                Rule::primary_expression => return self.build_primary_expression(inner),
+                _ => {}
+            }
         }
+        Err(NopalError::QueryParseError("Invalid expression".into()))
     }
 
     fn build_primary_expression(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
@@ -1257,13 +1296,6 @@ impl AstBuilder {
     }
 
     fn build_function_call(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
-        // `not (…)` no es un operador en la gramática: se leía como una
-        // función `not` que ningún evaluador conoce, y dejaba pasar todas las
-        // filas. Error con nombre, como `!` (#255).
-        let text = pair.as_str().trim();
-        if text.split('(').next().is_some_and(|n| n.trim().eq_ignore_ascii_case("not")) {
-            return Err(unsupported_in_expression("negation (`not`)", text));
-        }
         let mut name = None;
         let mut args = Vec::new();
 
@@ -1572,14 +1604,6 @@ fn build_quantifier(pair: pest::iterators::Pair<Rule>) -> Quantifier {
         (true, [n]) => Quantifier { min: *n, max: None },
         _ => Quantifier { min: 1, max: Some(1) },
     }
-}
-
-/// Error de parseo para lo que la gramática acepta pero NQL todavía no
-/// evalúa en expresiones generales (ver `build_primary_from_additive`).
-fn unsupported_in_expression(what: &str, text: &str) -> NopalError {
-    NopalError::QueryParseError(format!(
-        "{what} is not supported in NQL expressions yet: `{text}`"
-    ))
 }
 
 #[cfg(test)]

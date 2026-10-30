@@ -498,28 +498,41 @@ async fn group_passes_having(
     variable: &str,
     ctx: &QueryContext,
 ) -> Result<bool> {
-    use crate::query::nql::parser::ast::BinaryOperator;
+    // The aggregates are async; resolve them first, then apply NQL's
+    // operators (`value_ops`) over the values (#269).
+    let mut leaves: std::collections::HashMap<String, Option<PropertyValue>> = std::collections::HashMap::new();
+    collect_having_leaves(graph, expr, nodes, variable, ctx, &mut leaves).await?;
+    super::value_ops::condition(expr, &mut |e| match e {
+        Expression::Literal(v) => Ok(Some(v.clone())),
+        _ => leaves
+            .get(&e.to_string())
+            .cloned()
+            .ok_or_else(|| super::operators::unsupported_here(e)),
+    })
+}
+
+async fn collect_having_leaves(
+    graph: &Graph,
+    expr: &Expression,
+    nodes: &[Node],
+    variable: &str,
+    ctx: &QueryContext,
+    leaves: &mut std::collections::HashMap<String, Option<PropertyValue>>,
+) -> Result<()> {
     match expr {
-        Expression::BinaryOp { left, op: BinaryOperator::And, right } => Ok(
-            Box::pin(group_passes_having(graph, left, nodes, variable, ctx)).await?
-                && Box::pin(group_passes_having(graph, right, nodes, variable, ctx)).await?,
-        ),
-        Expression::BinaryOp { left, op: BinaryOperator::Or, right } => Ok(
-            Box::pin(group_passes_having(graph, left, nodes, variable, ctx)).await?
-                || Box::pin(group_passes_having(graph, right, nodes, variable, ctx)).await?,
-        ),
-        Expression::BinaryOp { left, op, right } => {
-            let l = having_scalar(graph, left, nodes, variable, ctx).await?;
-            let r = having_scalar(graph, right, nodes, variable, ctx).await?;
-            Ok(match (l, r) {
-                (Some(l), Some(r)) => super::operators::compare_values(&l, op, &r),
-                _ => false,
-            })
+        Expression::BinaryOp { left, right, .. } => {
+            Box::pin(collect_having_leaves(graph, left, nodes, variable, ctx, leaves)).await?;
+            Box::pin(collect_having_leaves(graph, right, nodes, variable, ctx, leaves)).await
         }
-        Expression::Literal(PropertyValue::Bool(b)) => Ok(*b),
-        other => Err(NopalError::QueryExecutionError(format!(
-            "HAVING condition is not a comparison: {other:?}"
-        ))),
+        Expression::UnaryOp { expr: inner, .. } => {
+            Box::pin(collect_having_leaves(graph, inner, nodes, variable, ctx, leaves)).await
+        }
+        Expression::FunctionCall { .. } | Expression::Property { .. } => {
+            let value = having_scalar(graph, expr, nodes, variable, ctx).await?;
+            leaves.insert(expr.to_string(), value);
+            Ok(())
+        }
+        _ => Ok(()),
     }
 }
 

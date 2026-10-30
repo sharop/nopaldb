@@ -7,6 +7,7 @@ pub mod operators;
 pub mod write;
 pub mod aggregations;
 pub mod export;
+pub(crate) mod value_ops;
 
 use operators::RowStream;
 
@@ -48,69 +49,57 @@ fn eval_row_condition_with_algo(
     source_var: &str,
     target_var: &str,
     algo_cache: &aggregations::AlgoResults,
-) -> bool {
-    match expr {
-        Expression::BinaryOp { left, op, right } => match op {
-            BinaryOperator::And => {
-                eval_row_condition_with_algo(row, left, source_var, target_var, algo_cache)
-                    && eval_row_condition_with_algo(row, right, source_var, target_var, algo_cache)
-            }
-            BinaryOperator::Or => {
-                eval_row_condition_with_algo(row, left, source_var, target_var, algo_cache)
-                    || eval_row_condition_with_algo(row, right, source_var, target_var, algo_cache)
-            }
-            _ => {
-                let l = eval_row_scalar_with_algo(row, left, source_var, target_var, algo_cache);
-                let r = eval_row_scalar_with_algo(row, right, source_var, target_var, algo_cache);
-                match (l, r) {
-                    (Some(l), Some(r)) => operators::compare_values(&l, op, &r),
-                    _ => false,
-                }
-            }
-        },
-        Expression::UnaryOp { op: UnaryOperator::Not, expr: inner } => {
-            !eval_row_condition_with_algo(row, inner, source_var, target_var, algo_cache)
-        }
-        Expression::Literal(PropertyValue::Bool(b)) => *b,
-        _ => true,
-    }
+) -> Result<bool> {
+    value_ops::condition(expr, &mut |e| row_leaf_with_algo(row, e, source_var, target_var, algo_cache))
 }
 
-fn eval_row_scalar_with_algo(
+/// `Vec::retain` with a predicate that can fail: the first error is
+/// returned and the vector is left as it was.
+fn try_retain<T>(items: &mut Vec<T>, mut keep: impl FnMut(&T) -> Result<bool>) -> Result<()> {
+    let mut flags = Vec::with_capacity(items.len());
+    for item in items.iter() {
+        flags.push(keep(item)?);
+    }
+    let mut flags = flags.into_iter();
+    items.retain(|_| flags.next().unwrap_or(false));
+    Ok(())
+}
+
+fn row_leaf_with_algo(
     row: &result::Row,
     expr: &Expression,
     source_var: &str,
     target_var: &str,
     algo_cache: &aggregations::AlgoResults,
-) -> Option<PropertyValue> {
+) -> Result<Option<PropertyValue>> {
     match expr {
-        Expression::Literal(v) => Some(v.clone()),
+        Expression::Literal(v) => Ok(Some(v.clone())),
         Expression::Property { variable, property } => {
             if property.is_empty() {
                 let id_key = format!("{}.id", variable);
-                row.values.get(&id_key).cloned()
+                Ok(row.values.get(&id_key).cloned())
             } else {
                 let key = format!("{}.{}", variable, property);
-                row.values.get(&key).cloned()
+                Ok(row.values.get(&key).cloned())
             }
         }
         Expression::FunctionCall { name, args } if expr.is_algorithm() => {
             let var = match args.first() {
                 Some(Expression::Property { variable, property })
                     if property.is_empty() => variable.clone(),
-                _ => return None,
+                _ => return Ok(None),
             };
             let _ = (source_var, target_var); // not needed: we use row-stored ids
             let id_key = format!("{}.id", var);
             if let Some(PropertyValue::String(id_str)) = row.values.get(&id_key)
                 && let Ok(node_id) = uuid::Uuid::parse_str(id_str)
             {
-                Some(lookup_algo_value(name, &node_id, algo_cache))
+                Ok(Some(lookup_algo_value(name, &node_id, algo_cache)))
             } else {
-                None
+                Ok(None)
             }
         }
-        _ => None,
+        other => Err(operators::unsupported_here(other)),
     }
 }
 
@@ -398,6 +387,9 @@ fn projections_contain_path_eval(projections: &[Projection]) -> bool {
 /// own use (an aliased property's original key, `var.id`) are dropped.
 struct OutputShape {
     columns: Vec<OutputColumn>,
+    /// For each leaf of a computed column (its text), the row key that holds
+    /// its value (see `split_computed`).
+    leaf_keys: HashMap<String, String>,
     /// Names asked for explicitly, left out of the expansion of `*`/`all`.
     asked: HashSet<String>,
     /// The variables of the patterns in order, and whether each one is a
@@ -409,6 +401,9 @@ enum OutputColumn {
     Named(String),
     /// A literal is a constant column: no path evaluates it.
     Literal(String, PropertyValue),
+    /// An expression with operators (`r.porciones * 2`, `-r.x`, #269),
+    /// computed here from its leaves; the paths only give the leaves.
+    Computed(String, Expression),
     AllOf(String),
     Every,
 }
@@ -427,6 +422,7 @@ impl OutputShape {
                         asked.insert(name.clone());
                         match expr {
                             Expression::Literal(v) => OutputColumn::Literal(name, v.clone()),
+                            e if is_computed(e) => OutputColumn::Computed(name, e.clone()),
                             _ => OutputColumn::Named(name),
                         }
                     }
@@ -449,15 +445,29 @@ impl OutputShape {
                 }
             }
         }
-        OutputShape { columns, asked, variables }
+        OutputShape { columns, leaf_keys: HashMap::new(), asked, variables }
     }
 
-    fn apply(&self, result: &mut QueryResult) {
+    fn apply(&self, result: &mut QueryResult) -> Result<()> {
         for column in &self.columns {
-            if let OutputColumn::Literal(name, value) = column {
-                for row in &mut result.rows {
-                    row.set(name.clone(), value.clone());
+            match column {
+                OutputColumn::Literal(name, value) => {
+                    for row in &mut result.rows {
+                        row.set(name.clone(), value.clone());
+                    }
                 }
+                OutputColumn::Computed(name, expr) => {
+                    for row in &mut result.rows {
+                        let value = value_ops::scalar(expr, &mut |e| match e {
+                            Expression::Literal(v) => Ok(Some(v.clone())),
+                            _ => Ok(self.leaf_keys.get(&e.to_string()).and_then(|k| row.values.get(k)).cloned()),
+                        })?;
+                        if let Some(value) = value {
+                            row.set(name.clone(), value);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         let mut names: Vec<String> = Vec::new();
@@ -468,7 +478,9 @@ impl OutputShape {
         };
         for column in &self.columns {
             match column {
-                OutputColumn::Named(name) | OutputColumn::Literal(name, _) => push(&mut names, name.clone()),
+                OutputColumn::Named(name) | OutputColumn::Literal(name, _) | OutputColumn::Computed(name, _) => {
+                    push(&mut names, name.clone())
+                }
                 OutputColumn::AllOf(var) => {
                     for k in self.keys_of(var, result) {
                         push(&mut names, k);
@@ -501,6 +513,7 @@ impl OutputShape {
             row.values.retain(|k, _| keep.contains(k));
         }
         result.columns = names;
+        Ok(())
     }
 
     /// The keys of `var` in the rows: `id`, `label` (`type` for a
@@ -567,6 +580,138 @@ fn name_projections(mut query: Query) -> Query {
         }
     }
     query
+}
+
+/// An expression with operators: a column computed from its leaves (#269).
+fn is_computed(expr: &Expression) -> bool {
+    matches!(expr, Expression::BinaryOp { .. } | Expression::UnaryOp { .. })
+}
+
+/// The leaves of an expression with operators: the properties and function
+/// calls whose values it combines.
+fn expression_leaves(expr: &Expression, out: &mut Vec<Expression>) {
+    match expr {
+        Expression::BinaryOp { left, right, .. } => {
+            expression_leaves(left, out);
+            expression_leaves(right, out);
+        }
+        Expression::UnaryOp { expr, .. } => expression_leaves(expr, out),
+        Expression::Literal(_) => {}
+        leaf => {
+            if !out.contains(leaf) {
+                out.push(leaf.clone());
+            }
+        }
+    }
+}
+
+/// Computed columns (`r.porciones * 2 as doble`, #269) are evaluated once,
+/// at the end (`OutputShape`), not in each of the five projection paths:
+/// here they leave the projection and their leaves enter it, so every path
+/// gives the leaves the way it gives any property or aggregate. A leaf that
+/// was not asked for is dropped by `OutputShape` with the rest of the keys
+/// the paths add.
+///
+/// `order by` on a computed expression is rewritten over the row keys of its
+/// leaves, which `apply_order_by` evaluates.
+fn split_computed(mut query: Query, shape: &mut OutputShape) -> Result<Query> {
+    let computed: Vec<(String, Expression)> = query
+        .find
+        .projections
+        .iter()
+        .filter_map(|p| match (p, p.column_name()) {
+            (Projection::Expression { expr, .. }, Some(name)) if is_computed(expr) => Some((name, expr.clone())),
+            _ => None,
+        })
+        .collect();
+    // `order by <alias of a computed column>` and `order by <its expression>`
+    // sort by the expression.
+    let mut order_exprs = Vec::new();
+    if let Some(order_by) = query.order_by.as_mut() {
+        for item in &mut order_by.items {
+            if let Expression::Property { variable, property } = &item.expression
+                && property.is_empty()
+                && let Some((_, expr)) = computed.iter().find(|(name, _)| name == variable)
+            {
+                item.expression = expr.clone();
+            }
+            if is_computed(&item.expression) {
+                order_exprs.push(item.expression.clone());
+            }
+        }
+    }
+    if computed.is_empty() && order_exprs.is_empty() {
+        return Ok(query);
+    }
+    // `distinct` compares the columns the paths give, and the leaves of a
+    // computed column or of an `order by` expression are among them: it
+    // would keep rows that differ only in a leaf.
+    if query.find.distinct
+        && let Some(expr) = computed.first().map(|(_, e)| e).or(order_exprs.first())
+    {
+        return Err(NopalError::QueryExecutionError(format!(
+            "distinct with a computed column or an order by expression (`{expr}`) is not supported yet"
+        )));
+    }
+    query.find.projections.retain(|p| !matches!(p, Projection::Expression { expr, .. } if is_computed(expr)));
+    let mut leaves = Vec::new();
+    for expr in computed.iter().map(|(_, e)| e).chain(order_exprs.iter()) {
+        expression_leaves(expr, &mut leaves);
+    }
+    for leaf in leaves {
+        let key = match &leaf {
+            Expression::Property { variable, property } => {
+                let key = property_projection_key(variable, property);
+                let projected = query.find.projections.iter().any(
+                    |p| matches!(p, Projection::Expression { expr, alias: None } if *expr == leaf),
+                );
+                if !projected {
+                    query.find.projections.push(Projection::Expression { expr: leaf.clone(), alias: None });
+                }
+                key
+            }
+            _ => {
+                let existing = query.find.projections.iter().find_map(|p| match p {
+                    Projection::Expression { expr, .. } if *expr == leaf => p.column_name(),
+                    _ => None,
+                });
+                existing.unwrap_or_else(|| {
+                    let key = leaf.to_string();
+                    query.find.projections.push(Projection::Expression { expr: leaf.clone(), alias: Some(key.clone()) });
+                    key
+                })
+            }
+        };
+        shape.leaf_keys.insert(leaf.to_string(), key);
+    }
+    // `apply_order_by` reads leaves by row key: a function leaf becomes a
+    // reference to its column.
+    if let Some(order_by) = query.order_by.as_mut() {
+        for item in &mut order_by.items {
+            if is_computed(&item.expression) {
+                item.expression = rewrite_leaves(&item.expression, &shape.leaf_keys);
+            }
+        }
+    }
+    Ok(query)
+}
+
+fn rewrite_leaves(expr: &Expression, keys: &HashMap<String, String>) -> Expression {
+    match expr {
+        Expression::BinaryOp { left, op, right } => Expression::BinaryOp {
+            left: Box::new(rewrite_leaves(left, keys)),
+            op: op.clone(),
+            right: Box::new(rewrite_leaves(right, keys)),
+        },
+        Expression::UnaryOp { op, expr: inner } => {
+            Expression::UnaryOp { op: op.clone(), expr: Box::new(rewrite_leaves(inner, keys)) }
+        }
+        Expression::FunctionCall { .. } => match keys.get(&expr.to_string()) {
+            Some(key) => Expression::Property { variable: key.clone(), property: String::new() },
+            None => expr.clone(),
+        },
+        other => other.clone(),
+    }
 }
 
 fn property_projection_key(variable: &str, property: &str) -> String {
@@ -828,9 +973,13 @@ impl<'a> Executor<'a> {
     /// Execute NQL query
     pub async fn execute(&self, query: Query) -> Result<QueryResult> {
         let query = name_projections(query);
-        let shape = OutputShape::of(&query);
+        // The schema rules are checked on the projection as written, before
+        // computed columns are split into their leaves.
+        crate::query::nql::validator::check_result_schema(&query)?;
+        let mut shape = OutputShape::of(&query);
+        let query = split_computed(query, &mut shape)?;
         let mut result = self.execute_inner(query).await?;
-        shape.apply(&mut result);
+        shape.apply(&mut result)?;
         Ok(result)
     }
 
@@ -1035,11 +1184,11 @@ impl<'a> Executor<'a> {
                 let all_nodes = self.graph.get_all_nodes().await?;
                 let cache = precompute_for_query(self.graph, &all_nodes, &query).await?;
                 let id_key = format!("{root_variable}.id");
-                nodes.retain(|node| {
+                try_retain(&mut nodes, |node| {
                     let mut row = result::Row::new();
                     row.set(id_key.clone(), PropertyValue::String(node.id.to_string()));
                     eval_row_condition_with_algo(&row, post_expr, root_variable, "", &cache)
-                });
+                })?;
             }
 
             let mut result = execute_aggregations(self.graph, nodes, &query, root_variable).await?;
@@ -1047,7 +1196,7 @@ impl<'a> Executor<'a> {
             self.apply_distinct_if_needed(&mut result, &query.find);
 
             if let Some(order_by) = &query.order_by {
-                self.apply_order_by(&mut result, order_by);
+                self.apply_order_by(&mut result, order_by)?;
             }
 
             if let Some(limit) = &query.limit {
@@ -1221,9 +1370,9 @@ impl<'a> Executor<'a> {
             let nodes_for_algo = self.graph.get_all_nodes().await?;
             let cache = precompute_for_query(self.graph, &nodes_for_algo, &query).await?;
             let target = String::new(); // single-node: no target var, but eval handles by var name
-            rows.retain(|row| {
+            try_retain(&mut rows, |row| {
                 eval_row_condition_with_algo(row, post_expr, root_variable, &target, &cache)
-            });
+            })?;
             // Strip auxiliary <var>.id if we added it.
             if let Some(aux) = &single_post_id_aux {
                 let was_in_query_proj = query.find.projections.iter().any(|p| match p {
@@ -1257,7 +1406,7 @@ impl<'a> Executor<'a> {
 
         // Step 5: Apply ORDER BY (BEFORE LIMIT — P0 fix)
         if let Some(order_by) = &query.order_by {
-            self.apply_order_by(&mut result, order_by);
+            self.apply_order_by(&mut result, order_by)?;
         }
 
         // Step 6: Apply LIMIT/OFFSET on projected result
@@ -1526,7 +1675,7 @@ impl<'a> Executor<'a> {
         self.apply_distinct_if_needed(&mut result, &query.find);
 
         if let Some(order_by) = &query.order_by {
-            self.apply_order_by(&mut result, order_by);
+            self.apply_order_by(&mut result, order_by)?;
         }
 
         if let Some(limit) = &query.limit {
@@ -1754,7 +1903,7 @@ impl<'a> Executor<'a> {
             self.apply_distinct_if_needed(&mut result, &query.find);
 
             if let Some(order_by) = &query.order_by {
-                self.apply_order_by(&mut result, order_by);
+                self.apply_order_by(&mut result, order_by)?;
             }
             if let Some(limit) = &query.limit {
                 let offset = limit.offset.unwrap_or(0);
@@ -1978,9 +2127,9 @@ impl<'a> Executor<'a> {
         // Bug 1 fix: apply algorithm-bearing WHERE predicates as a post-filter
         // using the algo cache and the resolved row values.
         if let (Some(post_expr), Some(cache)) = (where_post_filter.as_ref(), row_algo_cache.as_ref()) {
-            rows.retain(|row| {
+            try_retain(&mut rows, |row| {
                 eval_row_condition_with_algo(row, post_expr, &source_var, &target_var, cache)
-            });
+            })?;
         }
 
         self.inject_scores(&mut rows, &score_projs);
@@ -2000,7 +2149,7 @@ impl<'a> Executor<'a> {
 
         // 7. Post-processing (ORDER BY, LIMIT, STRIP)
         if let Some(order_by) = &query.order_by {
-            self.apply_order_by(&mut result, order_by);
+            self.apply_order_by(&mut result, order_by)?;
         }
 
         if limit_after && let Some(limit) = &query.limit {
@@ -2204,7 +2353,7 @@ impl<'a> Executor<'a> {
                         vm_state.as_ref(),
                     )?
                 } else {
-                    self.evaluate_linear_pattern_condition(&binding, &filter.condition)
+                    self.evaluate_linear_pattern_condition(&binding, &filter.condition)?
                 }
             } else {
                 true
@@ -2476,7 +2625,7 @@ impl<'a> Executor<'a> {
         self.apply_distinct_if_needed(&mut result, &query.find);
 
         if let Some(order_by) = &query.order_by {
-            self.apply_order_by(&mut result, order_by);
+            self.apply_order_by(&mut result, order_by)?;
         }
 
         if let Some(limit) = &query.limit {
@@ -2590,7 +2739,7 @@ impl<'a> Executor<'a> {
                 edge_vars: HashMap::new(),
             };
             if let Some(var) = &source_pattern.variable
-                && !self.binding_passes(&binding, filters.of_var(var))
+                && !self.binding_passes(&binding, filters.of_var(var))?
             {
                 continue;
             }
@@ -2629,8 +2778,13 @@ impl<'a> Executor<'a> {
 
     /// Si `binding` cumple todos los predicados de expansión de una variable,
     /// con el mismo evaluador que el WHERE final de este camino.
-    fn binding_passes(&self, binding: &LinearPatternBinding, filters: &[Expression]) -> bool {
-        filters.iter().all(|f| self.evaluate_linear_pattern_condition(binding, f))
+    fn binding_passes(&self, binding: &LinearPatternBinding, filters: &[Expression]) -> Result<bool> {
+        for f in filters {
+            if !self.evaluate_linear_pattern_condition(binding, f)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Expande exactamente un hop en el patrón lineal.
@@ -2702,7 +2856,7 @@ impl<'a> Executor<'a> {
                         continue;
                     }
 
-                if !self.binding_passes(&next_binding, target_filters) {
+                if !self.binding_passes(&next_binding, target_filters)? {
                     continue;
                 }
                 next_bindings.push(next_binding);
@@ -2964,72 +3118,56 @@ impl<'a> Executor<'a> {
         &self,
         binding: &LinearPatternBinding,
         expr: &Expression,
-    ) -> bool {
-        match expr {
-            Expression::BinaryOp { left, op, right } => match op {
-                BinaryOperator::And => {
-                    self.evaluate_linear_pattern_condition(binding, left)
-                        && self.evaluate_linear_pattern_condition(binding, right)
-                }
-                BinaryOperator::Or => {
-                    self.evaluate_linear_pattern_condition(binding, left)
-                        || self.evaluate_linear_pattern_condition(binding, right)
-                }
-                _ => {
-                    let left_val = self.evaluate_linear_pattern_expression(binding, left);
-                    let right_val = self.evaluate_linear_pattern_expression(binding, right);
-                    match (left_val, right_val) {
-                        (Some(l), Some(r)) => operators::compare_values(&l, op, &r),
-                        _ => false,
-                    }
-                }
-            },
-            Expression::Literal(PropertyValue::Bool(b)) => *b,
-            _ => true,
-        }
+    ) -> Result<bool> {
+        value_ops::condition(expr, &mut |e| self.linear_pattern_leaf(binding, e))
     }
 
     fn evaluate_linear_pattern_expression(
         &self,
         binding: &LinearPatternBinding,
         expr: &Expression,
-    ) -> Option<PropertyValue> {
+    ) -> Result<Option<PropertyValue>> {
+        value_ops::scalar(expr, &mut |e| self.linear_pattern_leaf(binding, e))
+    }
+
+    fn linear_pattern_leaf(&self, binding: &LinearPatternBinding, expr: &Expression) -> Result<Option<PropertyValue>> {
         match expr {
-            Expression::Literal(val) => Some(val.clone()),
+            Expression::Literal(val) => Ok(Some(val.clone())),
             Expression::Property { variable, property } => {
                 if variable == "path" {
                     let metadata = self.path_metadata_from_binding(binding);
-                    return match property.as_str() {
+                    return Ok(match property.as_str() {
                         "depth" => Some(PropertyValue::Int(metadata.depth as i64)),
                         "nodes" => Some(metadata.nodes),
                         "edges" => Some(metadata.edges),
                         _ => None,
-                    };
+                    });
                 }
 
                 if let Some(node) = binding.node_vars.get(variable) {
                     if property.is_empty() || property == "id" {
-                        return Some(PropertyValue::String(node.id.to_string()));
+                        return Ok(Some(PropertyValue::String(node.id.to_string())));
                     }
                     if property == "label" {
-                        return Some(PropertyValue::String(node.label.clone()));
+                        return Ok(Some(PropertyValue::String(node.label.clone())));
                     }
-                    return node.properties.get(property).cloned();
+                    return Ok(node.properties.get(property).cloned());
                 }
 
                 if let Some(edge) = binding.edge_vars.get(variable) {
                     if property.is_empty() || property == "id" {
-                        return Some(PropertyValue::String(edge.id.to_string()));
+                        return Ok(Some(PropertyValue::String(edge.id.to_string())));
                     }
                     if property == "type" || property == "edge_type" {
-                        return Some(PropertyValue::String(edge.edge_type.clone()));
+                        return Ok(Some(PropertyValue::String(edge.edge_type.clone())));
                     }
-                    return edge.properties.get(property).cloned();
+                    return Ok(edge.properties.get(property).cloned());
                 }
 
-                None
+                Ok(None)
             }
-            _ => None,
+            e if operators::is_seeded_predicate(e) => Ok(Some(PropertyValue::Bool(true))),
+            other => Err(operators::unsupported_here(other)),
         }
     }
 
@@ -3431,10 +3569,8 @@ impl<'a> Executor<'a> {
         right: PropertyValue,
     ) -> Result<PropertyValue> {
         match op {
-            BinaryOperator::Eq => Ok(PropertyValue::Bool(left == right)),
-            BinaryOperator::NotEq => Ok(PropertyValue::Bool(left != right)),
-            BinaryOperator::In | BinaryOperator::NotIn => {
-                Ok(PropertyValue::Bool(operators::compare_values(&left, op, &right)))
+            BinaryOperator::Eq | BinaryOperator::NotEq | BinaryOperator::In | BinaryOperator::NotIn => {
+                Ok(PropertyValue::Bool(value_ops::compare(&left, op, &right)))
             }
             BinaryOperator::Gt | BinaryOperator::Lt | BinaryOperator::GtEq | BinaryOperator::LtEq => {
                 let result = match (&left, &right) {
@@ -3490,58 +3626,7 @@ impl<'a> Executor<'a> {
                 Ok(PropertyValue::Bool(result))
             }
             BinaryOperator::Add | BinaryOperator::Sub | BinaryOperator::Mul | BinaryOperator::Div | BinaryOperator::Mod => {
-                match (left, right) {
-                    (PropertyValue::Int(a), PropertyValue::Int(b)) => match op {
-                        BinaryOperator::Add => Ok(PropertyValue::Int(a + b)),
-                        BinaryOperator::Sub => Ok(PropertyValue::Int(a - b)),
-                        BinaryOperator::Mul => Ok(PropertyValue::Int(a * b)),
-                        BinaryOperator::Div => {
-                            if b == 0 {
-                                Err(NopalError::QueryExecutionError("VM division by zero".into()))
-                            } else {
-                                Ok(PropertyValue::Float(a as f64 / b as f64))
-                            }
-                        }
-                        BinaryOperator::Mod => {
-                            if b == 0 {
-                                Err(NopalError::QueryExecutionError("VM modulo by zero".into()))
-                            } else {
-                                Ok(PropertyValue::Int(a % b))
-                            }
-                        }
-                        _ => unreachable!(),
-                    },
-                    (PropertyValue::Int(a), PropertyValue::Float(b)) => {
-                        self.evaluate_path_vm_binary(op, PropertyValue::Float(a as f64), PropertyValue::Float(b))
-                    }
-                    (PropertyValue::Float(a), PropertyValue::Int(b)) => {
-                        self.evaluate_path_vm_binary(op, PropertyValue::Float(a), PropertyValue::Float(b as f64))
-                    }
-                    (PropertyValue::Float(a), PropertyValue::Float(b)) => match op {
-                        BinaryOperator::Add => Ok(PropertyValue::Float(a + b)),
-                        BinaryOperator::Sub => Ok(PropertyValue::Float(a - b)),
-                        BinaryOperator::Mul => Ok(PropertyValue::Float(a * b)),
-                        BinaryOperator::Div => {
-                            if b == 0.0 {
-                                Err(NopalError::QueryExecutionError("VM division by zero".into()))
-                            } else {
-                                Ok(PropertyValue::Float(a / b))
-                            }
-                        }
-                        BinaryOperator::Mod => {
-                            if b == 0.0 {
-                                Err(NopalError::QueryExecutionError("VM modulo by zero".into()))
-                            } else {
-                                Ok(PropertyValue::Float(a % b))
-                            }
-                        }
-                        _ => unreachable!(),
-                    },
-                    (left, right) => Err(NopalError::QueryExecutionError(format!(
-                        "VM arithmetic operator '{:?}' requires numeric operands, got {:?} and {:?}",
-                        op, left, right
-                    ))),
-                }
+                value_ops::arith(op, &left, &right)
             }
             BinaryOperator::And | BinaryOperator::Or => Err(NopalError::QueryExecutionError(
                 "VM logical operators are handled before binary evaluation".into(),
@@ -3554,23 +3639,7 @@ impl<'a> Executor<'a> {
         op: &UnaryOperator,
         value: PropertyValue,
     ) -> Result<PropertyValue> {
-        match op {
-            UnaryOperator::Not => match value {
-                PropertyValue::Bool(value) => Ok(PropertyValue::Bool(!value)),
-                other => Err(NopalError::QueryExecutionError(format!(
-                    "VM operator 'not' requires Bool, got {:?}",
-                    other
-                ))),
-            },
-            UnaryOperator::Neg => match value {
-                PropertyValue::Int(value) => Ok(PropertyValue::Int(-value)),
-                PropertyValue::Float(value) => Ok(PropertyValue::Float(-value)),
-                other => Err(NopalError::QueryExecutionError(format!(
-                    "VM unary '-' requires numeric operand, got {:?}",
-                    other
-                ))),
-            },
-        }
+        value_ops::unary(op, &value)
     }
 
     fn evaluate_linear_pattern_expression_with_vm(
@@ -3618,7 +3687,7 @@ impl<'a> Executor<'a> {
                         _ => {} // fall through: path.depth/nodes/edges handled by evaluate_linear_pattern_expression
                     }
                 }
-                Ok(self.evaluate_linear_pattern_expression(binding, expr))
+                self.evaluate_linear_pattern_expression(binding, expr)
             }
             Expression::FunctionCall { name, args } if is_path_reducer(name) => {
                 let prop = Self::extract_reducer_prop(args)?;
@@ -3634,7 +3703,8 @@ impl<'a> Executor<'a> {
             Expression::FunctionCall { name, args } if is_path_embedding_fn(name) => {
                 Ok(Some(self.evaluate_path_embedding_function(binding, name, args)?))
             }
-            Expression::FunctionCall { .. } => Ok(None),
+            e if operators::is_seeded_predicate(e) => Ok(Some(PropertyValue::Bool(true))),
+            Expression::FunctionCall { .. } => Err(operators::unsupported_here(expr)),
             Expression::BinaryOp { left, op, right } => {
                 if *op == BinaryOperator::And || *op == BinaryOperator::Or {
                     let value = self.evaluate_linear_pattern_condition_with_vm(binding, expr, vm_state)?;
@@ -3663,7 +3733,7 @@ impl<'a> Executor<'a> {
             Expression::NamedArg { name, .. } => Err(NopalError::QueryExecutionError(format!(
                 "named argument `{name}` is only valid inside hybrid(...)"
             ))),
-            Expression::Wildcard => Ok(None),
+            Expression::Wildcard => Err(operators::unsupported_here(expr)),
         }
     }
 
@@ -3739,7 +3809,7 @@ impl<'a> Executor<'a> {
                     continue;
                 }
 
-                if let Some(value) = self.evaluate_linear_pattern_expression(
+                if let Ok(Some(value)) = self.evaluate_linear_pattern_expression(
                     binding,
                     &Expression::Property {
                         variable: var.to_string(),
@@ -3749,7 +3819,7 @@ impl<'a> Executor<'a> {
                     row.set(proj.clone(), value);
                 }
             } else if parts.len() == 1
-                && let Some(value) = self.evaluate_linear_pattern_expression(
+                && let Ok(Some(value)) = self.evaluate_linear_pattern_expression(
                     binding,
                     &Expression::Property {
                         variable: parts[0].to_string(),
@@ -3820,10 +3890,10 @@ impl<'a> Executor<'a> {
             for m in matches {
                 let key_values: Vec<PropertyValue> = group_by.expressions.iter()
                     .map(|expr| {
-                        self.evaluate_pattern_expression(m, expr, source_var, target_var)
-                            .unwrap_or(PropertyValue::Null)
+                        Ok(self.evaluate_pattern_expression(m, expr, source_var, target_var)?
+                            .unwrap_or(PropertyValue::Null))
                     })
-                    .collect();
+                    .collect::<Result<_>>()?;
 
                 let key = key_values.iter().map(|v| format!("{:?}", v)).collect::<Vec<_>>().join("|");
                 grouped.entry(key)
@@ -3878,7 +3948,7 @@ impl<'a> Executor<'a> {
                                 expr,
                                 source_var,
                                 target_var,
-                            ).unwrap_or(PropertyValue::Null)
+                            )?.unwrap_or(PropertyValue::Null)
                         };
 
                         let output_key = alias.clone().unwrap_or(key);
@@ -4041,17 +4111,15 @@ impl<'a> Executor<'a> {
                 if args.is_empty() || matches!(args.first(), Some(Expression::Wildcard)) {
                     Ok(PropertyValue::Int(group_matches.len() as i64))
                 } else {
-                    let count = group_matches.iter()
-                        .filter(|m| {
-                            self.evaluate_pattern_group_expression(
-                                m,
-                                &args[0],
-                                source_var,
-                                target_var,
-                                edge_var,
-                            ).is_some_and(|v| !matches!(v, PropertyValue::Null))
-                        })
-                        .count() as i64;
+                    let mut count = 0_i64;
+                    for m in group_matches {
+                        if self
+                            .evaluate_pattern_group_expression(m, &args[0], source_var, target_var, edge_var, Some(algo_cache))?
+                            .is_some_and(|v| !matches!(v, PropertyValue::Null))
+                        {
+                            count += 1;
+                        }
+                    }
                     Ok(PropertyValue::Int(count))
                 }
             }
@@ -4070,7 +4138,8 @@ impl<'a> Executor<'a> {
                         source_var,
                         target_var,
                         edge_var,
-                    ) && let Some(num) = self.property_value_to_f64(&v) {
+                        Some(algo_cache),
+                    )? && let Some(num) = self.property_value_to_f64(&v) {
                         total += num;
                         count += 1;
                     }
@@ -4098,7 +4167,8 @@ impl<'a> Executor<'a> {
                         source_var,
                         target_var,
                         edge_var,
-                    ) {
+                        Some(algo_cache),
+                    )? {
                         match &best {
                             None => best = Some(v),
                             Some(curr) => {
@@ -4124,6 +4194,7 @@ impl<'a> Executor<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn evaluate_pattern_group_condition(
         &self,
         group_matches: &[&operators::PatternMatch],
@@ -4135,59 +4206,13 @@ impl<'a> Executor<'a> {
         group_key_values: &[PropertyValue],
         algo_cache: &aggregations::AlgoResults,
     ) -> Result<bool> {
-        match expr {
-            Expression::BinaryOp { left, op, right } => {
-                match op {
-                    BinaryOperator::And => {
-                        Ok(self.evaluate_pattern_group_condition(
-                            group_matches, left, source_var, target_var, edge_var, group_by, group_key_values, algo_cache
-                        )? && self.evaluate_pattern_group_condition(
-                            group_matches, right, source_var, target_var, edge_var, group_by, group_key_values, algo_cache
-                        )?)
-                    }
-                    BinaryOperator::Or => {
-                        Ok(self.evaluate_pattern_group_condition(
-                            group_matches, left, source_var, target_var, edge_var, group_by, group_key_values, algo_cache
-                        )? || self.evaluate_pattern_group_condition(
-                            group_matches, right, source_var, target_var, edge_var, group_by, group_key_values, algo_cache
-                        )?)
-                    }
-                    _ => {
-                        let left_val = self.evaluate_pattern_group_scalar(
-                            group_matches,
-                            left,
-                            source_var,
-                            target_var,
-                            edge_var,
-                            group_by,
-                            group_key_values,
-                            algo_cache,
-                        )?;
-                        let right_val = self.evaluate_pattern_group_scalar(
-                            group_matches,
-                            right,
-                            source_var,
-                            target_var,
-                            edge_var,
-                            group_by,
-                            group_key_values,
-                            algo_cache,
-                        )?;
-
-                        match (left_val, right_val) {
-                            (Some(l), Some(r)) => Ok(operators::compare_values(&l, op, &r)),
-                            _ => Ok(false),
-                        }
-                    }
-                }
-            }
-            Expression::Literal(PropertyValue::Bool(b)) => Ok(*b),
-            _ => Ok(false),
-        }
+        value_ops::condition(expr, &mut |e| {
+            self.pattern_group_leaf(group_matches, e, source_var, target_var, edge_var, group_by, group_key_values, algo_cache)
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn evaluate_pattern_group_scalar(
+    fn pattern_group_leaf(
         &self,
         group_matches: &[&operators::PatternMatch],
         expr: &Expression,
@@ -4215,14 +4240,17 @@ impl<'a> Executor<'a> {
                         return Ok(Some(v.clone()));
                 }
 
-                Ok(group_matches.first().and_then(|m| {
-                    self.evaluate_pattern_group_expression(m, expr, source_var, target_var, edge_var)
-                }))
+                match group_matches.first() {
+                    Some(m) => self.evaluate_pattern_group_expression(m, expr, source_var, target_var, edge_var, None),
+                    None => Ok(None),
+                }
             }
-            _ => Ok(None),
+            other => Err(operators::unsupported_here(other)),
         }
     }
 
+    /// The value of `expr` for one match of a group: the argument of an
+    /// aggregate (`sum(l.gramos * 2)`, `max(degree(e))`, #269).
     fn evaluate_pattern_group_expression(
         &self,
         m: &operators::PatternMatch,
@@ -4230,9 +4258,10 @@ impl<'a> Executor<'a> {
         source_var: &str,
         target_var: &str,
         edge_var: Option<&str>,
-    ) -> Option<PropertyValue> {
-        match expr {
-            Expression::Property { variable, property } if property.is_empty() => {
+        algo_cache: Option<&aggregations::AlgoResults>,
+    ) -> Result<Option<PropertyValue>> {
+        value_ops::scalar(expr, &mut |e| match e {
+            Expression::Property { variable, property } if property.is_empty() => Ok({
                 if variable == source_var {
                     Some(PropertyValue::String(m.source.id.to_string()))
                 } else if variable == target_var {
@@ -4242,9 +4271,26 @@ impl<'a> Executor<'a> {
                 } else {
                     None
                 }
+            }),
+            // A per-node algorithm, for the node of this match.
+            Expression::FunctionCall { name, args } if e.is_algorithm() => {
+                let (Some(cache), Some(Expression::Property { variable, property })) = (algo_cache, args.first()) else {
+                    return Err(operators::unsupported_here(e));
+                };
+                if !property.is_empty() {
+                    return Err(operators::unsupported_here(e));
+                }
+                let node_id = if variable == source_var {
+                    m.source.id
+                } else if variable == target_var {
+                    m.target.id
+                } else {
+                    return Err(operators::unsupported_here(e));
+                };
+                Ok(Some(lookup_algo_value(name, &node_id, cache)))
             }
-            _ => self.evaluate_pattern_expression(m, expr, source_var, target_var),
-        }
+            _ => operators::eval_pattern_expression(m, e, source_var, target_var),
+        })
     }
 
     fn property_value_to_f64(&self, value: &PropertyValue) -> Option<f64> {
@@ -4278,47 +4324,25 @@ impl<'a> Executor<'a> {
 
     /// Evaluate condition on a node (with AND/OR support)
     fn evaluate_condition(&self, node: &crate::types::Node, expr: &Expression, variable: &str) -> Result<bool> {
+        value_ops::condition(expr, &mut |e| self.node_leaf(node, e, variable))
+    }
+
+    /// What `evaluate_condition` resolves itself: literals, properties of
+    /// `variable`, and the predicates that read the graph.
+    fn node_leaf(&self, node: &crate::types::Node, expr: &Expression, variable: &str) -> Result<Option<PropertyValue>> {
         match expr {
-            Expression::BinaryOp { left, op, right } => {
-                match op {
-                    BinaryOperator::And => {
-                        Ok(
-                            self.evaluate_condition(node, left, variable)?
-                                && self.evaluate_condition(node, right, variable)?,
-                        )
-                    }
-                    BinaryOperator::Or => {
-                        Ok(
-                            self.evaluate_condition(node, left, variable)?
-                                || self.evaluate_condition(node, right, variable)?,
-                        )
-                    }
-                    _ => {
-                        let left_val = self.evaluate_expression(node, left, variable);
-                        let right_val = self.evaluate_expression(node, right, variable);
-                        match (left_val, right_val) {
-                            (Some(l), Some(r)) => Ok(operators::compare_values(&l, op, &r)),
-                            _ => Ok(false),
-                        }
-                    }
-                }
-            }
             // Embedding predicates: has_embedding(var, "model")
             #[cfg(feature = "embeddings")]
-            Expression::FunctionCall { name, args }
-                if name.to_lowercase() == "has_embedding" =>
-            {
-                self.evaluate_embedding_predicate(node, args)
+            Expression::FunctionCall { name, args } if name.to_lowercase() == "has_embedding" => {
+                self.evaluate_embedding_predicate(node, args).map(|b| Some(PropertyValue::Bool(b)))
             }
             // Ontology predicates: instanceOf(var, "ClassName") and subClassOf(var, "ClassName")
-            Expression::FunctionCall { name, args } => {
-                Ok(self.evaluate_ontology_predicate(node, name, args, variable))
+            Expression::FunctionCall { name, args }
+                if matches!(name.to_lowercase().as_str(), "instanceof" | "subclassof") =>
+            {
+                Ok(Some(PropertyValue::Bool(self.evaluate_ontology_predicate(node, name, args, variable))))
             }
-            Expression::Literal(PropertyValue::Bool(b)) => Ok(*b),
-            _ => {
-                // For now, other expressions return true
-                Ok(true)
-            }
+            _ => self.evaluate_expression(node, expr, variable),
         }
     }
 
@@ -5062,29 +5086,8 @@ impl<'a> Executor<'a> {
     }
 
     /// Evaluate expression to get a value (with special field support)
-    fn evaluate_expression(&self, node: &crate::types::Node, expr: &Expression, expected_variable: &str) -> Option<PropertyValue> {
-        match expr {
-            Expression::Literal(val) => Some(val.clone()),
-            Expression::Property { variable, property } => {
-                if variable != expected_variable {
-                    return None;
-                }
-
-                if property.is_empty() {
-                    return Some(PropertyValue::String(node.id.to_string()));
-                }
-
-                // Handle special fields
-                if property == "label" {
-                    return Some(PropertyValue::String(node.label.clone()));
-                }
-                if property == "id" {
-                    return Some(PropertyValue::String(node.id.to_string()));
-                }
-                node.properties.get(property).cloned()
-            }
-            _ => None,
-        }
+    fn evaluate_expression(&self, node: &crate::types::Node, expr: &Expression, expected_variable: &str) -> Result<Option<PropertyValue>> {
+        operators::eval_expression(node, expr, expected_variable)
     }
 
     pub fn take_path_profile_value(&self) -> Option<PropertyValue> {
@@ -5361,42 +5364,51 @@ impl<'a> Executor<'a> {
 
 
     /// Apply ORDER BY to query result (I1)
-    fn apply_order_by(&self, result: &mut QueryResult, order_by: &OrderByClause) {
-        result.rows.sort_by(|a, b| {
+    /// Sorts the rows. A property (or a column, by its name) is read from
+    /// the row; an expression with operators is evaluated over the row keys
+    /// of its leaves (`split_computed`, #269).
+    fn apply_order_by(&self, result: &mut QueryResult, order_by: &OrderByClause) -> Result<()> {
+        let mut keyed: Vec<(Vec<Option<PropertyValue>>, Row)> = Vec::with_capacity(result.rows.len());
+        for row in std::mem::take(&mut result.rows) {
+            let mut keys = Vec::with_capacity(order_by.items.len());
             for item in &order_by.items {
-                // Extract column name from expression
-                let col_name = match &item.expression {
+                let key = match &item.expression {
                     Expression::Property { variable, property } => {
-                        if property.is_empty() {
-                            variable.clone()
-                        } else {
-                            property_projection_key(variable, property)
-                        }
+                        row.get(&property_projection_key(variable, property)).cloned()
                     }
-                    _ => continue,
+                    e if is_computed(e) => value_ops::scalar(e, &mut |leaf| match leaf {
+                        Expression::Literal(v) => Ok(Some(v.clone())),
+                        Expression::Property { variable, property } => {
+                            Ok(row.get(&property_projection_key(variable, property)).cloned())
+                        }
+                        other => Err(operators::unsupported_here(other)),
+                    })?,
+                    _ => None,
                 };
-
-                let a_val = a.get(&col_name);
-                let b_val = b.get(&col_name);
-
-                let ordering = match (a_val, b_val) {
+                keys.push(key);
+            }
+            keyed.push((keys, row));
+        }
+        keyed.sort_by(|(a, _), (b, _)| {
+            for (item, (av, bv)) in order_by.items.iter().zip(a.iter().zip(b)) {
+                let ordering = match (av, bv) {
                     (Some(av), Some(bv)) => av.cmp(bv),
                     (Some(_), None) => std::cmp::Ordering::Less,
                     (None, Some(_)) => std::cmp::Ordering::Greater,
                     (None, None) => std::cmp::Ordering::Equal,
                 };
-
                 let ordering = match item.order {
                     SortOrder::Desc => ordering.reverse(),
                     SortOrder::Asc => ordering,
                 };
-
                 if ordering != std::cmp::Ordering::Equal {
                     return ordering;
                 }
             }
             std::cmp::Ordering::Equal
         });
+        result.rows = keyed.into_iter().map(|(_, row)| row).collect();
+        Ok(())
     }
 
     fn apply_distinct_if_needed(
@@ -5542,55 +5554,8 @@ impl<'a> Executor<'a> {
         expr: &Expression,
         source_var: &str,
         target_var: &str,
-    ) -> Option<PropertyValue> {
-        match expr {
-            Expression::Literal(val) => Some(val.clone()),
-            Expression::Property { variable, property } => {
-                // Variable-only expression (e.g., count(r)) resolves to ID.
-                if property.is_empty() {
-                    if variable == source_var {
-                        return Some(PropertyValue::String(m.source.id.to_string()));
-                    }
-                    if variable == target_var {
-                        return Some(PropertyValue::String(m.target.id.to_string()));
-                    }
-                    if let Some(edge) = &m.edge {
-                        return Some(PropertyValue::String(edge.id.to_string()));
-                    }
-                    return None;
-                }
-
-                // Variable-aware property lookup
-                let node = if variable == source_var {
-                    &m.source
-                } else if variable == target_var {
-                    &m.target
-                } else {
-                    // P2 fix: Only treat as edge if edge actually exists.
-                    // Don't silently assume unknown variables are edges.
-                    if let Some(edge) = &m.edge {
-                        if property == "edge_type" || property == "type" {
-                            return Some(PropertyValue::String(edge.edge_type.clone()));
-                        }
-                        return edge.properties.get(property).cloned();
-                    }
-                    log::warn!("Unknown variable '{}' in pattern expression (known: {}, {})",
-                        variable, source_var, target_var);
-                    return None;
-                };
-
-                // Handle special fields
-                if property == "label" {
-                    return Some(PropertyValue::String(node.label.clone()));
-                }
-                if property == "id" {
-                    return Some(PropertyValue::String(node.id.to_string()));
-                }
-
-                node.properties.get(property).cloned()
-            }
-            _ => None,
-        }
+    ) -> Result<Option<PropertyValue>> {
+        operators::eval_pattern_expression(m, expr, source_var, target_var)
     }
 
     /// Project result based on FIND clause

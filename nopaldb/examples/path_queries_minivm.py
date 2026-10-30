@@ -114,7 +114,7 @@ def main():
         """
         find n.name, path.depth, path_eval("control")
         from (a:Company {name: "Alpha"})-[:OWNS]->{1,3}(n:Company)
-        init "control = 100"
+        init "control = 100.0"
         gather "control = control * edge.pct / 100"
         """)
 
@@ -194,7 +194,7 @@ def main():
         find n.name, path.result as control_pct, path.depth
         from (a:Company {name: "Alpha"})-[:OWNS]->{1,3}(n:Company)
         where path.result > 40
-        init "control = 100, any_risk = false"
+        init "control = 100.0, any_risk = false"
         gather "control = control * edge.pct / 100, any_risk = any_risk or edge.risk_score > 70"
         return "control"
         """)

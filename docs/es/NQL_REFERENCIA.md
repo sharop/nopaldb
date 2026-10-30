@@ -141,14 +141,31 @@ Refina tu búsqueda con condiciones lógicas.
 - **Comparación**: `=`, `!=`, `<`, `>`, `<=`, `>=`, `in [..]`, `not in [..]`
 - **Lógico**: `and`, `or`. `and` liga más que `or`: `a and b or c` es
   `(a and b) or c`. Los paréntesis agrupan: `a and (b or c)`.
+- **Negación**: `not <condición>` y `!`. `not` liga menos que la
+  comparación, como en SQL: `not r.region = "sur"` es `not (r.region = "sur")`.
+  `!` liga más que todo: `!(r.region = "sur")` necesita los paréntesis.
+- **Aritmética**: `+ - * / %` y el menos unario, en `where`, `having`, `find`,
+  `order by` y `set` ([#269](https://github.com/sharop/nopaldb/issues/269)):
+  `where r.porciones * 2 = 6`, `find r.porciones * 2 as doble`,
+  `order by -r.porciones`, `having count(*) * 2 > 3`.
 - **Literales**: cadenas, booleanos, enteros y decimales, también negativos
   (`-5`, `-2.5`), y listas (`[1, -2]`).
 
-Todavía no se soportan en expresiones: aritmética (`+ - * / %`), negación
-(`!`, `not`) y el menos unario sobre algo que no sea un número. Dan un error
-de parseo que los nombra, nunca una condición distinta en silencio. Hasta
-0.8.2 se descartaban: `x * 2 = 6` se ejecutaba como `x = 6`, y `-5` perdía
-el signo. Para excluir, usa `!=` o `not in`.
+La aritmética es la misma en toda cláusula y por toda ruta de ejecución:
+- Los enteros siguen enteros: `7 / 2` es `3` y `7 % 2` es `1` (truncado, como en
+  SQL y Cypher). Un entero con un decimal da decimal: `7 / 2.0` es `3.5`.
+- El desbordamiento de enteros y la división entre cero son errores que nombran
+  la operación, nunca un valor que da la vuelta o infinito.
+- `null` en aritmética da `null`; sobre una propiedad que no existe no hay
+  valor, y una comparación con él es falsa.
+- Los números se comparan por valor: `3 = 3.0` es verdadero, como ya lo era
+  `3 <= 3.0`.
+- `not` es de dos valores: `not r.region = "sur"` también es verdadero para una
+  receta sin `region`.
+
+Hasta 0.8.2 la aritmética y la negación se descartaban (`x * 2 = 6` se
+ejecutaba como `x = 6`); de 0.8.3 a 0.10.4 eran un error de parseo que las
+nombraba.
 
 ### Las condiciones son comparaciones (0.9.4)
 
@@ -299,7 +316,7 @@ set r.since = 2024, b.city = "CDMX"
 where a.name = "Alice" and b.name = "Bob"
 ```
 
-El valor de `set` es un literal: texto, número, booleano, `null` o lista. Leer una propiedad (`set b.city = a.city`) o llamar a una función es un error (desde 0.10.3; hasta 0.10.2 respondía OK y no actualizaba nada).
+El valor de `set` es un literal, una propiedad de la misma variable o aritmética sobre ellos: `set r.porciones = r.porciones + 1` ([#269](https://github.com/sharop/nopaldb/issues/269)). Cada valor se lee del elemento como estaba antes del `update` (`set n.a = n.b, n.b = n.a` los intercambia), y la aritmética sobre una propiedad que no existe escribe `null`. Un error, como un desbordamiento, no escribe nada. Leer otra variable del patrón (`set b.city = a.city`) o llamar a una función es un error: un nodo puede estar en varias coincidencias. Hasta 0.10.4 solo se aceptaban literales; hasta 0.10.2 lo demás respondía OK y no actualizaba nada.
 
 ### DELETE
 ```nql
