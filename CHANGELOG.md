@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.10.5] - unreleased
+## [0.10.5] - 2026-10-30
 
 NQL evalúa aritmética (`+ - * / %`, menos unario) y negación (`not`, `!`)
 en todas las cláusulas y por todas las rutas (#269), y varios patrones de un
