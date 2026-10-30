@@ -141,14 +141,29 @@ Refine your search with logical conditions.
 - **Comparison**: `=`, `!=`, `<`, `>`, `<=`, `>=`, `in [..]`, `not in [..]`
 - **Logical**: `and`, `or`. `and` binds tighter than `or`: `a and b or c` is
   `(a and b) or c`. Parentheses group: `a and (b or c)`.
+- **Negation**: `not <condition>` and `!`. `not` binds looser than a
+  comparison, as in SQL: `not r.region = "south"` is `not (r.region = "south")`.
+  `!` binds tightest: `!(r.region = "south")` needs the parentheses.
+- **Arithmetic**: `+ - * / %` and unary minus, in `where`, `having`, `find`,
+  `order by` and `set` ([#269](https://github.com/sharop/nopaldb/issues/269)):
+  `where r.servings * 2 = 6`, `find r.servings * 2 as double`,
+  `order by -r.servings`, `having count(*) * 2 > 3`.
 - **Literals**: strings, booleans, integers and floats, negative ones
   included (`-5`, `-2.5`), and lists (`[1, -2]`).
 
-Not supported yet in expressions: arithmetic (`+ - * / %`), negation (`!`,
-`not`) and unary minus on anything but a number. They are a parse error that
-names them, never a silently different condition. Until 0.8.2 they were
-dropped: `x * 2 = 6` ran as `x = 6`, and `-5` lost its sign. To exclude, use
-`!=` or `not in`.
+Arithmetic, the same in every clause and every execution path:
+- Integers stay integers: `7 / 2` is `3`, `7 % 2` is `1` (truncated, as in SQL
+  and Cypher). An integer and a float give a float: `7 / 2.0` is `3.5`.
+- An integer overflow and a division by zero are errors that name the
+  operation, never a wrapped or infinite value.
+- `null` in arithmetic gives `null`; over a missing property there is no value,
+  and a comparison with it is false.
+- Numbers compare by value: `3 = 3.0` is true, as `3 <= 3.0` already was.
+- `not` is two-valued: `not r.region = "south"` is also true for a recipe
+  without `region`.
+
+Until 0.8.2 arithmetic and negation were dropped (`x * 2 = 6` ran as `x = 6`);
+from 0.8.3 to 0.10.4 they were a parse error that named them.
 
 ### Conditions must be comparisons (0.9.4)
 
@@ -299,7 +314,7 @@ set r.since = 2024, b.city = "Mexico City"
 where a.name = "Alice" and b.name = "Bob"
 ```
 
-The value in `set` is a literal: a string, number, boolean, `null` or list. Reading a property (`set b.city = a.city`) or calling a function is an error (since 0.10.3; until 0.10.2 it answered OK and updated nothing).
+The value in `set` is a literal, a property of the same variable, or arithmetic over them: `set r.servings = r.servings + 1` ([#269](https://github.com/sharop/nopaldb/issues/269)). Every value is read from the element as it was before the `update` (`set n.a = n.b, n.b = n.a` swaps them), and arithmetic over a missing property writes `null`. An error, such as an overflow, writes nothing. Reading another variable of the pattern (`set b.city = a.city`) or calling a function is an error: one node can take part in several matches. Until 0.10.4 only literals were accepted; until 0.10.2 anything else answered OK and updated nothing.
 
 ### DELETE
 ```nql

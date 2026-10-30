@@ -257,3 +257,22 @@ and some queries that answered are now errors:
 | `find n.name … order by degree(n)` | not sorted | `SemanticError` | project it (`degree(n) as d`) and `order by d` |
 | `find … order by count(*)` with `count(*)` in `find` | not sorted | sorted | — |
 | `find n.name, 1 …` | column dropped | constant column `1` | — |
+
+## 11. From 0.10.4 to 0.10.5: arithmetic and negation
+
+NQL evaluates `+ - * / %`, unary minus, `not` and `!`
+([#269](https://github.com/sharop/nopaldb/issues/269)). Queries that were a
+parse error now answer; a few that answered change:
+
+| Query | 0.10.4 | 0.10.5 | What to do |
+|---|---|---|---|
+| `where r.servings * 2 = 6`, `find r.servings * 2 as d`, `order by -r.servings`, `having count(*) * 2 > 3`, `where not r.region = "south"`, `where !(…)` | parse error | evaluated | — |
+| `set r.servings = r.servings + 1` | `SemanticError` | writes the new value | — |
+| `path_eval` / `gather "x = a / b"` with two integers | float (`7 / 2` = `3.5`) | integer (`3`) | write one operand as a float: `a / 100.0`, or `init "x = 100.0"` |
+| `where n.x = 3.0` on an integer property (also `in [3.0]`) | no match | match: numbers compare by value | — |
+| integer overflow, `/ 0`, `% 0` in a `gather` | panic in debug, wrapped value in release / named error | named error | — |
+| a variable named `not` | allowed | `not` is a keyword | rename the variable |
+| `where not similar_to(…)` (also `hybrid`, `in_community`) | parse error | `SemanticError`: a search picks candidates, it cannot be negated | — |
+| `where r.servings + 1` (arithmetic as a condition) | parse error | `SemanticError`: compare it | `where r.servings + 1 > 0` |
+| `find distinct r.servings % 2`, or `distinct` with `order by` an expression | parse error | error: not supported yet | — |
+| `delete (n:L) where true` (also `update`) | deleted nothing: the write WHERE read anything but a comparison as `false` | deletes every `L`, as `find` reads it | check scripts that relied on it |

@@ -17,6 +17,7 @@ use crate::Transaction;
 // Import result types from result.rs
 use super::result::{AddResult, DeleteResult, UpdateResult};
 use super::operators;
+use super::value_ops;
 
 
 // ═══════════════════════════════════════════════════════════
@@ -201,9 +202,13 @@ impl<'a> WriteExecutor<'a> {
         let nodes = self.match_nodes_by_pattern(&delete.pattern).await?;
 
         let filtered = if let Some(filter) = &delete.filter {
-            nodes.into_iter()
-                .filter(|n| self.evaluate_simple_condition(n, &filter.condition))
-                .collect::<Vec<_>>()
+            let mut kept = Vec::with_capacity(nodes.len());
+            for n in nodes {
+                if self.evaluate_simple_condition(&n, &filter.condition)? {
+                    kept.push(n);
+                }
+            }
+            kept
         } else {
             nodes
         };
@@ -245,11 +250,13 @@ impl<'a> WriteExecutor<'a> {
 
         // Apply WHERE filter
         let filtered: Vec<_> = if let Some(filter) = &delete.filter {
-            matches.into_iter()
-                .filter(|m| self.evaluate_pattern_condition(
-                    m, &filter.condition, &source_var, &target_var
-                ))
-                .collect()
+            let mut kept = Vec::with_capacity(matches.len());
+            for m in matches {
+                if operators::eval_pattern_condition(&m, &filter.condition, &source_var, &target_var)? {
+                    kept.push(m);
+                }
+            }
+            kept
         } else {
             matches
         };
@@ -320,9 +327,13 @@ impl<'a> WriteExecutor<'a> {
         let nodes = self.match_nodes_by_pattern(&update.pattern).await?;
 
         let filtered = if let Some(filter) = &update.filter {
-            nodes.into_iter()
-                .filter(|n| self.evaluate_simple_condition(n, &filter.condition))
-                .collect::<Vec<_>>()
+            let mut kept = Vec::with_capacity(nodes.len());
+            for n in nodes {
+                if self.evaluate_simple_condition(&n, &filter.condition)? {
+                    kept.push(n);
+                }
+            }
+            kept
         } else {
             nodes
         };
@@ -354,11 +365,13 @@ impl<'a> WriteExecutor<'a> {
         let matches = operators::execute_one_hop_pattern(self.graph, source, rel, target).await?;
 
         let filtered: Vec<_> = if let Some(filter) = &update.filter {
-            matches.into_iter()
-                .filter(|m| self.evaluate_pattern_condition(
-                    m, &filter.condition, &source_var, &target_var
-                ))
-                .collect()
+            let mut kept = Vec::with_capacity(matches.len());
+            for m in matches {
+                if operators::eval_pattern_condition(&m, &filter.condition, &source_var, &target_var)? {
+                    kept.push(m);
+                }
+            }
+            kept
         } else {
             matches
         };
@@ -436,17 +449,16 @@ impl<'a> WriteExecutor<'a> {
         let mut properties_changed = 0;
 
         for mut node in nodes {
+            let before = node.clone();
             let mut changed = false;
             for assignment in assignments {
                 if !node_vars.iter().any(|var| *var == assignment.variable) {
                     continue;
                 }
-                let new_value = self.evaluate_assignment_value(&assignment.value);
-                if let Some(val) = new_value {
-                    node.properties.insert(assignment.property.clone(), val);
-                    properties_changed += 1;
-                    changed = true;
-                }
+                let val = self.assignment_value_for_node(&before, &assignment.variable, &assignment.value)?;
+                node.properties.insert(assignment.property.clone(), val);
+                properties_changed += 1;
+                changed = true;
             }
 
             if changed {
@@ -456,17 +468,16 @@ impl<'a> WriteExecutor<'a> {
         }
 
         for mut edge in edges {
+            let before = edge.clone();
             let mut changed = false;
             for assignment in assignments {
                 if Some(assignment.variable.as_str()) != edge_var {
                     continue;
                 }
-                let new_value = self.evaluate_assignment_value(&assignment.value);
-                if let Some(val) = new_value {
-                    edge.properties.insert(assignment.property.clone(), val);
-                    properties_changed += 1;
-                    changed = true;
-                }
+                let val = self.assignment_value_for_edge(&before, &assignment.variable, &assignment.value)?;
+                edge.properties.insert(assignment.property.clone(), val);
+                properties_changed += 1;
+                changed = true;
             }
 
             if changed {
@@ -523,81 +534,6 @@ impl<'a> WriteExecutor<'a> {
         Ok((source, rel, target, source_var, target_var))
     }
 
-    /// Evaluate condition on a pattern match with variable scoping
-    fn evaluate_pattern_condition(
-        &self,
-        m: &operators::PatternMatch,
-        expr: &Expression,
-        source_var: &str,
-        target_var: &str,
-    ) -> bool {
-        match expr {
-            Expression::BinaryOp { left, op, right } => {
-                use crate::query::nql::parser::ast::BinaryOperator;
-                match op {
-                    BinaryOperator::And => {
-                        self.evaluate_pattern_condition(m, left, source_var, target_var)
-                            && self.evaluate_pattern_condition(m, right, source_var, target_var)
-                    }
-                    BinaryOperator::Or => {
-                        self.evaluate_pattern_condition(m, left, source_var, target_var)
-                            || self.evaluate_pattern_condition(m, right, source_var, target_var)
-                    }
-                    _ => {
-                        let l = self.eval_pattern_expr(m, left, source_var, target_var);
-                        let r = self.eval_pattern_expr(m, right, source_var, target_var);
-                        match (l, r) {
-                            // Mismo evaluador que el WHERE de lectura (0.6.8):
-                            // antes eran dos copias sin `in`/`not in`.
-                            (Some(lv), Some(rv)) => operators::compare_values(&lv, op, &rv),
-                            _ => false,
-                        }
-                    }
-                }
-            }
-            _ => {
-                log::warn!("Unsupported expression in pattern WHERE, defaulting to false");
-                false
-            }
-        }
-    }
-
-    fn eval_pattern_expr(
-        &self,
-        m: &operators::PatternMatch,
-        expr: &Expression,
-        source_var: &str,
-        target_var: &str,
-    ) -> Option<PropertyValue> {
-        match expr {
-            Expression::Literal(v) => Some(v.clone()),
-            Expression::Property { variable, property } => {
-                let node = if variable == source_var {
-                    &m.source
-                } else if variable == target_var {
-                    &m.target
-                } else {
-                    if let Some(edge) = &m.edge {
-                        if property == "edge_type" || property == "type" {
-                            return Some(PropertyValue::String(edge.edge_type.clone()));
-                        }
-                        return edge.properties.get(property).cloned();
-                    }
-                    return None;
-                };
-
-                if property == "label" {
-                    return Some(PropertyValue::String(node.label.clone()));
-                }
-                if property == "id" {
-                    return Some(PropertyValue::String(node.id.to_string()));
-                }
-                node.properties.get(property).cloned()
-            }
-            _ => None,
-        }
-    }
-
     /// Match nodes by simple pattern (label filter only)
     async fn match_nodes_by_pattern(&self, pattern: &Pattern) -> Result<Vec<Node>> {
         if pattern.elements.is_empty() {
@@ -616,63 +552,42 @@ impl<'a> WriteExecutor<'a> {
         }
     }
 
-    /// Simple condition evaluation for DELETE/UPDATE WHERE clauses
-    fn evaluate_simple_condition(&self, node: &Node, expr: &Expression) -> bool {
-        match expr {
-            Expression::BinaryOp { left, op, right } => {
-                use crate::query::nql::parser::ast::BinaryOperator;
-                match op {
-                    BinaryOperator::And => {
-                        self.evaluate_simple_condition(node, left)
-                            && self.evaluate_simple_condition(node, right)
-                    }
-                    BinaryOperator::Or => {
-                        self.evaluate_simple_condition(node, left)
-                            || self.evaluate_simple_condition(node, right)
-                    }
-                    _ => {
-                        let l = self.eval_expr(node, left);
-                        let r = self.eval_expr(node, right);
-                        match (l, r) {
-                            // Mismo evaluador que el WHERE de lectura (0.6.8):
-                            // antes eran dos copias sin `in`/`not in`.
-                            (Some(lv), Some(rv)) => operators::compare_values(&lv, op, &rv),
-                            _ => false,
-                        }
-                    }
-                }
-            }
-            _ => {
-                log::warn!("Unsupported expression type in WHERE clause for write operation, defaulting to false for safety");
-                false
-            }
-        }
+    /// The WHERE of a single-node DELETE/UPDATE, with NQL's operators
+    /// (`value_ops`, #269). Until 0.10.4 anything but a comparison was
+    /// `false` here, so `where not …` or `where n.a * 2 = 6` touched nothing.
+    fn evaluate_simple_condition(&self, node: &Node, expr: &Expression) -> Result<bool> {
+        value_ops::condition(expr, &mut |e| match e {
+            Expression::Literal(v) => Ok(Some(v.clone())),
+            // The pattern has one variable: every property is of `node`.
+            Expression::Property { property, .. } => Ok(node_field(node, property)),
+            other => Err(operators::unsupported_here(other)),
+        })
     }
 
-    fn eval_expr(&self, node: &Node, expr: &Expression) -> Option<PropertyValue> {
-        match expr {
-            Expression::Literal(v) => Some(v.clone()),
-            Expression::Property { variable: _, property } => {
-                if property == "label" {
-                    Some(PropertyValue::String(node.label.clone()))
-                } else if property == "id" {
-                    Some(PropertyValue::String(node.id.to_string()))
-                } else {
-                    node.properties.get(property).cloned()
-                }
-            }
-            _ => None,
-        }
+    /// The value of `set var.prop = <expr>` for `node` (#269), read from the
+    /// node as it was before the UPDATE: `set n.a = n.b, n.b = n.a` swaps.
+    /// The validator lets through literals, properties of `var` and the
+    /// operators. Arithmetic over a missing property writes `null`.
+    fn assignment_value_for_node(&self, before: &Node, var: &str, expr: &Expression) -> Result<PropertyValue> {
+        let value = value_ops::scalar(expr, &mut |e| match e {
+            Expression::Literal(v) => Ok(Some(v.clone())),
+            Expression::Property { variable, property } if variable == var => Ok(node_field(before, property)),
+            other => Err(operators::unsupported_here(other)),
+        })?;
+        Ok(value.unwrap_or(PropertyValue::Null))
     }
 
-    fn evaluate_assignment_value(&self, expr: &Expression) -> Option<PropertyValue> {
-        match expr {
-            Expression::Literal(v) => Some(v.clone()),
-            _ => {
-                log::warn!("UPDATE SET only supports literal values for now. Expression {:?} ignored.", expr);
-                None
-            }
-        }
+    fn assignment_value_for_edge(&self, before: &Edge, var: &str, expr: &Expression) -> Result<PropertyValue> {
+        let value = value_ops::scalar(expr, &mut |e| match e {
+            Expression::Literal(v) => Ok(Some(v.clone())),
+            Expression::Property { variable, property } if variable == var => Ok(match property.as_str() {
+                "" | "id" => Some(PropertyValue::String(before.id.to_string())),
+                "type" | "edge_type" => Some(PropertyValue::String(before.edge_type.clone())),
+                p => before.properties.get(p).cloned(),
+            }),
+            other => Err(operators::unsupported_here(other)),
+        })?;
+        Ok(value.unwrap_or(PropertyValue::Null))
     }
 
     /// Match pattern against graph
@@ -730,5 +645,14 @@ mod tests {
     fn test_count_elements_empty() {
         let elements: Vec<MatchedElement> = vec![];
         assert_eq!(elements.len(), 0);
+    }
+}
+
+/// `id`, `label` or a property of `node`.
+fn node_field(node: &Node, property: &str) -> Option<PropertyValue> {
+    match property {
+        "" | "id" => Some(PropertyValue::String(node.id.to_string())),
+        "label" => Some(PropertyValue::String(node.label.clone())),
+        p => node.properties.get(p).cloned(),
     }
 }

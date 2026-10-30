@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Aritmética y negación en NQL** (#269): `+ - * / %`, el menos unario,
+  `not <condición>` y `!` en `where`, `having`, `find` (columnas calculadas,
+  `r.porciones * 2 as doble`), `order by` y `set`
+  (`set r.porciones = r.porciones + 1`). Una sola definición de los
+  operadores (`executor::value_ops`) para todos los evaluadores, así que el
+  resultado es el mismo por cualquier ruta (índice, uno o varios saltos,
+  algoritmos, `at timestamp`). De 0.8.3 a 0.10.4 eran un error de parseo.
+
+### Changed
+- **Semántica numérica explícita** (#269): la división y el módulo entre
+  enteros dan entero (`7 / 2` es `3`, también en `path_eval`, que daba
+  `3.5`); el desbordamiento y la división entre cero son errores con nombre;
+  `3 = 3.0` es verdadero (antes `=` comparaba el tipo y `<=` no). `not` pasa
+  a ser palabra clave: ya no puede nombrar una variable.
+- **Ningún evaluador da por buena una expresión que no sabe evaluar** (#269):
+  antes `_ => true` en condiciones y "sin valor" en comparaciones; ahora es
+  un error con nombre. `not similar_to(…)` (y `hybrid`, `in_community`) es
+  un error: la búsqueda elige candidatos, no se puede negar.
+- **`set` acepta propiedades de la misma variable y aritmética** (#269),
+  leídas del elemento antes del `update`. Leer otra variable del patrón o
+  llamar a una función sigue siendo error.
+
 ## [0.10.4] - 2026-10-29
 
 El esquema del resultado NQL es un contrato (#335): columnas en el orden del

@@ -322,7 +322,19 @@ or_expression = {
 }
 
 and_expression = {
-    comparison_expression ~ (and_op ~ comparison_expression)*
+    not_expression ~ (and_op ~ not_expression)*
+}
+
+// `not <condición>` (#269): por debajo de la comparación, como en SQL:
+// `not r.region = "sur"` es `not (r.region = "sur")`. `!` es el unario de
+// más precedencia (`!r.vegano = true` es `(!r.vegano) = true`).
+not_expression = {
+    (not_kw ~ not_expression) |
+    comparison_expression
+}
+
+not_kw = @{
+    ^"not" ~ !identifier_char
 }
 
 // Prevent matching prefixes like "order" as "or"
@@ -369,12 +381,16 @@ add_op = { "+" }
 sub_op = { "-" }
 
 multiplicative_expression = {
-    unary_expression ~ (("*"|"/"|"%") ~ unary_expression)*
+    unary_expression ~ ((mul_op | div_op | mod_op) ~ unary_expression)*
 }
 
 unary_expression = {
-    ("!" | neg_op)? ~ primary_expression
+    (bang_op ~ unary_expression) |
+    (neg_op ~ unary_expression) |
+    primary_expression
 }
+
+bang_op = { "!" }
 
 neg_op = { "-" }
 
