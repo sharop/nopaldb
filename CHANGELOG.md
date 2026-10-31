@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.6] - unreleased
+
+La unión de varios patrones NQL filtra mientras combina, se detiene en
+`limit` cuando puede y tiene un tope de filas con error con nombre (#349).
+Las filas no cambian. API nueva: `Graph::max_join_rows` /
+`set_max_join_rows` (también en Python); sin cambios de formato en disco.
+Lo que puede cambiar al actualizar está en la §12 de
+`docs/UPGRADING_0.10.md`.
 
 ### Added
 - **Tope de filas de la unión de varios patrones NQL** (#349):

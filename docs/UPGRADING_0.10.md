@@ -287,13 +287,13 @@ when a pattern had an edge:
 | `… where a.servings < b.servings` (a condition on both) | no rows | the pairs that pass | — |
 | `find count(*) from (a:Recipe), (b:Recipe)` | counted `a` only | named error: aggregations over several patterns are not supported yet | count over one pattern |
 
-## 12. After 0.10.5: the join of several patterns
+## 12. From 0.10.5 to 0.10.6: the join of several patterns
 
 The join of several patterns in `from` filters while it combines and has a
 row limit ([#349](https://github.com/sharop/nopaldb/issues/349)). The rows do
 not change; what changes:
 
-| Situation | 0.10.5 | Now | What to do |
+| Situation | 0.10.5 | 0.10.6 | What to do |
 |---|---|---|---|
 | `from (a:X), (b:X) where … limit 10` over large labels | the whole product in memory (2000 × 2000: 10 GB, 4 s) | only the rows that pass (18 MB, 10 ms) | — |
 | more than `Graph::max_join_rows()` rows pass the `where` in a join (400 000; 100 000 with `Mobile`) | ran out of memory | named error | relate each pattern to the ones before it in `where`, or `set_max_join_rows(n)` |

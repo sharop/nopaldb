@@ -294,13 +294,13 @@ cuando un patrón tenía una arista:
 | `… where a.porciones < b.porciones` (condición sobre los dos) | sin filas | los pares que la cumplen | — |
 | `find count(*) from (a:Receta), (b:Receta)` | contaba solo `a` | error con nombre: las agregaciones sobre varios patrones todavía no se soportan | cuenta sobre un patrón |
 
-## 12. Después de 0.10.5: la unión de varios patrones
+## 12. De 0.10.5 a 0.10.6: la unión de varios patrones
 
 La unión de varios patrones del `from` filtra mientras combina y tiene un
 tope de filas ([#349](https://github.com/sharop/nopaldb/issues/349)). Las
 filas no cambian; lo que cambia:
 
-| Situación | 0.10.5 | Ahora | Qué hacer |
+| Situación | 0.10.5 | 0.10.6 | Qué hacer |
 |---|---|---|---|
 | `from (a:X), (b:X) where … limit 10` sobre etiquetas grandes | el producto entero en memoria (2000 × 2000: 10 GB, 4 s) | solo las filas que pasan (18 MB, 10 ms) | — |
 | más de `Graph::max_join_rows()` filas cumplen el `where` en una unión (400 000; 100 000 con `Mobile`) | se agotaba la memoria | error con nombre | relaciona cada patrón con los anteriores en el `where`, o `set_max_join_rows(n)` |
