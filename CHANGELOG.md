@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.10.7] - unreleased
+## [0.10.7] - 2026-10-31
 
 La unión de varios patrones NQL agrupa por hash cuando los lados comparten
 una variable o el `where` tiene una igualdad con un lado en cada uno (#349):
