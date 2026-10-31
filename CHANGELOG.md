@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Tope de filas de la unión de varios patrones NQL** (#349):
+  `Graph::max_join_rows` / `set_max_join_rows` (también en Python). Por
+  defecto 400 000 filas (~1 GB), 100 000 con el perfil `Mobile`; pasarlo es
+  un error con nombre en vez de agotar la memoria. Cuentan las filas que
+  cumplen el `where` en cada unión, en el orden del `from`; con `order by`
+  o `distinct` la unión no se corta en `limit`, así que una consulta grande
+  que antes respondía (con memoria de sobra) puede dar el error.
+
+### Changed
+- **La unión de varios patrones filtra mientras combina** (#349): cada
+  patrón lee solo los nodos que cumplen sus condiciones de una variable, cada
+  parte del `where` se aplica en cuanto sus variables están ligadas, y sin
+  `order by` ni `distinct` la unión se detiene en `limit`. Las filas no
+  cambian. Antes se guardaba el producto entero y se filtraba al final:
+  `from (a:X), (b:X) where a.p = 1 and b.p = 2 limit 10` con 2000 nodos
+  ocupaba 10 GB y tardaba 4 s; ahora 18 MB y 10 ms. EXPLAIN dice qué
+  aplica cada patrón y cada unión (`Join: …`), y la estrategia de varios
+  patrones de un solo nodo es `PATTERN PIPELINE` (decía `LABEL SCAN`).
+
 ## [0.10.5] - 2026-10-30
 
 NQL evalúa aritmética (`+ - * / %`, menos unario) y negación (`not`, `!`)

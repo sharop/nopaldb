@@ -2085,6 +2085,9 @@ impl Graph {
             }
             graph.rebuild_taxonomy_from_graph().await?;
         }
+        // El tope de la unión es del grafo que consulta, no del perfil del
+        // grafo materializado en memoria.
+        graph.set_max_join_rows(self.max_join_rows());
         Ok(Some(PastGraph { graph, timestamp, nodes, edges }))
     }
 
@@ -5288,6 +5291,34 @@ impl Graph {
     /// Retira el callback de progreso, si lo había.
     pub fn clear_progress_callback(&self) {
         *self.ops.progress.write().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// Máximo de filas que puede dar la unión de varios patrones de un
+    /// `from` NQL (`from (a:X), (b:Y)`) antes de proyectar (#349). Una
+    /// consulta que lo pasa falla con un error con nombre en vez de agotar
+    /// la memoria: hoy cada fila combinada ocupa unos 2.5 KB.
+    ///
+    /// Por defecto 400 000 filas (~1 GB), 100 000 (~250 MB) con el perfil
+    /// `Mobile`. Cuentan las filas que cumplen el `where`, en cada unión y
+    /// en el orden del `from`: una condición se aplica en cuanto sus
+    /// variables están ligadas, así que en `from (a), (b), (c) where a.k =
+    /// c.k` la unión de `a` y `b` es el producto entero. Relacionar cada
+    /// patrón con los anteriores es la forma de quedar por debajo; `order
+    /// by` y `distinct` impiden cortar la unión en `limit`.
+    pub fn max_join_rows(&self) -> usize {
+        match self.ops.max_join_rows.load(AtomicOrdering::Relaxed) {
+            0 => match self.storage.profile() {
+                crate::storage::StorageProfile::Mobile => 100_000,
+                _ => 400_000,
+            },
+            n => n,
+        }
+    }
+
+    /// Cambia el tope de [`Graph::max_join_rows`] para este grafo y sus
+    /// clones. `0` vuelve al valor del perfil.
+    pub fn set_max_join_rows(&self, rows: usize) {
+        self.ops.max_join_rows.store(rows, AtomicOrdering::Relaxed);
     }
 
     /// Create a query planner instance

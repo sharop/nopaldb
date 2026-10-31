@@ -1533,6 +1533,29 @@ impl PyGraph {
         to_py_result(self.graph()?.gc_horizon())
     }
 
+    /// Most rows the join of several patterns of an NQL `from` may give
+    /// (`from (a:X), (b:Y)`); past it the query fails with a named error
+    /// instead of running out of memory. 400 000 by default (~1 GB),
+    /// 100 000 with the "mobile" profile. The rows that pass the `where`
+    /// are what count: relate the patterns there to stay below it.
+    ///
+    /// Example:
+    ///     >>> graph.max_join_rows()
+    ///     400000
+    fn max_join_rows(&self) -> PyResult<usize> {
+        Ok(self.graph()?.max_join_rows())
+    }
+
+    /// Change the limit of `max_join_rows()` for this graph; 0 goes back to
+    /// the profile's value.
+    ///
+    /// Example:
+    ///     >>> graph.set_max_join_rows(2_000_000)
+    fn set_max_join_rows(&self, rows: usize) -> PyResult<()> {
+        self.graph()?.set_max_join_rows(rows);
+        Ok(())
+    }
+
     /// Close the database
     ///
     /// Extrae el Arc interno y lo suelta, permitiendo que el motor libere su lock

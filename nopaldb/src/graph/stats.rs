@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Instant;
 
@@ -128,6 +128,9 @@ pub(crate) struct OpsState {
     pub(crate) last_gc: Mutex<Option<GcRun>>,
     /// Callback de progreso registrado, si alguno.
     pub(crate) progress: RwLock<Option<ProgressCallback>>,
+    /// Tope de filas de la unión de varios patrones NQL fijado con
+    /// [`crate::Graph::set_max_join_rows`]; `0` = el del perfil (#349).
+    pub(crate) max_join_rows: AtomicUsize,
 }
 
 impl OpsState {

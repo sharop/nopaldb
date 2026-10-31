@@ -74,6 +74,7 @@ g = nopaldb.Graph.open("./data")
 | `get_stats() -> Stats` | Structured stats of storage, WAL, indexes, graph. |
 | `last_commit_timestamp() -> int` | Logical timestamp of the latest applied write (0.10). Pass it to NQL `find … at timestamp <ts>` to read the graph as it was then (0.10.2). |
 | `gc_horizon() -> int` | How far the MVCC GC collected; history from here on is complete (0.10). |
+| `max_join_rows() -> int` / `set_max_join_rows(n)` | Row limit of the join of several patterns in an NQL `from` (400 000; 100 000 with `mobile`; `0` = profile default). |
 | `get_schema() -> dict[str, Any]` | Labels, edge types and their properties. |
 | `to_arrow(label: str | None = None) -> bytes` | Nodes as an Arrow IPC stream; properties only with `label` ([ARROW_EXPORT.md](ARROW_EXPORT.md)). |
 | `to_arrow_complete(label: str | None = None) -> tuple[bytes, bytes]` | Nodes and edges with properties; with `label`, the induced subgraph. |

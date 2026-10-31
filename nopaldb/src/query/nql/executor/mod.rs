@@ -2286,11 +2286,34 @@ impl<'a> Executor<'a> {
             NopalError::QueryExecutionError("No patterns in FROM clause".into())
         })?;
 
+        // Las partes del `where` se aplican en cuanto sus variables están
+        // ligadas (#349): una fila combinada que no las cumple no se guarda.
+        // Hasta 0.10.5 se guardaba el producto entero y se filtraba al
+        // final: `from (a:X), (b:X) where … limit 10` sobre 2000 nodos
+        // ocupaba 10 GB. El `where` completo se vuelve a aplicar al final.
+        let plan = JoinFilterPlan::of(&query);
+        let mut pending = plan.conjuncts;
+        let mut bound = pattern_variables(first_pattern);
+        let max_rows = self.graph.max_join_rows();
+
         let mut joined_bindings = self.execute_pattern_bindings(&query, first_pattern).await?;
 
-        for pattern in pattern_bindings_iter {
+        let rest: Vec<&Pattern> = pattern_bindings_iter.collect();
+        for (i, pattern) in rest.iter().enumerate() {
             let next_bindings = self.execute_pattern_bindings(&query, pattern).await?;
-            joined_bindings = self.join_pattern_bindings(&joined_bindings, &next_bindings);
+            bound.extend(pattern_variables(pattern));
+            let (ready, waiting): (Vec<_>, Vec<_>) =
+                pending.into_iter().partition(|(_, vars)| vars.is_subset(&bound));
+            pending = waiting;
+            let ready: Vec<&Expression> = ready.into_iter().map(|(e, _)| e).collect();
+            // Sin `order by` ni `distinct`, y con todo el `where` ya aplicado,
+            // las primeras `offset + limit` filas de la última unión son la
+            // respuesta.
+            let stop_at = (i + 1 == rest.len() && pending.is_empty() && plan.all_pushable)
+                .then(|| early_limit(&query))
+                .flatten();
+            joined_bindings =
+                self.join_pattern_bindings(&joined_bindings, &next_bindings, &ready, max_rows, stop_at)?;
         }
 
         self.build_query_result_from_bindings(joined_bindings, &query)
@@ -2668,6 +2691,16 @@ impl<'a> Executor<'a> {
                 }
             };
 
+            // Los predicados del WHERE sobre esta variable se aplican al leer
+            // (#349), como al expandir un patrón con aristas: un nodo que no
+            // los cumple no entra a la unión.
+            let filters = if self.query_uses_quoted_path_vm(query) {
+                ExpansionFilters::default()
+            } else {
+                ExpansionFilters::of(query)
+            };
+            let own_filters = source_pattern.variable.as_deref().map(|v| filters.of_var(v)).unwrap_or(&[]);
+
             let mut bindings = Vec::new();
             let mut source_stream = operators::scan_nodes_stream(self.graph, source_pattern.label.as_deref()).await?;
             while let Some(node) = source_stream.next().await? {
@@ -2680,12 +2713,16 @@ impl<'a> Executor<'a> {
                     node_vars.insert(var.clone(), node.clone());
                 }
 
-                bindings.push(LinearPatternBinding {
+                let binding = LinearPatternBinding {
                     nodes: vec![node],
                     edges: Vec::new(),
                     node_vars,
                     edge_vars: HashMap::new(),
-                });
+                };
+                if !self.binding_passes(&binding, own_filters)? {
+                    continue;
+                }
+                bindings.push(binding);
             }
 
             Ok(bindings)
@@ -3026,15 +3063,25 @@ impl<'a> Executor<'a> {
         Ok(results)
     }
 
+    /// Une dos conjuntos de ligaduras por sus variables comunes (producto
+    /// cruzado si no hay ninguna). `filters` son las partes del `where` cuyas
+    /// variables quedan todas ligadas con esta unión; `max_rows` es
+    /// [`Graph::max_join_rows`]; `stop_at` corta en cuanto hay esas filas.
     fn join_pattern_bindings(
         &self,
         left_bindings: &[LinearPatternBinding],
         right_bindings: &[LinearPatternBinding],
-    ) -> Vec<LinearPatternBinding> {
+        filters: &[&Expression],
+        max_rows: usize,
+        stop_at: Option<usize>,
+    ) -> Result<Vec<LinearPatternBinding>> {
         let mut joined = Vec::new();
 
         for left in left_bindings {
             for right in right_bindings {
+                if stop_at.is_some_and(|n| joined.len() >= n) {
+                    return Ok(joined);
+                }
                 if !self.pattern_bindings_compatible(left, right) {
                     continue;
                 }
@@ -3050,11 +3097,30 @@ impl<'a> Executor<'a> {
                     merged.edge_vars.entry(var.clone()).or_insert_with(|| edge.clone());
                 }
 
+                let mut keep = true;
+                for f in filters {
+                    if !self.evaluate_linear_pattern_condition(&merged, f)? {
+                        keep = false;
+                        break;
+                    }
+                }
+                if !keep {
+                    continue;
+                }
+                if joined.len() >= max_rows {
+                    return Err(NopalError::QueryExecutionError(format!(
+                        "the patterns of FROM combine into more than {max_rows} rows \
+                         (Graph::max_join_rows; every join counts, in the order of FROM); \
+                         relate each pattern to the ones before it in WHERE, by a shared \
+                         variable or a condition on both, or raise the limit with \
+                         set_max_join_rows"
+                    )));
+                }
                 joined.push(merged);
             }
         }
 
-        joined
+        Ok(joined)
     }
 
     fn pattern_bindings_compatible(
@@ -5878,6 +5944,9 @@ impl<'a> Executor<'a> {
                         ));
                     }
                 }
+                if query.from.patterns.len() > 1 && !self.query_uses_quoted_path_vm(&query) {
+                    explanation.push_str(&describe_join(&query, self.graph.max_join_rows()));
+                }
                 for (column, var, kind) in score_projections(&query) {
                     let has = |f: &str| {
                         query.filter.as_ref().is_some_and(|w| expr_searches_var(&w.condition, f, &var))
@@ -6035,7 +6104,7 @@ impl<'a> Executor<'a> {
                 }
             }
             FastPathDecision::Scan { reason } => {
-                let strategy = if query.from.patterns.iter().any(|p| {
+                let strategy = if query.from.patterns.len() > 1 || query.from.patterns.iter().any(|p| {
                     p.elements.iter().any(|e| matches!(e, PatternElement::Relationship(_)))
                 }) {
                     let seeded = query
@@ -7002,6 +7071,141 @@ fn filter_uses_path_vm(condition: &Expression) -> bool {
 /// evaluar con la fila completa. Como el WHERE entero se vuelve a aplicar a
 /// cada fila, aplicar estos antes solo evita expandir lo que se descartaría:
 /// las filas no cambian.
+/// Las partes de primer nivel del `where` (unidas por `and`) que la unión
+/// de varios patrones puede aplicar en cuanto sus variables están ligadas
+/// (#349), con esas variables. Solo propiedades, literales y operadores: una
+/// función (algoritmos, búsquedas) se resuelve en la pasada final.
+struct JoinFilterPlan<'q> {
+    conjuncts: Vec<(&'q Expression, HashSet<String>)>,
+    /// `true` si todas las partes del `where` están en `conjuncts`.
+    all_pushable: bool,
+}
+
+impl<'q> JoinFilterPlan<'q> {
+    fn of(query: &'q Query) -> Self {
+        let Some(filter) = &query.filter else {
+            return Self { conjuncts: Vec::new(), all_pushable: true };
+        };
+        if filter_uses_path_vm(&filter.condition) {
+            return Self { conjuncts: Vec::new(), all_pushable: false };
+        }
+        // Las comparaciones de una variable de nodo ya las aplica cada patrón
+        // al leer (`ExpansionFilters`); la unión no las repite.
+        let node_vars: HashSet<&str> = query
+            .from
+            .patterns
+            .iter()
+            .flat_map(|p| p.elements.iter())
+            .filter_map(|e| match e {
+                PatternElement::Node(n) => n.variable.as_deref(),
+                _ => None,
+            })
+            .collect();
+        let mut parts = Vec::new();
+        root_conjuncts(&filter.condition, &mut parts);
+        let mut conjuncts = Vec::new();
+        let mut all_pushable = true;
+        for part in parts {
+            if single_var_comparison(part).is_some_and(|v| node_vars.contains(v.as_str())) {
+                continue;
+            }
+            let mut vars = HashSet::new();
+            if plain_variables(part, &mut vars) && !vars.is_empty() {
+                conjuncts.push((part, vars));
+            } else {
+                all_pushable = false;
+            }
+        }
+        Self { conjuncts, all_pushable }
+    }
+}
+
+/// Las variables que lee `expr`; `false` si tiene algo que no es propiedad,
+/// literal u operador.
+fn plain_variables(expr: &Expression, out: &mut HashSet<String>) -> bool {
+    match expr {
+        Expression::Literal(_) => true,
+        Expression::Property { variable, .. } => {
+            out.insert(variable.clone());
+            true
+        }
+        Expression::BinaryOp { left, right, .. } => plain_variables(left, out) && plain_variables(right, out),
+        Expression::UnaryOp { expr, .. } => plain_variables(expr, out),
+        _ => false,
+    }
+}
+
+/// Las variables de nodo y de arista que liga un patrón.
+fn pattern_variables(pattern: &Pattern) -> HashSet<String> {
+    pattern
+        .elements
+        .iter()
+        .filter_map(|e| match e {
+            PatternElement::Node(n) => n.variable.clone(),
+            PatternElement::Relationship(r) => r.variable.clone(),
+        })
+        .collect()
+}
+
+/// Lo que EXPLAIN dice de la unión de varios patrones (#349): qué partes del
+/// `where` filtra cada patrón al leer, cuáles se aplican en cada unión, el
+/// corte por `limit` y el tope de filas.
+fn describe_join(query: &Query, max_rows: usize) -> String {
+    let filters = ExpansionFilters::of(query);
+    let plan = JoinFilterPlan::of(query);
+    let mut pending = plan.conjuncts;
+    let mut bound: HashSet<String> = HashSet::new();
+    let mut lines = Vec::new();
+    let last = query.from.patterns.len();
+    for (i, pattern) in query.from.patterns.iter().enumerate() {
+        let vars = pattern_variables(pattern);
+        let mut own: Vec<String> = Vec::new();
+        for element in &pattern.elements {
+            if let PatternElement::Node(n) = element
+                && let Some(v) = n.variable.as_deref()
+            {
+                own.extend(filters.of_var(v).iter().map(describe_comparison));
+            }
+        }
+        bound.extend(vars);
+        let mut line = format!("pattern {}", i + 1);
+        if !own.is_empty() {
+            line.push_str(&format!(" reads with {}", own.join(" and ")));
+        }
+        if i > 0 {
+            let (ready, waiting): (Vec<_>, Vec<_>) =
+                pending.into_iter().partition(|(_, vars)| vars.is_subset(&bound));
+            pending = waiting;
+            if !ready.is_empty() {
+                let ready: Vec<String> = ready.iter().map(|(e, _)| e.to_string()).collect();
+                line.push_str(&format!("; the join keeps rows with {}", ready.join(" and ")));
+            }
+            if i + 1 == last
+                && pending.is_empty()
+                && plan.all_pushable
+                && let Some(n) = early_limit(query)
+            {
+                line.push_str(&format!("; stops at {n} rows"));
+            }
+        }
+        lines.push(line);
+    }
+    format!(
+        "\nJoin: {}; at most {max_rows} rows (Graph::max_join_rows)",
+        lines.join("; ")
+    )
+}
+
+/// `offset + limit` cuando las primeras filas de la unión son la respuesta:
+/// sin `order by` ni `distinct`.
+fn early_limit(query: &Query) -> Option<usize> {
+    if query.order_by.is_some() || query.find.distinct {
+        return None;
+    }
+    let limit = query.limit.as_ref()?;
+    Some(limit.limit.saturating_add(limit.offset.unwrap_or(0)))
+}
+
 #[derive(Default)]
 struct ExpansionFilters {
     by_var: HashMap<String, Vec<Expression>>,
