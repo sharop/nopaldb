@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.7] - unreleased
+
+La unión de varios patrones NQL agrupa por hash cuando los lados comparten
+una variable o el `where` tiene una igualdad con un lado en cada uno (#349):
+L + R en vez de L × R. Las filas y su orden no cambian. Sin API nueva ni
+cambio de formato en disco.
 
 ### Changed
 - **Unión por hash de varios patrones NQL** (#349): cuando los dos lados de
