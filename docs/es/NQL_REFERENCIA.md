@@ -116,8 +116,13 @@ from (autor1:Investigador)<-[:COLABORA]->(autor2:Investigador)
   pasarlo la consulta es un error con nombre. Cuenta cada unión, en el
   orden del `from`: en `from (a), (b), (c) where a.k = c.k` la unión de `a`
   y `b` es el producto entero, porque la condición espera a `c`; escribe
-  `(a), (c), (b)`, para que cada patrón se relacione con los anteriores. `explain` muestra qué aplica
-  cada patrón y cada unión (`Join: …`).
+  `(a), (c), (b)`, para que cada patrón se relacione con los anteriores.
+  Cuando los dos lados de una unión comparten una variable
+  (`(a)-[:T]->(m), (b)-[:T]->(m)`) o el `where` tiene una igualdad con un
+  lado en cada uno (`a.k = b.k`, también `a.x + 1 = b.y`), la unión agrupa
+  por ella y cuesta L + R en vez de L × R; las filas y su orden no cambian.
+  `explain` muestra qué aplica cada patrón y cada unión (`Join: …`,
+  `joins by hash on …`).
 
 ---
 

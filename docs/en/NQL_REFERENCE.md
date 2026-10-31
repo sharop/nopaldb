@@ -115,8 +115,12 @@ from (author1:Researcher)<-[:COLLABORATES]->(author2:Researcher)
   named error. Every join counts, in the order of `from`: in
   `from (a), (b), (c) where a.k = c.k` the join of `a` and `b` is the whole
   product, because the condition waits for `c`; write `(a), (c), (b)`, so
-  each pattern is related to the ones before it. `explain` shows what each pattern and each join applies
-  (`Join: …`).
+  each pattern is related to the ones before it. When the two sides of a
+  join share a variable (`(a)-[:T]->(m), (b)-[:T]->(m)`) or the `where` has
+  an equality with one side in each (`a.k = b.k`, also `a.x + 1 = b.y`), the
+  join groups by it and costs L + R instead of L × R; the rows and their
+  order do not change. `explain` shows what each pattern and each join
+  applies (`Join: …`, `joins by hash on …`).
 
 ---
 
