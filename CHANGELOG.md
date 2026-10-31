@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.10.6] - unreleased
+## [0.10.6] - 2026-10-31
 
 La unión de varios patrones NQL filtra mientras combina, se detiene en
 `limit` cuando puede y tiene un tope de filas con error con nombre (#349).
