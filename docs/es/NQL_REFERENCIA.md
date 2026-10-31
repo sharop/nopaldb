@@ -107,6 +107,17 @@ from (autor1:Investigador)<-[:COLABORA]->(autor2:Investigador)
   patrones eran todos nodos solos leía solo el primero (#345). Las
   agregaciones sobre varios patrones todavía no se soportan: error con
   nombre.
+- **La unión filtra mientras combina** (#349). Cada patrón lee solo los
+  nodos que cumplen sus condiciones de una variable, cada parte del `where`
+  se aplica en cuanto sus variables están ligadas, y sin `order by` ni
+  `distinct` la unión se detiene en `limit`. Las filas que cumplen el
+  `where` cuentan para `Graph::max_join_rows()` (400 000 por defecto,
+  100 000 con el perfil `Mobile`, `set_max_join_rows` para cambiarlo); al
+  pasarlo la consulta es un error con nombre. Cuenta cada unión, en el
+  orden del `from`: en `from (a), (b), (c) where a.k = c.k` la unión de `a`
+  y `b` es el producto entero, porque la condición espera a `c`; escribe
+  `(a), (c), (b)`, para que cada patrón se relacione con los anteriores. `explain` muestra qué aplica
+  cada patrón y cada unión (`Join: …`).
 
 ---
 

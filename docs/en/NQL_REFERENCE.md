@@ -106,6 +106,17 @@ from (author1:Researcher)<-[:COLLABORATES]->(author2:Researcher)
   in `where` to keep it small. Until 0.10.4 a `from` whose patterns were all
   single nodes read only the first one (#345). Aggregations over several
   patterns are not supported yet: a named error.
+- **The join filters while it combines** (#349). Each pattern reads only the
+  nodes that pass its one-variable conditions, each part of the `where` is
+  applied as soon as its variables are bound, and without `order by` or
+  `distinct` the join stops at `limit`. The rows that pass the `where` count
+  toward `Graph::max_join_rows()` (400 000 by default, 100 000 with the
+  `Mobile` profile, `set_max_join_rows` to change it); past it the query is a
+  named error. Every join counts, in the order of `from`: in
+  `from (a), (b), (c) where a.k = c.k` the join of `a` and `b` is the whole
+  product, because the condition waits for `c`; write `(a), (c), (b)`, so
+  each pattern is related to the ones before it. `explain` shows what each pattern and each join applies
+  (`Join: …`).
 
 ---
 
