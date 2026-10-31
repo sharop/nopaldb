@@ -2301,7 +2301,9 @@ impl<'a> Executor<'a> {
         let rest: Vec<&Pattern> = pattern_bindings_iter.collect();
         for (i, pattern) in rest.iter().enumerate() {
             let next_bindings = self.execute_pattern_bindings(&query, pattern).await?;
-            bound.extend(pattern_variables(pattern));
+            let left_vars = bound.clone();
+            let right_vars = pattern_variables(pattern);
+            bound.extend(right_vars.iter().cloned());
             let (ready, waiting): (Vec<_>, Vec<_>) =
                 pending.into_iter().partition(|(_, vars)| vars.is_subset(&bound));
             pending = waiting;
@@ -2312,8 +2314,12 @@ impl<'a> Executor<'a> {
             let stop_at = (i + 1 == rest.len() && pending.is_empty() && plan.all_pushable)
                 .then(|| early_limit(&query))
                 .flatten();
-            joined_bindings =
-                self.join_pattern_bindings(&joined_bindings, &next_bindings, &ready, max_rows, stop_at)?;
+            let keys = JoinKeys::of(&ready, &left_vars, &right_vars);
+            joined_bindings = self.join_pattern_bindings(
+                &joined_bindings,
+                &next_bindings,
+                &JoinStep { filters: &ready, keys: &keys, max_rows, stop_at },
+            )?;
         }
 
         self.build_query_result_from_bindings(joined_bindings, &query)
@@ -3064,63 +3070,145 @@ impl<'a> Executor<'a> {
     }
 
     /// Une dos conjuntos de ligaduras por sus variables comunes (producto
-    /// cruzado si no hay ninguna). `filters` son las partes del `where` cuyas
-    /// variables quedan todas ligadas con esta unión; `max_rows` es
-    /// [`Graph::max_join_rows`]; `stop_at` corta en cuanto hay esas filas.
+    /// cruzado si no hay ninguna). Con una clave (variables comunes o
+    /// igualdades entre los dos lados, [`JoinKeys`]) agrupa el lado derecho
+    /// por clave y cada fila izquierda solo mira su grupo: L + R en vez de
+    /// L × R (#349). Las filas y su orden son los del ciclo anidado: cada
+    /// grupo guarda el orden del lado derecho, y cada par candidato pasa por
+    /// las mismas comprobaciones (`pattern_bindings_compatible` y todos los
+    /// `filters`), porque la clave solo agrupa, no decide.
     fn join_pattern_bindings(
         &self,
         left_bindings: &[LinearPatternBinding],
         right_bindings: &[LinearPatternBinding],
-        filters: &[&Expression],
-        max_rows: usize,
-        stop_at: Option<usize>,
+        step: &JoinStep<'_>,
     ) -> Result<Vec<LinearPatternBinding>> {
         let mut joined = Vec::new();
+        if left_bindings.is_empty() || right_bindings.is_empty() {
+            return Ok(joined);
+        }
+
+        if !step.keys.is_empty()
+            && let Some(left_keys) = self.join_keys_of(left_bindings, step.keys, Side::Left)?
+            && let Some(right_keys) = self.join_keys_of(right_bindings, step.keys, Side::Right)?
+        {
+            let mut groups: HashMap<Vec<JoinKey>, Vec<usize>> = HashMap::new();
+            for (i, key) in right_keys.into_iter().enumerate() {
+                if let Some(key) = key {
+                    groups.entry(key).or_default().push(i);
+                }
+            }
+            for (left, key) in left_bindings.iter().zip(left_keys) {
+                let Some(group) = key.as_ref().and_then(|k| groups.get(k)) else {
+                    continue;
+                };
+                for &i in group {
+                    if !self.push_joined(&mut joined, left, &right_bindings[i], step)? {
+                        return Ok(joined);
+                    }
+                }
+            }
+            return Ok(joined);
+        }
 
         for left in left_bindings {
             for right in right_bindings {
-                if stop_at.is_some_and(|n| joined.len() >= n) {
+                if !self.push_joined(&mut joined, left, right, step)? {
                     return Ok(joined);
                 }
-                if !self.pattern_bindings_compatible(left, right) {
-                    continue;
-                }
-
-                let mut merged = left.clone();
-                merged.nodes.extend(right.nodes.clone());
-                merged.edges.extend(right.edges.clone());
-
-                for (var, node) in &right.node_vars {
-                    merged.node_vars.entry(var.clone()).or_insert_with(|| node.clone());
-                }
-                for (var, edge) in &right.edge_vars {
-                    merged.edge_vars.entry(var.clone()).or_insert_with(|| edge.clone());
-                }
-
-                let mut keep = true;
-                for f in filters {
-                    if !self.evaluate_linear_pattern_condition(&merged, f)? {
-                        keep = false;
-                        break;
-                    }
-                }
-                if !keep {
-                    continue;
-                }
-                if joined.len() >= max_rows {
-                    return Err(NopalError::QueryExecutionError(format!(
-                        "the patterns of FROM combine into more than {max_rows} rows \
-                         (Graph::max_join_rows; every join counts, in the order of FROM); \
-                         relate each pattern to the ones before it in WHERE, by a shared \
-                         variable or a condition on both, or raise the limit with \
-                         set_max_join_rows"
-                    )));
-                }
-                joined.push(merged);
             }
         }
 
         Ok(joined)
+    }
+
+    /// Combina `left` con `right` y la guarda en `joined` si son
+    /// compatibles y pasan los filtros. `false` cuando ya hay `stop_at`
+    /// filas: la unión termina ahí.
+    fn push_joined(
+        &self,
+        joined: &mut Vec<LinearPatternBinding>,
+        left: &LinearPatternBinding,
+        right: &LinearPatternBinding,
+        step: &JoinStep<'_>,
+    ) -> Result<bool> {
+        if step.stop_at.is_some_and(|n| joined.len() >= n) {
+            return Ok(false);
+        }
+        if !self.pattern_bindings_compatible(left, right) {
+            return Ok(true);
+        }
+
+        let mut merged = left.clone();
+        merged.nodes.extend(right.nodes.clone());
+        merged.edges.extend(right.edges.clone());
+
+        for (var, node) in &right.node_vars {
+            merged.node_vars.entry(var.clone()).or_insert_with(|| node.clone());
+        }
+        for (var, edge) in &right.edge_vars {
+            merged.edge_vars.entry(var.clone()).or_insert_with(|| edge.clone());
+        }
+
+        for f in step.filters {
+            if !self.evaluate_linear_pattern_condition(&merged, f)? {
+                return Ok(true);
+            }
+        }
+        if joined.len() >= step.max_rows {
+            return Err(NopalError::QueryExecutionError(format!(
+                "the patterns of FROM combine into more than {} rows \
+                 (Graph::max_join_rows; every join counts, in the order of FROM); \
+                 relate each pattern to the ones before it in WHERE, by a shared \
+                 variable or a condition on both, or raise the limit with \
+                 set_max_join_rows",
+                step.max_rows
+            )));
+        }
+        joined.push(merged);
+        Ok(true)
+    }
+
+    /// La clave de unión de cada ligadura de un lado. Una ligadura sin
+    /// clave (una propiedad que falta) no puede cumplir la igualdad: queda
+    /// en `None`. `Ok(None)` si algún valor no se puede agrupar (un `NaN`,
+    /// que `=` iguala a cualquier entero) o falta una variable común: la
+    /// unión vuelve al ciclo anidado.
+    fn join_keys_of(
+        &self,
+        bindings: &[LinearPatternBinding],
+        keys: &JoinKeys<'_>,
+        side: Side,
+    ) -> Result<Option<Vec<Option<Vec<JoinKey>>>>> {
+        let mut out = Vec::with_capacity(bindings.len());
+        'rows: for binding in bindings {
+            let mut key = Vec::with_capacity(keys.shared.len() + keys.equalities.len());
+            for var in &keys.shared {
+                match (binding.node_vars.get(var), binding.edge_vars.get(var)) {
+                    (Some(n), _) => key.push(JoinKey::Node(n.id)),
+                    (None, Some(e)) => key.push(JoinKey::Edge(e.id)),
+                    (None, None) => return Ok(None),
+                }
+            }
+            for (left, right) in &keys.equalities {
+                let expr = match side {
+                    Side::Left => left,
+                    Side::Right => right,
+                };
+                match self.evaluate_linear_pattern_expression(binding, expr)? {
+                    None => {
+                        out.push(None);
+                        continue 'rows;
+                    }
+                    Some(v) => match JoinKey::of(&v) {
+                        Some(k) => key.push(k),
+                        None => return Ok(None),
+                    },
+                }
+            }
+            out.push(Some(key));
+        }
+        Ok(Some(out))
     }
 
     fn pattern_bindings_compatible(
@@ -7167,7 +7255,8 @@ fn describe_join(query: &Query, max_rows: usize) -> String {
                 own.extend(filters.of_var(v).iter().map(describe_comparison));
             }
         }
-        bound.extend(vars);
+        let left_vars = bound.clone();
+        bound.extend(vars.iter().cloned());
         let mut line = format!("pattern {}", i + 1);
         if !own.is_empty() {
             line.push_str(&format!(" reads with {}", own.join(" and ")));
@@ -7176,8 +7265,13 @@ fn describe_join(query: &Query, max_rows: usize) -> String {
             let (ready, waiting): (Vec<_>, Vec<_>) =
                 pending.into_iter().partition(|(_, vars)| vars.is_subset(&bound));
             pending = waiting;
+            let ready: Vec<&Expression> = ready.into_iter().map(|(e, _)| e).collect();
+            let keys = JoinKeys::of(&ready, &left_vars, &vars);
+            if !keys.is_empty() {
+                line.push_str(&format!("; joins by hash on {}", keys.describe()));
+            }
             if !ready.is_empty() {
-                let ready: Vec<String> = ready.iter().map(|(e, _)| e.to_string()).collect();
+                let ready: Vec<String> = ready.iter().map(|e| e.to_string()).collect();
                 line.push_str(&format!("; the join keeps rows with {}", ready.join(" and ")));
             }
             if i + 1 == last
@@ -7204,6 +7298,105 @@ fn early_limit(query: &Query) -> Option<usize> {
     }
     let limit = query.limit.as_ref()?;
     Some(limit.limit.saturating_add(limit.offset.unwrap_or(0)))
+}
+
+/// Lo que necesita una unión de dos lados (#349).
+struct JoinStep<'a> {
+    /// Las partes del `where` cuyas variables quedan ligadas con esta unión.
+    filters: &'a [&'a Expression],
+    keys: &'a JoinKeys<'a>,
+    /// [`Graph::max_join_rows`].
+    max_rows: usize,
+    /// Corta en cuanto hay esas filas (ver [`early_limit`]).
+    stop_at: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+enum Side {
+    Left,
+    Right,
+}
+
+/// Por qué se agrupa una unión: las variables que ligan los dos lados y las
+/// igualdades del `where` con un lado en cada uno (`a.k = b.k`, también
+/// `a.x + 1 = b.y`). Vacía, la unión es el producto cruzado.
+struct JoinKeys<'q> {
+    shared: Vec<String>,
+    /// (expresión del lado izquierdo, expresión del lado derecho).
+    equalities: Vec<(&'q Expression, &'q Expression)>,
+}
+
+impl<'q> JoinKeys<'q> {
+    fn of(ready: &[&'q Expression], left: &HashSet<String>, right: &HashSet<String>) -> Self {
+        let mut shared: Vec<String> = left.intersection(right).cloned().collect();
+        shared.sort();
+        let mut equalities = Vec::new();
+        for expr in ready {
+            let Expression::BinaryOp { left: l, op: BinaryOperator::Eq, right: r } = expr else {
+                continue;
+            };
+            let (mut lv, mut rv) = (HashSet::new(), HashSet::new());
+            if !plain_variables(l, &mut lv) || !plain_variables(r, &mut rv) || lv.is_empty() || rv.is_empty() {
+                continue;
+            }
+            if lv.is_subset(left) && rv.is_subset(right) {
+                equalities.push((&**l, &**r));
+            } else if rv.is_subset(left) && lv.is_subset(right) {
+                equalities.push((&**r, &**l));
+            }
+        }
+        Self { shared, equalities }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.shared.is_empty() && self.equalities.is_empty()
+    }
+
+    /// Para EXPLAIN: `m, a.k = b.k`.
+    fn describe(&self) -> String {
+        self.shared
+            .iter()
+            .cloned()
+            .chain(self.equalities.iter().map(|(l, r)| format!("{l} = {r}")))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// Una parte de la clave de unión. Solo agrupa: dos valores que `=` da por
+/// iguales ([`value_ops::equal`]) tienen la misma clave, y los pares de un
+/// grupo se comprueban después con el `where`. Los números van por su valor
+/// en `f64`, que es como `=` compara un entero con un decimal (`3 = 3.0`);
+/// los objetos van todos al mismo grupo.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum JoinKey {
+    Node(NodeId),
+    Edge(uuid::Uuid),
+    Null,
+    Bool(bool),
+    Number(u64),
+    String(String),
+    Bytes(Vec<u8>),
+    List(Vec<JoinKey>),
+    Object,
+}
+
+impl JoinKey {
+    /// `None` para un `NaN`: `=` lo iguala a cualquier entero, así que no
+    /// tiene un grupo.
+    fn of(value: &PropertyValue) -> Option<Self> {
+        let number = |f: f64| (!f.is_nan()).then(|| JoinKey::Number(if f == 0.0 { 0 } else { f.to_bits() }));
+        Some(match value {
+            PropertyValue::Null => JoinKey::Null,
+            PropertyValue::Bool(b) => JoinKey::Bool(*b),
+            PropertyValue::Int(i) => number(*i as f64)?,
+            PropertyValue::Float(f) => number(*f)?,
+            PropertyValue::String(s) => JoinKey::String(s.clone()),
+            PropertyValue::Bytes(b) => JoinKey::Bytes(b.clone()),
+            PropertyValue::List(items) => JoinKey::List(items.iter().map(JoinKey::of).collect::<Option<_>>()?),
+            PropertyValue::Object(_) => JoinKey::Object,
+        })
+    }
 }
 
 #[derive(Default)]

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **Unión por hash de varios patrones NQL** (#349): cuando los dos lados de
+  una unión comparten una variable (`(a)-[:T]->(m), (b)-[:T]->(m)`) o el
+  `where` tiene una igualdad con un lado en cada uno (`a.k = b.k`,
+  `a.x + 1 = b.y`), la unión agrupa por ella en vez del ciclo anidado: L + R
+  en vez de L × R. Las filas y su orden no cambian (la clave solo agrupa; cada
+  par pasa igual por el `where`). 2000 × 2000 con `a.grupo = b.grupo` (200 000
+  filas): 1.85 s → 0.25 s; 10 000 árboles atados a 1000 postes por `m`
+  común (100 000 filas): 1.99 s → 0.17 s. La memoria no cambia: la ocupan las
+  filas del resultado. EXPLAIN dice `joins by hash on …`. Cambia el orden
+  en que se evalúan las condiciones: cada lado de la igualdad se evalúa una
+  vez por fila, y las demás solo sobre los pares del mismo grupo, así que un
+  error de evaluación (un desbordamiento, `/ 0`) puede salir o dejar de salir
+  según qué pares descarte la igualdad.
+
 ## [0.10.6] - 2026-10-31
 
 La unión de varios patrones NQL filtra mientras combina, se detiene en

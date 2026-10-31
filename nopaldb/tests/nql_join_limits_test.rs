@@ -221,3 +221,140 @@ async fn explain_describes_the_join() {
     assert!(plan.contains("stops at 5 rows"), "{plan}");
     assert!(plan.contains("at most 400000 rows"), "{plan}");
 }
+
+/// The rows in the order they come, as `Debug` text of the given columns.
+async fn ordered(g: &Graph, q: &str, keys: &[&str]) -> Vec<Vec<String>> {
+    let r = g.execute_nql(q).await.unwrap_or_else(|e| panic!("{q}\n{e}"));
+    r.rows()
+        .iter()
+        .map(|row| keys.iter().map(|k| format!("{:?}", row.get(k))).collect())
+        .collect()
+}
+
+#[tokio::test]
+async fn an_equality_across_patterns_joins_by_hash_with_the_same_rows_in_the_same_order() {
+    // `a.fila = b.fila` groups the join; `a.fila - b.fila = 0` reads both
+    // sides in one expression, so it cannot, and takes the nested loop. Both
+    // give the same rows in the same order.
+    let g = orchard().await;
+    let keys = ["a.nombre", "b.nombre"];
+    let hashed = ordered(&g, "find a.nombre, b.nombre from (a:Arbol), (b:Arbol) where a.fila = b.fila", &keys).await;
+    let nested = ordered(&g, "find a.nombre, b.nombre from (a:Arbol), (b:Arbol) where a.fila - b.fila = 0", &keys).await;
+    assert_eq!(hashed.len(), 36);
+    assert_eq!(hashed, nested);
+
+    // An expression on each side, with `limit`: the same first rows.
+    let hashed = ordered(
+        &g,
+        "find a.nombre, b.nombre from (a:Arbol), (b:Arbol) where a.cosecha + 1 = b.cosecha limit 5",
+        &keys,
+    )
+    .await;
+    let nested = ordered(
+        &g,
+        "find a.nombre, b.nombre from (a:Arbol), (b:Arbol) where a.cosecha + 1 - b.cosecha = 0 limit 5",
+        &keys,
+    )
+    .await;
+    assert_eq!(hashed.len(), 5);
+    assert_eq!(hashed, nested);
+
+    // A property that is missing never matches: odd trees have no `poda`.
+    let rows = ordered(&g, "find a.nombre, b.nombre from (a:Arbol), (b:Arbol) where a.poda = b.poda", &keys).await;
+    assert_eq!(rows.len(), 6);
+}
+
+#[tokio::test]
+async fn the_hash_join_keeps_the_equality_of_numbers() {
+    // `=` compares an integer with a decimal by value (`3 = 3.0`), `0 =
+    // -0.0`, and lists element by element; text is not a number. The join
+    // groups by a key that keeps all of it.
+    let g = Graph::in_memory().await.unwrap();
+    let values = [
+        ("i3", int(3)),
+        ("f3", PropertyValue::Float(3.0)),
+        ("f3.5", PropertyValue::Float(3.5)),
+        ("i0", int(0)),
+        ("neg0", PropertyValue::Float(-0.0)),
+        ("l12", PropertyValue::List(vec![int(1), int(2)])),
+        ("lf12", PropertyValue::List(vec![PropertyValue::Float(1.0), PropertyValue::Float(2.0)])),
+        ("txt", s("3")),
+    ];
+    for (name, v) in values {
+        g.add_node(Node::new("Caja").with_property("nombre", s(name)).with_property("peso", v)).await.unwrap();
+    }
+    g.add_node(Node::new("Caja").with_property("nombre", s("sin"))).await.unwrap();
+    let keys = ["a.nombre", "b.nombre"];
+    let q = "find a.nombre, b.nombre from (a:Caja), (b:Caja) where a.peso = b.peso";
+    let groups: [&[&str]; 5] = [&["i3", "f3"], &["f3.5"], &["i0", "neg0"], &["l12", "lf12"], &["txt"]];
+    let expected: BTreeSet<Vec<String>> = groups
+        .iter()
+        .flat_map(|g| g.iter().flat_map(move |a| g.iter().map(move |b| vec![a.to_string(), b.to_string()])))
+        .collect();
+    assert_eq!(rows(&g, q, &keys).await, expected);
+
+    // A NaN cannot be grouped (`=` gives it equal to every integer, as the
+    // order of `PropertyValue` does): the join falls back to the nested loop
+    // and gives what `=` gives.
+    g.add_node(Node::new("Caja").with_property("nombre", s("nan")).with_property("peso", PropertyValue::Float(f64::NAN)))
+        .await
+        .unwrap();
+    let q = "find a.nombre, b.nombre from (a:Caja), (b:Caja) where a.nombre = 'nan' and a.peso = b.peso";
+    let expected: BTreeSet<Vec<String>> =
+        ["i3", "i0", "nan"].iter().map(|b| vec!["nan".to_string(), b.to_string()]).collect();
+    assert_eq!(rows(&g, q, &keys).await, expected);
+}
+
+#[tokio::test]
+async fn a_shared_variable_joins_by_hash_with_the_same_rows_in_the_same_order() {
+    // Trees tied to the same post. `m` is shared: the join groups by it.
+    // With a second variable `n` and `m.nombre <= n.nombre and m.nombre >=
+    // n.nombre` (no equality) the join is the nested loop; the rows and
+    // their order are the same.
+    let g = Graph::in_memory().await.unwrap();
+    let posts: Vec<_> = label_ids(&g, "Poste", 3).await;
+    let trees: Vec<_> = label_ids(&g, "Arbol", 9).await;
+    for (i, t) in trees.iter().enumerate() {
+        g.add_edge(Edge::new(*t, posts[i % 3], "ATADO_A")).await.unwrap();
+    }
+    let keys = ["a.nombre", "b.nombre"];
+    let hashed = ordered(
+        &g,
+        "find a.nombre, b.nombre from (a:Arbol)-[:ATADO_A]->(m:Poste), (b:Arbol)-[:ATADO_A]->(m)",
+        &keys,
+    )
+    .await;
+    let nested = ordered(
+        &g,
+        "find a.nombre, b.nombre from (a:Arbol)-[:ATADO_A]->(m:Poste), (b:Arbol)-[:ATADO_A]->(n:Poste) \
+         where m.nombre <= n.nombre and m.nombre >= n.nombre",
+        &keys,
+    )
+    .await;
+    assert_eq!(hashed.len(), 27);
+    assert_eq!(hashed, nested);
+}
+
+async fn label_ids(g: &Graph, label: &str, n: usize) -> Vec<nopaldb::types::NodeId> {
+    let mut ids = Vec::new();
+    for i in 0..n {
+        ids.push(g.add_node(Node::new(label).with_property("nombre", s(&format!("{label}{i}")))).await.unwrap());
+    }
+    ids
+}
+
+#[tokio::test]
+async fn explain_says_what_the_join_groups_by() {
+    let g = orchard().await;
+    let plan = |q: &str| {
+        let g = &g;
+        let q = q.to_string();
+        async move { format!("{:?}", g.execute_nql(&format!("explain {q}")).await.unwrap().rows()) }
+    };
+    let p = plan("find a.nombre from (a:Arbol), (b:Arbol) where a.fila = b.fila").await;
+    assert!(p.contains("joins by hash on a.fila = b.fila"), "{p}");
+    let p = plan("find a.nombre from (a:Arbol)-[:JUNTO_A]->(m:Arbol), (b:Arbol)-[:JUNTO_A]->(m)").await;
+    assert!(p.contains("joins by hash on m"), "{p}");
+    let p = plan("find a.nombre from (a:Arbol), (b:Arbol) where a.fila < b.fila").await;
+    assert!(!p.contains("joins by hash"), "{p}");
+}
