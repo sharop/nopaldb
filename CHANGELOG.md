@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.9] - unreleased
+
+HNSW: arreglada una carrera del punto de entrada en la construcción en
+paralelo (#343, que sigue abierto) y nuevo `HnswIndex::orphan_ids` para
+diagnosticar huérfanos. Sin cambio de formato en disco: los volcados de
+0.10.8 se leen igual.
 
 ### Added
 - **`HnswIndex::orphan_ids`** (#343): los nodos que la verificación del
