@@ -308,12 +308,12 @@ filas no cambian; lo que cambia:
 | `from (a), (b), (c) where a.k = c.k` (la condición se salta un patrón) | respondía, con memoria de sobra | la unión de `a` y `b` es el producto entero y cuenta | escribe `(a), (c), (b)` |
 | `explain` de varios patrones de un solo nodo | `Strategy: LABEL SCAN` | `Strategy: PATTERN PIPELINE` y una línea `Join: …` | actualiza quien lea el texto del plan |
 
-## 13. Después de 0.10.9: agregaciones sobre varios patrones
+## 13. De 0.10.9 a 0.10.10: agregaciones sobre varios patrones
 
 Las agregaciones sobre varios patrones del `from`, y sobre un patrón de
 varios saltos, responden en vez de fallar ([#362](https://github.com/sharop/nopaldb/issues/362)):
 
-| Consulta | 0.10.9 | Ahora | Qué hacer |
+| Consulta | 0.10.9 | 0.10.10 | Qué hacer |
 |---|---|---|---|
 | `find count(*) from (a:Receta), (b:Receta)` | error con nombre | el número de pares | — |
 | `find r.region, count(*), sum(r.porciones * i.gramos) from (r:Receta), (i:Ingrediente) where r.region = i.region group by r.region` | error con nombre | una fila por región | — |

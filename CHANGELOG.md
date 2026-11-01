@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.10] - unreleased
+
+Las agregaciones NQL (`count`, `sum`, `avg`, `min`, `max`, `group by`,
+`having`) funcionan sobre varios patrones del `from` y sobre un patrón de
+varios saltos (#362); hasta 0.10.9 eran un error con nombre. Sin API nueva
+ni cambio de formato en disco. Guía UPGRADING_0.10 §13.
 
 ### Added
 - **Agregaciones sobre varios patrones NQL y sobre un patrón de varios

@@ -301,12 +301,12 @@ not change; what changes:
 | `from (a), (b), (c) where a.k = c.k` (the condition skips a pattern) | answered, with memory to spare | the join of `a` and `b` is the whole product and counts | write `(a), (c), (b)` |
 | `explain` of several single-node patterns | `Strategy: LABEL SCAN` | `Strategy: PATTERN PIPELINE` and a `Join: …` line | update parsers of the plan text |
 
-## 13. After 0.10.9: aggregations over several patterns
+## 13. From 0.10.9 to 0.10.10: aggregations over several patterns
 
 Aggregations over several patterns in `from`, and over a multi-hop pattern,
 answer instead of failing ([#362](https://github.com/sharop/nopaldb/issues/362)):
 
-| Query | 0.10.9 | Now | What to do |
+| Query | 0.10.9 | 0.10.10 | What to do |
 |---|---|---|---|
 | `find count(*) from (a:Recipe), (b:Recipe)` | named error | the number of pairs | — |
 | `find r.region, count(*), sum(r.servings * i.grams) from (r:Recipe), (i:Ingredient) where r.region = i.region group by r.region` | named error | one row per region | — |
