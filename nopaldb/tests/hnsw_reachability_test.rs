@@ -69,10 +69,25 @@ fn a_freshly_inserted_point_is_reachable() {
     }
 }
 
+/// Grupos de [`clustered`].
+const CLUSTERS: u64 = 50;
+
+/// Los huérfanos por grupo (`i % CLUSTERS`), de más a menos: `grupo:n, …`.
+fn orphans_by_cluster(index: &HnswIndex, points: &[(NodeId, Vec<f32>)]) -> String {
+    let cluster: std::collections::HashMap<NodeId, u64> =
+        points.iter().enumerate().map(|(i, (id, _))| (*id, i as u64 % CLUSTERS)).collect();
+    let mut counts = std::collections::BTreeMap::<u64, usize>::new();
+    for id in index.orphan_ids() {
+        *counts.entry(cluster[&id]).or_default() += 1;
+    }
+    let mut counts: Vec<(u64, usize)> = counts.into_iter().collect();
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    counts.iter().map(|(c, n)| format!("{c}:{n}")).collect::<Vec<_>>().join(", ")
+}
+
 /// Datos agrupados como embeddings reales: grupos con un centroide y un
 /// subespacio propio de dimensión baja.
 fn clustered(n: usize, seed: u64) -> Vec<(NodeId, Vec<f32>)> {
-    const CLUSTERS: u64 = 50;
     const SUBSPACE: u64 = 6;
     let unit = |s: u64| {
         let v = vector(s);
@@ -101,10 +116,16 @@ fn a_large_clustered_build_leaves_few_orphans() {
     let n = 20_000;
     let points = clustered(n, 7);
     let index = HnswIndex::build_batch(points.clone(), "m", DIM).unwrap();
+    // #343: falló una vez bajo carga con 2527 (lo normal, medido en 139
+    // construcciones con y sin carga: 117–183). Si vuelve, el mensaje dice
+    // en qué grupos quedaron: unos pocos grupos enteros apuntan a grupos
+    // desconectados del grafo; repartidos, a puntos sueltos sin enlazar.
     assert!(
         index.orphans() * 100 <= n * 2,
-        "{} de {n} puntos sin enlaces entrantes (#201)",
-        index.orphans()
+        "{} de {n} puntos sin enlaces entrantes (#201); por grupo (de {} puntos): {}",
+        index.orphans(),
+        n as u64 / CLUSTERS,
+        orphans_by_cluster(&index, &points)
     );
     // Con `ef` = 64 (el de la verificación), cada punto se encuentra: por el
     // grafo o, si es huérfano, por la comparación directa.
