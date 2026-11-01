@@ -8,6 +8,7 @@ pub mod write;
 pub mod aggregations;
 pub mod export;
 pub(crate) mod value_ops;
+pub(crate) mod group_ops;
 
 use operators::RowStream;
 
@@ -2433,22 +2434,15 @@ impl<'a> Executor<'a> {
             }
         };
 
-        // Grupos en orden de aparición. La clave es el texto de los valores,
-        // como en los demás caminos de agregación.
-        let mut groups: Vec<Vec<&LinearPatternBinding>> = Vec::new();
-        let mut index: HashMap<String, usize> = HashMap::new();
-        for row in &rows {
-            let mut key = String::new();
-            for expr in keys {
-                let v = self.evaluate_linear_pattern_expression(row, expr)?.unwrap_or(PropertyValue::Null);
-                key.push_str(&format!("{v:?}|"));
-            }
-            let i = *index.entry(key).or_insert_with(|| {
-                groups.push(Vec::new());
-                groups.len() - 1
-            });
-            groups[i].push(row);
-        }
+        // Grupos en orden de aparición (`group_ops`, #364).
+        let mut groups: Vec<Vec<&LinearPatternBinding>> = group_ops::group_rows(
+            rows.iter().collect(),
+            keys,
+            &mut |row, e| self.evaluate_linear_pattern_expression(row, e),
+        )?
+        .into_iter()
+        .map(|(_, rows)| rows)
+        .collect();
         // Sin claves y sin filas, `count(*)` es 0: un grupo vacío.
         if groups.is_empty() && keys.is_empty() {
             groups.push(Vec::new());
@@ -2505,42 +2499,14 @@ impl<'a> Executor<'a> {
                 None => PropertyValue::Null,
             });
         };
-        let lower = name.to_lowercase();
-        let arg = || {
-            args.first()
-                .filter(|a| !matches!(a, Expression::Wildcard))
-                .ok_or_else(|| NopalError::QueryExecutionError(format!("{name}() requires an argument")))
-        };
-        let values = |arg: &Expression| -> Result<Vec<PropertyValue>> {
-            let mut out = Vec::with_capacity(group.len());
-            for row in group {
-                match self.evaluate_linear_pattern_expression(row, arg)? {
-                    None | Some(PropertyValue::Null) => {}
-                    Some(v) => out.push(v),
-                }
-            }
-            Ok(out)
-        };
-        Ok(match lower.as_str() {
-            "count" if args.is_empty() || matches!(args.first(), Some(Expression::Wildcard)) => {
-                PropertyValue::Int(group.len() as i64)
-            }
-            "count" => PropertyValue::Int(values(arg()?)?.len() as i64),
-            "sum" | "avg" => {
-                let numbers: Vec<f64> = values(arg()?)?.iter().filter_map(|v| self.property_value_to_f64(v)).collect();
-                let total: f64 = numbers.iter().sum();
-                match (lower.as_str(), numbers.len()) {
-                    ("sum", _) => PropertyValue::Float(total),
-                    (_, 0) => PropertyValue::Null,
-                    (_, n) => PropertyValue::Float(total / n as f64),
-                }
-            }
-            "min" => values(arg()?)?.into_iter().min().unwrap_or(PropertyValue::Null),
-            "max" => values(arg()?)?.into_iter().max().unwrap_or(PropertyValue::Null),
-            _ => match group.first() {
-                Some(first) => self.evaluate_linear_pattern_expression(first, expr)?.unwrap_or(PropertyValue::Null),
-                None => PropertyValue::Null,
-            },
+        if let Some(value) =
+            group_ops::sql_aggregate(name, args, group, &mut |row, e| self.evaluate_linear_pattern_expression(row, e))?
+        {
+            return Ok(value);
+        }
+        Ok(match group.first() {
+            Some(first) => self.evaluate_linear_pattern_expression(first, expr)?.unwrap_or(PropertyValue::Null),
+            None => PropertyValue::Null,
         })
     }
 
@@ -4234,31 +4200,18 @@ impl<'a> Executor<'a> {
             })
             .collect();
 
-        let mut grouped: std::collections::HashMap<String, (Vec<PropertyValue>, Vec<&operators::PatternMatch>)> =
-            std::collections::HashMap::new();
-
-        if let Some(group_by) = &query.group_by {
-            for m in matches {
-                let key_values: Vec<PropertyValue> = group_by.expressions.iter()
-                    .map(|expr| {
-                        Ok(self.evaluate_pattern_expression(m, expr, source_var, target_var)?
-                            .unwrap_or(PropertyValue::Null))
-                    })
-                    .collect::<Result<_>>()?;
-
-                let key = key_values.iter().map(|v| format!("{:?}", v)).collect::<Vec<_>>().join("|");
-                grouped.entry(key)
-                    .or_insert_with(|| (key_values, Vec::new()))
-                    .1
-                    .push(m);
-            }
-        } else {
-            grouped.insert("__all__".to_string(), (Vec::new(), matches.iter().collect()));
-        }
+        // Grupos en orden de aparición (`group_ops`, #364). Hasta 0.10.10 un
+        // `HashMap`: el orden de los grupos no estaba definido.
+        let grouped: Vec<(Vec<PropertyValue>, Vec<&operators::PatternMatch>)> = match &query.group_by {
+            Some(group_by) => group_ops::group_rows(matches.iter().collect(), &group_by.expressions, &mut |m, e| {
+                self.evaluate_pattern_expression(m, e, source_var, target_var)
+            })?,
+            None => vec![(Vec::new(), matches.iter().collect())],
+        };
 
         let mut result = QueryResult::new(columns.clone());
 
-        for (_group_key, (group_key_values, group_matches)) in grouped {
+        for (group_key_values, group_matches) in grouped {
             if group_matches.is_empty() {
                 continue;
             }
@@ -4457,91 +4410,12 @@ impl<'a> Executor<'a> {
             return Ok(lookup_algo_value(name, &node_id, algo_cache));
         }
 
-        match name.to_lowercase().as_str() {
-            "count" => {
-                if args.is_empty() || matches!(args.first(), Some(Expression::Wildcard)) {
-                    Ok(PropertyValue::Int(group_matches.len() as i64))
-                } else {
-                    let mut count = 0_i64;
-                    for m in group_matches {
-                        if self
-                            .evaluate_pattern_group_expression(m, &args[0], source_var, target_var, edge_var, Some(algo_cache))?
-                            .is_some_and(|v| !matches!(v, PropertyValue::Null))
-                        {
-                            count += 1;
-                        }
-                    }
-                    Ok(PropertyValue::Int(count))
-                }
-            }
-            "sum" | "avg" => {
-                let arg = args.first().ok_or_else(|| {
-                    NopalError::QueryExecutionError(format!("{}() requires an argument", name))
-                })?;
-
-                let mut total = 0.0_f64;
-                let mut count = 0_usize;
-
-                for m in group_matches {
-                    if let Some(v) = self.evaluate_pattern_group_expression(
-                        m,
-                        arg,
-                        source_var,
-                        target_var,
-                        edge_var,
-                        Some(algo_cache),
-                    )? && let Some(num) = self.property_value_to_f64(&v) {
-                        total += num;
-                        count += 1;
-                    }
-                }
-
-                if name.eq_ignore_ascii_case("avg") {
-                    if count == 0 {
-                        return Ok(PropertyValue::Null);
-                    }
-                    Ok(PropertyValue::Float(total / count as f64))
-                } else {
-                    Ok(PropertyValue::Float(total))
-                }
-            }
-            "min" | "max" => {
-                let arg = args.first().ok_or_else(|| {
-                    NopalError::QueryExecutionError(format!("{}() requires an argument", name))
-                })?;
-
-                let mut best: Option<PropertyValue> = None;
-                for m in group_matches {
-                    if let Some(v) = self.evaluate_pattern_group_expression(
-                        m,
-                        arg,
-                        source_var,
-                        target_var,
-                        edge_var,
-                        Some(algo_cache),
-                    )? {
-                        match &best {
-                            None => best = Some(v),
-                            Some(curr) => {
-                                let is_better = if name.eq_ignore_ascii_case("min") {
-                                    operators::compare_values(&v, &BinaryOperator::Lt, curr)
-                                } else {
-                                    operators::compare_values(&v, &BinaryOperator::Gt, curr)
-                                };
-                                if is_better {
-                                    best = Some(v);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Ok(best.unwrap_or(PropertyValue::Null))
-            }
-            _ => Err(NopalError::QueryExecutionError(
-                format!("Unsupported aggregation for relationship patterns: {}", name)
-            )),
+        if let Some(value) = group_ops::sql_aggregate(name, args, group_matches, &mut |m, e| {
+            self.evaluate_pattern_group_expression(m, e, source_var, target_var, edge_var, Some(algo_cache))
+        })? {
+            return Ok(value);
         }
+        Err(NopalError::QueryExecutionError(format!("Unsupported aggregation for relationship patterns: {name}")))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4643,16 +4517,6 @@ impl<'a> Executor<'a> {
             _ => operators::eval_pattern_expression(m, e, source_var, target_var),
         })
     }
-
-    fn property_value_to_f64(&self, value: &PropertyValue) -> Option<f64> {
-        match value {
-            PropertyValue::Int(i) => Some(*i as f64),
-            PropertyValue::Float(f) => Some(*f),
-            _ => None,
-        }
-    }
-
-
 
     /// Apply WHERE filter
     fn apply_filter(

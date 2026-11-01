@@ -371,18 +371,16 @@ async fn execute_grouped_aggregation(
     group_by: &crate::query::nql::parser::ast::GroupByClause,
     ctx: &QueryContext,
 ) -> Result<QueryResult> {
-    // Group nodes by ALL GROUP BY expressions (I2: multi-column support).
-    // BTreeMap gives deterministic iteration order (lexicographic by group key),
-    // so `limit 1` always returns the same row for the same data.
-    let mut groups: std::collections::BTreeMap<String, Vec<Node>> = std::collections::BTreeMap::new();
-
-    for node in nodes {
-        let group_key = group_by.expressions.iter()
-            .map(|expr| evaluate_group_key(expr, &node, variable))
-            .collect::<Result<Vec<_>>>()?
-            .join("|");
-        groups.entry(group_key).or_default().push(node);
+    // Group nodes by ALL GROUP BY expressions (I2: multi-column support), in
+    // the order each group first appears (`group_ops`, #364). Until 0.10.10
+    // a `BTreeMap` by the text of the key: `10` came before `9`, the keys
+    // came back as text (`"4"` for 4), and a value with `|` split the key.
+    for expr in &group_by.expressions {
+        check_group_key(expr, variable)?;
     }
+    let groups = super::group_ops::group_rows(nodes, &group_by.expressions, &mut |node, e| {
+        super::operators::eval_expression(node, e, variable)
+    })?;
 
     // Always inject `var.id` as the first column so that the graph-hint system
     // can detect UUID values without needing a separate fallback query.
@@ -444,9 +442,8 @@ async fn execute_grouped_aggregation(
             row.set(node_id_col.clone(), PropertyValue::String(first_node.id.to_string()));
         }
 
-        // Parse composite key back and add all group columns (I2).
-        // Usar el mismo nombre de columna (con alias si aplica) calculado arriba.
-        let key_parts: Vec<&str> = group_key.split('|').collect();
+        // The group columns (I2), with their values (#364), named as above
+        // (with the alias if there is one).
         for (i, expr) in group_by.expressions.iter().enumerate() {
             if let Expression::Property { variable: v, property } = expr {
                 let raw_key = format!("{}.{}", v, property);
@@ -465,10 +462,8 @@ async fn execute_grouped_aggregation(
                         }
                     })
                     .unwrap_or(raw_key);
-                let value = key_parts.get(i)
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "null".to_string());
-                row.set(row_key, PropertyValue::String(value));
+                let value = group_key.get(i).cloned().unwrap_or(PropertyValue::Null);
+                row.set(row_key, value);
             }
         }
 
@@ -559,43 +554,30 @@ async fn having_scalar(
     })
 }
 
-/// Evaluate GROUP BY key
-fn evaluate_group_key(expr: &Expression, node: &Node, variable: &str) -> Result<String> {
+/// A key of `group by` in the node path: a property of `variable` (also
+/// `id` and `label`).
+fn check_group_key(expr: &Expression, variable: &str) -> Result<()> {
     match expr {
-        Expression::Property { variable: var, property } => {
-            if var != variable {
-                return Err(NopalError::QueryExecutionError(
-                    format!("Unknown variable in GROUP BY: {}", var)
-                ));
-            }
-
-            // ✨ SPECIAL CASE: "label" is a Node field, not a property
-            if property == "label" {
-                return Ok(node.label.clone());
-            }
-
-            // ✨ SPECIAL CASE: "id" is a Node field, not a property
-            if property == "id" {
-                return Ok(node.id.to_string());
-            }
-
-            // Otherwise, get from properties
-            Ok(node.properties.get(property)
-                .map(|v| match v {
-                    PropertyValue::String(s) => s.clone(),
-                    PropertyValue::Int(i) => i.to_string(),
-                    PropertyValue::Float(f) => f.to_string(),
-                    PropertyValue::Bool(b) => b.to_string(),
-                    PropertyValue::Null => "null".to_string(),
-                    PropertyValue::Bytes(_) => "<bytes>".to_string(),
-                    PropertyValue::List(_) => "<list>".to_string(),
-                    PropertyValue::Object(_) => "<object>".to_string(),
-                })
-                .unwrap_or_else(|| "null".to_string()))
+        Expression::Property { variable: var, .. } if var == variable => Ok(()),
+        Expression::Property { variable: var, .. } => {
+            Err(NopalError::QueryExecutionError(format!("Unknown variable in GROUP BY: {var}")))
         }
-        _ => Err(NopalError::QueryExecutionError(
-            "GROUP BY only supports property expressions".into()
-        )),
+        _ => Err(NopalError::QueryExecutionError("GROUP BY only supports property expressions".into())),
+    }
+}
+
+/// The argument of an aggregate in the node path reads only `variable`.
+fn check_aggregate_arg(expr: &Expression, variable: &str) -> Result<()> {
+    match expr {
+        Expression::Property { variable: var, .. } if var != variable => {
+            Err(NopalError::QueryExecutionError(format!("Unknown variable: {var}")))
+        }
+        Expression::BinaryOp { left, right, .. } => {
+            check_aggregate_arg(left, variable)?;
+            check_aggregate_arg(right, variable)
+        }
+        Expression::UnaryOp { expr, .. } => check_aggregate_arg(expr, variable),
+        _ => Ok(()),
     }
 }
 
@@ -614,9 +596,8 @@ async fn evaluate_aggregation(
             let result_key = alias.clone().unwrap_or_else(|| name.clone());
 
             match name.as_str() {
-                "count" => {
-                    let count = nodes.len() as i64;
-                    Ok((result_key, PropertyValue::Int(count)))
+                "count" if args.is_empty() || matches!(args.first(), Some(Expression::Wildcard)) => {
+                    Ok((result_key, PropertyValue::Int(nodes.len() as i64)))
                 }
                 // `avg(degree(n))`: el promedio que hasta 0.10.2 daba
                 // `find degree(n)` sin agrupar, ahora pedido de forma
@@ -650,46 +631,19 @@ async fn evaluate_aggregation(
                     };
                     Ok((result_key, value))
                 }
-                "sum" => {
-                    if args.is_empty() {
-                        return Err(NopalError::QueryExecutionError(
-                            "sum() requires an argument".into()
-                        ));
+                // SQL's aggregates, shared with the pattern paths (#364).
+                // Until 0.10.10 `count(x)` counted every node, `avg(x)`
+                // divided by every node, `min`/`max` failed with no values
+                // and the argument could only be a property.
+                "count" | "sum" | "avg" | "min" | "max" => {
+                    if let Some(arg) = args.first() {
+                        check_aggregate_arg(arg, variable)?;
                     }
-
-                    let sum = sum_property(nodes, &args[0], variable)?;
-                    Ok((result_key, PropertyValue::Float(sum)))
-                }
-                "avg" => {
-                    if args.is_empty() {
-                        return Err(NopalError::QueryExecutionError(
-                            "avg() requires an argument".into()
-                        ));
-                    }
-
-                    let sum = sum_property(nodes, &args[0], variable)?;
-                    let avg = sum / nodes.len() as f64;
-                    Ok((result_key, PropertyValue::Float(avg)))
-                }
-                "min" => {
-                    if args.is_empty() {
-                        return Err(NopalError::QueryExecutionError(
-                            "min() requires an argument".into()
-                        ));
-                    }
-
-                    let min = min_property(nodes, &args[0], variable)?;
-                    Ok((result_key, min))
-                }
-                "max" => {
-                    if args.is_empty() {
-                        return Err(NopalError::QueryExecutionError(
-                            "max() requires an argument".into()
-                        ));
-                    }
-
-                    let max = max_property(nodes, &args[0], variable)?;
-                    Ok((result_key, max))
+                    let value = super::group_ops::sql_aggregate(name, args, nodes, &mut |node, e| {
+                        super::operators::eval_expression(node, e, variable)
+                    })?
+                    .unwrap_or(PropertyValue::Null);
+                    Ok((result_key, value))
                 }
                 #[cfg(feature = "algorithms")]
                 "pagerank" => {
@@ -765,112 +719,6 @@ async fn evaluate_aggregation(
         _ => Err(NopalError::QueryExecutionError(
             "Not an aggregation expression".into()
         ))
-    }
-}
-
-/// Sum numeric property
-fn sum_property(nodes: &[Node], expr: &Expression, variable: &str) -> Result<f64> {
-    match expr {
-        Expression::Property { variable: var, property } => {
-            if var != variable {
-                return Err(NopalError::QueryExecutionError(
-                    format!("Unknown variable: {}", var)
-                ));
-            }
-
-            let mut sum = 0.0;
-            for node in nodes {
-                if let Some(value) = node.properties.get(property) {
-                    sum += match value {
-                        PropertyValue::Int(i) => *i as f64,
-                        PropertyValue::Float(f) => *f,
-                        _ => 0.0,
-                    };
-                }
-            }
-            Ok(sum)
-        }
-        _ => Err(NopalError::QueryExecutionError(
-            "Aggregation argument must be a property".into()
-        ))
-    }
-}
-
-/// Find minimum property value
-fn min_property(nodes: &[Node], expr: &Expression, variable: &str) -> Result<PropertyValue> {
-    match expr {
-        Expression::Property { variable: var, property } => {
-            if var != variable {
-                return Err(NopalError::QueryExecutionError(
-                    format!("Unknown variable: {}", var)
-                ));
-            }
-
-            let mut min: Option<PropertyValue> = None;
-            for node in nodes {
-                if let Some(value) = node.properties.get(property)
-                    && min.as_ref().is_none_or(|m| is_less_than(value, m)) {
-                        min = Some(value.clone());
-                }
-            }
-
-            min.ok_or_else(|| NopalError::QueryExecutionError(
-                "No values found for min()".into()
-            ))
-        }
-        _ => Err(NopalError::QueryExecutionError(
-            "Aggregation argument must be a property".into()
-        ))
-    }
-}
-
-/// Find maximum property value
-fn max_property(nodes: &[Node], expr: &Expression, variable: &str) -> Result<PropertyValue> {
-    match expr {
-        Expression::Property { variable: var, property } => {
-            if var != variable {
-                return Err(NopalError::QueryExecutionError(
-                    format!("Unknown variable: {}", var)
-                ));
-            }
-
-            let mut max: Option<PropertyValue> = None;
-            for node in nodes {
-                if let Some(value) = node.properties.get(property)
-                    && max.as_ref().is_none_or(|m| is_greater_than(value, m)) {
-                        max = Some(value.clone());
-                }
-            }
-
-            max.ok_or_else(|| NopalError::QueryExecutionError(
-                "No values found for max()".into()
-            ))
-        }
-        _ => Err(NopalError::QueryExecutionError(
-            "Aggregation argument must be a property".into()
-        ))
-    }
-}
-
-/// Compare PropertyValues (less than)
-fn is_less_than(a: &PropertyValue, b: &PropertyValue) -> bool {
-    match (a, b) {
-        (PropertyValue::Int(a), PropertyValue::Int(b)) => a < b,
-        (PropertyValue::Float(a), PropertyValue::Float(b)) => a < b,
-        (PropertyValue::Int(a), PropertyValue::Float(b)) => (*a as f64) < *b,
-        (PropertyValue::Float(a), PropertyValue::Int(b)) => *a < (*b as f64),
-        _ => false,
-    }
-}
-
-/// Compare PropertyValues (greater than)
-fn is_greater_than(a: &PropertyValue, b: &PropertyValue) -> bool {
-    match (a, b) {
-        (PropertyValue::Int(a), PropertyValue::Int(b)) => a > b,
-        (PropertyValue::Float(a), PropertyValue::Float(b)) => a > b,
-        (PropertyValue::Int(a), PropertyValue::Float(b)) => (*a as f64) > *b,
-        (PropertyValue::Float(a), PropertyValue::Int(b)) => *a > (*b as f64),
-        _ => false,
     }
 }
 
