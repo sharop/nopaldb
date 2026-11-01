@@ -314,13 +314,13 @@ answer instead of failing ([#362](https://github.com/sharop/nopaldb/issues/362))
 | `… limit 1` on such an aggregation | — | `limit` counts groups; the whole join is aggregated | — |
 | `find avg(degree(r)) from (r:Recipe), (i:Ingredient)` | named error | still a named error | aggregate over one pattern |
 
-## 14. After 0.10.10: one semantics of aggregation
+## 14. From 0.10.10 to 0.10.11: one semantics of aggregation
 
 Aggregation has one semantics by every path, SQL's
 ([#364](https://github.com/sharop/nopaldb/issues/364)). The patterns already
 had it; **a pattern of one node** (`from (n:X)`) changes:
 
-| Query (`from (n:Recipe)`) | 0.10.10 | Now | What to do |
+| Query (`from (n:Recipe)`) | 0.10.10 | 0.10.11 | What to do |
 |---|---|---|---|
 | `count(n.heat)` with some recipes without `heat` | every recipe | the recipes with `heat` | `count(*)` to count every row |
 | `avg(n.heat)` with some recipes without `heat` | sum ÷ every recipe | sum ÷ recipes with `heat` | — |

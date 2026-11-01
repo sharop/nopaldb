@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.11] - unreleased
+
+Una sola semántica de agregación NQL, la de SQL, para todos los caminos
+(#364). **Cambian resultados** de las agregaciones sobre un patrón de un nodo
+(`count(x)`, `avg(x)` con faltantes, `min`/`max` sin valores, claves de
+`group by` como valor, orden de los grupos): la tabla completa está en la §14
+de `docs/UPGRADING_0.10.md`. Sin API nueva ni cambio de formato en disco.
 
 ### Changed
 - **Una sola semántica de agregación NQL para todos los caminos** (#364),
