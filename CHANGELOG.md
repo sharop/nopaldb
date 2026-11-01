@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **La unión de varios patrones NQL elige el orden** (#349): un patrón sin
+  relación con los ya unidos (ni variable común ni parte del `where` sobre
+  los dos) espera al primero posterior que sí la tenga. `from (a:A), (b:B),
+  (c:C) where a.g = c.g and b.g = c.g` une `a`, `c`, `b`: con 2000 nodos
+  por etiqueta y 200 valores de `g` daba el error del tope (la unión de `a`
+  y `b` pasaba de 400 000 filas) y ahora responde 200 000 filas en 0.56 s.
+  Las filas y su orden no cambian: al reordenar se rearman en el orden del
+  `from`. Con el orden cambiado la unión no se corta en `limit`. EXPLAIN dice
+  `Join: order 1, 3, 2 …`.
+
 ## [0.10.7] - 2026-10-31
 
 La unión de varios patrones NQL agrupa por hash cuando los lados comparten

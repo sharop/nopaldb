@@ -112,15 +112,20 @@ from (author1:Researcher)<-[:COLLABORATES]->(author2:Researcher)
   `distinct` the join stops at `limit`. The rows that pass the `where` count
   toward `Graph::max_join_rows()` (400 000 by default, 100 000 with the
   `Mobile` profile, `set_max_join_rows` to change it); past it the query is a
-  named error. Every join counts, in the order of `from`: in
-  `from (a), (b), (c) where a.k = c.k` the join of `a` and `b` is the whole
-  product, because the condition waits for `c`; write `(a), (c), (b)`, so
-  each pattern is related to the ones before it. When the two sides of a
+  named error. Every join counts. The patterns are joined in the order of
+  `from`, except that a pattern not related to the ones already joined (no
+  shared variable, no part of the `where` on both) waits for the first
+  later one that is: `from (a), (b), (c) where a.k = c.k and b.k = c.k`
+  joins `a`, `c`, `b` instead of the whole product of `a` and `b`. The rows
+  still come in the order of `from`; when the order changes, the join cannot
+  stop at `limit`. A part that reads three patterns at once (`a.x + b.y =
+  c.z`) relates none of them two by two: write first the patterns that
+  their own conditions make small, so each join stays small. When the two sides of a
   join share a variable (`(a)-[:T]->(m), (b)-[:T]->(m)`) or the `where` has
   an equality with one side in each (`a.k = b.k`, also `a.x + 1 = b.y`), the
   join groups by it and costs L + R instead of L × R; the rows and their
   order do not change. `explain` shows what each pattern and each join
-  applies (`Join: …`, `joins by hash on …`).
+  applies (`Join: …`, `joins by hash on …`, `order 1, 3, 2` when it reorders).
 
 ---
 
