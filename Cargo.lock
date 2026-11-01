@@ -1450,7 +1450,7 @@ dependencies = [
 
 [[package]]
 name = "nopaldb"
-version = "0.10.9"
+version = "0.10.10"
 dependencies = [
  "anndists",
  "anyhow",
