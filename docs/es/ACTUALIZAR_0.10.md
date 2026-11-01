@@ -321,13 +321,13 @@ varios saltos, responden en vez de fallar ([#362](https://github.com/sharop/nopa
 | `… limit 1` sobre una de esas agregaciones | — | `limit` cuenta grupos; se agrega la unión entera | — |
 | `find avg(degree(r)) from (r:Receta), (i:Ingrediente)` | error con nombre | sigue siendo error con nombre | agrega sobre un patrón |
 
-## 14. Después de 0.10.10: una sola semántica de agregación
+## 14. De 0.10.10 a 0.10.11: una sola semántica de agregación
 
 La agregación tiene una sola semántica por todos los caminos, la de SQL
 ([#364](https://github.com/sharop/nopaldb/issues/364)). Los patrones ya la
 tenían; cambia **un patrón de un nodo** (`from (n:X)`):
 
-| Consulta (`from (n:Receta)`) | 0.10.10 | Ahora | Qué hacer |
+| Consulta (`from (n:Receta)`) | 0.10.10 | 0.10.11 | Qué hacer |
 |---|---|---|---|
 | `count(n.picante)` con recetas sin `picante` | todas las recetas | las recetas con `picante` | `count(*)` para contar todas las filas |
 | `avg(n.picante)` con recetas sin `picante` | suma ÷ todas las recetas | suma ÷ recetas con `picante` | — |
