@@ -105,8 +105,13 @@ from (autor1:Investigador)<-[:COLABORA]->(autor2:Investigador)
   cada par. El producto de N y M filas tiene N·M filas; relaciona los
   patrones en el `where` para acotarlo. Hasta 0.10.4 un `from` cuyos
   patrones eran todos nodos solos leía solo el primero (#345). Las
-  agregaciones sobre varios patrones todavía no se soportan: error con
-  nombre.
+  agregaciones sobre varios patrones, y sobre un patrón de varios saltos,
+  agregan las filas de la unión (#362): `find r.region, count(*),
+  sum(r.porciones * i.gramos) from (r:Receta), (i:Ingrediente) where
+  r.region = i.region group by r.region`. `count(x)` cuenta los valores
+  presentes; `sum`/`avg` toman los números; `limit` cuenta grupos. Los
+  algoritmos dentro de una agregación (`avg(degree(r))`) siguen siendo aquí
+  un error con nombre.
 - **La unión filtra mientras combina** (#349). Cada patrón lee solo los
   nodos que cumplen sus condiciones de una variable, cada parte del `where`
   se aplica en cuanto sus variables están ligadas, y sin `order by` ni

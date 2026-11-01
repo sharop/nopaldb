@@ -2236,12 +2236,6 @@ impl<'a> Executor<'a> {
     }
 
     async fn execute_multi_pattern_query(&self, query: Query) -> Result<QueryResult> {
-        if has_aggregations(&query.find.projections) || query.group_by.is_some() {
-            return Err(NopalError::QueryExecutionError(
-                "Pattern aggregations for multi-pattern queries are not supported yet".into()
-            ));
-        }
-
         if projections_contain_path_reducer(&query.find.projections)
             || query.filter.as_ref().map(|f| expr_contains_path_reducer(&f.condition)).unwrap_or(false)
         {
@@ -2345,6 +2339,9 @@ impl<'a> Executor<'a> {
             joined_bindings = in_from_order(joined_bindings, &sets);
         }
 
+        if is_aggregate_query(&query) {
+            return self.aggregate_bindings(joined_bindings, &query);
+        }
         self.build_query_result_from_bindings(joined_bindings, &query)
     }
 
@@ -2353,12 +2350,6 @@ impl<'a> Executor<'a> {
         query: Query,
         pattern: &Pattern,
     ) -> Result<QueryResult> {
-        if has_aggregations(&query.find.projections) || query.group_by.is_some() {
-            return Err(NopalError::QueryExecutionError(
-                "Pattern aggregations for multi-hop queries are not supported yet".into()
-            ));
-        }
-
         // F3: path reducers no soportados en ORDER BY
         if let Some(order_by) = &query.order_by {
             for item in &order_by.items {
@@ -2380,7 +2371,177 @@ impl<'a> Executor<'a> {
         self.update_path_profile(|metrics| {
             metrics.bindings_examined = bindings.len();
         });
+        if is_aggregate_query(&query) {
+            return self.aggregate_bindings(bindings, &query);
+        }
         self.build_query_result_from_bindings(bindings, &query)
+    }
+
+    /// Agrega las filas de un patrón de varios saltos o de varios patrones
+    /// (#362): las que cumplen el `where`, en grupos por las claves del
+    /// `group by` (o, sin él, por las propiedades de `find` que no son
+    /// agregaciones, como en los demás caminos), en el orden en que cada
+    /// grupo aparece. Hasta 0.10.9 era un error.
+    ///
+    /// La semántica es la de la agregación de un salto
+    /// (`execute_pattern_aggregations`), que es la de SQL: `count(*)` cuenta
+    /// filas y `count(x)` los valores presentes; `sum` y `avg` toman los
+    /// números (`avg` sin ninguno es nulo); `min` y `max` comparan como el
+    /// `order by` y sin valores son nulos. Las columnas llevan el nombre que
+    /// les da `name_projections`; `OutputShape` arma el esquema.
+    fn aggregate_bindings(&self, bindings: Vec<LinearPatternBinding>, query: &Query) -> Result<QueryResult> {
+        for p in &query.find.projections {
+            if let Projection::Expression { expr, .. } = p
+                && let Some(bad) = unsupported_in_pattern_aggregate(expr)
+            {
+                return Err(NopalError::QueryExecutionError(format!(
+                    "{bad} is not supported in aggregations over several patterns or a multi-hop pattern yet"
+                )));
+            }
+        }
+        if query.filter.as_ref().is_some_and(|f| filter_uses_path_vm(&f.condition)) {
+            return Err(NopalError::QueryExecutionError(
+                "path_eval and INIT/GATHER are not supported with aggregations over patterns yet".into(),
+            ));
+        }
+
+        let mut rows = Vec::new();
+        for binding in bindings {
+            let keep = match &query.filter {
+                Some(filter) => self.evaluate_linear_pattern_condition(&binding, &filter.condition)?,
+                None => true,
+            };
+            if keep {
+                rows.push(binding);
+            }
+        }
+
+        let implicit;
+        let keys: &[Expression] = match &query.group_by {
+            Some(group_by) => &group_by.expressions,
+            None => {
+                implicit = query
+                    .find
+                    .projections
+                    .iter()
+                    .filter_map(|p| match p {
+                        Projection::Expression { expr: e @ Expression::Property { .. }, .. } => Some(e.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                &implicit
+            }
+        };
+
+        // Grupos en orden de aparición. La clave es el texto de los valores,
+        // como en los demás caminos de agregación.
+        let mut groups: Vec<Vec<&LinearPatternBinding>> = Vec::new();
+        let mut index: HashMap<String, usize> = HashMap::new();
+        for row in &rows {
+            let mut key = String::new();
+            for expr in keys {
+                let v = self.evaluate_linear_pattern_expression(row, expr)?.unwrap_or(PropertyValue::Null);
+                key.push_str(&format!("{v:?}|"));
+            }
+            let i = *index.entry(key).or_insert_with(|| {
+                groups.push(Vec::new());
+                groups.len() - 1
+            });
+            groups[i].push(row);
+        }
+        // Sin claves y sin filas, `count(*)` es 0: un grupo vacío.
+        if groups.is_empty() && keys.is_empty() {
+            groups.push(Vec::new());
+        }
+
+        let mut columns = Vec::new();
+        let mut out = Vec::new();
+        for p in &query.find.projections {
+            if let Some(name) = p.column_name() {
+                columns.push(name);
+            }
+        }
+        for group in &groups {
+            let mut row = Row::new();
+            for p in &query.find.projections {
+                let (Projection::Expression { expr, .. }, Some(name)) = (p, p.column_name()) else { continue };
+                let value = self.group_value(expr, group)?;
+                row.set(name, value);
+            }
+            if let Some(having) = &query.having {
+                let holds = value_ops::condition(&having.condition, &mut |leaf| match leaf {
+                    Expression::Literal(v) => Ok(Some(v.clone())),
+                    Expression::Property { variable, property } if property.is_empty() && row.values.contains_key(variable) => {
+                        Ok(row.values.get(variable).cloned())
+                    }
+                    other => self.group_value(other, group).map(Some),
+                })?;
+                if !holds {
+                    continue;
+                }
+            }
+            out.push(row);
+        }
+
+        let mut result = QueryResult::new(columns);
+        result.rows = out;
+        self.apply_distinct_if_needed(&mut result, &query.find);
+        if let Some(order_by) = &query.order_by {
+            self.apply_order_by(&mut result, order_by)?;
+        }
+        if let Some(limit) = &query.limit {
+            let offset = limit.offset.unwrap_or(0);
+            result.rows = result.rows.into_iter().skip(offset).take(limit.limit).collect();
+        }
+        Ok(result)
+    }
+
+    /// El valor de `expr` para un grupo: una agregación sobre sus filas, o
+    /// una clave del grupo leída en su primera fila (todas la comparten).
+    fn group_value(&self, expr: &Expression, group: &[&LinearPatternBinding]) -> Result<PropertyValue> {
+        let Expression::FunctionCall { name, args } = expr else {
+            return Ok(match group.first() {
+                Some(first) => self.evaluate_linear_pattern_expression(first, expr)?.unwrap_or(PropertyValue::Null),
+                None => PropertyValue::Null,
+            });
+        };
+        let lower = name.to_lowercase();
+        let arg = || {
+            args.first()
+                .filter(|a| !matches!(a, Expression::Wildcard))
+                .ok_or_else(|| NopalError::QueryExecutionError(format!("{name}() requires an argument")))
+        };
+        let values = |arg: &Expression| -> Result<Vec<PropertyValue>> {
+            let mut out = Vec::with_capacity(group.len());
+            for row in group {
+                match self.evaluate_linear_pattern_expression(row, arg)? {
+                    None | Some(PropertyValue::Null) => {}
+                    Some(v) => out.push(v),
+                }
+            }
+            Ok(out)
+        };
+        Ok(match lower.as_str() {
+            "count" if args.is_empty() || matches!(args.first(), Some(Expression::Wildcard)) => {
+                PropertyValue::Int(group.len() as i64)
+            }
+            "count" => PropertyValue::Int(values(arg()?)?.len() as i64),
+            "sum" | "avg" => {
+                let numbers: Vec<f64> = values(arg()?)?.iter().filter_map(|v| self.property_value_to_f64(v)).collect();
+                let total: f64 = numbers.iter().sum();
+                match (lower.as_str(), numbers.len()) {
+                    ("sum", _) => PropertyValue::Float(total),
+                    (_, 0) => PropertyValue::Null,
+                    (_, n) => PropertyValue::Float(total / n as f64),
+                }
+            }
+            "min" => values(arg()?)?.into_iter().min().unwrap_or(PropertyValue::Null),
+            "max" => values(arg()?)?.into_iter().max().unwrap_or(PropertyValue::Null),
+            _ => match group.first() {
+                Some(first) => self.evaluate_linear_pattern_expression(first, expr)?.unwrap_or(PropertyValue::Null),
+                None => PropertyValue::Null,
+            },
+        })
     }
 
     fn build_query_result_from_bindings(
@@ -7332,11 +7493,36 @@ fn describe_join(query: &Query, max_rows: usize) -> String {
 /// `offset + limit` cuando las primeras filas de la unión son la respuesta:
 /// sin `order by` ni `distinct`.
 fn early_limit(query: &Query) -> Option<usize> {
-    if query.order_by.is_some() || query.find.distinct {
+    // Con agregaciones, `limit` cuenta grupos, no filas de la unión.
+    if query.order_by.is_some() || query.find.distinct || is_aggregate_query(query) {
         return None;
     }
     let limit = query.limit.as_ref()?;
     Some(limit.limit.saturating_add(limit.offset.unwrap_or(0)))
+}
+
+/// Si la consulta agrega: una agregación en `find` o un `group by`.
+fn is_aggregate_query(query: &Query) -> bool {
+    has_aggregations(&query.find.projections) || query.group_by.is_some()
+}
+
+/// Lo que la agregación de patrones (#362) aún no evalúa dentro de `find`:
+/// algoritmos por nodo (`avg(degree(r))`) y las funciones de embeddings.
+fn unsupported_in_pattern_aggregate(expr: &Expression) -> Option<&Expression> {
+    match expr {
+        e if e.is_algorithm() => Some(e),
+        Expression::FunctionCall { name, args } => {
+            if matches!(name.as_str(), "embedding_similarity" | "knn_nodes") {
+                return Some(expr);
+            }
+            args.iter().find_map(unsupported_in_pattern_aggregate)
+        }
+        Expression::BinaryOp { left, right, .. } => {
+            unsupported_in_pattern_aggregate(left).or_else(|| unsupported_in_pattern_aggregate(right))
+        }
+        Expression::UnaryOp { expr, .. } => unsupported_in_pattern_aggregate(expr),
+        _ => None,
+    }
 }
 
 /// En qué orden se unen los patrones del `from` (#349): el del `from`,

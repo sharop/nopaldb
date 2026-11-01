@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Agregaciones sobre varios patrones NQL y sobre un patrón de varios
+  saltos** (#362): `count`, `sum`, `avg`, `min`, `max` con `group by`,
+  `having`, `order by` y `limit`, sobre las filas de la unión que cumplen el
+  `where`. Hasta 0.10.9 las dos daban un error con nombre. Semántica de la
+  agregación de un salto (la de SQL): `count(*)` cuenta filas, `count(x)` los
+  valores presentes, `sum`/`avg` los números (`avg` sin ninguno es nulo),
+  `min`/`max` comparan como el `order by` y sin valores son nulos. Los grupos
+  salen en orden de aparición; `limit` cuenta grupos (la unión no se corta
+  antes) y aplica `max_join_rows`. Los algoritmos dentro de una agregación
+  (`avg(degree(r))`) siguen siendo un error con nombre aquí. Guía
+  UPGRADING_0.10 §13.
+
 ## [0.10.9] - 2026-11-01
 
 HNSW: arreglada una carrera del punto de entrada en la construcción en

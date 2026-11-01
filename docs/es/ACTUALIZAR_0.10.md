@@ -307,3 +307,16 @@ filas no cambian; lo que cambia:
 | `from (a:X), (b:Y) order by a.x limit 10` con más pares que el tope (`order by` y `distinct` necesitan todas las filas) | respondía, con memoria de sobra | error con nombre | relaciona los patrones, o `set_max_join_rows(n)` |
 | `from (a), (b), (c) where a.k = c.k` (la condición se salta un patrón) | respondía, con memoria de sobra | la unión de `a` y `b` es el producto entero y cuenta | escribe `(a), (c), (b)` |
 | `explain` de varios patrones de un solo nodo | `Strategy: LABEL SCAN` | `Strategy: PATTERN PIPELINE` y una línea `Join: …` | actualiza quien lea el texto del plan |
+
+## 13. Después de 0.10.9: agregaciones sobre varios patrones
+
+Las agregaciones sobre varios patrones del `from`, y sobre un patrón de
+varios saltos, responden en vez de fallar ([#362](https://github.com/sharop/nopaldb/issues/362)):
+
+| Consulta | 0.10.9 | Ahora | Qué hacer |
+|---|---|---|---|
+| `find count(*) from (a:Receta), (b:Receta)` | error con nombre | el número de pares | — |
+| `find r.region, count(*), sum(r.porciones * i.gramos) from (r:Receta), (i:Ingrediente) where r.region = i.region group by r.region` | error con nombre | una fila por región | — |
+| `find z.nombre, count(*) from (r)-[:LLEVA]->(i)-[:CRECE_EN]->(z) group by z.nombre` | error con nombre | una fila por zona | — |
+| `… limit 1` sobre una de esas agregaciones | — | `limit` cuenta grupos; se agrega la unión entera | — |
+| `find avg(degree(r)) from (r:Receta), (i:Ingrediente)` | error con nombre | sigue siendo error con nombre | agrega sobre un patrón |

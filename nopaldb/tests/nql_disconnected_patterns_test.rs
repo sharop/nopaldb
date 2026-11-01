@@ -153,12 +153,12 @@ async fn at_timestamp_gives_the_product_of_the_past() {
 }
 
 #[tokio::test]
-async fn an_aggregate_over_several_patterns_is_a_named_error() {
-    // Until 0.10.4 this counted the first pattern only (3). Aggregations over
-    // several patterns are not supported yet: an error, not a wrong number.
+async fn an_aggregate_over_several_patterns_counts_the_product() {
+    // Until 0.10.4 this counted the first pattern only (3); from 0.10.5 to
+    // 0.10.9 it was a named error. Since #362 it counts the 3 × 3 pairs.
     let g = kitchen().await;
-    let err = g.execute_nql("find count(*) from (a:Receta), (b:Receta)").await.unwrap_err();
-    assert!(err.to_string().contains("multi-pattern"), "{err}");
+    let r = g.execute_nql("find count(*) from (a:Receta), (b:Receta)").await.unwrap();
+    assert_eq!(r.rows()[0].get("count(*)"), Some(&PropertyValue::Int(9)));
 }
 
 #[tokio::test]
