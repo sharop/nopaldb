@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.10.11] - unreleased
+## [0.10.11] - 2026-11-01
 
 Una sola semántica de agregación NQL, la de SQL, para todos los caminos
 (#364). **Cambian resultados** de las agregaciones sobre un patrón de un nodo
