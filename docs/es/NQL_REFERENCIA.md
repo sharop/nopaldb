@@ -599,10 +599,13 @@ NQL soporta funciones para resumir datos, ideales para análisis estadístico.
 
 Los nombres de las funciones no distinguen mayúsculas (`COUNT(*)` es `count(*)`). Un nombre que no es una función de NQL es un error en toda cláusula (desde 0.10.3; hasta 0.10.2 se descartaba sin error). No hay `id(n)`: el id es la propiedad `n.id`.
 
-- `count(*)`: Cuenta el total de coincidencias.
-- `sum(p.monto)`: Suma los valores de una propiedad numérica.
-- `avg(p.edad)`: Calcula el promedio.
-- `min(p.score)`, `max(p.score)`: Encuentra valores mínimos y máximos.
+- `count(*)`: Cuenta las filas (o las de cada grupo).
+- `count(p.correo)`: Cuenta los valores presentes; una propiedad que falta o un nulo no cuentan.
+- `sum(p.monto)`: Suma los números (`0.0` si no hay). El argumento puede ser una expresión: `sum(p.precio * p.cantidad)`.
+- `avg(p.edad)`: El promedio de los números presentes; `null` si no hay.
+- `min(p.score)`, `max(p.score)`: El valor menor y el mayor, comparados como en el `order by`; `null` sin valores.
+
+Son iguales por cualquier camino, sea cual sea la forma del `from` (un nodo, un salto, varios patrones o varios saltos) (#364). Hasta 0.10.10 un patrón de un nodo contaba todos los nodos en `count(x)`, dividía `avg(x)` entre todos, fallaba en `min`/`max` sin valores y solo aceptaba una propiedad como argumento. Sin `order by`, los grupos de `group by` salen en el orden en que aparecen por primera vez, con las claves como sus valores (una clave que falta es un grupo `null`).
 - `degree(n)`, `pagerank(n)`, `betweenness(n)`, `clustering(n)`: Analítica de grafos, un valor por nodo: `find n.nombre, degree(n) as d` da una fila por nodo. El promedio o los extremos son agregaciones sobre ellos: `avg(degree(n))`, `max(pagerank(n))`, también por grupo con `group by`. Hasta 0.10.2 `find degree(n)` sin agrupar daba una fila con el promedio.
 - `community(n)`: Detección exacta global de comunidades (basada en Louvain).
 - `community_fast(n)`: Detección aproximada local de comunidades para exploración de baja latencia.

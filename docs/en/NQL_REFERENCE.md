@@ -590,10 +590,13 @@ NQL supports functions for data summarization, ideal for statistical analysis.
 
 Function names are matched without case (`COUNT(*)` is `count(*)`). A name that is not an NQL function is an error in every clause (since 0.10.3; until 0.10.2 it was dropped without one). There is no `id(n)`: the id is the property `n.id`.
 
-- `count(*)`: Counts total matches.
-- `sum(p.amount)`: Sums numeric property values.
-- `avg(p.age)`: Calculates average.
-- `min(p.score)`, `max(p.score)`: Finds minimum and maximum values.
+- `count(*)`: Counts the rows (or the rows of each group).
+- `count(p.email)`: Counts the values present; a missing property or a null does not count.
+- `sum(p.amount)`: Sums the numbers (`0.0` with none). The argument can be an expression: `sum(p.price * p.qty)`.
+- `avg(p.age)`: The average of the numbers present; `null` with none.
+- `min(p.score)`, `max(p.score)`: The smallest and largest value, compared as `order by` does; `null` with no values.
+
+These are the same by every path, whatever the shape of `from` (one node, one hop, several patterns or several hops) (#364). Until 0.10.10 a pattern of one node counted every node in `count(x)`, divided `avg(x)` by every node, failed `min`/`max` with no values and took only a property as argument. Without `order by`, the groups of `group by` come in the order they first appear, with the keys as their values (a missing key is a `null` group).
 - `degree(n)`, `pagerank(n)`, `betweenness(n)`, `clustering(n)`: Graph analytics, one value per node: `find n.name, degree(n) as d` gives one row per node. The average or the extremes are aggregations over them: `avg(degree(n))`, `max(pagerank(n))`, also per group with `group by`. Until 0.10.2 `find degree(n)` without grouping gave one row with the average.
 - `community(n)`: Exact global community detection (Louvain, modularity-based).
 - `community_fast(n)`: Approximate local community detection for low-latency exploration.

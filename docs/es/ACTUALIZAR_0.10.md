@@ -320,3 +320,20 @@ varios saltos, responden en vez de fallar ([#362](https://github.com/sharop/nopa
 | `find z.nombre, count(*) from (r)-[:LLEVA]->(i)-[:CRECE_EN]->(z) group by z.nombre` | error con nombre | una fila por zona | — |
 | `… limit 1` sobre una de esas agregaciones | — | `limit` cuenta grupos; se agrega la unión entera | — |
 | `find avg(degree(r)) from (r:Receta), (i:Ingrediente)` | error con nombre | sigue siendo error con nombre | agrega sobre un patrón |
+
+## 14. Después de 0.10.10: una sola semántica de agregación
+
+La agregación tiene una sola semántica por todos los caminos, la de SQL
+([#364](https://github.com/sharop/nopaldb/issues/364)). Los patrones ya la
+tenían; cambia **un patrón de un nodo** (`from (n:X)`):
+
+| Consulta (`from (n:Receta)`) | 0.10.10 | Ahora | Qué hacer |
+|---|---|---|---|
+| `count(n.picante)` con recetas sin `picante` | todas las recetas | las recetas con `picante` | `count(*)` para contar todas las filas |
+| `avg(n.picante)` con recetas sin `picante` | suma ÷ todas las recetas | suma ÷ recetas con `picante` | — |
+| `min(n.picante)`, `max(n.picante)` sin valores | error "No values found for min()" | `null` | — |
+| `sum(n.precio * n.cantidad)` | error "Aggregation argument must be a property" | la suma | — |
+| `find n.porciones, count(*) … group by n.porciones` | `n.porciones` como texto (`"4"`) | el número (`4`) | compara con números |
+| un grupo sin valor en su clave | el texto `"null"` | `null` | — |
+| grupos sin `order by` | por el texto de la clave (`10` antes que `9`) | el orden en que aparecen por primera vez | `order by` la clave si necesitas un orden |
+| grupos de un salto sin `order by` (`from (a)-[:R]->(b)`) | indefinido | el orden en que aparecen por primera vez | — |

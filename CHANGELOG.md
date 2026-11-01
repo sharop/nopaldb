@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **Una sola semántica de agregación NQL para todos los caminos** (#364),
+  la de SQL, en un núcleo compartido (`executor::group_ops`). Cambia
+  resultados de un patrón de un nodo (`from (n:X)`), el camino más usado:
+  - `count(x)` cuenta los valores presentes (contaba todos los nodos);
+  - `avg(x)` divide entre los números presentes (dividía entre todos los
+    nodos, como si un faltante valiera 0);
+  - `min(x)`/`max(x)` sin valores dan `null` (era el error "No values found
+    for min()");
+  - el argumento puede ser una expresión: `sum(n.precio * n.cantidad)` (era
+    el error "Aggregation argument must be a property");
+  - las claves de `group by` salen como su valor: `group by n.porciones`
+    da `4`, no `"4"`; una clave que falta es `null`, no el texto `"null"`,
+    y un valor con `|` ya no parte la clave;
+  - sin `order by`, los grupos salen en el orden en que aparecen por primera
+    vez (iban por el texto de la clave: `10` antes que `9`). En el camino de
+    un salto el orden no estaba definido (`HashMap`).
+  Guía UPGRADING_0.10 §14.
+
 ## [0.10.10] - 2026-11-01
 
 Las agregaciones NQL (`count`, `sum`, `avg`, `min`, `max`, `group by`,
