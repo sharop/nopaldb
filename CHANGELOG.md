@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.10.8] - unreleased
+## [0.10.8] - 2026-11-01
 
 La unión de varios patrones NQL elige el orden: un patrón sin relación con
 los ya unidos espera al primero posterior que sí la tenga (#349, que queda
