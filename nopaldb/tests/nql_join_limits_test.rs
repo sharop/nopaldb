@@ -164,17 +164,23 @@ async fn the_row_limit_is_a_named_error() {
     let ok = rows(&g, "find a.nombre, b.nombre from (a:Arbol), (b:Arbol) where a.cosecha = 0 and b.fila = 1", &["a.nombre", "b.nombre"]).await;
     assert_eq!(ok.len(), 3);
 
-    // Every join counts, in the order of FROM. `b` is related to `a` only
-    // through `c`: with `b` second, the join of `a` (1 tree) and `b` keeps
-    // all 12 pairs, more than 10; with `c` second it keeps 3, and the
-    // answer is the same 9 rows.
+    // Every join counts. `b` is related to `a` only through `c`: the join
+    // goes `a`, `c`, `b` (#349), so the join of `a` (1 tree) and `c` keeps
+    // 3 rows instead of the 12 of `a` and `b`, under a limit of 10.
     g.set_max_join_rows(10);
     let q = |order: &str| {
         format!("find a.nombre, b.nombre from {order} where a.cosecha = 0 and a.fila = c.fila and b.fila = c.fila")
     };
+    assert_eq!(g.execute_nql(&q("(a:Arbol), (b:Arbol), (c:Arbol)")).await.unwrap().rows().len(), 9);
+    assert_eq!(g.execute_nql(&q("(a:Arbol), (c:Arbol), (b:Arbol)")).await.unwrap().rows().len(), 9);
+    // A part that reads all three relates none of them two by two: the
+    // join follows FROM, and `a` with `b` keeps 12 rows.
+    let q = |order: &str| {
+        format!("find a.nombre, b.nombre from {order} where a.cosecha = 0 and c.cosecha = 0 and a.fila + b.fila = c.fila")
+    };
     let err = g.execute_nql(&q("(a:Arbol), (b:Arbol), (c:Arbol)")).await.unwrap_err();
     assert!(err.to_string().contains("every join counts"), "{err}");
-    assert_eq!(g.execute_nql(&q("(a:Arbol), (c:Arbol), (b:Arbol)")).await.unwrap().rows().len(), 9);
+    assert_eq!(g.execute_nql(&q("(a:Arbol), (c:Arbol), (b:Arbol)")).await.unwrap().rows().len(), 3);
     g.set_max_join_rows(20);
 
     // `order by` needs every row: the join cannot stop at `limit`.
@@ -357,4 +363,90 @@ async fn explain_says_what_the_join_groups_by() {
     assert!(p.contains("joins by hash on m"), "{p}");
     let p = plan("find a.nombre from (a:Arbol), (b:Arbol) where a.fila < b.fila").await;
     assert!(!p.contains("joins by hash"), "{p}");
+}
+
+/// The nodes of a label in the order a single pattern reads them.
+async fn scan(g: &Graph, label: &str) -> Vec<String> {
+    let r = g.execute_nql(&format!("find x.nombre from (x:{label})")).await.unwrap();
+    r.rows()
+        .iter()
+        .map(|row| match row.get("x.nombre") {
+            Some(PropertyValue::String(v)) => v.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_reordered_join_gives_the_rows_in_the_order_of_from() {
+    // `b` relates to `a` only through `c`: the join goes `a`, `c`, `b`, and
+    // the rows come back in the order the nested loop over `a`, `b`, `c`
+    // gives them, also with `limit`.
+    let g = orchard().await;
+    let trees = scan(&g, "Arbol").await;
+    let fila = |name: &str| name[1..].parse::<i64>().unwrap() % 4;
+    let mut expected = Vec::new();
+    for a in &trees {
+        for b in &trees {
+            for c in &trees {
+                if fila(a) == 1 && fila(a) == fila(c) && fila(b) == fila(c) {
+                    expected.push(vec![format!("{:?}", Some(s(a))), format!("{:?}", Some(s(b))), format!("{:?}", Some(s(c)))]);
+                }
+            }
+        }
+    }
+    let keys = ["a.nombre", "b.nombre", "c.nombre"];
+    let q = "find a.nombre, b.nombre, c.nombre from (a:Arbol), (b:Arbol), (c:Arbol) \
+             where a.fila = 1 and a.fila = c.fila and b.fila = c.fila";
+    assert_eq!(expected.len(), 27);
+    assert_eq!(ordered(&g, q, &keys).await, expected);
+    assert_eq!(ordered(&g, &format!("{q} limit 4 offset 3"), &keys).await, expected[3..7].to_vec());
+}
+
+#[tokio::test]
+async fn a_reordered_join_keeps_the_paths_of_each_pattern() {
+    // Patterns with edges: `(a)->(b)` and `(c)->(d)` relate only through
+    // `(b)->(c)`, written last, so the join goes 1, 3, 2. The rows come in
+    // the sequence of the nested loop over the FROM order.
+    let g = orchard().await;
+    let edges = ordered(&g, "find x.nombre, y.nombre from (x:Arbol)-[:JUNTO_A]->(y:Arbol)", &["x.nombre", "y.nombre"]).await;
+    // `cosecha` is the number in the name.
+    let cosecha = |cell: &str| cell.chars().filter(char::is_ascii_digit).collect::<String>().parse::<i64>().unwrap();
+    let mut expected = Vec::new();
+    for ab in &edges {
+        for cd in &edges {
+            for bc in &edges {
+                if bc[0] == ab[1] && bc[1] == cd[0] && cosecha(&ab[0]) < 3 {
+                    expected.push(vec![ab[0].clone(), cd[1].clone()]);
+                }
+            }
+        }
+    }
+    let q = "find a.nombre, d.nombre from (a:Arbol)-[:JUNTO_A]->(b:Arbol), (c:Arbol)-[:JUNTO_A]->(d:Arbol), \
+             (b)-[:JUNTO_A]->(c) where a.cosecha < 3";
+    let rows = ordered(&g, q, &["a.nombre", "d.nombre"]).await;
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows, expected);
+}
+
+#[tokio::test]
+async fn explain_says_the_order_of_the_join() {
+    let g = orchard().await;
+    let r = g
+        .execute_nql(
+            "explain find a.nombre from (a:Arbol), (b:Arbol), (c:Arbol) where a.fila = c.fila and b.fila = c.fila limit 5",
+        )
+        .await
+        .unwrap();
+    let plan = format!("{:?}", r.rows());
+    assert!(plan.contains("Join: order 1, 3, 2"), "{plan}");
+    assert!(plan.contains("pattern 3; joins by hash on a.fila = c.fila"), "{plan}");
+    assert!(!plan.contains("stops at"), "{plan}");
+    // In the order of FROM, no order line.
+    let r = g
+        .execute_nql("explain find a.nombre from (a:Arbol), (b:Arbol), (c:Arbol) where a.fila = b.fila and b.fila = c.fila")
+        .await
+        .unwrap();
+    let plan = format!("{:?}", r.rows());
+    assert!(!plan.contains("order 1"), "{plan}");
 }

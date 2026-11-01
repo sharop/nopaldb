@@ -113,16 +113,22 @@ from (autor1:Investigador)<-[:COLABORA]->(autor2:Investigador)
   `distinct` la unión se detiene en `limit`. Las filas que cumplen el
   `where` cuentan para `Graph::max_join_rows()` (400 000 por defecto,
   100 000 con el perfil `Mobile`, `set_max_join_rows` para cambiarlo); al
-  pasarlo la consulta es un error con nombre. Cuenta cada unión, en el
-  orden del `from`: en `from (a), (b), (c) where a.k = c.k` la unión de `a`
-  y `b` es el producto entero, porque la condición espera a `c`; escribe
-  `(a), (c), (b)`, para que cada patrón se relacione con los anteriores.
+  pasarlo la consulta es un error con nombre. Cuenta cada unión. Los
+  patrones se unen en el orden del `from`, salvo que uno sin relación con
+  los ya unidos (ni una variable común ni una parte del `where` sobre los
+  dos) espera al primero posterior que sí la tenga:
+  `from (a), (b), (c) where a.k = c.k and b.k = c.k` une `a`, `c`, `b` en
+  vez del producto entero de `a` y `b`. Las filas siguen saliendo en el
+  orden del `from`; cuando el orden cambia, la unión no puede cortarse en
+  `limit`. Una parte que lee tres patrones a la vez (`a.x + b.y = c.z`) no
+  relaciona a ninguno de dos en dos: escribe primero los patrones que sus
+  propias condiciones dejan pequeños, para que cada unión quede pequeña.
   Cuando los dos lados de una unión comparten una variable
   (`(a)-[:T]->(m), (b)-[:T]->(m)`) o el `where` tiene una igualdad con un
   lado en cada uno (`a.k = b.k`, también `a.x + 1 = b.y`), la unión agrupa
   por ella y cuesta L + R en vez de L × R; las filas y su orden no cambian.
   `explain` muestra qué aplica cada patrón y cada unión (`Join: …`,
-  `joins by hash on …`).
+  `joins by hash on …`, `order 1, 3, 2` cuando reordena).
 
 ---
 

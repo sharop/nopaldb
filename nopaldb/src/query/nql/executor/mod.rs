@@ -824,6 +824,10 @@ struct LinearPatternBinding {
     edges: Vec<Edge>,
     node_vars: HashMap<String, Node>,
     edge_vars: HashMap<String, Edge>,
+    /// En una unión de varios patrones reordenada (#349): de qué ligadura
+    /// de cada patrón viene esta fila, como (patrón, índice). Vacío fuera de
+    /// ella.
+    origin: Vec<(usize, usize)>,
 }
 
 impl LinearPatternBinding {
@@ -2281,10 +2285,9 @@ impl<'a> Executor<'a> {
             ));
         }
 
-        let mut pattern_bindings_iter = query.from.patterns.iter();
-        let first_pattern = pattern_bindings_iter.next().ok_or_else(|| {
-            NopalError::QueryExecutionError("No patterns in FROM clause".into())
-        })?;
+        if query.from.patterns.is_empty() {
+            return Err(NopalError::QueryExecutionError("No patterns in FROM clause".into()));
+        }
 
         // Las partes del `where` se aplican en cuanto sus variables están
         // ligadas (#349): una fila combinada que no las cumple no se guarda.
@@ -2292,15 +2295,30 @@ impl<'a> Executor<'a> {
         // final: `from (a:X), (b:X) where … limit 10` sobre 2000 nodos
         // ocupaba 10 GB. El `where` completo se vuelve a aplicar al final.
         let plan = JoinFilterPlan::of(&query);
+        let order = join_order(&query, &plan.conjuncts);
+        let reordered = order.iter().enumerate().any(|(i, p)| i != *p);
         let mut pending = plan.conjuncts;
-        let mut bound = pattern_variables(first_pattern);
         let max_rows = self.graph.max_join_rows();
 
-        let mut joined_bindings = self.execute_pattern_bindings(&query, first_pattern).await?;
+        let mut sets = Vec::with_capacity(order.len());
+        for (p, pattern) in query.from.patterns.iter().enumerate() {
+            let mut bindings = self.execute_pattern_bindings(&query, pattern).await?;
+            if reordered {
+                for (i, b) in bindings.iter_mut().enumerate() {
+                    b.origin = vec![(p, i)];
+                }
+            }
+            sets.push(bindings);
+        }
 
-        let rest: Vec<&Pattern> = pattern_bindings_iter.collect();
-        for (i, pattern) in rest.iter().enumerate() {
-            let next_bindings = self.execute_pattern_bindings(&query, pattern).await?;
+        let first = order[0];
+        let mut bound = pattern_variables(&query.from.patterns[first]);
+        // Sin reordenar, cada conjunto se usa una vez; reordenado, hacen
+        // falta todos al final para rearmar las filas.
+        let mut joined_bindings =
+            if reordered { sets[first].clone() } else { std::mem::take(&mut sets[first]) };
+        for (step, &p) in order.iter().enumerate().skip(1) {
+            let pattern = &query.from.patterns[p];
             let left_vars = bound.clone();
             let right_vars = pattern_variables(pattern);
             bound.extend(right_vars.iter().cloned());
@@ -2310,16 +2328,21 @@ impl<'a> Executor<'a> {
             let ready: Vec<&Expression> = ready.into_iter().map(|(e, _)| e).collect();
             // Sin `order by` ni `distinct`, y con todo el `where` ya aplicado,
             // las primeras `offset + limit` filas de la última unión son la
-            // respuesta.
-            let stop_at = (i + 1 == rest.len() && pending.is_empty() && plan.all_pushable)
+            // respuesta. Con los patrones reordenados no: las primeras filas
+            // son otras hasta volver al orden del `from`.
+            let stop_at = (step + 1 == order.len() && pending.is_empty() && plan.all_pushable && !reordered)
                 .then(|| early_limit(&query))
                 .flatten();
             let keys = JoinKeys::of(&ready, &left_vars, &right_vars);
             joined_bindings = self.join_pattern_bindings(
                 &joined_bindings,
-                &next_bindings,
+                &sets[p],
                 &JoinStep { filters: &ready, keys: &keys, max_rows, stop_at },
             )?;
+        }
+
+        if reordered {
+            joined_bindings = in_from_order(joined_bindings, &sets);
         }
 
         self.build_query_result_from_bindings(joined_bindings, &query)
@@ -2724,6 +2747,7 @@ impl<'a> Executor<'a> {
                     edges: Vec::new(),
                     node_vars,
                     edge_vars: HashMap::new(),
+                    origin: Vec::new(),
                 };
                 if !self.binding_passes(&binding, own_filters)? {
                     continue;
@@ -2790,6 +2814,7 @@ impl<'a> Executor<'a> {
                 edges: Vec::new(),
                 node_vars,
                 edge_vars: HashMap::new(),
+                origin: Vec::new(),
             };
             if let Some(var) = &source_pattern.variable
                 && !self.binding_passes(&binding, filters.of_var(var))?
@@ -3142,6 +3167,7 @@ impl<'a> Executor<'a> {
         let mut merged = left.clone();
         merged.nodes.extend(right.nodes.clone());
         merged.edges.extend(right.edges.clone());
+        merged.origin.extend(right.origin.iter().copied());
 
         for (var, node) in &right.node_vars {
             merged.node_vars.entry(var.clone()).or_insert_with(|| node.clone());
@@ -7241,11 +7267,14 @@ fn pattern_variables(pattern: &Pattern) -> HashSet<String> {
 fn describe_join(query: &Query, max_rows: usize) -> String {
     let filters = ExpansionFilters::of(query);
     let plan = JoinFilterPlan::of(query);
+    let order = join_order(query, &plan.conjuncts);
+    let reordered = order.iter().enumerate().any(|(i, p)| i != *p);
     let mut pending = plan.conjuncts;
     let mut bound: HashSet<String> = HashSet::new();
     let mut lines = Vec::new();
     let last = query.from.patterns.len();
-    for (i, pattern) in query.from.patterns.iter().enumerate() {
+    for (i, &p) in order.iter().enumerate() {
+        let pattern = &query.from.patterns[p];
         let vars = pattern_variables(pattern);
         let mut own: Vec<String> = Vec::new();
         for element in &pattern.elements {
@@ -7257,7 +7286,7 @@ fn describe_join(query: &Query, max_rows: usize) -> String {
         }
         let left_vars = bound.clone();
         bound.extend(vars.iter().cloned());
-        let mut line = format!("pattern {}", i + 1);
+        let mut line = format!("pattern {}", p + 1);
         if !own.is_empty() {
             line.push_str(&format!(" reads with {}", own.join(" and ")));
         }
@@ -7277,6 +7306,7 @@ fn describe_join(query: &Query, max_rows: usize) -> String {
             if i + 1 == last
                 && pending.is_empty()
                 && plan.all_pushable
+                && !reordered
                 && let Some(n) = early_limit(query)
             {
                 line.push_str(&format!("; stops at {n} rows"));
@@ -7284,8 +7314,17 @@ fn describe_join(query: &Query, max_rows: usize) -> String {
         }
         lines.push(line);
     }
+    let order_note = if reordered {
+        let names: Vec<String> = order.iter().map(|p| (p + 1).to_string()).collect();
+        format!(
+            "order {} (each pattern related to the ones before it; rows in the order of FROM); ",
+            names.join(", ")
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "\nJoin: {}; at most {max_rows} rows (Graph::max_join_rows)",
+        "\nJoin: {order_note}{}; at most {max_rows} rows (Graph::max_join_rows)",
         lines.join("; ")
     )
 }
@@ -7298,6 +7337,79 @@ fn early_limit(query: &Query) -> Option<usize> {
     }
     let limit = query.limit.as_ref()?;
     Some(limit.limit.saturating_add(limit.offset.unwrap_or(0)))
+}
+
+/// En qué orden se unen los patrones del `from` (#349): el del `from`,
+/// salvo que el siguiente no se relacione con los ya unidos (ni una
+/// variable común ni una parte del `where` sobre los dos) y uno posterior
+/// sí; entonces va primero el primero de esos. Así `(a), (b), (c) where
+/// a.k = c.k and b.k = c.k` une `a` con `c` y después `b`, en vez de armar
+/// el producto de `a` y `b`. Sin ninguno relacionado se sigue el `from`: el
+/// producto no se puede evitar. Se descartó ordenar por tamaño estimado:
+/// la regla de relación evita el caso que explota, y es la que el usuario
+/// puede predecir y leer en EXPLAIN.
+fn join_order(query: &Query, conjuncts: &[(&Expression, HashSet<String>)]) -> Vec<usize> {
+    let vars: Vec<HashSet<String>> = query.from.patterns.iter().map(pattern_variables).collect();
+    let mut order = Vec::with_capacity(vars.len());
+    if vars.is_empty() {
+        return order;
+    }
+    order.push(0);
+    let mut bound = vars[0].clone();
+    let mut remaining: Vec<usize> = (1..vars.len()).collect();
+    while !remaining.is_empty() {
+        let related = |p: usize| {
+            !vars[p].is_disjoint(&bound)
+                || conjuncts.iter().any(|(_, v)| {
+                    !v.is_disjoint(&vars[p])
+                        && !v.is_disjoint(&bound)
+                        && v.iter().all(|x| bound.contains(x) || vars[p].contains(x))
+                })
+        };
+        let pos = remaining.iter().position(|&p| related(p)).unwrap_or(0);
+        let p = remaining.remove(pos);
+        bound.extend(vars[p].iter().cloned());
+        order.push(p);
+    }
+    order
+}
+
+/// Las filas de una unión reordenada en el orden y la forma que da el
+/// `from` escrito: cada fila se rearma con sus ligaduras en el orden de los
+/// patrones (`nodes` y `edges` como los concatenaba la unión sin reordenar)
+/// y las filas se ordenan por sus índices en ese orden, que es la secuencia
+/// del ciclo anidado.
+fn in_from_order(rows: Vec<LinearPatternBinding>, sets: &[Vec<LinearPatternBinding>]) -> Vec<LinearPatternBinding> {
+    let mut keyed: Vec<(Vec<usize>, LinearPatternBinding)> = rows
+        .into_iter()
+        .map(|row| {
+            let mut idx = vec![0; sets.len()];
+            for &(p, i) in &row.origin {
+                idx[p] = i;
+            }
+            let mut out = LinearPatternBinding {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                node_vars: HashMap::new(),
+                edge_vars: HashMap::new(),
+                origin: Vec::new(),
+            };
+            for (p, &i) in idx.iter().enumerate() {
+                let part = &sets[p][i];
+                out.nodes.extend(part.nodes.iter().cloned());
+                out.edges.extend(part.edges.iter().cloned());
+                for (var, node) in &part.node_vars {
+                    out.node_vars.entry(var.clone()).or_insert_with(|| node.clone());
+                }
+                for (var, edge) in &part.edge_vars {
+                    out.edge_vars.entry(var.clone()).or_insert_with(|| edge.clone());
+                }
+            }
+            (idx, out)
+        })
+        .collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    keyed.into_iter().map(|(_, row)| row).collect()
 }
 
 /// Lo que necesita una unión de dos lados (#349).
