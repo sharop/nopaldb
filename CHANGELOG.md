@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.10.9] - unreleased
+## [0.10.9] - 2026-11-01
 
 HNSW: arreglada una carrera del punto de entrada en la construcción en
 paralelo (#343, que sigue abierto) y nuevo `HnswIndex::orphan_ids` para
