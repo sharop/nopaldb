@@ -105,7 +105,12 @@ from (author1:Researcher)<-[:COLLABORATES]->(author2:Researcher)
   every pair. The product of N and M rows has N·M rows; relate the patterns
   in `where` to keep it small. Until 0.10.4 a `from` whose patterns were all
   single nodes read only the first one (#345). Aggregations over several
-  patterns are not supported yet: a named error.
+  patterns, and over a multi-hop pattern, aggregate the rows of the join
+  (#362): `find r.region, count(*), sum(r.servings * i.grams) from
+  (r:Recipe), (i:Ingredient) where r.region = i.region group by r.region`.
+  `count(x)` counts the values present; `sum`/`avg` take the numbers;
+  `limit` counts groups. Algorithms inside an aggregate (`avg(degree(r))`)
+  are still a named error here.
 - **The join filters while it combines** (#349). Each pattern reads only the
   nodes that pass its one-variable conditions, each part of the `where` is
   applied as soon as its variables are bound, and without `order by` or

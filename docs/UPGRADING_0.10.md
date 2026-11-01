@@ -300,3 +300,16 @@ not change; what changes:
 | `from (a:X), (b:Y) order by a.x limit 10` with more than the limit of pairs (`order by` and `distinct` need every row) | answered, with memory to spare | named error | relate the patterns, or `set_max_join_rows(n)` |
 | `from (a), (b), (c) where a.k = c.k` (the condition skips a pattern) | answered, with memory to spare | the join of `a` and `b` is the whole product and counts | write `(a), (c), (b)` |
 | `explain` of several single-node patterns | `Strategy: LABEL SCAN` | `Strategy: PATTERN PIPELINE` and a `Join: …` line | update parsers of the plan text |
+
+## 13. After 0.10.9: aggregations over several patterns
+
+Aggregations over several patterns in `from`, and over a multi-hop pattern,
+answer instead of failing ([#362](https://github.com/sharop/nopaldb/issues/362)):
+
+| Query | 0.10.9 | Now | What to do |
+|---|---|---|---|
+| `find count(*) from (a:Recipe), (b:Recipe)` | named error | the number of pairs | — |
+| `find r.region, count(*), sum(r.servings * i.grams) from (r:Recipe), (i:Ingredient) where r.region = i.region group by r.region` | named error | one row per region | — |
+| `find z.name, count(*) from (r)-[:USES]->(i)-[:GROWS_IN]->(z) group by z.name` | named error | one row per zone | — |
+| `… limit 1` on such an aggregation | — | `limit` counts groups; the whole join is aggregated | — |
+| `find avg(degree(r)) from (r:Recipe), (i:Ingredient)` | named error | still a named error | aggregate over one pattern |
