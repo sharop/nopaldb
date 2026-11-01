@@ -1,6 +1,6 @@
 // Copied from hnsw_rs 0.3.4 (Jean-Pierre Both; MIT OR Apache-2.0, see LICENSE-MIT
 // and LICENSE-APACHE next to this file). Changes for nopaldb are marked
-// "nopaldb (#288)"; see mod.rs.
+// "nopaldb (#288)" and "nopaldb (#343)"; see mod.rs.
 
 //! A rust implementation of Approximate NN search from:  
 //! Efficient and robust approximate nearest neighbour search using Hierarchical Navigable
@@ -1072,36 +1072,45 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
     pub fn insert_slice(&self, data_with_id: (&[T], usize)) {
         //
         let (data, origin_id) = data_with_id;
-        let keep_pruned = self.keep_pruned;
         // insert in indexation and get point_id adn generate a new entry_point if necessary
-        let (new_point, point_rank) = self
+        let (new_point, _point_rank) = self
             .layer_indexed_points
             .generate_new_point(data, origin_id);
         trace!("Hnsw insert generated new point {:?} ", new_point.p_id);
+        self.link_new_point(data, new_point);
+    }
+
+    /// The second half of [`Self::insert_slice`]: links a point that
+    /// `generate_new_point` already put in the layers.
+    fn link_new_point(&self, data: &[T], new_point: Arc<Point<'b, T>>) {
+        let keep_pruned = self.keep_pruned;
         // now real work begins
         // allocate a binary heap
         let level = new_point.p_id.0;
-        let mut enter_point_copy = None;
-        let mut max_level_observed = 0;
-        // entry point has been set in
-        {
-            // I open a read lock on an option
-            if let Some(arc_point) = self.layer_indexed_points.entry_point.read().as_ref() {
-                enter_point_copy = Some(Arc::clone(arc_point));
-                if point_rank == 1 {
-                    debug!(
-                        "Hnsw  stored first point , direct return  {:?} ",
-                        new_point.p_id
-                    );
-                    return;
+        // nopaldb (#343): only the point that finds no entry point under the
+        // write lock becomes it without links; every other point links.
+        // Upstream reads the entry point once, without the write lock: under
+        // `parallel_insert` every thread that read `None` before the first
+        // one set it returned unlinked, and the first point generated
+        // (`point_rank == 1`) returned unlinked whenever another thread had
+        // set the entry point first. Each of those points had no neighbours.
+        let found = self.layer_indexed_points.entry_point.read().as_ref().map(Arc::clone);
+        let entry = match found {
+            Some(entry) => entry,
+            None => {
+                let mut entry_ref = self.layer_indexed_points.entry_point.write();
+                match entry_ref.as_ref() {
+                    Some(entry) => Arc::clone(entry),
+                    None => {
+                        debug!("Hnsw  stored first point , direct return  {:?} ", new_point.p_id);
+                        *entry_ref = Some(Arc::clone(&new_point));
+                        return;
+                    }
                 }
-                max_level_observed = enter_point_copy.as_ref().unwrap().p_id.0;
             }
-        }
-        if enter_point_copy.is_none() {
-            self.layer_indexed_points.check_entry_point(&new_point);
-            return;
-        }
+        };
+        let max_level_observed = entry.p_id.0;
+        let mut enter_point_copy = Some(entry);
         let mut dist_to_entry = self
             .dist_f
             .eval(data, enter_point_copy.as_ref().unwrap().data.get_v());
@@ -1789,5 +1798,38 @@ mod nopaldb_lock_order_tests {
             worker.join().unwrap();
             assert!(p_free, "the reverse update kept P's neighbour list locked while waiting for Q (#288)");
         });
+    }
+}
+
+// nopaldb (#343): the entry point under concurrent inserts.
+#[cfg(test)]
+mod nopaldb_entry_point_tests {
+    use super::*;
+    use anndists::dist::distances::DistL2;
+
+    /// The first point generated must be linked even when another insert
+    /// set the entry point while it was between `generate_new_point` and
+    /// reading the entry point (a thread descheduled there under load).
+    /// Upstream returned early for `point_rank == 1`, so the point kept no
+    /// neighbours and nothing linked to it.
+    #[test]
+    fn the_first_point_links_when_another_insert_set_the_entry_point() {
+        let data: Vec<Vec<f32>> = (0..64).map(|i| vec![i as f32, (i % 7) as f32]).collect();
+        let hnsw = Hnsw::<f32, DistL2>::new(16, data.len(), 16, 100, DistL2 {});
+        // The first point is generated and its thread stops there.
+        let (first, rank) = hnsw.layer_indexed_points.generate_new_point(&data[0], 0);
+        assert_eq!(rank, 1);
+        // Other inserts run meanwhile; the second one sets the entry point.
+        for (i, v) in data.iter().enumerate().skip(1) {
+            hnsw.insert((v.as_slice(), i));
+        }
+        // The first thread resumes.
+        hnsw.link_new_point(&data[0], Arc::clone(&first));
+        assert!(
+            !first.neighbours.read()[0].is_empty(),
+            "the first point kept no neighbours (#343)"
+        );
+        let hits = hnsw.search(&data[0], 1, 32);
+        assert_eq!(hits[0].d_id, 0, "the first point is not found (#343)");
     }
 }

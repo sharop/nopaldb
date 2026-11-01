@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **`HnswIndex::orphan_ids`** (#343): los nodos que la verificación del
+  build dejó como huérfanos (los que cuenta `HnswIndex::orphans`), para
+  diagnosticar dónde quedan. `hnsw_reachability_test` los agrupa por grupo de
+  datos en su mensaje de fallo.
+
+### Fixed
+- **HNSW: el punto de entrada con inserciones concurrentes** (#343). En la
+  copia interna de `hnsw_rs`, cada inserción de `parallel_insert` leía el
+  punto de entrada una vez, sin el write lock: los hilos que lo leían vacío
+  antes de que el primero lo fijara volvían sin enlazar su punto, y el primer
+  punto generado volvía sin enlazar si otro hilo fijaba el punto de entrada
+  antes. Ahora solo uno se vuelve punto de entrada y los demás se enlazan.
+  Afectaba a pocos puntos por build (a lo sumo uno por hilo, y la búsqueda
+  los encontraba igual como huérfanos); no explica el fallo de 2527
+  huérfanos de #343, que sigue abierto: en 139 builds de 20 000 puntos, con y
+  sin carga, los huérfanos fueron 117–183 (umbral 400).
+
 ## [0.10.8] - 2026-11-01
 
 La unión de varios patrones NQL elige el orden: un patrón sin relación con

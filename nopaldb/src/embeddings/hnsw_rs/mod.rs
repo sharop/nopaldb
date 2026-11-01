@@ -1,7 +1,8 @@
 //! Copia interna de [`hnsw_rs`](https://crates.io/crates/hnsw_rs) 0.3.4
 //! (Jean-Pierre Both, MIT o Apache-2.0: `LICENSE-MIT`, `LICENSE-APACHE`),
-//! con un solo cambio de comportamiento: el orden de los candados en
-//! `Hnsw::reverse_update_neighborhood_simple` (#288).
+//! con dos cambios de comportamiento: el orden de los candados en
+//! `Hnsw::reverse_update_neighborhood_simple` (#288) y el punto de entrada
+//! con inserciones concurrentes (#343).
 //!
 //! En 0.3.4 (y 0.3.5) la actualización inversa recorre la lista de vecinos
 //! del punto nuevo con su read guard tomado y, dentro del bucle, toma el
@@ -10,6 +11,13 @@
 //! y pide `Q.write`, B tiene `Q.read` y pide `P.write`. Aquí la lista se
 //! copia primero y el read guard se suelta antes de tomar ningún write lock,
 //! así que cada hilo sostiene a lo sumo un candado de vecinos a la vez.
+//!
+//! En 0.3.4 cada inserción lee el punto de entrada una vez, sin el write
+//! lock: con `parallel_insert`, los hilos que lo leían vacío antes de que el
+//! primero lo fijara volvían sin enlazar su punto, y el primer punto
+//! generado volvía sin enlazar si otro hilo había fijado el punto de entrada
+//! antes. Aquí solo el punto que lo encuentra vacío bajo el write lock se
+//! vuelve punto de entrada sin vecinos; los demás se enlazan (#343).
 //!
 //! Se descartó insertar en serie: con 16 núcleos la construcción es ~10×
 //! más lenta (50k × 384: 33 s → 318 s). Un fork por git no sirve porque un

@@ -611,6 +611,13 @@ impl HnswIndex {
         self.orphans.len()
     }
 
+    /// Los nodos de [`Self::orphans`]. Sirve para diagnosticar dónde quedan
+    /// los huérfanos (por ejemplo, por grupo de datos) cuando son más de los
+    /// esperados (#343).
+    pub fn orphan_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.orphans.iter().map(|(id, _)| *id)
+    }
+
     /// `DataId` muertos que siguen en el grafo: los tombstones del llamador.
     pub fn dead_points(&self) -> usize {
         self.tombstones
