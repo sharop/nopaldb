@@ -767,7 +767,7 @@ with no warning.
 
 | Type | Example | Note |
 |------|---------|------|
-| String | `"Text"` or `'Text'` | Use double or single quotes. |
+| String | `"Text"` or `'Text'` | Use double or single quotes. Escapes: `\"`, `\'`, `\\`, `\n`, `\r`, `\t` (a Windows path is `"C:\\dir"` or `"C:/dir"`). |
 | Int | `42` | Integers. |
 | Float | `3.14` | Decimals. |
 | Bool | `true`, `false` | Boolean logic. |
