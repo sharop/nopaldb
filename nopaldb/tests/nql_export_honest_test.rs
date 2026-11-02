@@ -9,6 +9,12 @@
 
 use nopaldb::{Graph, Node, NqlResult, PropertyValue, Result};
 
+/// A path inside an NQL string: `\` is an escape there (as in Python or
+/// JSON), so a Windows path `C:\Users\...` has to be written with `\\`.
+fn nql_path(p: &std::path::Path) -> String {
+    p.display().to_string().replace('\\', "\\\\")
+}
+
 async fn plants() -> Result<Graph> {
     let graph = Graph::in_memory().await?;
     let mut tx = graph.begin_transaction().await?;
@@ -40,7 +46,7 @@ async fn csv_unknown_option_delimiter_is_an_error() -> Result<()> {
     let path = dir.path().join("plants.csv");
     let nql = format!(
         r#"find p.name, p.height from (p:Plant) export csv with path="{}", delimiter=";""#,
-        path.display()
+        nql_path(&path)
     );
 
     let err = export_error(&graph, &nql).await;
@@ -67,7 +73,7 @@ async fn csv_separator_still_works() -> Result<()> {
     let path = dir.path().join("plants.csv");
     let nql = format!(
         r#"find p.name, p.height from (p:Plant) where p.name = "Nopal" export csv with path="{}", separator=";""#,
-        path.display()
+        nql_path(&path)
     );
 
     match graph.execute_statement(&nql).await? {
@@ -122,7 +128,7 @@ async fn parquet_export_writes_the_file() -> Result<()> {
     let path = dir.path().join("plants.parquet");
     let nql = format!(
         r#"find p.name, p.height from (p:Plant) order by p.height export parquet "{}""#,
-        path.display()
+        nql_path(&path)
     );
 
     match graph.execute_statement(&nql).await? {
@@ -160,7 +166,7 @@ async fn arrow_export_with_path_writes_an_ipc_file() -> Result<()> {
     let path = dir.path().join("plants.arrow");
     let nql = format!(
         r#"find p.name from (p:Plant) where p.height > 100 order by p.name export arrow with path="{}""#,
-        path.display()
+        nql_path(&path)
     );
 
     match graph.execute_statement(&nql).await? {
@@ -186,7 +192,7 @@ async fn execute_nql_reports_where_parquet_went() -> Result<()> {
     let graph = plants().await?;
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("plants.parquet");
-    let nql = format!(r#"find p.name from (p:Plant) export parquet "{}""#, path.display());
+    let nql = format!(r#"find p.name from (p:Plant) export parquet "{}""#, nql_path(&path));
 
     let result = graph.execute_nql(&nql).await?;
     let row = &result.rows()[0];
@@ -205,7 +211,7 @@ async fn parquet_without_analytics_is_a_named_error() -> Result<()> {
     let graph = plants().await?;
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("plants.parquet");
-    let nql = format!(r#"find p.name from (p:Plant) export parquet "{}""#, path.display());
+    let nql = format!(r#"find p.name from (p:Plant) export parquet "{}""#, nql_path(&path));
 
     let err = export_error(&graph, &nql).await;
     assert!(err.contains("requires the `analytics` feature"), "{err}");

@@ -331,7 +331,7 @@ had it; **a pattern of one node** (`from (n:X)`) changes:
 | groups without `order by` | by the text of the key (`10` before `9`) | the order they first appear | `order by` the key if you need an order |
 | one-hop groups without `order by` (`from (a)-[:R]->(b)`) | undefined | the order they first appear | — |
 
-## 15. From 0.10.11 to 0.10.12: escapes in NQL strings
+## 15. From 0.10.11 to 0.10.12: escapes in NQL strings, close on Windows
 
 An NQL string reads its escapes
 ([#372](https://github.com/sharop/nopaldb/issues/372)): `\"`, `\'`, `\\`,
@@ -353,3 +353,7 @@ What to check:
 - A Windows path in NQL is written `"C:\\Users\\..."` or with `/`
   (`"C:/Users/..."`): `"C:\temp\new.csv"` holds a tab and a line break.
 - `export parquet "…"` reports in `exported_to` the path it wrote.
+- On Windows, `close()` failed with "Access is denied" and a database whose
+  WAL had a torn tail (a crash in the middle of a write) did not open
+  ([#370](https://github.com/sharop/nopaldb/issues/370)). Fixed; nothing to
+  do.

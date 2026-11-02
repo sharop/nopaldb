@@ -101,12 +101,63 @@ jobs:
           name: wheels-sdist
           path: dist
 
+  # Cada wheel se instala en un entorno limpio de su sistema operativo y corre
+  # `wheel_smoke.py` antes de publicar (#370): hasta 0.10.11 ninguna se
+  # probaba y Windows y ARM no tenían ni un test. Si una falla, no se publica
+  # ninguna. La de Linux aarch64 se construye cruzada en x86_64: aquí corre en
+  # un runner ARM nativo. La wheel es abi3: se prueba con la versión mínima
+  # de Python y con la más nueva.
+  smoke:
+    name: smoke (${{ matrix.wheels }}, py${{ matrix.python }})
+    needs: [linux, macos, windows]
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.13"]
+        wheels: [linux-x86_64, linux-aarch64, macos-x86_64, macos-aarch64, windows-x64]
+        include:
+          - wheels: linux-x86_64
+            os: ubuntu-latest
+          - wheels: linux-aarch64
+            os: ubuntu-24.04-arm
+          - wheels: macos-x86_64
+            os: macos-15-intel
+          - wheels: macos-aarch64
+            os: macos-latest
+          - wheels: windows-x64
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: nopaldb/python/scripts/wheel_smoke.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-${{ matrix.wheels }}
+          path: dist
+      - name: Install the wheel in a clean venv and run the smoke test
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          if [ -x "$RUNNER_TEMP/venv/Scripts/python.exe" ]; then
+            PY="$RUNNER_TEMP/venv/Scripts/python.exe"
+          else
+            PY="$RUNNER_TEMP/venv/bin/python"
+          fi
+          "$PY" -m pip install --quiet --no-index --find-links dist nopaldb
+          cd "$RUNNER_TEMP"
+          "$PY" -I "$GITHUB_WORKSPACE/nopaldb/python/scripts/wheel_smoke.py"
+
   release:
     name: Publish to PyPI
     runs-on: ubuntu-latest
     # Publica solo en tags v*
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [linux, macos, windows, sdist]
+    needs: [smoke, sdist]
     environment:
       name: pypi
       url: https://pypi.org/p/nopaldb

@@ -338,7 +338,7 @@ tenían; cambia **un patrón de un nodo** (`from (n:X)`):
 | grupos sin `order by` | por el texto de la clave (`10` antes que `9`) | el orden en que aparecen por primera vez | `order by` la clave si necesitas un orden |
 | grupos de un salto sin `order by` (`from (a)-[:R]->(b)`) | indefinido | el orden en que aparecen por primera vez | — |
 
-## 15. De 0.10.11 a 0.10.12: escapes en los strings de NQL
+## 15. De 0.10.11 a 0.10.12: escapes en los strings de NQL, close en Windows
 
 Un string de NQL interpreta sus escapes
 ([#372](https://github.com/sharop/nopaldb/issues/372)): `\"`, `\'`, `\\`,
@@ -361,3 +361,7 @@ Qué revisar:
   (`"C:/Users/..."`): `"C:\temp\nuevo.csv"` contiene un tabulador y un salto
   de línea.
 - `export parquet "…"` informa en `exported_to` la ruta que escribió.
+- En Windows, `close()` fallaba con "Access is denied" y una base con la cola
+  del WAL rasgada (un crash a mitad de una escritura) no se abría
+  ([#370](https://github.com/sharop/nopaldb/issues/370)). Arreglado; no hay
+  que hacer nada.

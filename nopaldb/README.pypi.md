@@ -22,6 +22,9 @@ pip install nopaldb
 
 Prebuilt wheels for Linux (x86_64/aarch64), macOS (Intel/Apple Silicon) and
 Windows, for CPython 3.10+ (abi3: one wheel per platform covers all versions).
+Every wheel is installed and tried on its own platform before it is
+published; the whole test suite runs on Linux x86_64, macOS arm64 and
+Windows x64.
 
 ### What the wheel contains
 
