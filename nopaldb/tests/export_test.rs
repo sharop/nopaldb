@@ -6,6 +6,7 @@ use nopaldb::{Graph, Node, PropertyValue, NqlResult, Result};
 
 /// A path inside an NQL string: `\` is an escape there (as in Python or
 /// JSON), so a Windows path `C:\Users\...` has to be written with `\\`.
+#[cfg(feature = "analytics")]
 fn nql_path(p: &std::path::Path) -> String {
     p.display().to_string().replace('\\', "\\\\")
 }
