@@ -156,6 +156,27 @@ jobs:
         run: cargo test -p nopaldb --features core --test cold_start_crash_test
 
 
+  # Las wheels salen para macOS y Windows, pero hasta #370 los tests solo
+  # corrían en Linux x86_64: la rama de `redb.rs` que crea la base en Windows
+  # (cerrar antes del rename) nunca se había ejecutado. Aquí corre la suite
+  # entera; `--no-fail-fast` para ver todos los fallos de una plataforma de
+  # una vez. Los tests que matan procesos con SIGKILL son `cfg(unix)`.
+  portability:
+    name: tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Test everything (full + cli)
+        run: cargo test -p nopaldb --features full,cli --lib --tests --no-fail-fast
+
   python-stubs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
