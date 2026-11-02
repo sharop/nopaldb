@@ -776,7 +776,7 @@ actual sin aviso.
 
 | Tipo | Ejemplo | Nota |
 |------|---------|------|
-| String | `"Texto"` o `'Texto'` | Usa comillas dobles o simples. |
+| String | `"Texto"` o `'Texto'` | Usa comillas dobles o simples. Escapes: `\"`, `\'`, `\\`, `\n`, `\r`, `\t` (una ruta de Windows es `"C:\\dir"` o `"C:/dir"`). |
 | Int | `42` | Números enteros. |
 | Float | `3.14` | Decimales. |
 | Bool | `true`, `false` | Lógica booleana. |

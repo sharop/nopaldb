@@ -337,3 +337,27 @@ tenían; cambia **un patrón de un nodo** (`from (n:X)`):
 | un grupo sin valor en su clave | el texto `"null"` | `null` | — |
 | grupos sin `order by` | por el texto de la clave (`10` antes que `9`) | el orden en que aparecen por primera vez | `order by` la clave si necesitas un orden |
 | grupos de un salto sin `order by` (`from (a)-[:R]->(b)`) | indefinido | el orden en que aparecen por primera vez | — |
+
+## 15. De 0.10.11 a 0.10.12: escapes en los strings de NQL
+
+Un string de NQL interpreta sus escapes
+([#372](https://github.com/sharop/nopaldb/issues/372)): `\"`, `\'`, `\\`,
+`\n`, `\r` y `\t`, como en Python o JSON. Hasta 0.10.11 la gramática los
+aceptaba pero el valor se quedaba con la barra.
+
+| Se escribe en NQL | 0.10.11 | 0.10.12 |
+|---|---|---|
+| `"dice \"hola\""` | `dice \"hola\"` | `dice "hola"` |
+| `'it\'s'` | `it\'s` | `it's` |
+| `"C:\\cocina"` | `C:\\cocina` | `C:\cocina` |
+| `"una\ndos"` | `una\ndos` (con la barra) | una, salto de línea, dos |
+
+Qué revisar:
+
+- Los valores escritos antes de 0.10.12 con un escape conservan la barra en
+  la base. Un `where` con el mismo literal ahora compara sin ella y ya no los
+  encuentra; reescríbelos con `set`.
+- Una ruta de Windows en NQL se escribe `"C:\\Users\\..."` o con `/`
+  (`"C:/Users/..."`): `"C:\temp\nuevo.csv"` contiene un tabulador y un salto
+  de línea.
+- `export parquet "…"` informa en `exported_to` la ruta que escribió.

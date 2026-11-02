@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Los escapes de los strings NQL se interpretan** (#372). La gramática
+  aceptaba `\"`, `\'`, `\\`, `\n`, `\r` y `\t`, pero el parser solo quitaba
+  las comillas: `"dice \"hola\""` se guardaba como `dice \"hola\"`, un
+  `where` con escapes comparaba contra el texto con barras y
+  `export parquet "…"` informaba una ruta distinta de la escrita. Los valores
+  ya guardados con barras no cambian: §15 de `docs/UPGRADING_0.10.md`. Test:
+  `nql_string_escapes_test`.
+
 ## [0.10.11] - 2026-11-01
 
 Una sola semántica de agregación NQL, la de SQL, para todos los caminos

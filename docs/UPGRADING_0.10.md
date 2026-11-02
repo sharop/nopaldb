@@ -330,3 +330,26 @@ had it; **a pattern of one node** (`from (n:X)`) changes:
 | a group with no value for its key | the text `"null"` | `null` | — |
 | groups without `order by` | by the text of the key (`10` before `9`) | the order they first appear | `order by` the key if you need an order |
 | one-hop groups without `order by` (`from (a)-[:R]->(b)`) | undefined | the order they first appear | — |
+
+## 15. From 0.10.11 to 0.10.12: escapes in NQL strings
+
+An NQL string reads its escapes
+([#372](https://github.com/sharop/nopaldb/issues/372)): `\"`, `\'`, `\\`,
+`\n`, `\r` and `\t`, as in Python or JSON. Until 0.10.11 the grammar accepted
+them but the value kept the backslash.
+
+| Written in NQL | 0.10.11 | 0.10.12 |
+|---|---|---|
+| `"says \"hi\""` | `says \"hi\"` | `says "hi"` |
+| `'it\'s'` | `it\'s` | `it's` |
+| `"C:\\kitchen"` | `C:\\kitchen` | `C:\kitchen` |
+| `"one\ntwo"` | `one\ntwo` (with the backslash) | one, a line break, two |
+
+What to check:
+
+- Values written before 0.10.12 with an escape keep the backslash in the
+  database. A `where` with the same literal now compares without it and no
+  longer finds them; rewrite them with `set`.
+- A Windows path in NQL is written `"C:\\Users\\..."` or with `/`
+  (`"C:/Users/..."`): `"C:\temp\new.csv"` holds a tab and a line break.
+- `export parquet "…"` reports in `exported_to` the path it wrote.

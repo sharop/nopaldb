@@ -1518,16 +1518,37 @@ impl AstBuilder {
         Ok(Expression::NamedArg { name, value: Box::new(value) })
     }
 
+    /// The value of a string literal: without its quotes and with its escapes
+    /// read (`\"`, `\'`, `\\`, `\n`, `\r`, `\t`, the ones the grammar
+    /// accepts). Until #372 only the quotes were removed and `"dice \"hola\""`
+    /// was stored as `dice \"hola\"`.
     fn unquote_string(input: &str) -> String {
         let bytes = input.as_bytes();
-        if bytes.len() >= 2 {
-            let first = bytes[0];
-            let last = bytes[bytes.len() - 1];
-            if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-                return input[1..bytes.len() - 1].to_string();
+        let inner = if bytes.len() >= 2
+            && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
+                || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
+        {
+            &input[1..input.len() - 1]
+        } else {
+            return input.to_string();
+        };
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                // `\"`, `\'` and `\\`; the grammar accepts no other escape.
+                Some(other) => out.push(other),
+                None => out.push('\\'),
             }
         }
-        input.to_string()
+        out
     }
 
     fn build_drop_index_stmt(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<DropIndexStmt> {
