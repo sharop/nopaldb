@@ -270,6 +270,15 @@ Prebuilt wheels for Linux, macOS and Windows (CPython 3.10+). To build from
 source instead: `pip install maturin && maturin develop --release --features python-full`
 (from the `nopaldb/` directory).
 
+**Platform support:**
+
+| Platform | Level |
+|---|---|
+| Linux x86_64, macOS arm64 (Apple Silicon), Windows x64 | Tested: the whole test suite runs in CI, and each wheel is installed and tried before it is published |
+| Linux aarch64, macOS x86_64 (Intel) | Wheel tried before it is published (open, write, HNSW and full-text indexes, close, reopen) |
+| musllinux (Alpine), Windows ARM64, big-endian | No wheel; building from source is untested |
+| wasm32, 32-bit | Not supported (needs `mmap`, threads and a file system) |
+
 `cargo build -p nopaldb --features full` builds the Rust library only. The Python wrapper is built with `maturin` because PyO3 needs Python-specific linker configuration.
 
 See **[Feature Tiers Guide](docs/FEATURE_TIERS.md)** for detailed compilation options.
@@ -594,6 +603,15 @@ pip install nopaldb
 Wheels preconstruidas para Linux, macOS y Windows (CPython 3.10+). Para compilar
 desde fuente: `pip install maturin && maturin develop --release --features python-full`
 (desde el directorio `nopaldb/`).
+
+**Plataformas:**
+
+| Plataforma | Nivel |
+|---|---|
+| Linux x86_64, macOS arm64 (Apple Silicon), Windows x64 | Probadas: la suite completa corre en el CI y cada wheel se instala y se prueba antes de publicarse |
+| Linux aarch64, macOS x86_64 (Intel) | La wheel se prueba antes de publicarse (abrir, escribir, índices HNSW y full-text, cerrar, reabrir) |
+| musllinux (Alpine), Windows ARM64, big-endian | Sin wheel; compilar desde fuente no está probado |
+| wasm32, 32 bits | Sin soporte (necesita `mmap`, hilos y sistema de archivos) |
 
 `cargo build -p nopaldb --features full` solo compila la librería Rust. El wrapper Python se compila con `maturin`, porque PyO3 necesita configuración de linker específica de Python.
 
