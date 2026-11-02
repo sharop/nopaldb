@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Windows: `close()` fallaba con "Access is denied" y una base con la
+  cola del WAL rasgada no se abría** (#370). El WAL se abría en modo append,
+  y en Windows un archivo así no se puede truncar; el WAL se trunca en cada
+  checkpoint (`close` incluido) y al descartar una cola rasgada. Ahora se
+  abre en escritura normal y cada escritura va al final del log válido.
+  macOS y Linux no se veían afectados.
 - **Los escapes de los strings NQL se interpretan** (#372). La gramática
   aceptaba `\"`, `\'`, `\\`, `\n`, `\r` y `\t`, pero el parser solo quitaba
   las comillas: `"dice \"hola\""` se guardaba como `dice \"hola\"`, un
@@ -17,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `export parquet "…"` informaba una ruta distinta de la escrita. Los valores
   ya guardados con barras no cambian: §15 de `docs/UPGRADING_0.10.md`. Test:
   `nql_string_escapes_test`.
+
+### Added
+- **CI en macOS y Windows** (#370): la suite completa corre en
+  `macos-latest` y `windows-latest`, y `release-python.yml` instala y prueba
+  cada wheel en su sistema operativo (Linux aarch64 en un runner ARM nativo,
+  Python 3.10 y 3.13) antes de publicar; si una falla, no se publica
+  ninguna. Niveles de soporte por plataforma en el README.
 
 ## [0.10.11] - 2026-11-01
 
