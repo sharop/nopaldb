@@ -111,10 +111,14 @@ impl WalManager {
     pub async fn new(path: impl AsRef<Path>) -> Result<Self> {
         let wal_path = path.as_ref().to_path_buf();
 
-        // Open or create WAL file (append mode)
+        // Sin `append`: en Windows un archivo abierto en modo append no se
+        // puede truncar (`set_len` da "Access is denied"), y el WAL se trunca
+        // en cada checkpoint y al descartar una cola rasgada (#370). Cada
+        // escritura se posiciona en `position`, el final del log válido.
         let file = OpenOptions::new()
             .create(true)
-            .append(true)
+            .truncate(false)
+            .write(true)
             .read(true)
             .open(&wal_path)?;
 
@@ -186,6 +190,8 @@ impl WalManager {
         let mut file = self.file.lock().await;
         let mut position = self.position.lock().await;
 
+        // `read_all` mueve el cursor: se escribe siempre al final del log.
+        file.seek(SeekFrom::Start(*position))?;
         file.write_all(&buffer)?;
         if sync {
             file.sync_all()?;
@@ -405,7 +411,7 @@ impl WalManager {
         file.set_len(0)?;
         file.sync_all()?;
 
-        // Reabrir en modo append
+        // Las escrituras siguientes empiezan en 0
         file.seek(SeekFrom::Start(0))?;
 
         *position = 0;
@@ -647,5 +653,58 @@ mod tests {
             WalRecord::Commit { tx_id, .. } => assert_eq!(*tx_id, 1),
             _ => panic!("Expected Commit"),
         }
+    }
+
+    /// Sin modo append (#370): reiniciar con checkpoint trunca el archivo (en
+    /// Windows, con append, daba "Access is denied"), y una escritura después
+    /// de leer el log, que mueve el cursor, cae al final y no encima.
+    #[tokio::test]
+    async fn checkpoint_truncates_and_writes_after_a_read_land_at_the_end() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let wal_path = temp_dir.path().join("test.wal");
+        let wal = WalManager::new(&wal_path).await.unwrap();
+
+        wal.append(WalRecord::Begin { tx_id: 1, timestamp: 100 }).await.unwrap();
+        wal.append(WalRecord::Commit { tx_id: 1, timestamp: 101 }).await.unwrap();
+        wal.restart_with_checkpoint(vec![]).await.unwrap();
+        assert_eq!(wal.read_all().await.unwrap().len(), 1, "only the checkpoint is left");
+
+        assert_eq!(wal.read_all().await.unwrap().len(), 1);
+        wal.append(WalRecord::Begin { tx_id: 2, timestamp: 200 }).await.unwrap();
+        assert_eq!(wal.read_all().await.unwrap().len(), 2);
+        wal.append(WalRecord::Commit { tx_id: 2, timestamp: 201 }).await.unwrap();
+        drop(wal);
+
+        let reopened = WalManager::new(&wal_path).await.unwrap();
+        let records = reopened.read_all().await.unwrap();
+        assert!(matches!(records[0], WalRecord::Checkpoint { .. }), "{records:?}");
+        assert!(matches!(records[1], WalRecord::Begin { tx_id: 2, .. }), "{records:?}");
+        assert!(matches!(records[2], WalRecord::Commit { tx_id: 2, .. }), "{records:?}");
+        assert_eq!(records.len(), 3);
+    }
+
+    /// Al abrir con una cola rasgada, el escaneo deja el cursor después del
+    /// corte; sin modo append, la escritura siguiente tiene que caer en el
+    /// final del log válido y no dejar un hueco de ceros.
+    #[tokio::test]
+    async fn a_write_after_cutting_a_torn_tail_lands_at_the_end() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let wal_path = temp_dir.path().join("test.wal");
+        let wal = WalManager::new(&wal_path).await.unwrap();
+        wal.append(WalRecord::Begin { tx_id: 1, timestamp: 100 }).await.unwrap();
+        drop(wal);
+
+        // A length prefix whose payload never reached the disk.
+        let mut f = OpenOptions::new().append(true).open(&wal_path).unwrap();
+        f.write_all(&1000u64.to_le_bytes()).unwrap();
+        drop(f);
+
+        let wal = WalManager::new(&wal_path).await.unwrap();
+        wal.append(WalRecord::Commit { tx_id: 1, timestamp: 101 }).await.unwrap();
+        drop(wal);
+
+        let records = WalManager::new(&wal_path).await.unwrap().read_all().await.unwrap();
+        assert_eq!(records.len(), 2, "{records:?}");
+        assert!(matches!(records[1], WalRecord::Commit { tx_id: 1, .. }), "{records:?}");
     }
 }

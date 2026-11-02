@@ -3,6 +3,12 @@
 use nopaldb::{Edge, Graph, Node, PropertyValue, Result};
 use std::fs;
 
+/// A path inside an NQL string: `\` is an escape there (as in Python or
+/// JSON), so a Windows path `C:\Users\...` has to be written with `\\`.
+fn nql_path(p: &std::path::Path) -> String {
+    p.display().to_string().replace('\\', "\\\\")
+}
+
 #[tokio::test]
 async fn test_simple_nql_query() -> Result<()> {
     let graph = Graph::in_memory().await?;
@@ -411,13 +417,12 @@ async fn test_export_csv_to_path() -> Result<()> {
 
     let path = std::env::temp_dir()
         .join(format!("nql_export_test_{}.csv", uuid::Uuid::new_v4()));
-    let path_str = path.to_string_lossy();
 
     let query = format!(r#"
         find p.name, p.age
         from (p:Person)
         export csv with path="{}", header=true
-    "#, path_str);
+    "#, nql_path(&path));
 
     let result = graph.execute_nql(&query).await?;
 

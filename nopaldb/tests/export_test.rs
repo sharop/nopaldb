@@ -4,6 +4,12 @@
 
 use nopaldb::{Graph, Node, PropertyValue, NqlResult, Result};
 
+/// A path inside an NQL string: `\` is an escape there (as in Python or
+/// JSON), so a Windows path `C:\Users\...` has to be written with `\\`.
+fn nql_path(p: &std::path::Path) -> String {
+    p.display().to_string().replace('\\', "\\\\")
+}
+
 async fn setup_graph() -> Result<Graph> {
     let graph = Graph::in_memory().await?;
     let mut tx = graph.begin_transaction().await?;
@@ -117,7 +123,7 @@ async fn test_export_arrow() -> Result<()> {
 
     let result = graph.execute_statement(&format!(
         r#"find p.name, p.age from (p:Person) export arrow with path="{}""#,
-        path.display()
+        nql_path(&path)
     )).await?;
 
     match &result {
