@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.10.12] - unreleased
+## [0.10.12] - 2026-11-03
 
 Dos arreglos y CI multiplataforma. En **Windows** `close()` fallaba con
 "Access is denied" y una base con la cola del WAL rasgada no se abría (#370).
