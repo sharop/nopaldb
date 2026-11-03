@@ -2300,7 +2300,7 @@ impl<'a> Executor<'a> {
     async fn multi_pattern_sets(&self, query: &Query) -> Result<Vec<Vec<LinearPatternBinding>>> {
         #[cfg(feature = "embeddings-index")]
         if let Some(var) = vector_search_variable(query) {
-            let others = without_searches(query);
+            let others = without_searches(query, &var);
             let mut sets = vec![Vec::new(); query.from.patterns.len()];
             for (p, pattern) in query.from.patterns.iter().enumerate().skip(1) {
                 sets[p] = self.execute_pattern_bindings(&others, pattern).await?;
@@ -6108,7 +6108,7 @@ impl<'a> Executor<'a> {
                     }
                     // Los demás patrones del `from` como universo (#384).
                     if query.from.patterns.len() > 1 && UniverseGroup::of(&query, &var).is_some() {
-                        let others = without_searches(&query);
+                        let others = without_searches(&query, &var);
                         let mut sets = vec![Vec::new(); query.from.patterns.len()];
                         for (p, pattern) in query.from.patterns.iter().enumerate().skip(1) {
                             sets[p] = self.execute_pattern_bindings(&others, pattern).await?;
@@ -7410,18 +7410,29 @@ fn mentions_search(expr: &Expression) -> bool {
     }
 }
 
-/// La consulta sin las partes del `and` raíz que buscan (#384): con ella se
-/// leen los demás patrones, que no se siembran con la búsqueda.
+/// La consulta con la que se leen los demás patrones (#384): sin las partes
+/// del `and` raíz que buscan, y sin las que solo leen la variable buscada.
+/// Esas siguen las reglas de 2a: las igualdades e `in` ya están en el
+/// universo, y un rango o un `!=` sobre ella filtra las filas de la
+/// búsqueda, nunca el universo (contrato 2). El WHERE entero se vuelve a
+/// aplicar a cada fila.
 #[cfg(feature = "embeddings-index")]
-fn without_searches(query: &Query) -> Query {
+fn without_searches(query: &Query, var: &str) -> Query {
     let mut q = query.clone();
     if let Some(filter) = &query.filter {
         let mut parts = Vec::new();
         root_conjuncts(&filter.condition, &mut parts);
-        q.filter = and_all(parts.into_iter().filter(|e| !mentions_search(e)).cloned())
+        q.filter = and_all(parts.into_iter().filter(|e| !mentions_search(e) && !reads_only(e, var)).cloned())
             .map(|condition| crate::query::nql::parser::ast::WhereClause { condition });
     }
     q
+}
+
+/// ¿Lee `expr` solo la variable `var`?
+#[cfg(feature = "embeddings-index")]
+fn reads_only(expr: &Expression, var: &str) -> bool {
+    let mut used = HashSet::new();
+    plain_variables(expr, &mut used) && used.len() == 1 && used.contains(var)
 }
 
 /// `a and b and …`; `None` sin partes.
@@ -7473,7 +7484,12 @@ impl<'q> UniverseGroup<'q> {
             root_conjuncts(&filter.condition, &mut parts);
             for part in parts {
                 let mut used = HashSet::new();
-                if plain_variables(part, &mut used) && !used.is_empty() && used.is_subset(&bound) {
+                // Las que solo leen `var` siguen las reglas de 2a.
+                if plain_variables(part, &mut used)
+                    && !used.is_empty()
+                    && used.is_subset(&bound)
+                    && !(used.len() == 1 && used.contains(var))
+                {
                     conjuncts.push(part);
                 }
             }

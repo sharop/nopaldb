@@ -41,7 +41,7 @@ No son equivalentes. La primera da `k` resultados dentro del filtro siempre que 
   - las igualdades y listas `in` sobre `v` en el `and` raíz del `where` (`v.tenant = "t7"`, `v.kind in ["a", "b"]`, `v.id = "…"`, `v.id in […]`);
   - las propiedades inline del nodo `v`;
   - `in_community(v, key[, via = "T"])`: los miembros de una comunidad materializada, o los nodos con una arista `T` hacia uno de ellos. Es el mismo universo, como conjunto, que el patrón explícito por `IN_COMMUNITY`.
-  - desde #384, **los demás patrones del `from`** que llegan a `v`, directo o por variables que comparten entre ellos, con las partes del `and` raíz cuyas variables están todas en ellos: `v` tiene que tener una fila de esos patrones que cumpla esas partes. Los patrones que se unen al primero por otra variable son restricciones de expansión.
+  - desde #384, **los demás patrones del `from`** que llegan a `v`, directo o por variables que comparten entre ellos, con las partes del `and` raíz cuyas variables están todas en ellos y que leen una variable distinta de `v`: `v` tiene que tener una fila de esos patrones que cumpla esas partes. Los predicados que solo leen `v` siguen las reglas de esta lista (un rango sobre `v` sigue filtrando las filas; no pasa al universo porque otro patrón mencione `v`). Los patrones que se unen al primero por otra variable son restricciones de expansión.
 
   `score(v)`, `rank(v)` y los scores crudos se calculan en ese universo.
 - **Restricciones de expansión**: predicados sobre las otras variables del patrón (`e.kind = "lugar"`). Filtran las filas expandidas y **nunca cambian qué semillas elige la búsqueda**: `k` cuenta semillas. Una semilla cuyas expansiones fallan todas no produce filas, así que una consulta puede devolver menos de `k` semillas.
@@ -63,7 +63,7 @@ Lo comprueban:
 - `nql_parens_and_literals_test::hybrid_and_a_parenthesised_or`;
 - `nql_in_community_test::the_universe_equals_the_explicit_pattern_as_a_set` e `in_community_intersects_with_id_lists`;
 - `candidate_set_test` (el universo de `search_hybrid(candidates=…)`);
-- `nql_search_several_patterns_test` (los demás patrones del `from` como universo: fuerza bruta, `|semillas| = min(k, |universo|)`, un patrón contra dos, patrones que no llegan a `v`, el mismo conjunto que `in_community`, orden de semillas con la unión reordenada, agregaciones).
+- `nql_search_several_patterns_test` (los demás patrones del `from` como universo: fuerza bruta, `|semillas| = min(k, |universo|)`, un patrón contra dos, los predicados solo sobre `v`, patrones que no llegan a `v`, el mismo conjunto que `in_community`, orden de semillas con la unión reordenada, agregaciones).
 
 ## 3. Orden de evaluación
 

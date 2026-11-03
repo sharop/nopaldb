@@ -613,16 +613,18 @@ where similar_to(r, vector = [...], model = "minilm", k = 5)
 devuelve las 5 recetas más cercanas al vector **entre las que usan un
 ingrediente de invierno**, una fila por cada uno de esos ingredientes. Las
 partes del `where` cuyas variables están todas en esos patrones
-(`i.temporada = "invierno"`) cuentan para el universo. Escrita con un solo
+(`i.temporada = "invierno"`) cuentan para el universo; las que solo leen `r`
+siguen sus reglas de siempre (las igualdades e `in` están en el universo, un
+rango sobre `r` filtra las filas). Escrita con un solo
 patrón, `from (r:Receta)-[:USA]->(i:Ingrediente)`, el mismo `where` es una
 restricción de expansión: las 5 recetas más cercanas, y las que no usan un
 ingrediente de invierno no dan filas. Un patrón que se une al primero por
 otra variable (`(i)-[:IN_COMMUNITY]->(k)`) solo filtra filas. Las filas
 salen en el orden de las semillas con `score(r)` en cada una, las
 agregaciones funcionan sobre ellas, y `explain` imprime una línea
-`Search universe from patterns:` con los patrones y el tamaño del universo.
-Los patrones extra se leen completos, una vez; a su unión le aplica
-`Graph::max_join_rows`.
+`Search universe from patterns:` con los patrones y el tamaño del universo
+(para saber el tamaño, `explain` lee esos patrones). Los patrones extra se
+leen completos, una vez; a su unión le aplica `Graph::max_join_rows`.
 
 ---
 

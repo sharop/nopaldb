@@ -96,6 +96,7 @@ async fn fixture() -> Fx {
         let reps = 1 + (RECIPES - i) * 5 / RECIPES;
         let node = Node::new("Receta")
             .with_property("nombre", s(&format!("receta{i}")))
+            .with_property("n", PropertyValue::Int(i as i64))
             .with_property("texto", s(&format!("{} caliente {i}", vec!["sopa"; reps].join(" "))));
         let id = graph.add_node(node).await.unwrap();
         graph.add_node_embedding(id, vector_of(i), "m").await.unwrap();
@@ -239,6 +240,20 @@ async fn one_pattern_expands_and_several_restrict() {
     assert_eq!(expanded, global.iter().copied().filter(|id| universe.contains(id)).collect::<Vec<_>>());
     assert!(expanded.len() < 10);
     assert_eq!(seeds(&run(&fx, &two).await), exact_top(&fx, &universe, 10));
+}
+
+#[tokio::test]
+async fn predicates_on_the_searched_variable_keep_their_rules() {
+    // A range on `r` filters the rows of the search (contract 2), also when
+    // another pattern mentions `r`: every recipe has a region, so the extra
+    // pattern's universe is every recipe and the seeds must not change.
+    let fx = fixture().await;
+    let alone = format!(r#"find r.id from (r:Receta) where {} and r.n > 100"#, similar(5));
+    let with_pattern =
+        format!(r#"find r.id from (r:Receta), (r)-[:DE]->(g:Region) where {} and r.n > 100"#, similar(5));
+    let a = seeds(&run(&fx, &alone).await);
+    assert!(a.len() < 5, "the range is applied to the top-5, not inside it: {a:?}");
+    assert_eq!(seeds(&run(&fx, &with_pattern).await), a);
 }
 
 #[tokio::test]

@@ -41,7 +41,7 @@ These are not equivalent. The first gives `k` results inside the filter whenever
   - the equalities and `in` lists on `v` in the top-level `and` of the `where` (`v.tenant = "t7"`, `v.kind in ["a", "b"]`, `v.id = "…"`, `v.id in […]`);
   - inline properties of `v`'s node pattern;
   - `in_community(v, key[, via = "T"])`: the members of a materialized community, or the nodes with a `T` edge to one of them. It is the same universe, as a set, as the explicit pattern through `IN_COMMUNITY`.
-  - since #384, the **other patterns of the `from`** that reach `v`, directly or through variables they share with each other, with the parts of the top-level `and` whose variables are all in them: `v` must have a row of those patterns that passes those parts. Patterns that join the first pattern through another variable are expansion constraints.
+  - since #384, the **other patterns of the `from`** that reach `v`, directly or through variables they share with each other, with the parts of the top-level `and` whose variables are all in them and that read a variable other than `v`: `v` must have a row of those patterns that passes those parts. The predicates that only read `v` keep the rules of this list (a range on `v` still filters the rows, it does not become part of the universe because another pattern mentions `v`). Patterns that join the first pattern through another variable are expansion constraints.
 
   `score(v)`, `rank(v)` and the raw scores are computed in that universe.
 - **Expansion constraints** are predicates on the other variables of the pattern (`e.kind = "lugar"`). They filter the expanded rows and **never change which seeds the search picks**: `k` counts seeds. A seed whose expansions all fail produces no row, so a query can return fewer than `k` seeds.
@@ -63,7 +63,7 @@ Tested by:
 - `nql_parens_and_literals_test::hybrid_and_a_parenthesised_or`;
 - `nql_in_community_test::the_universe_equals_the_explicit_pattern_as_a_set` and `in_community_intersects_with_id_lists`;
 - `candidate_set_test` (the universe for `search_hybrid(candidates=…)`);
-- `nql_search_several_patterns_test` (the other patterns of the `from` as the universe: brute force, `|seeds| = min(k, |universe|)`, one pattern against two, patterns that do not reach `v`, the same set as `in_community`, seed order through a reordered join, aggregations).
+- `nql_search_several_patterns_test` (the other patterns of the `from` as the universe: brute force, `|seeds| = min(k, |universe|)`, one pattern against two, the predicates on `v` alone, patterns that do not reach `v`, the same set as `in_community`, seed order through a reordered join, aggregations).
 
 ## 3. Order of evaluation
 

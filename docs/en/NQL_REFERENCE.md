@@ -604,14 +604,16 @@ where similar_to(r, vector = [...], model = "minilm", k = 5)
 returns the 5 recipes nearest to the vector **among those that use a winter
 ingredient**, one row per such ingredient. The parts of the `where` whose
 variables are all in those patterns (`i.temporada = "invierno"`) count for
-the universe. Written as one pattern, `from (r:Receta)-[:USA]->(i:Ingrediente)`,
+the universe; the ones that only read `r` keep their usual rules (equalities
+and `in` are in the universe, a range on `r` filters the rows). Written as one pattern, `from (r:Receta)-[:USA]->(i:Ingrediente)`,
 the same `where` is an expansion constraint: the 5 nearest recipes, and those
 without a winter ingredient give no row. A pattern that joins the first one
 through another variable (`(i)-[:IN_COMMUNITY]->(k)`) only filters rows.
 Rows come in seed order with `score(r)` in each, aggregations work over them,
 and `explain` prints a `Search universe from patterns:` line with the
-patterns and the size of the universe. The extra patterns are read in full,
-once; `Graph::max_join_rows` applies to their join.
+patterns and the size of the universe (to know the size, `explain` reads
+those patterns). The extra patterns are read in full, once;
+`Graph::max_join_rows` applies to their join.
 
 ---
 
