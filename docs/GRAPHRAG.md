@@ -434,6 +434,13 @@ spread plus noise, normalized. That is how embeddings of real text behave
 - Building is the slow part: 72 s for 100k × 1024, paid once; the index is
   persisted, so reopening the database does not rebuild it.
 
+**Uniform random vectors** are the worst case for any HNSW index: with no
+structure, all points are almost equally far apart. The bench measures them
+too, as a floor, not as a reference. At 100k, recall@10 is 0.11 / 0.24 at
+384 dimensions and 0.08 / 0.18 at 1024, with 2.4% and 3.5% orphans and a
+build of 119 s and 243 s. If your vectors look like that (hashes, random
+projections), use the exact scan instead.
+
 ### Real text: 2WikiMultiHopQA
 
 The synthetic recall above is optimistic. Measured on embeddings of real
@@ -493,12 +500,95 @@ repository is Apache-2.0, its paragraphs are Wikipedia text (CC BY-SA), and
 neither they nor their vectors are in this repository; all-MiniLM-L6-v2 is
 Apache-2.0 and bge-large-en-v1.5 is MIT.
 
-**Uniform random vectors** are the worst case for any HNSW index: with no
-structure, all points are almost equally far apart. The bench measures them
-too, as a floor, not as a reference. At 100k, recall@10 is 0.11 / 0.24 at
-384 dimensions and 0.08 / 0.18 at 1024, with 2.4% and 3.5% orphans and a
-build of 119 s and 243 s. If your vectors look like that (hashes, random
-projections), use the exact scan instead.
+### Retrieval quality: does it find the answer?
+
+The tables above measure whether the index returns the exact nearest
+neighbours. This one measures whether retrieval finds **the paragraphs that
+answer the question**, and how much expanding through the graph adds.
+
+Same corpus: the 54,957 paragraphs of 2WikiMultiHopQA `dev`, with a
+full-text index and the embeddings of each model. 1000 of its questions
+(seeded sample), each with 2 or 4 supporting paragraphs (the gold).
+recall@k is the share of the gold in the top k; MRR is 1 / the position of
+the first gold paragraph in the top 10. Three builds per model, ranges over
+the three. Same machine, 0.10.12 with the fix of #377 (before it, 31% of
+these questions were a full-text syntax error).
+
+**The graph comes from the dataset's triples, not from an extractor.** Each
+paragraph is a `Chunk` linked by `ABOUT` to the `Entity` of its title; each
+(subject, relation, object) triple of the dataset is an edge between
+entities. Those triples are the reasoning steps of the questions, so two
+graphs are measured:
+
+- **complete graph:** every triple. It holds the path of every evaluated
+  question: the ceiling of what expansion can add with a perfect graph.
+- **graph without the sample:** only the triples that also appear in
+  questions outside the evaluated 1000. No evaluated path leaks; what is
+  left is what the rest of the dataset knows about the same entities (24%
+  of the sample's triples).
+
+Strategies: `vector` (KNN of the question), `hybrid` (`search_hybrid` with
+the question's text and vector), and `hybrid + graph`: the top 5 of the
+hybrid search as seeds, in their order, then the paragraphs of their
+neighbourhood (depth 3, both directions, 200 nodes, 64 edges per node), then
+the rest of the hybrid top 10. The top 5 is the hybrid's by construction;
+the graph fills places 6 to 10.
+
+| model | strategy | `ef_search` | recall@5 | recall@10 | MRR |
+|---|---|---|---|---|---|
+| MiniLM (384) | vector | 30 | 0.496–0.498 | 0.541–0.544 | 0.819–0.821 |
+| | | 100 | 0.522–0.526 | 0.567–0.573 | 0.842–0.850 |
+| | hybrid | 30 | 0.600–0.608 | 0.669–0.670 | 0.891 |
+| | | 100 | 0.616–0.618 | 0.676–0.677 | 0.907–0.912 |
+| | hybrid + complete graph | 100 | 0.616–0.618 | 0.895–0.896 | 0.906–0.912 |
+| | hybrid + graph without the sample | 100 | 0.616–0.618 | 0.712–0.713 | 0.906–0.912 |
+| bge-large (1024) | vector | 30 | 0.585–0.598 | 0.609–0.620 | 0.873–0.875 |
+| | | 100 | 0.651–0.659 | 0.676–0.683 | 0.933–0.938 |
+| | hybrid | 30 | 0.650–0.656 | 0.712–0.713 | 0.886–0.889 |
+| | | 100 | 0.672–0.675 | 0.723–0.724 | 0.920–0.923 |
+| | hybrid + complete graph | 100 | 0.672–0.675 | 0.927–0.928 | 0.920–0.922 |
+| | hybrid + graph without the sample | 100 | 0.672–0.675 | 0.755–0.756 | 0.920–0.922 |
+
+recall@10 by type of question (MiniLM, `ef_search` 100):
+
+| type | share of `dev` | hybrid | + complete graph | + graph without the sample |
+|---|---|---|---|---|
+| compositional (A's B's C) | 42% | 0.62 | 0.91 | 0.66 |
+| comparison (A or B, which is older?) | 24% | 0.93 | 0.93 | 0.93 |
+| inference (A's grandparent) | 12% | 0.70 | 0.84 | 0.74 |
+| bridge comparison (whose director is older?) | 22% | 0.49 | 0.85 | 0.55 |
+
+- **Hybrid beats vector** by 0.04–0.13 of recall@10. With bge-large at
+  `ef_search` 100, vector alone has the best MRR (0.93): the full-text
+  branch adds paragraphs the question names, not always the first answer.
+- **The graph adds what the graph knows.** With every reasoning step in it,
+  recall@10 goes from 0.68 to 0.90 (MiniLM) and from 0.72 to 0.93
+  (bge-large), most of it on the questions that need a hop (bridge
+  comparison 0.49 → 0.85). With only what the rest of the dataset knows,
+  +0.03. A graph built by your own extractor will land between the two,
+  closer to whichever its coverage resembles. Comparison questions name both
+  paragraphs and gain nothing.
+- **BFS or PPR to order the expansion makes no difference here** (within
+  0.004). Keep the seeds in search order: `neighborhood` already returns
+  them first. Sorting the whole result by `ctx["score"]`, seeds included,
+  with the hybrid scores as `seed_weights` drops MRR from 0.91–0.92 to
+  0.47–0.51:
+  RRF scores are almost equal (1/(60 + rank)) and do not keep the seeds
+  apart.
+- **`ef_search` 100 helps end to end, little for hybrid:** +0.01 recall@10
+  and +0.02–0.03 MRR for hybrid; +0.03–0.07 recall@10 and +0.03–0.06 MRR
+  for vector alone.
+
+To reproduce, with the data of the previous section:
+
+```bash
+NOPALDB_BENCH_DATA=~/nopaldb-212 NOPALDB_BENCH_MODEL=minilm \
+    make bench BENCH=retrieval_quality
+```
+
+`NOPALDB_BENCH_QUESTIONS` (default 1000), `NOPALDB_BENCH_SEEDS` (5) and
+`NOPALDB_BENCH_EF` (`30,100`) change the run; the bench also prints a PPR row
+and the recall@10 of every type for each graph.
 
 ## Limits, and what comes next
 
