@@ -357,3 +357,11 @@ What to check:
   WAL had a torn tail (a crash in the middle of a write) did not open
   ([#370](https://github.com/sharop/nopaldb/issues/370)). Fixed; nothing to
   do.
+
+## 16. After 0.10.12: natural text in full-text search
+
+A full-text query (`search_hybrid(text=...)`, NQL `hybrid(n, text = "…")`)
+that is not valid tantivy syntax is searched as its words instead of failing
+with "Syntax Error" ([#377](https://github.com/sharop/nopaldb/issues/377)).
+Code that caught that error to clean the text can drop it. Valid syntax is
+read as before.

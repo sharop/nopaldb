@@ -36,6 +36,16 @@ matches the filter). The query text is analyzed with **that index's analyzer**
 with (...)`; see the NQL reference), so for a non-English corpus the BM25
 branch keeps its recall instead of degrading the fusion to vector-only.
 
+**The text is a query, or plain words.** Valid [tantivy query
+syntax](https://docs.rs/tantivy/latest/tantivy/query/struct.QueryParser.html)
+is read as a query: `salsa AND "mole negro"`, `kitchen -mole`. Text that is
+not valid syntax, such as a question a user typed (`When did the chef's
+mother open her kitchen?`: the apostrophe opens a phrase that never closes),
+is searched as its words, with none dropped or excluded. Until 0.10.12 it
+was a syntax error; on 2WikiMultiHopQA that was 31% of the questions (#377).
+Valid syntax that happens to be natural text keeps its meaning as a query:
+`What is NOT allowed?` excludes `allowed`.
+
 ```python
 hits = graph.search_hybrid(
     text="graph memory", vector=[...], model="e5-large",

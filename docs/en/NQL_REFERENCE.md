@@ -375,6 +375,10 @@ create index on Article(body) type fulltext        // BM25 text search, used by 
 drop index Person_email                            // the name is Label_property
 ```
 
+The text of a full-text search (`hybrid(n, text = "…")`) is read as tantivy
+query syntax when it is valid (`salsa AND "mole negro"`) and as plain words
+when it is not, such as a question with an apostrophe or a colon (#377).
+
 ### Full-text analyzer
 
 A full-text index tokenizes its documents once, at indexing time, and every

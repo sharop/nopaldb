@@ -174,8 +174,27 @@ impl FullTextIndex {
     }
 }
 
+/// `text` as words with no query syntax: every character that is not a
+/// letter or a digit becomes a space, and the text is lowercased so `AND`,
+/// `OR` and `NOT` are words, not operators. The analyzers split on those
+/// characters and lowercase anyway, so the terms are the ones the text has.
+fn plain_words(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .to_lowercase()
+}
+
 impl FullTextIndex {
     /// Parse the text of a `FullText` query against the content field.
+    ///
+    /// Valid tantivy syntax is a query (`salsa AND "mole negro"`). Text that
+    /// is not, such as a question in natural language (`the chef's mother`:
+    /// the apostrophe opens a phrase), is searched as plain words: until #377
+    /// it was a syntax error, 31% of the questions of 2WikiMultiHopQA.
+    /// `parse_query_lenient` was discarded: on natural text it reads the
+    /// operators and drops words without saying (`… AND OR NOT house?`
+    /// excludes `house`).
     fn parse_text_query(&self, query: &IndexQuery) -> Result<Box<dyn Query>> {
         let query_text = match query {
             IndexQuery::FullText(text) => text,
@@ -184,7 +203,9 @@ impl FullTextIndex {
             )),
         };
         let query_parser = QueryParser::for_index(&self.index, vec![self.content_field]);
-        query_parser.parse_query(query_text)
+        query_parser
+            .parse_query(query_text)
+            .or_else(|_| query_parser.parse_query(&plain_words(query_text)))
             .map_err(|e| NopalError::index_error(format!("Failed to parse query: {}", e)))
     }
 
