@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.12] - unreleased
+
+Dos arreglos y CI multiplataforma. En **Windows** `close()` fallaba con
+"Access is denied" y una base con la cola del WAL rasgada no se abría (#370).
+Los **escapes de los strings NQL** se interpretan (#372): cambia el valor de
+los literales con `\"`, `\'`, `\\`, `\n`, `\r` o `\t`; los valores ya
+guardados no cambian (§15 de `docs/UPGRADING_0.10.md`). Cada wheel se prueba
+en su sistema operativo antes de publicarse. Sin API nueva ni cambio de
+formato en disco.
 
 ### Fixed
 - **Windows: `close()` fallaba con "Access is denied" y una base con la
