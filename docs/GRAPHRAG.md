@@ -609,11 +609,12 @@ A change that moves the numbers on purpose updates the baseline in the same
 pull request: run the bench with `NOPALDB_BENCH_EF=100
 NOPALDB_BENCH_JSON=<file>` (or take the `retrieval-quality` artifact of the
 pull request's run) and copy that file over the baseline. A row that rises
-more than the tolerance prints a notice to raise it.
+more than the tolerance prints a notice to raise it. Give both files as
+absolute paths: `cargo bench` runs from `nopaldb/`.
 
 ```bash
 NOPALDB_BENCH_DATA=~/nopaldb-212 NOPALDB_BENCH_EF=100 \
-NOPALDB_BENCH_BASELINE=nopaldb/benches/retrieval_quality_baseline.json \
+NOPALDB_BENCH_BASELINE=$PWD/nopaldb/benches/retrieval_quality_baseline.json \
     make bench BENCH=retrieval_quality
 ```
 

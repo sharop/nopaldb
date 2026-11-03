@@ -81,7 +81,7 @@ jobs:
           NOPALDB_BENCH_MODEL=minilm \
           NOPALDB_BENCH_EF=100 \
           NOPALDB_BENCH_JSON="$RUNNER_TEMP/retrieval_quality.json" \
-          NOPALDB_BENCH_BASELINE=nopaldb/benches/retrieval_quality_baseline.json \
+          NOPALDB_BENCH_BASELINE="$GITHUB_WORKSPACE/nopaldb/benches/retrieval_quality_baseline.json" \
             make bench BENCH=retrieval_quality
 
       - name: Upload numbers

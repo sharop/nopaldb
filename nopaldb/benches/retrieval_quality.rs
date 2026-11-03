@@ -67,7 +67,8 @@
 //! de cada fila contra ese archivo y termina con error si alguna cae más de
 //! `NOPALDB_BENCH_TOLERANCE` (default 0.02); si alguna sube más, lo avisa
 //! para que se suba la línea base. Una fila que falta en un lado también es
-//! error. Actualizar la línea base es copiar el JSON de una corrida.
+//! error. Actualizar la línea base es copiar el JSON de una corrida. Las dos
+//! rutas, absolutas: `cargo bench` corre desde `nopaldb/`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
