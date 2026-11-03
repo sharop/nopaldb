@@ -30,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defecto el recall@10 es 0,90 (MiniLM) y 0,87 (bge), no el 0,99 de los
   datos sintéticos; `docs/GRAPHRAG.md` recomienda 100 para embeddings de
   texto (0,96–0,98).
+- **Calidad de recuperación de punta a punta** (#212, parte 2): el bench
+  `retrieval_quality` mide si la búsqueda encuentra los párrafos que
+  responden cada pregunta de 2WikiMultiHopQA (recall@5, recall@10, MRR, y
+  recall@10 por tipo de pregunta) con vector, híbrida e híbrida + grafo
+  (BFS y PPR), con el grafo de todas las tripletas del dataset (techo) y
+  sin las de la muestra evaluada. Híbrida recall@10 0,68 (MiniLM) / 0,72
+  (bge); con el grafo completo 0,90 / 0,93; sin la muestra +0,03.
+  `ef_search` 100 mejora la híbrida en +0,01 de recall@10 y +0,02–0,03 de
+  MRR. Tablas en `docs/GRAPHRAG.md`.
 
 ## [0.10.12] - 2026-11-03
 

@@ -167,6 +167,11 @@ harness = false
 required-features = ["embeddings-index"]
 
 [[bench]]
+name = "retrieval_quality"
+harness = false
+required-features = ["hybrid"]
+
+[[bench]]
 name = "exact_threshold"
 harness = false
 required-features = ["embeddings-index"]
