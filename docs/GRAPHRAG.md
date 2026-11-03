@@ -409,7 +409,8 @@ change the grid).
 
 The vectors are synthetic and clustered: 100 clusters with a 16-dimension
 spread plus noise, normalized. That is how embeddings of real text behave
-(nearby texts, nearby vectors); a real corpus may score somewhat lower.
+(nearby texts, nearby vectors), but real text scores lower: see
+[Real text](#real-text-2wikimultihopqa-01012) below.
 
 | dims | vectors | build | orphans | index memory | p95, `ef_search` 30 | p95, `ef_search` 100 | exact scan | recall@10, ef 30 / 100 |
 |---|---|---|---|---|---|---|---|---|
@@ -432,6 +433,65 @@ spread plus noise, normalized. That is how embeddings of real text behave
   (650 and 897 MiB at 100k; #206); an index reopened from disk did not.
 - Building is the slow part: 72 s for 100k × 1024, paid once; the index is
   persisted, so reopening the database does not rebuild it.
+
+### Real text: 2WikiMultiHopQA (0.10.12)
+
+The synthetic recall above is optimistic. Measured on embeddings of real
+text, the default `ef_search` 30 finds about 90% of the true top 10, not 99%.
+
+The corpus is the 54,957 distinct paragraphs of the `dev` split of
+[2WikiMultiHopQA](https://github.com/Alab-NII/2wikimultihop), embedded with
+two open models. The queries are 200 of its questions, embedded with the same
+model, and recall@10 is again measured against an exact scan of the same
+vectors. Three builds per row: HNSW builds in parallel and no two builds are
+equal, so each figure is the range over the three. Apple M3 Max (16 cores,
+128 GB), release build, 2 November 2026.
+
+| model (dims) | build | orphans | index memory | `ef_search` | p95 | recall@10 |
+|---|---|---|---|---|---|---|
+| all-MiniLM-L6-v2 (384) | 27–30 s | 1.0–1.1% | 220 MiB | 30 (default) | 0.8 ms | 0.895–0.910 |
+| | | | | 50 | 1.0–1.3 ms | 0.946–0.952 |
+| | | | | 100 | 1.7–2.1 ms | 0.978–0.981 |
+| | | | | 200 | 2.8–3.1 ms | 0.990–0.994 |
+| bge-large-en-v1.5 (1024) | 50–67 s | 1.1–1.2% | 353 MiB | 30 (default) | 1.9–2.0 ms | 0.862–0.874 |
+| | | | | 50 | 2.5–2.8 ms | 0.911–0.921 |
+| | | | | 100 | 3.9–4.7 ms | 0.957–0.964 |
+| | | | | 200 | 6.3–6.5 ms | 0.985–0.989 |
+
+The exact scan takes 15 ms at 384 dimensions and 43 ms at 1024.
+
+- **For text embeddings, use `ef_search` 100.** It finds 96–98% of the true
+  top 10 for 2–5 ms, still about 10× faster than the exact scan. Use 200 when
+  missing a neighbour is costly (≥ 98.5%, still 5–7× faster). Pass it per
+  call: `knn_nodes(..., ef_search=100)` in Python, `ef_search = 100` in NQL
+  `hybrid(...)` and `similar_to(...)`.
+- The larger model loses more at the same `ef_search`. Its vectors are
+  harder to search, not worse at retrieval: this table says nothing about
+  which model finds the answer, only how much of the exact top 10 the index
+  returns.
+- Why lower than the synthetic data: a question is not a point of the same
+  distribution as the paragraphs (it is shorter and phrased differently),
+  and text embeddings spread over more directions than the 16 of each
+  synthetic cluster.
+
+To reproduce, prepare the data outside the repository and point the bench at
+it:
+
+```bash
+python -m venv ~/.venvs/nopaldb-212 && ~/.venvs/nopaldb-212/bin/pip install sentence-transformers
+~/.venvs/nopaldb-212/bin/python -I nopaldb/python/scripts/prepare_2wiki.py \
+    --cache ~/.cache/nopaldb-212 --out ~/nopaldb-212
+NOPALDB_BENCH_DATA=~/nopaldb-212 NOPALDB_BENCH_EF=30,50,100,200 \
+    make bench BENCH=retrieval_dims
+```
+
+The script downloads the dataset (259 MB) and checks its sha256, pins each
+model to a revision, and writes the paragraphs, questions and vectors with a
+manifest of versions. Preparing both models took 23 minutes on the GPU of the
+machine above (bge-large most of it). Licences: the 2WikiMultiHopQA
+repository is Apache-2.0, its paragraphs are Wikipedia text (CC BY-SA), and
+neither they nor their vectors are in this repository; all-MiniLM-L6-v2 is
+Apache-2.0 and bge-large-en-v1.5 is MIT.
 
 **Uniform random vectors** are the worst case for any HNSW index: with no
 structure, all points are almost equally far apart. The bench measures them

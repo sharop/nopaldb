@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Recall del índice vectorial con texto real** (#212, parte 1).
+  `nopaldb/python/scripts/prepare_2wiki.py` descarga 2WikiMultiHopQA
+  (`dev`, sha256 comprobado), calcula los embeddings de párrafos y preguntas
+  con all-MiniLM-L6-v2 y bge-large-en-v1.5 (revisiones fijadas) y lo escribe
+  fuera del repo; `retrieval_dims` lo mide con `NOPALDB_BENCH_DATA=<dir>`
+  (`NOPALDB_BENCH_EF` cambia los `ef_search`). Con el `ef_search` 30 por
+  defecto el recall@10 es 0,90 (MiniLM) y 0,87 (bge), no el 0,99 de los
+  datos sintéticos; `docs/GRAPHRAG.md` recomienda 100 para embeddings de
+  texto (0,96–0,98).
+
 ## [0.10.12] - 2026-11-03
 
 Dos arreglos y CI multiplataforma. En **Windows** `close()` fallaba con
