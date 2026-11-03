@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.13] - unreleased
+
+El **`ef_search` por defecto pasa de 30 a 100** (#212): con texto real, 30
+devolvía ~90 % del top 10 exacto; **cambian resultados** de las búsquedas
+vectoriales sin `ef_search` (§17 de `docs/UPGRADING_0.10.md`). La búsqueda
+**full-text acepta texto natural** (#377): una pregunta con apóstrofo o dos
+puntos ya no es un error de sintaxis. Y las primeras mediciones con texto
+real (2WikiMultiHopQA): recall del índice y calidad de recuperación por
+estrategia. Sin API nueva ni cambio de formato en disco.
 
 ### Changed
 - **`ef_search` por defecto: 100 (era 30)** (#212). Medido con texto real
