@@ -1,0 +1,119 @@
+{
+  "model": "minilm",
+  "questions": 1000,
+  "rows": [
+    {
+      "ef": 100,
+      "kg": "—",
+      "mrr": 0.842,
+      "recall@10": 0.566,
+      "recall@10 by type": {
+        "bridge_comparison": 0.387,
+        "comparison": 0.718,
+        "compositional": 0.553,
+        "inference": 0.635
+      },
+      "recall@5": 0.52,
+      "strategy": "vector"
+    },
+    {
+      "ef": 100,
+      "kg": "—",
+      "mrr": 0.905,
+      "recall@10": 0.676,
+      "recall@10 by type": {
+        "bridge_comparison": 0.49,
+        "comparison": 0.939,
+        "compositional": 0.615,
+        "inference": 0.698
+      },
+      "recall@5": 0.616,
+      "strategy": "híbrida"
+    },
+    {
+      "ef": 100,
+      "kg": "completo",
+      "mrr": 0.905,
+      "recall@10": 0.894,
+      "recall@10 by type": {
+        "bridge_comparison": 0.849,
+        "comparison": 0.931,
+        "compositional": 0.911,
+        "inference": 0.833
+      },
+      "recall@5": 0.616,
+      "strategy": "híbrida+BFS (s=5)"
+    },
+    {
+      "ef": 100,
+      "kg": "completo",
+      "mrr": 0.905,
+      "recall@10": 0.894,
+      "recall@10 by type": {
+        "bridge_comparison": 0.853,
+        "comparison": 0.931,
+        "compositional": 0.909,
+        "inference": 0.833
+      },
+      "recall@5": 0.616,
+      "strategy": "híbrida+PPR (s=5)"
+    },
+    {
+      "ef": 100,
+      "kg": "completo",
+      "mrr": 0.474,
+      "recall@10": 0.894,
+      "recall@10 by type": {
+        "bridge_comparison": 0.853,
+        "comparison": 0.931,
+        "compositional": 0.909,
+        "inference": 0.833
+      },
+      "recall@5": 0.616,
+      "strategy": "PPR reordena semillas (s=5)"
+    },
+    {
+      "ef": 100,
+      "kg": "sin la muestra",
+      "mrr": 0.905,
+      "recall@10": 0.711,
+      "recall@10 by type": {
+        "bridge_comparison": 0.55,
+        "comparison": 0.933,
+        "compositional": 0.659,
+        "inference": 0.739
+      },
+      "recall@5": 0.616,
+      "strategy": "híbrida+BFS (s=5)"
+    },
+    {
+      "ef": 100,
+      "kg": "sin la muestra",
+      "mrr": 0.905,
+      "recall@10": 0.711,
+      "recall@10 by type": {
+        "bridge_comparison": 0.55,
+        "comparison": 0.933,
+        "compositional": 0.659,
+        "inference": 0.739
+      },
+      "recall@5": 0.616,
+      "strategy": "híbrida+PPR (s=5)"
+    },
+    {
+      "ef": 100,
+      "kg": "sin la muestra",
+      "mrr": 0.845,
+      "recall@10": 0.711,
+      "recall@10 by type": {
+        "bridge_comparison": 0.55,
+        "comparison": 0.933,
+        "compositional": 0.659,
+        "inference": 0.739
+      },
+      "recall@5": 0.616,
+      "strategy": "PPR reordena semillas (s=5)"
+    }
+  ],
+  "seeds": 5
+}
