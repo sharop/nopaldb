@@ -50,10 +50,20 @@
 //! Correr: `make bench BENCH=retrieval_dims`. Variables:
 //! `NOPALDB_BENCH_DIMS` (default `384,1024`), `NOPALDB_BENCH_SCALES`
 //! (default `10000,100000`), `NOPALDB_BENCH_QUERIES` (default 200),
-//! `NOPALDB_BENCH_ENGINE` (`redb`).
+//! `NOPALDB_BENCH_EF` (default `30,100`), `NOPALDB_BENCH_ENGINE` (`redb`).
+//!
+//! **Texto real** (#212): con `NOPALDB_BENCH_DATA=<dir>`, un directorio que
+//! escribió `nopaldb/python/scripts/prepare_2wiki.py`, mide en vez de los
+//! sintéticos los párrafos de 2WikiMultiHopQA (~55k) con los embeddings de
+//! cada modelo del manifiesto, y sus preguntas como consultas
+//! (`NOPALDB_BENCH_QUERIES` de ellas, repartidas por el archivo). Los
+//! embeddings de un modelo de texto real no son puntos de la misma
+//! distribución que las consultas: una pregunta no se parece a un párrafo
+//! como un párrafo a otro.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -72,6 +82,7 @@ const CLUSTER_DIMS: usize = 16;
 const NOISE: f32 = 0.6;
 /// Norma esperada del ruido isotrópico: saca a los puntos del subespacio.
 const ISOTROPIC: f32 = 0.05;
+/// Los `ef_search` medidos; `NOPALDB_BENCH_EF` los cambia.
 const EF_SEARCH: &[usize] = &[30, 100];
 
 struct Counting;
@@ -252,9 +263,45 @@ fn mib(bytes: usize) -> String {
     format!("{:.0}", bytes as f64 / (1024.0 * 1024.0))
 }
 
-async fn run(dim: usize, n: usize, q: usize, data: Data) -> Vec<String> {
+async fn run_synthetic(dim: usize, n: usize, q: usize, data: Data) -> Vec<String> {
     let seed = 0x9E37_79B9 ^ ((dim as u64) << 32) ^ n as u64 ^ matches!(data, Data::Uniform) as u64;
     let (vectors, queries) = generate(data, dim, n, q, seed);
+    run(dim, data.name(), vectors, queries).await
+}
+
+/// The vectors of a directory written by `prepare_2wiki.py` (#212): the
+/// paragraphs of 2WikiMultiHopQA as data and its questions as queries, for
+/// each model in the manifest. `q` questions, evenly spread over the file.
+fn real_data(dir: &Path, q: usize) -> Vec<(String, usize, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.join("manifest.json")).expect("manifest.json"),
+    )
+    .expect("manifest.json is JSON");
+    let models = manifest["models"].as_object().expect("manifest: models");
+    let mut out = Vec::new();
+    for (key, spec) in models {
+        let dim = spec["dim"].as_u64().expect("manifest: dim") as usize;
+        let vectors = read_f32(&dir.join(format!("{key}.chunks.f32")), dim);
+        let all = read_f32(&dir.join(format!("{key}.questions.f32")), dim);
+        let step = (all.len() / q.max(1)).max(1);
+        let queries = all.into_iter().step_by(step).take(q).collect();
+        out.push((format!("2wiki {key}"), dim, vectors, queries));
+    }
+    out
+}
+
+/// Rows of `dim` float32 little-endian values, one after another.
+fn read_f32(path: &Path, dim: usize) -> Vec<Vec<f32>> {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert_eq!(bytes.len() % (4 * dim), 0, "{}: not rows of {dim} float32", path.display());
+    bytes
+        .chunks_exact(4 * dim)
+        .map(|row| row.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
+        .collect()
+}
+
+async fn run(dim: usize, data: &str, vectors: Vec<Vec<f32>>, queries: Vec<Vec<f32>>) -> Vec<String> {
+    let (n, q) = (vectors.len(), queries.len());
 
     let dir = tempfile::tempdir().expect("tempdir");
     let graph = Graph::open_with_options(dir.path(), bench_options()).await.expect("open");
@@ -309,7 +356,7 @@ async fn run(dim: usize, n: usize, q: usize, data: Data) -> Vec<String> {
         let _ = guard.search_knn(qv, K);
     }
     let mut rows = Vec::new();
-    for &ef in EF_SEARCH {
+    for ef in env_list("NOPALDB_BENCH_EF", EF_SEARCH) {
         let mut lat = Vec::with_capacity(q);
         let mut hits = 0usize;
         for (qv, expected) in queries.iter().zip(&truth) {
@@ -322,8 +369,7 @@ async fn run(dim: usize, n: usize, q: usize, data: Data) -> Vec<String> {
         lat.sort();
         let recall = hits as f64 / (q * K) as f64;
         rows.push(format!(
-            "| {dim} | {n} | {} | {ef} | {} | {} | {} | {} | {} | {} | {} | {recall:.3} |",
-            data.name(),
+            "| {dim} | {n} | {data} | {ef} | {} | {} | {} | {} | {} | {} | {} | {recall:.3} |",
             secs(load),
             secs(build),
             guard.orphans(),
@@ -349,10 +395,18 @@ fn main() {
 
     println!("| dims | nodos | datos | ef | carga (s) | build (s) | huérfanos | memoria (MiB) | p50 (ms) | p95 (ms) | exacto (ms) | recall@10 |");
     println!("|---|---|---|---|---|---|---|---|---|---|---|---|");
+    if let Ok(dir) = std::env::var("NOPALDB_BENCH_DATA") {
+        for (name, dim, vectors, queries) in real_data(Path::new(&dir), q) {
+            for row in rt.block_on(run(dim, &name, vectors, queries)) {
+                println!("{row}");
+            }
+        }
+        return;
+    }
     for &dim in &dims {
         for &n in &scales {
             for data in [Data::Clustered, Data::Uniform] {
-                for row in rt.block_on(run(dim, n, q, data)) {
+                for row in rt.block_on(run_synthetic(dim, n, q, data)) {
                     println!("{row}");
                 }
             }

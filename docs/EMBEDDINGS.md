@@ -496,7 +496,7 @@ from (n:Article)
 |-----------|---------|---------|
 | M (max connections) | 24 | Edges per node per layer. Higher = better recall, more memory |
 | ef_construction | 400 | Beam width during index construction |
-| ef_search | 30 | Beam width during search. Higher = better recall, slower |
+| ef_search | 30 | Beam width during search. Higher = better recall, slower. With text embeddings 30 finds ~90% of the true top 10 and 100 finds 96–98% ([GRAPHRAG.md](GRAPHRAG.md#real-text-2wikimultihopqa)) |
 
 ### Distance metric
 
