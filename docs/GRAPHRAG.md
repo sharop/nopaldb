@@ -410,7 +410,7 @@ change the grid).
 The vectors are synthetic and clustered: 100 clusters with a 16-dimension
 spread plus noise, normalized. That is how embeddings of real text behave
 (nearby texts, nearby vectors), but real text scores lower: see
-[Real text](#real-text-2wikimultihopqa-01012) below.
+[Real text](#real-text-2wikimultihopqa) below.
 
 | dims | vectors | build | orphans | index memory | p95, `ef_search` 30 | p95, `ef_search` 100 | exact scan | recall@10, ef 30 / 100 |
 |---|---|---|---|---|---|---|---|---|
@@ -434,7 +434,7 @@ spread plus noise, normalized. That is how embeddings of real text behave
 - Building is the slow part: 72 s for 100k × 1024, paid once; the index is
   persisted, so reopening the database does not rebuild it.
 
-### Real text: 2WikiMultiHopQA (0.10.12)
+### Real text: 2WikiMultiHopQA
 
 The synthetic recall above is optimistic. Measured on embeddings of real
 text, the default `ef_search` 30 finds about 90% of the true top 10, not 99%.
@@ -445,7 +445,7 @@ two open models. The queries are 200 of its questions, embedded with the same
 model, and recall@10 is again measured against an exact scan of the same
 vectors. Three builds per row: HNSW builds in parallel and no two builds are
 equal, so each figure is the range over the three. Apple M3 Max (16 cores,
-128 GB), release build, 2 November 2026.
+128 GB), release build of 0.10.12, 2 November 2026.
 
 | model (dims) | build | orphans | index memory | `ef_search` | p95 | recall@10 |
 |---|---|---|---|---|---|---|
