@@ -37,7 +37,8 @@ The main tuning parameters are:
 | `ef_search` | Candidate width while querying |
 
 Higher values generally improve recall and increase memory or CPU cost.
-NopalDB's defaults are `M` = 24, `ef_construction` = 400 and `ef_search` = 30.
+NopalDB's defaults are `M` = 24, `ef_construction` = 400 and `ef_search` = 100
+(30 until 0.10.12; see [GRAPHRAG.md](GRAPHRAG.md#real-text-2wikimultihopqa) for why).
 
 ## What NopalDB adds around HNSW
 

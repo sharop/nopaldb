@@ -41,7 +41,14 @@ const HNSW_CAPACITY_HINT: usize = 0;
 /// explora: más alto = mejor recall, más lento. Solo aplica cuando la
 /// búsqueda va por el grafo HNSW (N > `EXACT_SEARCH_THRESHOLD`); el camino
 /// exacto lo ignora porque no hay aproximación que compensar.
-pub const DEFAULT_EF_SEARCH: usize = 30;
+///
+/// Era 30 hasta 0.10.12. Medido con texto real (#212, 2WikiMultiHopQA, 55k
+/// párrafos): con 30 el índice devolvía ~90 % del top 10 exacto con
+/// all-MiniLM-L6-v2 y ~87 % con bge-large; con 100, 98 % y 96 %, y la
+/// búsqueda solo vectorial ganaba 0,03–0,07 de recall@10 de punta a punta.
+/// Cuesta ~1 ms a 384 dims y ~2,5 ms a 1024 en el p95. Los datos
+/// sintéticos con que se eligió 30 daban 0,99 y escondían la diferencia.
+pub const DEFAULT_EF_SEARCH: usize = 100;
 
 /// Con `N ≤ EXACT_SEARCH_THRESHOLD` puntos, `search_knn*` responde con un
 /// scan lineal exacto (distancia coseno contra todos los puntos) en lugar de

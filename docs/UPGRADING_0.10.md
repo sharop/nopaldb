@@ -365,3 +365,21 @@ that is not valid tantivy syntax is searched as its words instead of failing
 with "Syntax Error" ([#377](https://github.com/sharop/nopaldb/issues/377)).
 Code that caught that error to clean the text can drop it. Valid syntax is
 read as before.
+
+## 17. After 0.10.12: `ef_search` 100 by default
+
+The HNSW `ef_search` used when a call does not pass one is 100; it was 30
+([#212](https://github.com/sharop/nopaldb/issues/212)). Measured on real
+text (2WikiMultiHopQA, 55k paragraphs), 30 returned about 90% of the exact
+top 10 with all-MiniLM-L6-v2 and 87% with bge-large; 100 returns 98% and
+96%. It applies to `knn_nodes`, `search_hybrid`, and NQL `similar_to(...)`
+and `hybrid(...)` without `ef_search`.
+
+| | 0.10.12 | now |
+|---|---|---|
+| recall@10 of the index, MiniLM / bge-large | 0.90 / 0.87 | 0.98 / 0.96 |
+| p95 of a vector search, 384 / 1024 dims, 55k vectors | 0.8 / 2.0 ms | 1.7–2.1 / 3.9–4.7 ms |
+
+Results can change: a vector search may now return neighbours it missed
+before. To keep the old speed, pass `ef_search=30` (Python), `ef_search = 30`
+(NQL) or `HybridQuery { ef_search: Some(30), .. }` (Rust).

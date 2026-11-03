@@ -471,14 +471,14 @@ Reglas: `vector` es una lista no vacía de números (se aceptan enteros y
 `1e-05`) cuya longitud debe coincidir con el índice del modelo; `vector`
 exige `model`; una llamada da o el nodo de referencia o el literal, no ambos.
 Opciones con nombre de `hybrid`: `rrf_k` (número > 0, default 60), `ef_search`
-(entero ≥ 1, default 30), `overfetch` (entero ≥ 1, default 4), `text_index`
+(entero ≥ 1, default 100), `overfetch` (entero ≥ 1, default 4), `text_index`
 (cadena; default: el primer índice full-text del label). Una opción
 desconocida, un valor del tipo equivocado o un número incorrecto de
 posicionales es un error de validación que nombra el problema; ninguna otra
 función acepta opciones con nombre.
 
 Opciones con nombre de `similar_to`: `overfetch` (entero ≥ 1, default 4) y
-`ef_search` (entero ≥ 1, default 30). Con un patrón con label se piden
+`ef_search` (entero ≥ 1, default 100). Con un patrón con label se piden
 `overfetch·k` vecinos al índice y se conservan los primeros `k` del label; si
 quedan menos, la petición crece ×4 (hasta 4096), y si el label es tan escaso
 entre los vecinos más cercanos se busca entre los propios nodos del label. Así

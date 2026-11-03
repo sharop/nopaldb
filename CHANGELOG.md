@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`ef_search` por defecto: 100 (era 30)** (#212). Medido con texto real
+  (2WikiMultiHopQA, 55k párrafos), 30 devolvía ~90 % del top 10 exacto con
+  all-MiniLM-L6-v2 y ~87 % con bge-large; 100 devuelve 98 % y 96 %, y la
+  búsqueda solo vectorial gana 0,03–0,07 de recall@10 de punta a punta
+  (híbrida +0,01). Cuesta ~1 ms (384 dims) y ~2,5 ms (1024) en el p95 de
+  cada búsqueda vectorial. Afecta a `knn_nodes`, `search_hybrid`, NQL
+  `similar_to(...)` y `hybrid(...)` cuando no se pasa `ef_search`; pasar
+  `ef_search=30` recupera lo anterior. Guía 0.10 §17.
+
 ### Fixed
 - **Una pregunta en lenguaje natural ya no es un error de sintaxis en la
   búsqueda full-text** (#377). El texto pasaba por el parser estricto de

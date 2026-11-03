@@ -465,13 +465,13 @@ Rules: `vector` is a non-empty list of numbers (integers are accepted, and
 `1e-05` parses) whose length must match the model's index; `vector` requires
 `model`; a call gives either a reference node or a literal, not both. Named
 options of `hybrid`: `rrf_k` (number > 0, default 60), `ef_search` (integer
-≥ 1, default 30), `overfetch` (integer ≥ 1, default 4), `text_index` (string,
+≥ 1, default 100), `overfetch` (integer ≥ 1, default 4), `text_index` (string,
 default: the first full-text index matching the label). Unknown options, wrong
 value kinds, or a wrong number of positional arguments are validation errors
 that name the problem; no other function accepts named options.
 
 Named options of `similar_to`: `overfetch` (integer ≥ 1, default 4) and
-`ef_search` (integer ≥ 1, default 30). With a labelled pattern the index is
+`ef_search` (integer ≥ 1, default 100). With a labelled pattern the index is
 asked for `overfetch·k` neighbours and the first `k` of the label are kept; if
 fewer carry the label the fetch grows ×4 (up to 4096), and if the label is that
 rare among the nearest neighbours the label's own nodes are searched. So the

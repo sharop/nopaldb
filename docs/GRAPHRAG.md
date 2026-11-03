@@ -395,6 +395,8 @@ Rust; `python/scripts/graphrag_sample.py` is the functional guard).
 | same with `hybrid(text, vector)` in NQL | not possible | 132 ms (0.6.9): the pattern's label reached the hybrid filter as a label scan. Since 0.6.10 the label is checked on each branch's candidates: 0.99 ms at 100k chunks since the full-text branch asks tantivy only for the hits it uses (2.42 ms before; 16.2 ms → 0.89 ms at 10k). The rest is BM25 over every matching chunk: the bench matches ~57k of 100k on purpose |
 | **two hops in ONE NQL query** (`hybrid` k=10, chunk → entity → related entity, `score(c)` on each row) | not possible | 1.35 ms at 100k chunks (0.6.19; one hop 1.11 ms in the same run): the second hop costs ~0.25 ms for ~60 rows |
 
+These were measured with `ef_search` 30, the default until 0.10.12; the
+default is now 100, about 1 ms more per vector search at 384 dimensions.
 Fill in the exact numbers for your data with `make bench BENCH=retrieval`.
 
 ### Real embedding sizes: 384 and 1024 dimensions (0.6.11)
@@ -444,7 +446,8 @@ projections), use the exact scan instead.
 ### Real text: 2WikiMultiHopQA
 
 The synthetic recall above is optimistic. Measured on embeddings of real
-text, the default `ef_search` 30 finds about 90% of the true top 10, not 99%.
+text, `ef_search` 30, the default until 0.10.12, finds about 90% of the true
+top 10, not 99%. That is why the default is now 100.
 
 The corpus is the 54,957 distinct paragraphs of the `dev` split of
 [2WikiMultiHopQA](https://github.com/Alab-NII/2wikimultihop), embedded with
@@ -456,22 +459,22 @@ equal, so each figure is the range over the three. Apple M3 Max (16 cores,
 
 | model (dims) | build | orphans | index memory | `ef_search` | p95 | recall@10 |
 |---|---|---|---|---|---|---|
-| all-MiniLM-L6-v2 (384) | 27–30 s | 1.0–1.1% | 220 MiB | 30 (default) | 0.8 ms | 0.895–0.910 |
+| all-MiniLM-L6-v2 (384) | 27–30 s | 1.0–1.1% | 220 MiB | 30 | 0.8 ms | 0.895–0.910 |
 | | | | | 50 | 1.0–1.3 ms | 0.946–0.952 |
-| | | | | 100 | 1.7–2.1 ms | 0.978–0.981 |
+| | | | | 100 (default) | 1.7–2.1 ms | 0.978–0.981 |
 | | | | | 200 | 2.8–3.1 ms | 0.990–0.994 |
-| bge-large-en-v1.5 (1024) | 50–67 s | 1.1–1.2% | 353 MiB | 30 (default) | 1.9–2.0 ms | 0.862–0.874 |
+| bge-large-en-v1.5 (1024) | 50–67 s | 1.1–1.2% | 353 MiB | 30 | 1.9–2.0 ms | 0.862–0.874 |
 | | | | | 50 | 2.5–2.8 ms | 0.911–0.921 |
-| | | | | 100 | 3.9–4.7 ms | 0.957–0.964 |
+| | | | | 100 (default) | 3.9–4.7 ms | 0.957–0.964 |
 | | | | | 200 | 6.3–6.5 ms | 0.985–0.989 |
 
 The exact scan takes 15 ms at 384 dimensions and 43 ms at 1024.
 
-- **For text embeddings, use `ef_search` 100.** It finds 96–98% of the true
-  top 10 for 2–5 ms, still about 10× faster than the exact scan. Use 200 when
-  missing a neighbour is costly (≥ 98.5%, still 5–7× faster). Pass it per
-  call: `knn_nodes(..., ef_search=100)` in Python, `ef_search = 100` in NQL
-  `hybrid(...)` and `similar_to(...)`.
+- **100, the default, finds 96–98% of the true top 10** for 2–5 ms, still
+  about 10× faster than the exact scan. Use 200 when missing a neighbour is
+  costly (≥ 98.5%, still 5–7× faster), or 30 to trade recall for speed.
+  Pass it per call: `knn_nodes(..., ef_search=200)` in Python,
+  `ef_search = 200` in NQL `hybrid(...)` and `similar_to(...)`.
 - The larger model loses more at the same `ef_search`. Its vectors are
   harder to search, not worse at retrieval: this table says nothing about
   which model finds the answer, only how much of the exact top 10 the index
