@@ -60,6 +60,15 @@
 //! `NOPALDB_BENCH_MODEL` (default `minilm`), `NOPALDB_BENCH_EF` (default
 //! `30,100`). La construcción del HNSW en paralelo no es determinista:
 //! corre el bench varias veces para ver la dispersión.
+//!
+//! **Gate** (job `retrieval-quality`, nightly). `NOPALDB_BENCH_JSON=<archivo>`
+//! escribe las cifras de cada fila (solo agregados: ni texto, ni títulos, ni
+//! ids del dataset). `NOPALDB_BENCH_BASELINE=<archivo>` compara el recall@10
+//! de cada fila contra ese archivo y termina con error si alguna cae más de
+//! `NOPALDB_BENCH_TOLERANCE` (default 0.02); si alguna sube más, lo avisa
+//! para que se suba la línea base. Una fila que falta en un lado también es
+//! error. Actualizar la línea base es copiar el JSON de una corrida. Las dos
+//! rutas, absolutas: `cargo bench` corre desde `nopaldb/`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -286,6 +295,24 @@ impl Score {
         t.1 += 1;
     }
 
+    fn json(&self, name: &str, ef: usize, kg: &str) -> serde_json::Value {
+        let n = self.n as f64;
+        let round = |x: f64| (x * 1000.0).round() / 1000.0;
+        let by_type: serde_json::Map<String, serde_json::Value> = TYPES
+            .iter()
+            .filter_map(|t| self.by_type.get(*t).map(|(s, c)| (t.to_string(), round(s / *c as f64).into())))
+            .collect();
+        serde_json::json!({
+            "strategy": name,
+            "ef": ef,
+            "kg": kg,
+            "recall@5": round(self.r5 / n),
+            "recall@10": round(self.r10 / n),
+            "mrr": round(self.mrr / n),
+            "recall@10 by type": by_type,
+        })
+    }
+
     fn row(&self, name: &str, ef: usize, kg: &str) -> String {
         let n = self.n as f64;
         let types: Vec<String> = TYPES
@@ -314,6 +341,50 @@ fn ranked_list(first: &[NodeId], then: impl Iterator<Item = NodeId>, fill: &[Nod
         .chain(fill.iter().copied())
         .filter(|id| seen.insert(*id))
         .collect()
+}
+
+fn row_key(row: &serde_json::Value) -> String {
+    format!("{} | ef {} | KG {}", row["strategy"].as_str().unwrap_or("?"), row["ef"], row["kg"].as_str().unwrap_or("?"))
+}
+
+/// Compares the recall@10 of every row against `baseline`; returns the
+/// failures. The setup (model, questions, seeds) must match: numbers from a
+/// different run say nothing about a regression.
+fn check_baseline(current: &serde_json::Value, baseline: &serde_json::Value, tolerance: f64) -> Vec<String> {
+    let mut failures = Vec::new();
+    for field in ["model", "questions", "seeds"] {
+        if current[field] != baseline[field] {
+            failures.push(format!("{field}: this run {} , baseline {}", current[field], baseline[field]));
+        }
+    }
+    if !failures.is_empty() {
+        return failures;
+    }
+    let rows = |v: &serde_json::Value| -> HashMap<String, f64> {
+        v["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .map(|r| (row_key(r), r["recall@10"].as_f64().expect("recall@10")))
+            .collect()
+    };
+    let (now, base) = (rows(current), rows(baseline));
+    let mut keys: Vec<&String> = now.keys().chain(base.keys()).collect::<HashSet<_>>().into_iter().collect();
+    keys.sort();
+    for key in keys {
+        match (now.get(key), base.get(key)) {
+            (Some(n), Some(b)) if n + tolerance < *b => {
+                failures.push(format!("{key}: recall@10 {n:.3}, baseline {b:.3} (tolerance {tolerance})"))
+            }
+            (Some(n), Some(b)) if *n > b + tolerance => {
+                eprintln!("notice: {key}: recall@10 {n:.3} is above the baseline {b:.3}: raise the baseline")
+            }
+            (Some(_), Some(_)) => {}
+            (Some(_), None) => failures.push(format!("{key}: not in the baseline")),
+            (None, _) => failures.push(format!("{key}: in the baseline but not in this run")),
+        }
+    }
+    failures
 }
 
 fn main() {
@@ -347,6 +418,7 @@ fn main() {
     let picked = sample(questions.len(), n_questions, 212);
     let evaluated: HashSet<usize> = picked.iter().copied().collect();
 
+    let mut rows = Vec::new();
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     rt.block_on(async {
         let c = build(&dir, &model, &questions, &evaluated).await;
@@ -414,14 +486,43 @@ fn main() {
                 }
             }
             eprintln!("ef {ef}: {} questions in {:.0} s", picked.len(), t.elapsed().as_secs_f64());
-            println!("{}", vector.row("vector", ef, "—"));
-            println!("{}", hybrid.row("híbrida", ef, "—"));
+            let mut scored = vec![(vector, "vector".to_string(), "—"), (hybrid, "híbrida".to_string(), "—")];
             for (j, (kg, _)) in kgs.iter().enumerate() {
-                println!("{}", bfs[j].row(&format!("híbrida+BFS (s={seeds})"), ef, kg));
-                println!("{}", ppr[j].row(&format!("híbrida+PPR (s={seeds})"), ef, kg));
-                println!("{}", ppr_all[j].row(&format!("PPR reordena semillas (s={seeds})"), ef, kg));
+                scored.push((bfs[j].clone(), format!("híbrida+BFS (s={seeds})"), *kg));
+                scored.push((ppr[j].clone(), format!("híbrida+PPR (s={seeds})"), *kg));
+                scored.push((ppr_all[j].clone(), format!("PPR reordena semillas (s={seeds})"), *kg));
+            }
+            for (score, name, kg) in &scored {
+                println!("{}", score.row(name, ef, kg));
+                rows.push(score.json(name, ef, kg));
             }
         }
         c.graph.close().await.expect("close");
     });
+
+    let report = serde_json::json!({
+        "model": model,
+        "questions": picked.len(),
+        "seeds": seeds,
+        "rows": rows,
+    });
+    if let Ok(path) = std::env::var("NOPALDB_BENCH_JSON") {
+        let text = serde_json::to_string_pretty(&report).expect("json") + "\n";
+        std::fs::write(&path, text).unwrap_or_else(|e| panic!("{path}: {e}"));
+    }
+    if let Ok(path) = std::env::var("NOPALDB_BENCH_BASELINE") {
+        let tolerance: f64 =
+            env_or("NOPALDB_BENCH_TOLERANCE", "0.02").parse().expect("NOPALDB_BENCH_TOLERANCE no es un número");
+        let baseline: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))).expect("baseline");
+        let failures = check_baseline(&report, &baseline, tolerance);
+        if failures.is_empty() {
+            eprintln!("recall@10 within {tolerance} of the baseline {path} in every row");
+        } else {
+            for f in &failures {
+                eprintln!("REGRESSION: {f}");
+            }
+            std::process::exit(1);
+        }
+    }
 }

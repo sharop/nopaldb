@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Gate de calidad de recuperación** (#212, parte 3): el workflow
+  `retrieval-quality` (diario, y en los PR que tocan el bench, el script de
+  preparación o la línea base) corre `retrieval_quality` sobre
+  2WikiMultiHopQA (corpus completo, 1000 preguntas fijas, MiniLM, ef 100) y
+  falla si el recall@10 de alguna estrategia cae más de 0,02 respecto a
+  `nopaldb/benches/retrieval_quality_baseline.json`. El bench gana
+  `NOPALDB_BENCH_JSON` (cifras de cada fila) y `NOPALDB_BENCH_BASELINE`
+  (comparación). La línea base solo lleva cifras agregadas; el texto del
+  dataset no entra al repo.
+
 ## [0.10.13] - 2026-11-03
 
 El **`ef_search` por defecto pasa de 30 a 100** (#212): con texto real, 30

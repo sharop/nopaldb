@@ -1,0 +1,93 @@
+name: Retrieval Quality
+
+# Gate de calidad de recuperación (#212, parte 3). Corre el bench
+# `retrieval_quality` sobre 2WikiMultiHopQA (corpus completo, 1000 preguntas
+# fijas, MiniLM, ef_search 100) y falla si el recall@10 de alguna estrategia
+# cae más de NOPALDB_BENCH_TOLERANCE respecto a la línea base versionada
+# (`nopaldb/benches/retrieval_quality_baseline.json`, solo cifras agregadas).
+#
+# El texto del dataset viene de Wikipedia (CC BY-SA) y no entra al repo: se
+# descarga y se convierte en vectores aquí, y solo vive en la caché de
+# Actions. El artefacto que se sube es el JSON de cifras, nada del dataset.
+#
+# Un PR que cambia el bench, el script de preparación o la línea base corre
+# el gate: el que cambia los resultados a propósito actualiza la línea base
+# copiando el JSON de la corrida.
+
+on:
+  schedule:
+    - cron: "30 7 * * *" # 07:30 UTC diario, después de Nightly Hardening
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/retrieval-quality.yml
+      - nopaldb/benches/retrieval_quality.rs
+      - nopaldb/benches/retrieval_quality_baseline.json
+      - nopaldb/python/scripts/prepare_2wiki.py
+
+permissions:
+  contents: read
+
+env:
+  TORCH_VERSION: "2.15.0"
+  SENTENCE_TRANSFORMERS_VERSION: "6.2.0"
+  NOPALDB_BENCH_TOLERANCE: "0.02"
+
+jobs:
+  retrieval-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache 2WikiMultiHopQA download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/nopaldb-212
+          # El sha256 del zip está fijado en prepare_2wiki.py.
+          key: 2wiki-zip-95df2bf56fdabe03
+
+      - name: Cache prepared data and vectors
+        id: prepared
+        uses: actions/cache@v4
+        with:
+          path: ~/nopaldb-212
+          key: 2wiki-minilm-all-${{ hashFiles('nopaldb/python/scripts/prepare_2wiki.py') }}-torch${{ env.TORCH_VERSION }}-st${{ env.SENTENCE_TRANSFORMERS_VERSION }}
+
+      - name: Setup Python
+        if: steps.prepared.outputs.cache-hit != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prepare data and MiniLM vectors (CPU)
+        if: steps.prepared.outputs.cache-hit != 'true'
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "torch==$TORCH_VERSION" --index-url https://download.pytorch.org/whl/cpu
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "sentence-transformers==$SENTENCE_TRANSFORMERS_VERSION"
+          "$RUNNER_TEMP/venv/bin/python" -I nopaldb/python/scripts/prepare_2wiki.py \
+            --cache ~/.cache/nopaldb-212 --out ~/nopaldb-212 --model minilm --corpus all --device cpu
+          cat ~/nopaldb-212/manifest.json
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Retrieval quality against the baseline
+        run: |
+          NOPALDB_BENCH_DATA="$HOME/nopaldb-212" \
+          NOPALDB_BENCH_MODEL=minilm \
+          NOPALDB_BENCH_EF=100 \
+          NOPALDB_BENCH_JSON="$RUNNER_TEMP/retrieval_quality.json" \
+          NOPALDB_BENCH_BASELINE="$GITHUB_WORKSPACE/nopaldb/benches/retrieval_quality_baseline.json" \
+            make bench BENCH=retrieval_quality
+
+      - name: Upload numbers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-quality
+          path: ${{ runner.temp }}/retrieval_quality.json
+          if-no-files-found: ignore

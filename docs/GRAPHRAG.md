@@ -593,6 +593,31 @@ NOPALDB_BENCH_DATA=~/nopaldb-212 NOPALDB_BENCH_MODEL=minilm \
 `NOPALDB_BENCH_EF` (`30,100`) change the run; the bench also prints a PPR row
 and the recall@10 of every type for each graph.
 
+### Regression gate
+
+The `retrieval-quality` workflow runs this bench every night, and on every
+pull request that touches the bench, `prepare_2wiki.py` or the baseline:
+full corpus, the same 1000 questions, MiniLM computed on CPU, `ef_search`
+100. It fails when the recall@10 of any row drops more than 0.02 below
+[`nopaldb/benches/retrieval_quality_baseline.json`](../nopaldb/benches/retrieval_quality_baseline.json),
+and when a row is missing on either side. Three runs on the same data
+differ by up to 0.007 (the parallel HNSW build is not deterministic), and
+vectors computed on CPU or on a GPU by up to 0.004, so 0.02 is about three
+times the noise. The baseline holds aggregate numbers only.
+
+A change that moves the numbers on purpose updates the baseline in the same
+pull request: run the bench with `NOPALDB_BENCH_EF=100
+NOPALDB_BENCH_JSON=<file>` (or take the `retrieval-quality` artifact of the
+pull request's run) and copy that file over the baseline. A row that rises
+more than the tolerance prints a notice to raise it. Give both files as
+absolute paths: `cargo bench` runs from `nopaldb/`.
+
+```bash
+NOPALDB_BENCH_DATA=~/nopaldb-212 NOPALDB_BENCH_EF=100 \
+NOPALDB_BENCH_BASELINE=$PWD/nopaldb/benches/retrieval_quality_baseline.json \
+    make bench BENCH=retrieval_quality
+```
+
 ## Limits, and what comes next
 
 - Edges are still read one by one from storage during expansion (the
