@@ -426,7 +426,7 @@ limit 10
 | option | type | default | meaning |
 |---|---|---|---|
 | `rrf_k` | number > 0 | 60 | the RRF constant; lower makes rank 1 weigh more |
-| `ef_search` | integer ≥ 1 | 30 | HNSW beam width for the vector branch |
+| `ef_search` | integer ≥ 1 | 100 | HNSW beam width for the vector branch (30 until 0.10.12) |
 | `overfetch` | integer ≥ 1 | 4 | each branch fetches `K × overfetch` candidates before fusion |
 | `text_index` | string | auto | full-text index name (`Label_property`); auto picks the first one matching the label |
 

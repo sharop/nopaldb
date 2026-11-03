@@ -2050,7 +2050,7 @@ impl PyGraph {
     ///     vector (list[float], optional): query vector (requires `model`).
     ///     model (str, optional): embedding model name (requires `vector`).
     ///     k (int): number of fused results (default 10).
-    ///     ef (int, optional): HNSW ef_search (default 30).
+    ///     ef (int, optional): HNSW ef_search (default 100).
     ///     label (str, optional): restrict to this node label.
     ///     props (dict, optional): restrict to these property equalities (AND).
     ///     text_index (str, optional): fulltext index name; auto-discovered if omitted.
