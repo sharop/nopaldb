@@ -365,3 +365,11 @@ Qué revisar:
   del WAL rasgada (un crash a mitad de una escritura) no se abría
   ([#370](https://github.com/sharop/nopaldb/issues/370)). Arreglado; no hay
   que hacer nada.
+
+## 16. Después de 0.10.12: texto natural en la búsqueda full-text
+
+Una consulta full-text (`search_hybrid(text=...)`, NQL `hybrid(n, text = "…")`)
+que no es sintaxis válida de tantivy se busca como sus palabras en vez de
+fallar con "Syntax Error" ([#377](https://github.com/sharop/nopaldb/issues/377)).
+El código que capturaba ese error para limpiar el texto puede quitarlo. La
+sintaxis válida se lee igual que antes.

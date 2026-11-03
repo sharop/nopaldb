@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Una pregunta en lenguaje natural ya no es un error de sintaxis en la
+  búsqueda full-text** (#377). El texto pasaba por el parser estricto de
+  tantivy: un apóstrofo (`chef's`), dos puntos, comillas sin cerrar o un
+  operador suelto daban "Syntax Error", el 31 % de las preguntas de
+  2WikiMultiHopQA. Ahora la sintaxis válida se interpreta igual y el texto
+  que no lo es se busca como palabras sueltas, sin descartar ni excluir
+  ninguna (`parse_query_lenient` se descartó: con texto natural lee los
+  operadores y tira palabras). Afecta a `search_hybrid`, NQL `hybrid(...)`
+  y al índice full-text. Test: `fulltext_natural_text_test`.
+
 ### Added
 - **Recall del índice vectorial con texto real** (#212, parte 1).
   `nopaldb/python/scripts/prepare_2wiki.py` descarga 2WikiMultiHopQA

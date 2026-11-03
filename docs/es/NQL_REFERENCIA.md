@@ -380,6 +380,11 @@ create index on Articulo(cuerpo) type fulltext     // búsqueda de texto BM25, l
 drop index Persona_email                           // el nombre es Label_propiedad
 ```
 
+El texto de una búsqueda full-text (`hybrid(n, text = "…")`) se lee como
+sintaxis de consulta de tantivy cuando es válida (`salsa AND "mole negro"`) y
+como palabras sueltas cuando no, como una pregunta con apóstrofo o dos puntos
+(#377).
+
 ### Analyzer full-text
 
 Un índice full-text tokeniza sus documentos una vez, al indexar, y toda consulta
