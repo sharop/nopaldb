@@ -41,19 +41,29 @@ These are not equivalent. The first gives `k` results inside the filter whenever
   - the equalities and `in` lists on `v` in the top-level `and` of the `where` (`v.tenant = "t7"`, `v.kind in ["a", "b"]`, `v.id = "…"`, `v.id in […]`);
   - inline properties of `v`'s node pattern;
   - `in_community(v, key[, via = "T"])`: the members of a materialized community, or the nodes with a `T` edge to one of them. It is the same universe, as a set, as the explicit pattern through `IN_COMMUNITY`.
+  - since #384, the **other patterns of the `from`** that reach `v`, directly or through variables they share with each other, with the parts of the top-level `and` whose variables are all in them: `v` must have a row of those patterns that passes those parts. Patterns that join the first pattern through another variable are expansion constraints.
 
   `score(v)`, `rank(v)` and the raw scores are computed in that universe.
 - **Expansion constraints** are predicates on the other variables of the pattern (`e.kind = "lugar"`). They filter the expanded rows and **never change which seeds the search picks**: `k` counts seeds. A seed whose expansions all fail produces no row, so a query can return fewer than `k` seeds.
 - Everything else is applied to the rows of the search and never widens the universe: ranges, `!=`, `not in`, `null`, functions, predicates on other variables, and conditions under `or`.
 - `k = N` bounds the seeds. In a pattern, `LIMIT` bounds the expanded rows. Without `k`, a single-node query uses its `LIMIT` and a pattern uses 10.
 - The search must be a condition of the top-level `and`. Under `or` or a negation it is an error.
+- **With several patterns, the first one expands from the seeds and the others restrict where the search looks** (#384). `v` must be the first node of the first pattern. The rows are the join of every pattern, as without a search, in seed order. So the order of the patterns matters when there is a search, and the same shape written as one pattern or as two can give different seeds:
+
+  ```text
+  from (r:Receta)-[:USA]->(i:Ingrediente) where similar_to(r, …, k = 5) and i.temporada = "invierno"
+      -- the 5 nearest recipes; those without a winter ingredient give no row
+  from (r:Receta), (r)-[:USA]->(i:Ingrediente) where similar_to(r, …, k = 5) and i.temporada = "invierno"
+      -- the 5 nearest recipes among those that use a winter ingredient
+  ```
 
 Tested by:
 - `nql_where_candidates_test::hybrid_returns_k_rows_inside_the_tenant`, `similar_to_returns_the_exact_top_k_inside_the_tenant`, `ids_are_the_universe_and_intersect`, `residual_predicates_still_filter_and_are_never_widened`, `a_search_must_be_a_root_conjunct` and `a_seeded_pattern_pushes_on_the_seed`;
 - `nql_vector_literal_test::explicit_k_wins_over_limit_and_limit_still_caps_rows`;
 - `nql_parens_and_literals_test::hybrid_and_a_parenthesised_or`;
 - `nql_in_community_test::the_universe_equals_the_explicit_pattern_as_a_set` and `in_community_intersects_with_id_lists`;
-- `candidate_set_test` (the universe for `search_hybrid(candidates=…)`).
+- `candidate_set_test` (the universe for `search_hybrid(candidates=…)`);
+- `nql_search_several_patterns_test` (the other patterns of the `from` as the universe: brute force, `|seeds| = min(k, |universe|)`, one pattern against two, patterns that do not reach `v`, the same set as `in_community`, seed order through a reordered join, aggregations).
 
 ## 3. Order of evaluation
 
@@ -123,7 +133,6 @@ Current behaviour, which the tests pin down:
 
 These are named errors, never a different result:
 
-- Several patterns in the `from` together with a search.
 - Seeding a chain longer than two hops from a search.
 - `OPTIONAL` patterns.
 - `distinct` with a computed column (`r.p * 2`) or with `order by` an expression (#269).

@@ -477,5 +477,8 @@ one query, `score(c)` on every expanded row (`EXPLAIN` says `PATTERN PIPELINE
   constraints. They never change which seeds the search picks, so they can
   leave fewer than K rows. Since 0.8.4 they prune while expanding, with the
   same rows. Ranges and other non-equality predicates on the searched
-  variable apply to its rows, with the same effect. See [NQL
+  variable apply to its rows, with the same effect. Since #384, a search
+  can also have several patterns in the `from`: the first one expands from
+  the seeds and the others that reach the searched variable are its
+  universe, so they do fill K. See [NQL
   semantics](NQL_SEMANTICS.md#2-search-the-universe-seed-constraints-and-expansion-constraints).

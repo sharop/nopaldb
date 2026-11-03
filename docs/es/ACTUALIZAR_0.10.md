@@ -392,3 +392,21 @@ Los resultados pueden cambiar: una búsqueda vectorial puede devolver ahora
 vecinos que antes se le escapaban. Para conservar la velocidad anterior,
 pasa `ef_search=30` (Python), `ef_search = 30` (NQL) o
 `HybridQuery { ef_search: Some(30), .. }` (Rust).
+
+## 18. De 0.10.13 a 0.10.14: búsqueda con varios patrones
+
+`hybrid(v, …)` y `similar_to(v, …)` con más de un patrón en el `from` eran un
+error con nombre ("FROM with several patterns is not supported"); ahora se
+ejecutan ([#384](https://github.com/sharop/nopaldb/issues/384)). El primer
+patrón tiene que empezar en `v` y expande desde las semillas; los demás
+patrones que llegan a `v` definen el universo donde la búsqueda calcula su
+top-k ([semántica de NQL § 2](SEMANTICA_NQL.md)). Nada de lo que ya
+funcionaba cambia.
+
+| consulta | 0.10.13 | 0.10.14 |
+|---|---|---|
+| `from (r:Receta), (r)-[:USA]->(i) where similar_to(r, …, k = 5) and i.temporada = "invierno"` | error | las 5 recetas más cercanas que usan un ingrediente de invierno |
+| lo mismo con `v` fuera del primer nodo del primer patrón | error | error, con un mensaje que dice dónde va `v` |
+
+Si rodeabas el error buscando primero y uniendo por id, el universo ahora lo
+hace en una consulta, con `k` contado dentro de él.

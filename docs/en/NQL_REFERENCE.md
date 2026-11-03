@@ -524,8 +524,11 @@ searched variable (the candidates seed the pipeline: `k` bounds the seeds and
 `LIMIT` caps the expanded rows, so give `k` explicitly; `score(a)` and the
 raw scores travel with every expanded row; the `where` predicates on the
 other variables apply after the expansion). Two hops is the multi-hop of GraphRAG, "chunk → entity →
-related entity", in one query (0.6.19). Several patterns, longer chains,
-quantifiers or searching a target variable are validation errors. Before 0.6.9 such queries, and any
+related entity", in one query (0.6.19). Longer chains, quantifiers or
+searching a target variable are validation errors. With several patterns in
+the `from` (#384), the first one must start at the searched variable and
+expands from the seeds; the others restrict where the search looks (see
+below). Before 0.6.9 such queries, and any
 malformed `similar_to`, were silently ignored and returned every row.
 `explain` prints the effective parameters (`SimilarTo:` / `Hybrid:` lines,
 the vector shown as `<literal dim=N>`), the strategy (`VECTOR SEARCH
@@ -585,6 +588,30 @@ It is only valid as a condition of the top-level `and`, next to `hybrid` or
 `similar_to` on the same variable. Anywhere else, with an unknown option, or
 with an unknown key, it is a named error. To filter rows by community without
 a search, write that pattern.
+
+**Search over several patterns (#384).** With more than one pattern in the
+`from`, the first one starts at the searched variable and expands from the
+seeds; every other pattern that reaches that variable, directly or through
+variables shared with other extra patterns, restricts where the search looks:
+
+```nql
+find r.nombre, i.nombre, score(r)
+from (r:Receta), (r)-[:USA]->(i:Ingrediente)
+where similar_to(r, vector = [...], model = "minilm", k = 5)
+  and i.temporada = "invierno"
+```
+
+returns the 5 recipes nearest to the vector **among those that use a winter
+ingredient**, one row per such ingredient. The parts of the `where` whose
+variables are all in those patterns (`i.temporada = "invierno"`) count for
+the universe. Written as one pattern, `from (r:Receta)-[:USA]->(i:Ingrediente)`,
+the same `where` is an expansion constraint: the 5 nearest recipes, and those
+without a winter ingredient give no row. A pattern that joins the first one
+through another variable (`(i)-[:IN_COMMUNITY]->(k)`) only filters rows.
+Rows come in seed order with `score(r)` in each, aggregations work over them,
+and `explain` prints a `Search universe from patterns:` line with the
+patterns and the size of the universe. The extra patterns are read in full,
+once; `Graph::max_join_rows` applies to their join.
 
 ---
 
