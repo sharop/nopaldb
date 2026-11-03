@@ -41,19 +41,29 @@ No son equivalentes. La primera da `k` resultados dentro del filtro siempre que 
   - las igualdades y listas `in` sobre `v` en el `and` raíz del `where` (`v.tenant = "t7"`, `v.kind in ["a", "b"]`, `v.id = "…"`, `v.id in […]`);
   - las propiedades inline del nodo `v`;
   - `in_community(v, key[, via = "T"])`: los miembros de una comunidad materializada, o los nodos con una arista `T` hacia uno de ellos. Es el mismo universo, como conjunto, que el patrón explícito por `IN_COMMUNITY`.
+  - desde #384, **los demás patrones del `from`** que llegan a `v`, directo o por variables que comparten entre ellos, con las partes del `and` raíz cuyas variables están todas en ellos y que leen una variable distinta de `v`: `v` tiene que tener una fila de esos patrones que cumpla esas partes. Los predicados que solo leen `v` siguen las reglas de esta lista (un rango sobre `v` sigue filtrando las filas; no pasa al universo porque otro patrón mencione `v`). Los patrones que se unen al primero por otra variable son restricciones de expansión.
 
   `score(v)`, `rank(v)` y los scores crudos se calculan en ese universo.
 - **Restricciones de expansión**: predicados sobre las otras variables del patrón (`e.kind = "lugar"`). Filtran las filas expandidas y **nunca cambian qué semillas elige la búsqueda**: `k` cuenta semillas. Una semilla cuyas expansiones fallan todas no produce filas, así que una consulta puede devolver menos de `k` semillas.
 - Todo lo demás se aplica a las filas de la búsqueda y nunca amplía el universo: rangos, `!=`, `not in`, `null`, funciones, predicados sobre otras variables y condiciones bajo `or`.
 - `k = N` acota las semillas. En un patrón, `LIMIT` acota las filas expandidas. Sin `k`, una consulta de un nodo usa su `LIMIT` y un patrón usa 10.
 - La búsqueda tiene que ser una condición del `and` raíz. Bajo `or` o una negación da error.
+- **Con varios patrones, el primero expande desde las semillas y los demás restringen dónde se busca** (#384). `v` tiene que ser el primer nodo del primer patrón. Las filas son la unión de todos los patrones, como sin búsqueda, en el orden de las semillas. Por eso el orden de los patrones importa cuando hay búsqueda, y la misma forma escrita como un patrón o como dos puede dar otras semillas:
+
+  ```text
+  from (r:Receta)-[:USA]->(i:Ingrediente) where similar_to(r, …, k = 5) and i.temporada = "invierno"
+      -- las 5 recetas más cercanas; las que no usan un ingrediente de invierno no dan filas
+  from (r:Receta), (r)-[:USA]->(i:Ingrediente) where similar_to(r, …, k = 5) and i.temporada = "invierno"
+      -- las 5 recetas más cercanas entre las que usan un ingrediente de invierno
+  ```
 
 Lo comprueban:
 - `nql_where_candidates_test::hybrid_returns_k_rows_inside_the_tenant`, `similar_to_returns_the_exact_top_k_inside_the_tenant`, `ids_are_the_universe_and_intersect`, `residual_predicates_still_filter_and_are_never_widened`, `a_search_must_be_a_root_conjunct` y `a_seeded_pattern_pushes_on_the_seed`;
 - `nql_vector_literal_test::explicit_k_wins_over_limit_and_limit_still_caps_rows`;
 - `nql_parens_and_literals_test::hybrid_and_a_parenthesised_or`;
 - `nql_in_community_test::the_universe_equals_the_explicit_pattern_as_a_set` e `in_community_intersects_with_id_lists`;
-- `candidate_set_test` (el universo de `search_hybrid(candidates=…)`).
+- `candidate_set_test` (el universo de `search_hybrid(candidates=…)`);
+- `nql_search_several_patterns_test` (los demás patrones del `from` como universo: fuerza bruta, `|semillas| = min(k, |universo|)`, un patrón contra dos, los predicados solo sobre `v`, patrones que no llegan a `v`, el mismo conjunto que `in_community`, orden de semillas con la unión reordenada, agregaciones).
 
 ## 3. Orden de evaluación
 
@@ -123,7 +133,6 @@ Comportamiento actual, fijado por los tests:
 
 Todo esto da un error con nombre, nunca un resultado distinto:
 
-- Varios patrones en el `from` junto con una búsqueda.
 - Sembrar desde una búsqueda una cadena de más de dos saltos.
 - Patrones `OPTIONAL`.
 - `distinct` con una columna calculada (`r.p * 2`) o con `order by` de una expresión (#269).

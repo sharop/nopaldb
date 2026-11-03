@@ -764,6 +764,12 @@ pub struct Executor<'a> {
     /// `rank(var)`, `text_score(var)` y `vector_score(var)`. Lo llena
     /// `vector_search_candidates`; vacío si la consulta no busca.
     search_scores: Mutex<HashMap<NodeId, SearchScores>>,
+    /// El universo que fijan los demás patrones del `from` cuando la consulta
+    /// busca con varios patrones (#384): la variable buscada y sus ids. Lo
+    /// pone `multi_pattern_sets` mientras siembra el primer patrón y lo lee
+    /// la búsqueda (`apply_pattern_universe`).
+    #[cfg(feature = "embeddings-index")]
+    pattern_universe: Mutex<Option<(String, HashSet<NodeId>)>>,
 }
 
 /// Lo que la búsqueda del WHERE sabe de un candidato (#228). `score` es lo
@@ -972,6 +978,8 @@ impl<'a> Executor<'a> {
             graph,
             path_profile: Mutex::new(None),
             search_scores: Mutex::new(HashMap::new()),
+            #[cfg(feature = "embeddings-index")]
+            pattern_universe: Mutex::new(None),
         }
     }
 
@@ -1735,19 +1743,6 @@ impl<'a> Executor<'a> {
     async fn execute_pattern_query(&self, query: Query) -> Result<QueryResult> {
         log::info!("Executing streaming pattern matching query");
 
-        // `similar_to`/`hybrid` solo se precomputan en el pipeline de un
-        // salto (`seeded_source_stream`); en cualquier otro camino el
-        // evaluador los pasaría como `true` y la consulta devolvería TODO en
-        // silencio (así era hasta 0.6.8). El validador ya lo rechaza; esto
-        // es la red de seguridad del ejecutor.
-        if let Some(kind) = where_vector_search(&query)
-            && query.from.patterns.len() > 1
-        {
-            return Err(NopalError::SemanticError(format!(
-                "{kind}: FROM with several patterns is not supported; search in a single pattern and join by id"
-            )));
-        }
-
         if query.from.patterns.len() > 1 {
             return self.execute_multi_pattern_query(query).await;
         }
@@ -2289,21 +2284,89 @@ impl<'a> Executor<'a> {
         // Hasta 0.10.5 se guardaba el producto entero y se filtraba al
         // final: `from (a:X), (b:X) where … limit 10` sobre 2000 nodos
         // ocupaba 10 GB. El `where` completo se vuelve a aplicar al final.
-        let plan = JoinFilterPlan::of(&query);
-        let order = join_order(&query, &plan.conjuncts);
+        let sets = self.multi_pattern_sets(&query).await?;
+        let joined_bindings = self.join_pattern_sets(&query, sets)?;
+
+        if is_aggregate_query(&query) {
+            return self.aggregate_bindings(joined_bindings, &query);
+        }
+        self.build_query_result_from_bindings(joined_bindings, &query)
+    }
+
+    /// Las filas de cada patrón del `from`, en su orden. Con una búsqueda
+    /// (#384), los demás patrones se leen sin ella, el grupo que llega a la
+    /// variable buscada fija el universo, y el primer patrón se siembra con
+    /// la búsqueda dentro de ese universo.
+    async fn multi_pattern_sets(&self, query: &Query) -> Result<Vec<Vec<LinearPatternBinding>>> {
+        #[cfg(feature = "embeddings-index")]
+        if let Some(var) = vector_search_variable(query) {
+            let others = without_searches(query, &var);
+            let mut sets = vec![Vec::new(); query.from.patterns.len()];
+            for (p, pattern) in query.from.patterns.iter().enumerate().skip(1) {
+                sets[p] = self.execute_pattern_bindings(&others, pattern).await?;
+            }
+            let universe = self.pattern_universe_of(query, &var, &sets)?.map(|(ids, _)| (var, ids));
+            *self.pattern_universe.lock().unwrap_or_else(|e| e.into_inner()) = universe;
+            let first = self.execute_pattern_bindings(query, &query.from.patterns[0]).await;
+            *self.pattern_universe.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            sets[0] = first?;
+            return Ok(sets);
+        }
+        let mut sets = Vec::with_capacity(query.from.patterns.len());
+        for pattern in &query.from.patterns {
+            sets.push(self.execute_pattern_bindings(query, pattern).await?);
+        }
+        Ok(sets)
+    }
+
+    /// Los ids de `var` que cumplen el grupo de patrones (2.º en adelante)
+    /// que llega a ella, con las partes del WHERE cuyas variables están
+    /// todas en el grupo (#384), y la descripción para EXPLAIN. `None` si
+    /// ningún patrón extra habla de `var`. `sets` trae las filas de cada
+    /// patrón, leídas sin la búsqueda.
+    #[cfg(feature = "embeddings-index")]
+    fn pattern_universe_of(
+        &self,
+        query: &Query,
+        var: &str,
+        sets: &[Vec<LinearPatternBinding>],
+    ) -> Result<Option<(HashSet<NodeId>, String)>> {
+        let Some(group) = UniverseGroup::of(query, var) else { return Ok(None) };
+        let sub = group.query(query);
+        let sub_sets: Vec<Vec<LinearPatternBinding>> = group.patterns.iter().map(|&p| sets[p].clone()).collect();
+        let rows = self.join_pattern_sets(&sub, sub_sets)?;
+        let mut ids = HashSet::new();
+        for row in rows {
+            let keep = match &sub.filter {
+                Some(f) => self.evaluate_linear_pattern_condition(&row, &f.condition)?,
+                None => true,
+            };
+            if keep && let Some(node) = row.node_vars.get(var) {
+                ids.insert(node.id);
+            }
+        }
+        let described = group.describe(var);
+        Ok(Some((ids, described)))
+    }
+
+    /// Une las filas de cada patrón en el orden de `join_order`, aplicando
+    /// cada parte del WHERE en cuanto sus variables están ligadas (#349).
+    fn join_pattern_sets(
+        &self,
+        query: &Query,
+        mut sets: Vec<Vec<LinearPatternBinding>>,
+    ) -> Result<Vec<LinearPatternBinding>> {
+        let plan = JoinFilterPlan::of(query);
+        let order = join_order(query, &plan.conjuncts);
         let reordered = order.iter().enumerate().any(|(i, p)| i != *p);
         let mut pending = plan.conjuncts;
         let max_rows = self.graph.max_join_rows();
-
-        let mut sets = Vec::with_capacity(order.len());
-        for (p, pattern) in query.from.patterns.iter().enumerate() {
-            let mut bindings = self.execute_pattern_bindings(&query, pattern).await?;
-            if reordered {
+        if reordered {
+            for (p, bindings) in sets.iter_mut().enumerate() {
                 for (i, b) in bindings.iter_mut().enumerate() {
                     b.origin = vec![(p, i)];
                 }
             }
-            sets.push(bindings);
         }
 
         let first = order[0];
@@ -2326,7 +2389,7 @@ impl<'a> Executor<'a> {
             // respuesta. Con los patrones reordenados no: las primeras filas
             // son otras hasta volver al orden del `from`.
             let stop_at = (step + 1 == order.len() && pending.is_empty() && plan.all_pushable && !reordered)
-                .then(|| early_limit(&query))
+                .then(|| early_limit(query))
                 .flatten();
             let keys = JoinKeys::of(&ready, &left_vars, &right_vars);
             joined_bindings = self.join_pattern_bindings(
@@ -2339,11 +2402,7 @@ impl<'a> Executor<'a> {
         if reordered {
             joined_bindings = in_from_order(joined_bindings, &sets);
         }
-
-        if is_aggregate_query(&query) {
-            return self.aggregate_bindings(joined_bindings, &query);
-        }
-        self.build_query_result_from_bindings(joined_bindings, &query)
+        Ok(joined_bindings)
     }
 
     async fn execute_linear_multihop_pattern_query(
@@ -2858,7 +2917,13 @@ impl<'a> Executor<'a> {
             let own_filters = source_pattern.variable.as_deref().map(|v| filters.of_var(v)).unwrap_or(&[]);
 
             let mut bindings = Vec::new();
-            let mut source_stream = operators::scan_nodes_stream(self.graph, source_pattern.label.as_deref()).await?;
+            // El patrón de la variable buscada se siembra con la búsqueda
+            // (#384, varios patrones); los demás leen su etiqueta.
+            let mut source_stream = if searches_from(query, source_pattern.variable.as_deref()) {
+                self.seeded_source_stream(query, source_pattern).await?
+            } else {
+                operators::scan_nodes_stream(self.graph, source_pattern.label.as_deref()).await?
+            };
             while let Some(node) = source_stream.next().await? {
                 if !self.node_matches_pattern(&node, source_pattern) {
                     continue;
@@ -6041,6 +6106,20 @@ impl<'a> Executor<'a> {
                             pushed.described.join(" and ")
                         ));
                     }
+                    // Los demás patrones del `from` como universo (#384).
+                    if query.from.patterns.len() > 1 && UniverseGroup::of(&query, &var).is_some() {
+                        let others = without_searches(&query, &var);
+                        let mut sets = vec![Vec::new(); query.from.patterns.len()];
+                        for (p, pattern) in query.from.patterns.iter().enumerate().skip(1) {
+                            sets[p] = self.execute_pattern_bindings(&others, pattern).await?;
+                        }
+                        if let Some((ids, described)) = self.pattern_universe_of(&query, &var, &sets)? {
+                            explanation.push_str(&format!(
+                                "\nSearch universe from patterns: top-k computed inside {described} ({} nodes); pattern 1 expands from the seeds",
+                                ids.len()
+                            ));
+                        }
+                    }
                 }
                 // In a pattern, `k` bounds the seeds and LIMIT the expanded
                 // rows (#231): say both, they are easy to confuse.
@@ -6470,6 +6549,7 @@ impl<'a> Executor<'a> {
         // el universo: el top-k se calcula dentro de ellos.
         let mut pushed = pushed_predicates(query, &call.variable);
         self.resolve_pushed_communities(&mut pushed).await?;
+        self.apply_pattern_universe(&call.variable, &mut pushed);
         let node_filter = crate::graph::hybrid::NodeFilter {
             label: label.clone(),
             eq: pushed.eq.clone(),
@@ -6506,6 +6586,21 @@ impl<'a> Executor<'a> {
             })
             .collect();
         Ok(Some(nodes))
+    }
+
+    /// Intersecta el universo de los demás patrones del `from` (#384) con los
+    /// `ids` del WHERE, si la consulta en curso lo fijó para `var`.
+    #[cfg(feature = "embeddings-index")]
+    fn apply_pattern_universe(&self, var: &str, pushed: &mut PushedPredicates) {
+        let guard = self.pattern_universe.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((v, ids)) = guard.as_ref()
+            && v == var
+        {
+            pushed.ids = Some(match pushed.ids.take() {
+                None => ids.clone(),
+                Some(cur) => cur.intersection(ids).copied().collect(),
+            });
+        }
     }
 
     /// Resuelve los `in_community(...)` empujados a ids de la comunidad (o de
@@ -6547,6 +6642,7 @@ impl<'a> Executor<'a> {
         // fase 2) son el universo de la búsqueda: el top-k se calcula dentro.
         let mut pushed = pushed_predicates(query, &call.variable);
         self.resolve_pushed_communities(&mut pushed).await?;
+        self.apply_pattern_universe(&call.variable, &mut pushed);
         let label = pattern_label_for(query, &call.variable);
         let filter = (label.is_some() || !pushed.eq.is_empty())
             .then(|| crate::graph::HybridFilter { label, props: pushed.eq.clone() });
@@ -7284,6 +7380,150 @@ fn pattern_variables(pattern: &Pattern) -> HashSet<String> {
             PatternElement::Relationship(r) => r.variable.clone(),
         })
         .collect()
+}
+
+/// ¿Busca la consulta (`similar_to`/`hybrid`) sobre `var`?
+fn searches_from(query: &Query, var: Option<&str>) -> bool {
+    #[cfg(feature = "embeddings-index")]
+    {
+        var.is_some() && vector_search_variable(query).as_deref() == var
+    }
+    #[cfg(not(feature = "embeddings-index"))]
+    {
+        let _ = (query, var);
+        false
+    }
+}
+
+/// ¿Llama `expr` a una búsqueda o a `in_community`? Son las partes del
+/// WHERE que solo resuelve la búsqueda del primer patrón.
+#[cfg(feature = "embeddings-index")]
+fn mentions_search(expr: &Expression) -> bool {
+    match expr {
+        Expression::FunctionCall { name, args } => {
+            ["similar_to", "hybrid", "in_community"].iter().any(|f| name.eq_ignore_ascii_case(f))
+                || args.iter().any(mentions_search)
+        }
+        Expression::BinaryOp { left, right, .. } => mentions_search(left) || mentions_search(right),
+        Expression::UnaryOp { expr, .. } => mentions_search(expr),
+        _ => false,
+    }
+}
+
+/// La consulta con la que se leen los demás patrones (#384): sin las partes
+/// del `and` raíz que buscan, y sin las que solo leen la variable buscada.
+/// Esas siguen las reglas de 2a: las igualdades e `in` ya están en el
+/// universo, y un rango o un `!=` sobre ella filtra las filas de la
+/// búsqueda, nunca el universo (contrato 2). El WHERE entero se vuelve a
+/// aplicar a cada fila.
+#[cfg(feature = "embeddings-index")]
+fn without_searches(query: &Query, var: &str) -> Query {
+    let mut q = query.clone();
+    if let Some(filter) = &query.filter {
+        let mut parts = Vec::new();
+        root_conjuncts(&filter.condition, &mut parts);
+        q.filter = and_all(parts.into_iter().filter(|e| !mentions_search(e) && !reads_only(e, var)).cloned())
+            .map(|condition| crate::query::nql::parser::ast::WhereClause { condition });
+    }
+    q
+}
+
+/// ¿Lee `expr` solo la variable `var`?
+#[cfg(feature = "embeddings-index")]
+fn reads_only(expr: &Expression, var: &str) -> bool {
+    let mut used = HashSet::new();
+    plain_variables(expr, &mut used) && used.len() == 1 && used.contains(var)
+}
+
+/// `a and b and …`; `None` sin partes.
+#[cfg(feature = "embeddings-index")]
+fn and_all(parts: impl Iterator<Item = Expression>) -> Option<Expression> {
+    parts.reduce(|left, right| Expression::BinaryOp {
+        left: Box::new(left),
+        op: BinaryOperator::And,
+        right: Box::new(right),
+    })
+}
+
+/// Los patrones del `from` (del 2.º en adelante) que llegan a la variable
+/// buscada, directo o por variables compartidas entre ellos, con las partes
+/// del WHERE cuyas variables están todas en ellos (#384). Son un predicado
+/// de grafo sobre la variable: el universo de la búsqueda. Los patrones que
+/// solo se unen al primero por otra variable no entran: son restricciones
+/// de expansión, como un WHERE sobre otra variable.
+#[cfg(feature = "embeddings-index")]
+struct UniverseGroup<'q> {
+    patterns: Vec<usize>,
+    conjuncts: Vec<&'q Expression>,
+}
+
+#[cfg(feature = "embeddings-index")]
+impl<'q> UniverseGroup<'q> {
+    fn of(query: &'q Query, var: &str) -> Option<Self> {
+        let vars: Vec<HashSet<String>> = query.from.patterns.iter().map(pattern_variables).collect();
+        let mut patterns: Vec<usize> = (1..vars.len()).filter(|&p| vars[p].contains(var)).collect();
+        if patterns.is_empty() {
+            return None;
+        }
+        let mut bound: HashSet<String> = patterns.iter().flat_map(|&p| vars[p].iter().cloned()).collect();
+        loop {
+            let next: Vec<usize> =
+                (1..vars.len()).filter(|p| !patterns.contains(p) && !vars[*p].is_disjoint(&bound)).collect();
+            if next.is_empty() {
+                break;
+            }
+            for p in next {
+                bound.extend(vars[p].iter().cloned());
+                patterns.push(p);
+            }
+        }
+        patterns.sort_unstable();
+        let mut conjuncts = Vec::new();
+        if let Some(filter) = &query.filter {
+            let mut parts = Vec::new();
+            root_conjuncts(&filter.condition, &mut parts);
+            for part in parts {
+                let mut used = HashSet::new();
+                // Las que solo leen `var` siguen las reglas de 2a.
+                if plain_variables(part, &mut used)
+                    && !used.is_empty()
+                    && used.is_subset(&bound)
+                    && !(used.len() == 1 && used.contains(var))
+                {
+                    conjuncts.push(part);
+                }
+            }
+        }
+        Some(Self { patterns, conjuncts })
+    }
+
+    /// La consulta que lee solo el grupo, con sus partes del WHERE.
+    fn query(&self, query: &Query) -> Query {
+        let mut q = query.clone();
+        q.from.patterns = self.patterns.iter().map(|&p| query.from.patterns[p].clone()).collect();
+        q.filter = and_all(self.conjuncts.iter().map(|e| (*e).clone())).map(|condition| crate::query::nql::parser::ast::WhereClause { condition });
+        q.group_by = None;
+        q.having = None;
+        q.order_by = None;
+        q.limit = None;
+        q.return_expr = None;
+        q.export = None;
+        q
+    }
+
+    fn describe(&self, var: &str) -> String {
+        let names: Vec<String> = self.patterns.iter().map(|p| (p + 1).to_string()).collect();
+        let mut text = format!(
+            "the nodes of {var} that match pattern{} {}",
+            if names.len() > 1 { "s" } else { "" },
+            names.join(", ")
+        );
+        if !self.conjuncts.is_empty() {
+            let conds: Vec<String> = self.conjuncts.iter().map(|e| e.to_string()).collect();
+            text.push_str(&format!(" with {}", conds.join(" and ")));
+        }
+        text
+    }
 }
 
 /// Lo que EXPLAIN dice de la unión de varios patrones (#349): qué partes del

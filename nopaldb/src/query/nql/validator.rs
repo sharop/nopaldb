@@ -956,12 +956,20 @@ impl SemanticValidator {
     /// con nombre: antes de 0.6.9 esas consultas devolvían todo el grafo en
     /// silencio porque el predicado pasaba como `true`.
     fn validate_vector_search_placement(&self, fname: &str, variable: &str, query: &Query) -> Result<()> {
-        if query.from.patterns.len() > 1 {
-            return Err(NopalError::SemanticError(format!(
-                "{fname}: FROM with several patterns is not supported; search in a single pattern and join by id"
-            )));
-        }
         let Some(pattern) = query.from.patterns.first() else { return Ok(()) };
+        // Con varios patrones (#384), la búsqueda siembra el primero y los
+        // demás fijan el universo: la variable buscada abre el primero.
+        if query.from.patterns.len() > 1 {
+            let first_var = match pattern.elements.first() {
+                Some(PatternElement::Node(n)) => n.variable.as_deref(),
+                _ => None,
+            };
+            if first_var != Some(variable) {
+                return Err(NopalError::SemanticError(format!(
+                    "{fname}: with several patterns in FROM, `{variable}` must be the first node of the first pattern (the search seeds it; the other patterns define where it searches)"
+                )));
+            }
+        }
         if !pattern.elements.iter().any(|e| matches!(e, PatternElement::Relationship(_))) {
             return Ok(());
         }

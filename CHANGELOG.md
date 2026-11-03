@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **NQL: búsqueda con varios patrones en el `from`** (#384, #214 fase 2c).
+  `hybrid(v, …)` y `similar_to(v, …)` ya no dan error con más de un patrón:
+  el primero empieza en `v` y expande desde las semillas, y los demás que
+  llegan a `v` (directo o por variables compartidas entre ellos), con las
+  partes del `where` que solo leen sus variables, son el universo de la
+  búsqueda: `k` cuenta semillas dentro de él. Los patrones que se unen al
+  primero por otra variable solo filtran filas. Filas en el orden de las
+  semillas con `score(v)`, agregaciones, y `explain` con la línea
+  `Search universe from patterns:`. Contrato 2 de `NQL_SEMANTICS.md`; guía
+  0.10 §18.
 - **Gate de calidad de recuperación** (#212, parte 3): el workflow
   `retrieval-quality` (diario, y en los PR que tocan el bench, el script de
   preparación o la línea base) corre `retrieval_quality` sobre

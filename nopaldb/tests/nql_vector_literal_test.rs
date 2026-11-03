@@ -143,7 +143,8 @@ async fn malformed_calls_are_errors_not_every_row() {
         (r#"find e.name from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:MENTIONS]->(f:Entity)-[:MENTIONS]->(g:Entity) where similar_to(c, vector = [1, 0, 0], model = "minilm")"#, "longer chains"),
         (r#"find e.name from (c:Chunk)-[:MENTIONS]->{1,2}(e:Entity) where similar_to(c, vector = [1, 0, 0], model = "minilm")"#, "quantifiers"),
         (r#"find e.name from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:MENTIONS]->{1,2}(f:Entity) where similar_to(c, vector = [1, 0, 0], model = "minilm")"#, "quantifiers"),
-        (r#"find e.name from (c:Chunk), (e:Entity) where similar_to(c, vector = [1, 0, 0], model = "minilm")"#, "several patterns"),
+        // Con varios patrones (#384) la variable buscada abre el primero.
+        (r#"find e.name from (e:Entity), (c:Chunk) where similar_to(c, vector = [1, 0, 0], model = "minilm")"#, "first node of the first pattern"),
     ];
     for (nql, needle) in cases {
         let err = g.execute_nql(nql).await.unwrap_err().to_string();

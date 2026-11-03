@@ -383,3 +383,21 @@ and `hybrid(...)` without `ef_search`.
 Results can change: a vector search may now return neighbours it missed
 before. To keep the old speed, pass `ef_search=30` (Python), `ef_search = 30`
 (NQL) or `HybridQuery { ef_search: Some(30), .. }` (Rust).
+
+## 18. From 0.10.13 to 0.10.14: a search with several patterns
+
+`hybrid(v, …)` and `similar_to(v, …)` with more than one pattern in the
+`from` were a named error ("FROM with several patterns is not supported");
+now they run ([#384](https://github.com/sharop/nopaldb/issues/384)). The first
+pattern must start at `v` and expands from the seeds; the other patterns
+that reach `v` define the universe where the search computes its top-k
+([NQL semantics § 2](NQL_SEMANTICS.md#2-search-the-universe-seed-constraints-and-expansion-constraints)).
+Nothing that worked before changes.
+
+| query | 0.10.13 | 0.10.14 |
+|---|---|---|
+| `from (r:Receta), (r)-[:USA]->(i) where similar_to(r, …, k = 5) and i.temporada = "invierno"` | error | the 5 nearest recipes that use a winter ingredient |
+| the same with `v` outside the first node of the first pattern | error | error, with a message that says where `v` goes |
+
+If you worked around the error by searching first and joining by id, the
+universe now does it in one query, with `k` counted inside it.
