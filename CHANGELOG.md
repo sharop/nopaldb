@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.14] - unreleased
+
+**NQL busca con varios patrones en el `from`** (#384, #214 fase 2c): el
+primer patrón expande desde las semillas y los demás que llegan a la
+variable buscada son el universo de la búsqueda, así que `k` cuenta
+semillas dentro de ellos (§18 de `docs/UPGRADING_0.10.md`). Lo que antes
+era un error con nombre ahora responde; nada de lo que ya funcionaba
+cambia. Y un gate nightly de calidad de recuperación con 2WikiMultiHopQA
+(#212). Sin cambio de formato en disco.
 
 ### Added
 - **NQL: búsqueda con varios patrones en el `from`** (#384, #214 fase 2c).
