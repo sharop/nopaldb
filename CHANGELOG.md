@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.10.14] - unreleased
+## [0.10.14] - 2026-11-04
 
 **NQL busca con varios patrones en el `from`** (#384, #214 fase 2c): el
 primer patrón expande desde las semillas y los demás que llegan a la
