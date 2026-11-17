@@ -15,6 +15,8 @@
 //!   buscar + expandir en una consulta con `similar_to` y con `hybrid` sobre
 //!   el vector literal (0.6.10, #174: `hybrid` ya no recorre la etiqueta);
 //!   `hybrid` sembrando dos saltos con `score(c)` (#231)
+//!   y `similar_to` con dos patrones en el `from` cuyo universo fija una
+//!   igualdad en la entidad (#388)
 //!
 //! Fixture: `NOPALDB_BENCH_SCALE` chunks (default 100_000) con vectores de
 //! 64 dims y texto, un 20 % de entidades, 3 `MENTIONS` por chunk y 2
@@ -373,6 +375,12 @@ fn bench_retrieval(c: &mut Criterion) {
     let q_ids_two_hops_filtered = format!(
         "find c.text, f.name from (c:Chunk)-[:MENTIONS]->(e:Entity)-[:RELATED]->(f:Entity) where c.id in [{id_list}] and e.kind = \"lugar\""
     );
+    // #388 (#214 fase 2c-2): el segundo patrón fija el universo. Se lee
+    // desde la entidad (`e.name = …`) y la unión, desde las semillas; antes
+    // se leía completo hacia adelante (todos los chunks).
+    let q_similar_two_patterns = format!(
+        "find c.text, e.name from (c:Chunk), (c)-[:MENTIONS]->(e:Entity) where similar_to(c, vector = [{literal}], model = \"{MODEL}\", k = {K}) and e.name in [\"entity-7\", \"entity-8\"]"
+    );
     for (name, q) in [
         ("id_lookup", &q_id),
         ("id_in_10", &q_in),
@@ -382,6 +390,7 @@ fn bench_retrieval(c: &mut Criterion) {
         ("hybrid_two_hops", &q_hybrid_two_hops),
         ("hybrid_k100_two_hops_filtered", &q_hybrid_two_hops_filtered),
         ("ids_two_hops_filtered", &q_ids_two_hops_filtered),
+        ("similar_to_two_patterns_selective", &q_similar_two_patterns),
     ] {
         g.bench_with_input(BenchmarkId::new(name, n), &n, |b, _| {
             b.to_async(&rt).iter(|| async { black_box(fx.graph.execute_nql(q).await.expect("nql")) })

@@ -2301,15 +2301,32 @@ impl<'a> Executor<'a> {
         #[cfg(feature = "embeddings-index")]
         if let Some(var) = vector_search_variable(query) {
             let others = without_searches(query, &var);
-            let mut sets = vec![Vec::new(); query.from.patterns.len()];
-            for (p, pattern) in query.from.patterns.iter().enumerate().skip(1) {
-                sets[p] = self.execute_pattern_bindings(&others, pattern).await?;
-            }
-            let universe = self.pattern_universe_of(query, &var, &sets)?.map(|(ids, _)| (var, ids));
+            let mut sets = self.extra_pattern_sets(query, &others, &var).await?;
+            let universe = self.pattern_universe_of(query, &var, &sets)?.map(|(ids, _)| (var.clone(), ids));
             *self.pattern_universe.lock().unwrap_or_else(|e| e.into_inner()) = universe;
             let first = self.execute_pattern_bindings(query, &query.from.patterns[0]).await;
             *self.pattern_universe.lock().unwrap_or_else(|e| e.into_inner()) = None;
             sets[0] = first?;
+            // Para la unión, los patrones extra que empiezan en `var` se leen
+            // desde las semillas (#388): las filas de las demás nunca se unen.
+            let seeded: Vec<usize> =
+                (1..sets.len()).filter(|&p| seedable_from(&query.from.patterns[p], &var)).collect();
+            if !seeded.is_empty() {
+                let mut seen = HashSet::new();
+                let seeds: Vec<NodeId> = sets[0]
+                    .iter()
+                    .filter_map(|b| b.node_vars.get(&var).map(|n| n.id))
+                    .filter(|id| seen.insert(*id))
+                    .collect();
+                let from_seeds = with_ids(&others, &var, &seeds);
+                for p in seeded {
+                    sets[p] = if seeds.is_empty() {
+                        Vec::new()
+                    } else {
+                        self.execute_pattern_bindings(&from_seeds, &query.from.patterns[p]).await?
+                    };
+                }
+            }
             return Ok(sets);
         }
         let mut sets = Vec::with_capacity(query.from.patterns.len());
@@ -2317,6 +2334,70 @@ impl<'a> Executor<'a> {
             sets.push(self.execute_pattern_bindings(query, pattern).await?);
         }
         Ok(sets)
+    }
+
+    /// Las filas de los patrones extra (2.º en adelante; el 1.º queda vacío),
+    /// leídas sin la búsqueda para sacar el universo (#384). Un patrón que
+    /// empieza en `var` y cuyo otro extremo tiene una igualdad o un `in` se
+    /// lee desde ese extremo (#388): hacia adelante recorrería toda la
+    /// etiqueta de `var` para quedarse con unos cuantos. Sus filas solo
+    /// sirven para el universo, que es un conjunto; la unión las vuelve a
+    /// leer desde las semillas.
+    #[cfg(feature = "embeddings-index")]
+    async fn extra_pattern_sets(
+        &self,
+        query: &Query,
+        others: &Query,
+        var: &str,
+    ) -> Result<Vec<Vec<LinearPatternBinding>>> {
+        let mut sets = vec![Vec::new(); query.from.patterns.len()];
+        for (p, pattern) in query.from.patterns.iter().enumerate().skip(1) {
+            let pattern = match self.reversed_for_universe(others, pattern, var) {
+                Some(reversed) => reversed,
+                None => pattern.clone(),
+            };
+            sets[p] = self.execute_pattern_bindings(others, &pattern).await?;
+        }
+        Ok(sets)
+    }
+
+    /// `pattern` escrito desde su otro extremo, si conviene leerlo así para
+    /// el universo (#388): empieza en `var`, sus saltos son fijos y en una
+    /// dirección, y el último nodo tiene etiqueta y una igualdad o un `in`
+    /// (del `where` o inline) que `var` no tiene. Sin estadísticas por
+    /// etiqueta, esa condición es la que asegura leer menos: la regla es
+    /// conservadora y deja todo lo demás como estaba.
+    #[cfg(feature = "embeddings-index")]
+    fn reversed_for_universe(&self, others: &Query, pattern: &Pattern, var: &str) -> Option<Pattern> {
+        if !seedable_from(pattern, var)
+            || self.query_uses_path_metadata(others)
+            || self.query_uses_quoted_path_vm(others)
+        {
+            return None;
+        }
+        let PatternElement::Node(first) = &pattern.elements[0] else { return None };
+        let PatternElement::Node(last) = pattern.elements.last()? else { return None };
+        let far = last.variable.as_deref();
+        let far_is_selective = !last.properties.is_empty() || far.is_some_and(|f| has_eq_or_in(others, f));
+        if !first.properties.is_empty() || last.label.is_none() || far == Some(var) || !far_is_selective {
+            return None;
+        }
+        let mut elements = Vec::with_capacity(pattern.elements.len());
+        for element in pattern.elements.iter().rev() {
+            elements.push(match element {
+                PatternElement::Relationship(r) => {
+                    let mut r = r.clone();
+                    r.direction = match r.direction {
+                        Direction::Outgoing => Direction::Incoming,
+                        Direction::Incoming => Direction::Outgoing,
+                        Direction::Bidirectional => return None,
+                    };
+                    PatternElement::Relationship(r)
+                }
+                node => node.clone(),
+            });
+        }
+        Some(Pattern { elements })
     }
 
     /// Los ids de `var` que cumplen el grupo de patrones (2.º en adelante)
@@ -6109,15 +6190,35 @@ impl<'a> Executor<'a> {
                     // Los demás patrones del `from` como universo (#384).
                     if query.from.patterns.len() > 1 && UniverseGroup::of(&query, &var).is_some() {
                         let others = without_searches(&query, &var);
-                        let mut sets = vec![Vec::new(); query.from.patterns.len()];
-                        for (p, pattern) in query.from.patterns.iter().enumerate().skip(1) {
-                            sets[p] = self.execute_pattern_bindings(&others, pattern).await?;
-                        }
+                        let sets = self.extra_pattern_sets(&query, &others, &var).await?;
                         if let Some((ids, described)) = self.pattern_universe_of(&query, &var, &sets)? {
                             explanation.push_str(&format!(
                                 "\nSearch universe from patterns: top-k computed inside {described} ({} nodes); pattern 1 expands from the seeds",
                                 ids.len()
                             ));
+                        }
+                        // Cómo se lee cada patrón extra (#388).
+                        for (p, pattern) in query.from.patterns.iter().enumerate().skip(1) {
+                            if self.reversed_for_universe(&others, pattern, &var).is_some() {
+                                let far = match pattern.elements.last() {
+                                    Some(PatternElement::Node(n)) => n
+                                        .variable
+                                        .clone()
+                                        .or_else(|| n.label.as_ref().map(|l| format!(":{l}")))
+                                        .unwrap_or_default(),
+                                    _ => String::new(),
+                                };
+                                explanation.push_str(&format!(
+                                    "\nPattern {}: read from {far} for the universe",
+                                    p + 1
+                                ));
+                            }
+                            if seedable_from(pattern, &var) {
+                                explanation.push_str(&format!(
+                                    "\nPattern {}: read again from the seeds for the join",
+                                    p + 1
+                                ));
+                            }
                         }
                     }
                 }
@@ -7425,6 +7526,55 @@ fn without_searches(query: &Query, var: &str) -> Query {
         q.filter = and_all(parts.into_iter().filter(|e| !mentions_search(e) && !reads_only(e, var)).cloned())
             .map(|condition| crate::query::nql::parser::ast::WhereClause { condition });
     }
+    q
+}
+
+/// ¿Empieza `pattern` en `var` con saltos fijos? Entonces leerlo desde unos
+/// ids de `var` da, para cada uno, las mismas filas en el mismo orden que
+/// leerlo completo (#388): las de un mismo origen salen juntas y en el orden
+/// de sus aristas. Eso depende de que `expand_linear_hop` recorra las filas
+/// en orden y emita juntas las de cada una; si ese ciclo se paraleliza, el
+/// orden se rompe y lo detecta
+/// `reading_from_the_selective_end_gives_the_same_rows_in_the_same_order`.
+/// Con cuantificadores no se supone.
+#[cfg(feature = "embeddings-index")]
+fn seedable_from(pattern: &Pattern, var: &str) -> bool {
+    matches!(pattern.elements.first(), Some(PatternElement::Node(n)) if n.variable.as_deref() == Some(var))
+        && pattern
+            .elements
+            .iter()
+            .all(|e| !matches!(e, PatternElement::Relationship(r) if r.quantifier.is_some()))
+}
+
+/// ¿Tiene el `and` raíz del WHERE un `var.prop = literal` o un
+/// `var.prop in [literales]`?
+#[cfg(feature = "embeddings-index")]
+fn has_eq_or_in(query: &Query, var: &str) -> bool {
+    let Some(filter) = &query.filter else { return false };
+    let mut parts = Vec::new();
+    root_conjuncts(&filter.condition, &mut parts);
+    parts.iter().any(|part| {
+        matches!(part, Expression::BinaryOp { left, op: BinaryOperator::Eq | BinaryOperator::In, right }
+            if matches!(left.as_ref(), Expression::Property { variable, .. } if variable == var)
+                && matches!(right.as_ref(), Expression::Literal(_)))
+    })
+}
+
+/// `query` con `var.id in [ids]` delante del WHERE, para que la lectura
+/// del patrón empiece en esos nodos (`pattern_seed_ids` elige la condición
+/// de `id` más a la izquierda).
+#[cfg(feature = "embeddings-index")]
+fn with_ids(query: &Query, var: &str, ids: &[NodeId]) -> Query {
+    let restriction = Expression::BinaryOp {
+        left: Box::new(Expression::Property { variable: var.to_string(), property: "id".to_string() }),
+        op: BinaryOperator::In,
+        right: Box::new(Expression::Literal(PropertyValue::List(
+            ids.iter().map(|id| PropertyValue::String(id.to_string())).collect(),
+        ))),
+    };
+    let mut q = query.clone();
+    q.filter = and_all(std::iter::once(restriction).chain(query.filter.iter().map(|f| f.condition.clone())))
+        .map(|condition| crate::query::nql::parser::ast::WhereClause { condition });
     q
 }
 

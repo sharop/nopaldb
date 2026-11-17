@@ -623,8 +623,16 @@ otra variable (`(i)-[:IN_COMMUNITY]->(k)`) solo filtra filas. Las filas
 salen en el orden de las semillas con `score(r)` en cada una, las
 agregaciones funcionan sobre ellas, y `explain` imprime una línea
 `Search universe from patterns:` con los patrones y el tamaño del universo
-(para saber el tamaño, `explain` lee esos patrones). Los patrones extra se
-leen completos, una vez; a su unión le aplica `Graph::max_join_rows`.
+(para saber el tamaño, `explain` lee esos patrones). Cada patrón extra se
+lee una vez para el universo: desde su otro extremo cuando empieza en la
+variable buscada, sus saltos son fijos y en una dirección, y ese extremo
+tiene etiqueta y una igualdad o un `in` (`i.temporada = "invierno"`);
+completo si no. Un patrón extra que empieza en la variable buscada y no tiene
+cuantificadores se vuelve a leer desde las semillas para la unión (#388).
+`explain` dice `Pattern N: read from i for the universe` y
+`Pattern N: read again from the seeds for the join`. Las filas y su orden son
+los mismos de las dos maneras. A la
+unión de los patrones extra le aplica `Graph::max_join_rows`.
 
 ---
 

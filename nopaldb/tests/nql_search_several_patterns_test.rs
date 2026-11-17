@@ -410,3 +410,101 @@ async fn misplaced_searches_stay_named_errors() {
     }
 }
 
+
+/// The rows of `query` (with a search, `k` seeds) against the same `from`
+/// and `where` without the search, read from the seeds by id (#388): for
+/// each seed, in seed order, the oracle's rows of that seed in its order.
+/// `cols` are the columns compared.
+async fn assert_rows_match_the_plain_join(fx: &Fx, from: &str, cond: &str, k: usize) {
+    let cols = "r.id, i.nombre";
+    let searched = run(fx, &format!("find {cols} from {from} where {} and {cond}", similar(k))).await;
+    let order = seeds(&searched);
+    assert!(!order.is_empty(), "{from} {cond}");
+    let ids = order.iter().map(|id| format!("\"{id}\"")).collect::<Vec<_>>().join(", ");
+    let plain = run(fx, &format!("find {cols} from {from} where r.id in [{ids}] and {cond}")).await;
+    let mut want = Vec::new();
+    for seed in &order {
+        want.extend(plain.iter().filter(|r| id_of(r.get("r.id")) == *seed).cloned());
+    }
+    assert_eq!(searched, want, "{from} {cond}");
+    assert!(
+        order.iter().any(|s| searched.iter().filter(|r| id_of(r.get("r.id")) == *s).count() > 1),
+        "some seed must have several rows: {from} {cond}"
+    );
+}
+
+#[tokio::test]
+async fn reading_from_the_selective_end_gives_the_same_rows_in_the_same_order() {
+    // `i.temporada in […]` puts the universe read on the ingredient end and
+    // the join read on the seeds (#388); recipes with `i % 4 == 0` use two
+    // ingredients, so a seed has several rows.
+    let fx = fixture().await;
+    let from = "(r:Receta), (r)-[:USA]->(i:Ingrediente)";
+    assert_rows_match_the_plain_join(&fx, from, r#"i.temporada in ["invierno", "verano"]"#, 20).await;
+    // Inline properties on the far end, and an equality.
+    assert_rows_match_the_plain_join(&fx, "(r:Receta), (r)-[:USA]->(i:Ingrediente {temporada: \"verano\"})", "r.n >= 0", 30).await;
+    // No predicate on the far end: read forward, joined from the seeds.
+    assert_rows_match_the_plain_join(&fx, from, "r.n >= 0", 20).await;
+    // A bidirectional hop: joined from the seeds, never read backwards.
+    assert_rows_match_the_plain_join(&fx, "(r:Receta), (r)<-[:USA]->(i:Ingrediente)", r#"i.temporada in ["invierno", "verano"]"#, 20).await;
+}
+
+#[tokio::test]
+async fn a_two_hop_pattern_read_from_its_far_end_keeps_the_universe() {
+    let fx = fixture().await;
+    let q = format!(
+        r#"find r.id from (r:Receta), (r)-[:USA]->(i:Ingrediente)-[:IN_COMMUNITY]->(k:Community) where {} and k.key = "{}""#,
+        similar(1000),
+        fx.key
+    );
+    // Brute force: the recipes that use an ingredient with an even index.
+    let universe: HashSet<NodeId> = fx
+        .recipe
+        .iter()
+        .filter(|(_, i)| ingredients_of(**i).into_iter().any(|j| j % 2 == 0))
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(seeds(&run(&fx, &q).await), exact_top(&fx, &universe, 1000));
+    let plan = explain(&fx, &format!("explain {q}")).await;
+    assert!(plan.contains("Pattern 2: read from k for the universe"), "{plan}");
+    assert!(plan.contains("Pattern 2: read again from the seeds for the join"), "{plan}");
+}
+
+#[tokio::test]
+async fn explain_says_how_each_extra_pattern_is_read() {
+    let fx = fixture().await;
+    let selective = format!(
+        r#"explain find r.id from (r:Receta), (r)-[:USA]->(i:Ingrediente) where {} and i.temporada = "invierno""#,
+        similar(5)
+    );
+    let plan = explain(&fx, &selective).await;
+    assert!(plan.contains("Pattern 2: read from i for the universe"), "{plan}");
+    assert!(plan.contains("Pattern 2: read again from the seeds for the join"), "{plan}");
+
+    // A range is not an equality: the pattern is read forward.
+    let range = format!(
+        r#"explain find r.id from (r:Receta), (r)-[:USA]->(i:Ingrediente) where {} and i.nombre > "ing5""#,
+        similar(5)
+    );
+    let plan = explain(&fx, &range).await;
+    assert!(!plan.contains("for the universe"), "{plan}");
+    assert!(plan.contains("Pattern 2: read again from the seeds for the join"), "{plan}");
+
+    // A bidirectional hop is not read backwards, but the join still reads it
+    // from the seeds.
+    let both = format!(
+        r#"explain find r.id from (r:Receta), (r)<-[:DE]->(g:Region) where {} and g.nombre in ["region0", "region1"]"#,
+        similar(5)
+    );
+    let plan = explain(&fx, &both).await;
+    assert!(!plan.contains("for the universe"), "{plan}");
+    assert!(plan.contains("Pattern 2: read again from the seeds for the join"), "{plan}");
+
+    // A pattern that does not start at `r` is read as written.
+    let other = format!(
+        r#"explain find r.id from (r:Receta), (i:Ingrediente)<-[:USA]-(r) where {} and i.temporada = "invierno""#,
+        similar(5)
+    );
+    let plan = explain(&fx, &other).await;
+    assert!(!plan.contains("Pattern 2: read"), "{plan}");
+}
