@@ -612,8 +612,15 @@ through another variable (`(i)-[:IN_COMMUNITY]->(k)`) only filters rows.
 Rows come in seed order with `score(r)` in each, aggregations work over them,
 and `explain` prints a `Search universe from patterns:` line with the
 patterns and the size of the universe (to know the size, `explain` reads
-those patterns). The extra patterns are read in full, once;
-`Graph::max_join_rows` applies to their join.
+those patterns). Each extra pattern is read once for the universe: from its
+other end when it starts at the searched variable, its hops are fixed and in
+one direction, and that end has a label and an equality or `in`
+(`i.temporada = "invierno"`); in full otherwise. An extra pattern that starts
+at the searched variable without quantifiers is read again from the seeds for
+the join (#388). `explain` says `Pattern N: read from i for the universe` and
+`Pattern N: read again from the seeds for the join`. The rows and their order
+are the same either way.
+`Graph::max_join_rows` applies to the join of the extra patterns.
 
 ---
 

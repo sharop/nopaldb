@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **NQL: la búsqueda con varios patrones ya no lee completo cada patrón
+  extra** (#388, #214 fase 2c-2). Un patrón extra que empieza en la variable
+  buscada, con saltos fijos en una dirección, se lee desde su otro extremo
+  para sacar el universo cuando ese extremo tiene etiqueta y una igualdad o
+  un `in`; y todo patrón extra que empieza en ella sin cuantificadores se
+  vuelve a leer desde las semillas para la unión. Mismas filas en el mismo
+  orden. Con 100k chunks y un universo del 1 %,
+  `from (c:Chunk), (c)-[:MENTIONS]->(e:Entity) where similar_to(c, …) and
+  e.kind = "lugar"` baja de 175 ms a 5 ms; la fila nueva del bench
+  `retrieval` (`nql/similar_to_two_patterns_selective`, 20k entidades sin
+  índice), de 766 a 32 ms. `explain` dice cómo se lee cada patrón extra.
+  Sin cambio de semántica ni de formato en disco.
+
+---
+
 ## [0.10.14] - 2026-11-04
 
 **NQL busca con varios patrones en el `from`** (#384, #214 fase 2c): el
