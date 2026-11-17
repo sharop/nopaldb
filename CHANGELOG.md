@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.15] - unreleased
+
+**La búsqueda NQL con varios patrones en el `from` ya no lee completo cada
+patrón extra** (#388, #214 fase 2c-2): con un universo del 1 % sobre 100k
+chunks pasa de 175 ms a 5 ms. Mismas filas en el mismo orden; sin cambio de
+semántica ni de formato en disco.
 
 ### Changed
 - **NQL: la búsqueda con varios patrones ya no lee completo cada patrón
