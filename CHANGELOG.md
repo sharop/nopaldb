@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.10.15] - unreleased
+## [0.10.15] - 2026-11-17
 
 **La búsqueda NQL con varios patrones en el `from` ya no lee completo cada
 patrón extra** (#388, #214 fase 2c-2): con un universo del 1 % sobre 100k
