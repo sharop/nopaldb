@@ -63,6 +63,11 @@ jobs:
       - name: Check the HNSW index without hybrid
         run: cargo check -p nopaldb --features embeddings-index
 
+      # `reasoner` sin `owl-import` (lo que usa nopaldb-mcp) no compiló de
+      # 0.10.2 a 0.10.15: `find … at` copiaba prefijos RDF bajo `reasoner`.
+      - name: Check the reasoner without the Turtle import
+        run: cargo check -p nopaldb --features reasoner
+
       # Los ejemplos no los compilaba nadie y dos dejaron de compilar.
       - name: Examples compile-check
         run: cargo check -p nopaldb --features full --examples
