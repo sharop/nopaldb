@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.16] - unreleased
+
+**El crate vuelve a compilar con `reasoner` sin `owl-import`** (#393), la
+combinación que usa `nopaldb-mcp`. Sin cambio de API, semántica ni formato
+en disco.
 
 ### Fixed
 - **El crate no compilaba con `reasoner` sin `owl-import`** (desde 0.10.2).
