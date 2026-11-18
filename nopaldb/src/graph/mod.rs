@@ -2077,14 +2077,17 @@ impl Graph {
         // reconstruirla aquí darían `false` en el pasado sin aviso. Los
         // prefijos RDF (para nombrar clases como `prefijo:Local`) no tienen
         // versión, pero el import solo los añade: los actuales sirven.
-        #[cfg(feature = "reasoner")]
+        // Solo el import de Turtle escribe prefijos: sin `owl-import` no hay
+        // catálogo que copiar, y la constante no existe.
+        #[cfg(feature = "owl-import")]
         {
             use crate::storage::META_RDF_PREFIXES;
             if let Some(bytes) = self.storage.get_meta_bytes(META_RDF_PREFIXES).await? {
                 graph.storage.put_meta_bytes(META_RDF_PREFIXES, &bytes).await?;
             }
-            graph.rebuild_taxonomy_from_graph().await?;
         }
+        #[cfg(feature = "reasoner")]
+        graph.rebuild_taxonomy_from_graph().await?;
         // El tope de la unión es del grafo que consulta, no del perfil del
         // grafo materializado en memoria.
         graph.set_max_join_rows(self.max_join_rows());

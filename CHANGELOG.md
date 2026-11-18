@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **El crate no compilaba con `reasoner` sin `owl-import`** (desde 0.10.2).
+  `find … at` copiaba el catálogo de prefijos RDF, que solo existe con
+  `owl-import`, bajo el gate de `reasoner`. Ahora la copia va bajo
+  `owl-import` y la reconstrucción de la taxonomía sigue bajo `reasoner`.
+  Afectaba a quien usara esa combinación, como `nopaldb-mcp`. CI compila
+  ahora `--features reasoner`.
+
 ## [0.10.15] - 2026-11-17
 
 **La búsqueda NQL con varios patrones en el `from` ya no lee completo cada
