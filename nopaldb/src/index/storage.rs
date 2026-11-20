@@ -54,6 +54,7 @@ mod tests {
                 index_type: IndexType::Hash,
                 created_at: chrono::Utc::now(),
                 size: 1000,
+                unique: false,
             },
             IndexMetadata {
                 name: "Person_age".to_string(),
@@ -62,6 +63,7 @@ mod tests {
                 index_type: IndexType::BTree,
                 created_at: chrono::Utc::now(),
                 size: 500,
+                unique: false,
             },
         ];
 

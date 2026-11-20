@@ -182,6 +182,11 @@ pub enum NopalError {
     #[error("Ambiguous upsert key: {0}")]
     AmbiguousUpsertKey(String),
 
+    /// A write would leave two nodes with the same value under a unique
+    /// index. The commit is rejected before it reaches the WAL.
+    #[error("Unique index violation: {0}")]
+    UniqueViolation(String),
+
     // ═══════════════════════════════════════════════════════════════
     // ERRORES GENÉRICOS
     // ═══════════════════════════════════════════════════════════════

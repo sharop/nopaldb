@@ -250,7 +250,8 @@ enum Plan {
     Op { logged: Option<(TransactionId, u64)> },
     /// Commit validado: sus registros van en el grupo con este timestamp.
     Commit { ts: u64 },
-    /// Commit rechazado por la prevalidación: sin registros WAL, ack Err.
+    /// Commit (o escritura directa) rechazado por la prevalidación: sin
+    /// registros WAL, ack Err.
     Rejected(crate::error::NopalError),
 }
 
@@ -333,13 +334,21 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
     let mut commits_in_group = 0usize;
     let mut created_in_batch: std::collections::HashSet<NodeId> = Default::default();
     let mut deleted_in_batch: std::collections::HashSet<NodeId> = Default::default();
+    // Unique indexes (`unique.rs`). The redo re-applies records that already
+    // passed this check, so it is skipped while replaying.
+    let mut unique = super::unique::UniqueBatch::default();
+    let check_unique = !anchor.replaying.load(std::sync::atomic::Ordering::Acquire);
 
     for msg in &batch {
         match &msg.work {
             Work::Commit(set) => {
-                match validate_commit_set(&msg.graph, set, &created_in_batch, &deleted_in_batch)
-                    .await
-                {
+                let mut checked =
+                    validate_commit_set(&msg.graph, set, &created_in_batch, &deleted_in_batch).await;
+                if checked.is_ok() && check_unique {
+                    let deleted: Vec<NodeId> = set.deleted_nodes.iter().map(|(id, _)| *id).collect();
+                    checked = unique.admit(&msg.graph, &deleted, &set.pending_nodes).await;
+                }
+                match checked {
                     Ok(()) => {
                         let ts = msg.graph.next_logical_timestamp();
                         group_records.extend(set.wal_records(ts));
@@ -358,6 +367,22 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
                 }
             }
             Work::Op(op) => {
+                if check_unique {
+                    let admitted = match op {
+                        WriteOp::AddNode { node, .. } => {
+                            unique.admit(&msg.graph, &[], std::slice::from_ref(node)).await
+                        }
+                        WriteOp::DeleteNode { id, .. } => {
+                            unique.note_deleted(*id);
+                            Ok(())
+                        }
+                        _ => Ok(()),
+                    };
+                    if let Err(e) = admitted {
+                        plans.push(Plan::Rejected(e));
+                        continue;
+                    }
+                }
                 let logged = match direct_op_records(&msg.graph, op).await {
                     Some((tx_id, ts, records)) => {
                         group_records.extend(records);
@@ -409,6 +434,7 @@ async fn process_batch(batch: Vec<ApplierMsg>) {
     for (msg, plan) in batch.into_iter().zip(plans) {
         let result = match msg.work {
             Work::Op(op) => match plan {
+                Plan::Rejected(e) => Err(e),
                 // Sin registro (índice de propiedades, borrado de algo que
                 // no existe): se aplica igual que siempre.
                 Plan::Op { logged: None } => msg.graph.apply_write_op(op, None).await,

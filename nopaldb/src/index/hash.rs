@@ -74,6 +74,14 @@ impl Index for HashIndex {
     fn size(&self) -> usize {
         self.map.len()
     }
+
+    fn duplicate_values(&self) -> Vec<(PropertyValue, Vec<NodeId>)> {
+        self.map
+            .iter()
+            .filter(|(_, nodes)| nodes.len() > 1)
+            .map(|(value, nodes)| (value.clone(), nodes.clone()))
+            .collect()
+    }
 }
 
 impl Default for HashIndex {

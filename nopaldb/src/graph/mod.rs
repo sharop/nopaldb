@@ -2,6 +2,7 @@
 
 pub mod view;
 pub mod upsert;
+pub(crate) mod unique;
 pub mod stats;
 pub mod neighborhood;
 pub mod communities;
@@ -631,6 +632,8 @@ impl Graph {
                 adjacency_rebuilt = true;
             }
         }
+        // After the redo: the indexes now hold every committed write.
+        graph.audit_unique_indexes().await;
 
         // Invariante del snapshot: cargado ⇒ sin crash recovery ⇒ nada que
         // reproducir. Si no se cumple, mejor una reconstrucción de más.
@@ -4706,6 +4709,8 @@ impl Graph {
         if nodes.is_empty() {
             return Ok(Vec::new());
         }
+        // Before any write: a batch that breaks a unique index writes nothing.
+        unique::UniqueBatch::default().admit(self, &[], &nodes).await?;
 
         // 0. Un lote puede pisar ids existentes (batch-upsert): retirar las
         //    entradas de índice que la sobrescritura invalida mientras el
@@ -4981,7 +4986,14 @@ impl Graph {
     /// Drop an index
     pub async fn drop_index(&self, index_name: &str) -> Result<()> {
         self.deny_if_read_only("drop_index")?;
-        self.index_manager.drop_index(index_name).await
+        let was_unique = self.index_manager.unique_names().await.iter().any(|n| n == index_name);
+        if !was_unique {
+            return self.index_manager.drop_index(index_name).await;
+        }
+        let gate = self.write_gate();
+        let _gate = gate.lock().await;
+        self.index_manager.drop_index(index_name).await?;
+        self.forget_unique_index().await
     }
     /// Reconstruye los índices de usuario desde `<dir>/indexes/metadata.bin`
     /// y los nodos actuales, exactamente como lo hace `Graph::open`. Devuelve

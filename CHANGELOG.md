@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Índices únicos** (M1-8): `Graph::create_unique_index(label, propiedad,
+  IndexType::Hash | BTree)`. Ninguna vía de escritura (transacción,
+  escritura directa, NQL, carga masiva) deja dos nodos de la etiqueta con el
+  mismo valor: el commit se rechaza con `NopalError::UniqueViolation` antes
+  de llegar al WAL, y de varios commits concurrentes con el mismo valor gana
+  exactamente uno. Los nodos sin la propiedad o con `null` no cuentan. Crear
+  el índice sobre valores ya repetidos falla y los lista.
+  `IndexMetadata::unique` lo reporta; `Graph::unique_index_duplicates` lista
+  repeticiones escritas por una versión anterior. `metadata.bin` no cambia
+  de forma: la marca vive en el catálogo del storage, así que una 0.10.x
+  abre la base y trata el índice como uno común. NQL y Python, en la
+  siguiente entrega.
+
 ## [0.10.17] - 2026-11-20
 
 **La dirección de las relaciones en NQL significa lo que se escribe** (#395).

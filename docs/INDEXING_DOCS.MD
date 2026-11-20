@@ -119,6 +119,41 @@ find n.titulo from (n:Nota) where hybrid(n, "clasificacion de catalogos", "ref",
 - Per-index analyzer (0.5.13): stemming and stop words for 18 / 13 languages, accent folding; the query is analyzed with the index's analyzer. Default = tantivy's `default` tokenizer (lowercase only). Changing it requires drop + create. Full option table in the NQL reference.
 - There is no `fulltext(...)` predicate in NQL; text search goes through `hybrid(...)` / `search_hybrid`.
 
+### 4. Unique Index
+
+**Use for:** business keys (`email`, an external id) that must not repeat within a label  
+**Usar para:** claves de negocio (`email`, un id externo) que no deben repetirse dentro de una etiqueta
+
+```rust
+// Rust (0.11.0): a hash or btree index that refuses repeated values
+graph.create_unique_index("Persona", "email", IndexType::Hash).await?;
+
+graph.add_node(Node::new("Persona").with_property("email", "s@example.org")).await?;
+let err = graph.add_node(Node::new("Persona").with_property("email", "s@example.org")).await;
+assert!(matches!(err, Err(NopalError::UniqueViolation(_))));
+```
+
+- **Every write path is checked:** transactions, direct writes, NQL and the
+  bulk loader. The check runs before the write reaches the WAL: a refused
+  commit writes nothing. Concurrent commits of the same value leave exactly
+  one node.
+- **Scope:** one label and one property. Nodes without the property, or with
+  `null`, are not constrained (as in SQL). The same value under another label
+  is allowed.
+- **Creating** it over data that already repeats a value fails, creates
+  nothing, and lists the first repeated values with their nodes.
+- **Updates:** a node may be rewritten with its own value; taking another
+  node's value is refused. Swapping two values inside one transaction works,
+  and deleting a node, or moving it to another label, frees its value.
+- `list_indexes()` reports `unique: true`; `drop_index` removes the index and
+  the constraint.
+- **Older versions** (≤ 0.10.x) open the base and keep the index as a plain
+  one, without enforcing it. If they wrote repeated values, opening again
+  logs a warning and `graph.unique_index_duplicates("Persona_email")` lists
+  them; new repetitions are still refused.
+- NQL (`create unique index on Persona(email)`) and Python arrive in a
+  following release.
+
 ---
 
 ## API Reference / Referencia de API

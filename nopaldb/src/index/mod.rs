@@ -186,6 +186,13 @@ pub trait Index: Send + Sync {
     fn fulltext_analyzer(&self) -> Option<&FullTextAnalyzer> {
         None
     }
+
+    /// Values held by more than one node, with those nodes. Only the
+    /// value-keyed indexes (hash, btree) can back a unique index, so only
+    /// they answer; the rest return nothing.
+    fn duplicate_values(&self) -> Vec<(PropertyValue, Vec<NodeId>)> {
+        Vec::new()
+    }
 }
 
 /// Options for [`IndexManager::create_index_with`]. Today only full-text
@@ -217,6 +224,15 @@ pub struct IndexMetadata {
     #[serde(with = "chrono::serde::ts_seconds")]
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub size: usize,
+    /// No two nodes of `label` may hold the same value of `property`.
+    ///
+    /// Not serialized: `metadata.bin` keeps the shape every earlier version
+    /// reads. A version that failed to read it would start with no indexes
+    /// and rewrite the file on the next `create_index`, losing every index
+    /// definition. The flag lives in the storage catalog instead
+    /// (`unique_indexes`) and is set on load.
+    #[serde(skip)]
+    pub unique: bool,
 }
 
 /// Index manager - coordinates all indexes
@@ -236,6 +252,10 @@ pub struct IndexManager {
     /// between leaves it set and costs one extra, empty flush, never a lost
     /// one.
     pending: Arc<AtomicBool>,
+
+    /// Some index is unique. Lets the commit path skip the unique check
+    /// without taking the metadata lock when there is none (the common case).
+    has_unique: Arc<AtomicBool>,
 }
 
 impl IndexManager {
@@ -253,11 +273,41 @@ impl IndexManager {
             metadata: Arc::new(RwLock::new(HashMap::new())),
             base_path,
             pending: Arc::new(AtomicBool::new(false)),
+            has_unique: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Load indices from disk and rebuild them
+    /// Load indices from disk and rebuild them, then mark the unique ones
+    /// from the storage catalog. A name in the catalog whose index is gone
+    /// (dropped by a version that did not know about unique indexes) is
+    /// pruned from the catalog.
     pub async fn load_indices(&self, storage: &crate::storage::Storage) -> Result<()> {
+        self.load_index_definitions(storage).await?;
+        let names = load_unique_names(storage).await?;
+        let mut kept = Vec::with_capacity(names.len());
+        {
+            let mut metadata = self.metadata.write().await;
+            for meta in metadata.values_mut() {
+                meta.unique = false;
+            }
+            for name in &names {
+                match metadata.get_mut(name) {
+                    Some(meta) => {
+                        meta.unique = true;
+                        kept.push(name.clone());
+                    }
+                    None => log::warn!("unique index {name} has no definition any more; forgetting it"),
+                }
+            }
+        }
+        if kept.len() != names.len() {
+            save_unique_names(storage, &kept).await?;
+        }
+        self.has_unique.store(!kept.is_empty(), Ordering::Release);
+        Ok(())
+    }
+
+    async fn load_index_definitions(&self, storage: &crate::storage::Storage) -> Result<()> {
         if let Some(base_path) = &self.base_path {
             let metadata_path = std::path::Path::new(base_path).join("metadata.bin");
 
@@ -528,6 +578,7 @@ impl IndexManager {
             index_type: index_type.clone(),
             created_at: chrono::Utc::now(),
             size: 0,
+            unique: false,
         };
 
         let mut indexes = self.indexes.write().await;
@@ -558,6 +609,7 @@ impl IndexManager {
         let meta = metadata.remove(index_name);
 
         self.save_metadata_internal(&metadata)?;
+        self.has_unique.store(metadata.values().any(|m| m.unique), Ordering::Release);
 
         // Release the writer (its lock file) before removing the directory.
         drop(removed);
@@ -834,6 +886,61 @@ impl IndexManager {
         Some(IndexInfo { metadata, analyzer })
     }
 
+    /// Mark `index_name` unique (or not) in memory. The caller persists the
+    /// catalog with [`save_unique_names`].
+    pub(crate) async fn set_unique(&self, index_name: &str, unique: bool) -> Result<()> {
+        let mut metadata = self.metadata.write().await;
+        let meta = metadata.get_mut(index_name).ok_or_else(|| {
+            crate::error::NopalError::index_error(format!("Index {index_name} does not exist"))
+        })?;
+        meta.unique = unique;
+        self.has_unique.store(metadata.values().any(|m| m.unique), Ordering::Release);
+        Ok(())
+    }
+
+    /// Names of the unique indexes, sorted.
+    pub(crate) async fn unique_names(&self) -> Vec<String> {
+        let metadata = self.metadata.read().await;
+        let mut names: Vec<String> =
+            metadata.values().filter(|m| m.unique).map(|m| m.name.clone()).collect();
+        names.sort();
+        names
+    }
+
+    /// `(index name, property)` of every unique index on `label`. Empty
+    /// without touching the lock when no index is unique.
+    pub(crate) async fn unique_properties(&self, label: &str) -> Vec<(String, String)> {
+        if !self.has_unique.load(Ordering::Acquire) {
+            return Vec::new();
+        }
+        let metadata = self.metadata.read().await;
+        metadata
+            .values()
+            .filter(|m| m.unique && m.label == label)
+            .map(|m| (m.name.clone(), m.property.clone()))
+            .collect()
+    }
+
+    /// Whether some index is unique.
+    pub(crate) fn has_unique(&self) -> bool {
+        self.has_unique.load(Ordering::Acquire)
+    }
+
+    /// Nodes the index holds for `value`.
+    pub(crate) async fn lookup(&self, index_name: &str, value: &PropertyValue) -> Result<Vec<NodeId>> {
+        let indexes = self.indexes.read().await;
+        match indexes.get(index_name) {
+            Some(index) => index.query(&IndexQuery::Equals(value.clone())),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Values of `index_name` held by more than one node.
+    pub(crate) async fn duplicate_values(&self, index_name: &str) -> Vec<(PropertyValue, Vec<NodeId>)> {
+        let indexes = self.indexes.read().await;
+        indexes.get(index_name).map(|i| i.duplicate_values()).unwrap_or_default()
+    }
+
     /// List all indexes
     pub async fn list_indexes(&self) -> Vec<IndexMetadata> {
         let metadata = self.metadata.read().await;
@@ -883,6 +990,25 @@ impl IndexManager {
         let mut indexes = self.indexes.write().await;
         indexes.insert("_taxonomy".to_string(), Box::new(taxonomy));
     }
+}
+
+
+/// Catalog entry with the names of the unique indexes (JSON list).
+const META_UNIQUE_INDEXES: &str = "unique_indexes";
+
+pub(crate) async fn load_unique_names(storage: &crate::storage::Storage) -> Result<Vec<String>> {
+    match storage.get_meta_bytes(META_UNIQUE_INDEXES).await? {
+        None => Ok(Vec::new()),
+        Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+            crate::error::NopalError::serialization(format!("unique index catalog: {e}"))
+        }),
+    }
+}
+
+pub(crate) async fn save_unique_names(storage: &crate::storage::Storage, names: &[String]) -> Result<()> {
+    let bytes = serde_json::to_vec(names)
+        .map_err(|e| crate::error::NopalError::serialization(format!("unique index catalog: {e}")))?;
+    storage.put_meta_bytes(META_UNIQUE_INDEXES, &bytes).await
 }
 
 #[cfg(test)]
