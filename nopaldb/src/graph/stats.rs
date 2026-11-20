@@ -252,6 +252,8 @@ pub struct IndexSection {
     pub property: String,
     /// `"Hash"`, `"BTree"`, `"FullText"` o `"Taxonomy"`.
     pub kind: String,
+    /// Índice único (M1-8): rechaza escrituras que repitan un valor.
+    pub unique: bool,
     /// Entradas indexadas.
     pub size: usize,
     /// Solo full-text: `"default"` o lo activo unido con `+`, el mismo

@@ -24,8 +24,16 @@
 //     workaround was narrower than the bug (it only reached the property index,
 //     never the user indexes) and is gone now that the applier does it.
 //   * A process-global per-key lock serializes concurrent upserts of the SAME
-//     key so two racing creates cannot both insert. This is best-effort, not a
-//     transactional unique constraint (follow-up M1-8).
+//     key so two racing creates cannot both insert. On its own it is
+//     best-effort: a write that is not an upsert (`add_node`, NQL `add`, the
+//     bulk loader), or a link stub (stubs take no lock), can still create the
+//     key in between the lookup and the commit. A unique index on the key
+//     (M1-8) is the actual constraint: the commit that would duplicate it is
+//     refused before the WAL, so the upsert retries the whole row (or chunk)
+//     from a fresh transaction, and the new lookup finds the winner and
+//     updates it. The lock stays as an optimization, so racing upserts of one
+//     key queue up instead of failing and retrying. Without a unique index the
+//     retry never fires and the behavior is the old best-effort one.
 //   * Embedding updates go through `add_node_embedding`, which overwrites the
 //     persisted vector and updates the cached HNSW index in place: the old
 //     point becomes a tombstone and the new one is inserted (#113). The index
@@ -47,6 +55,13 @@ use super::Graph;
 /// in memory and the time the per-key locks of a chunk stay taken; a caller
 /// that needs a whole batch to be atomic sends at most this many rows.
 pub const UPSERT_TX_ROWS: usize = 1024;
+
+/// Attempts of one row (or chunk) whose commit loses its key to a concurrent
+/// write and is refused by a unique index. The retry after a refusal always
+/// sees the winner (the applier applies it before validating any later
+/// batch), so more than one retry only happens if the key keeps being
+/// recreated.
+const UNIQUE_KEY_ATTEMPTS: usize = 3;
 
 /// What an upsert did to the target node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,19 +168,50 @@ impl Graph {
         let lock = key_lock_for(&req.label, &req.key, &key_value);
         let _guard = lock.lock().await;
 
-        let mut tx = self.begin_transaction().await?;
-        let mut state = TxState::default();
-        let plan = self.upsert_in_tx(&mut tx, &req, &mut state).await?;
+        let retry = self.keys_are_unique(std::slice::from_ref(&req)).await;
+        let mut attempt = 1;
+        loop {
+            let mut tx = self.begin_transaction().await?;
+            let mut state = TxState::default();
+            let plan = self.upsert_in_tx(&mut tx, &req, &mut state).await?;
 
-        if !plan.wrote {
-            // Nothing to write — abort the empty transaction so an unchanged
-            // re-run costs zero WAL records.
-            tx.rollback_async().await?;
-            return Ok((UpsertOutcome::Unchanged, plan.node_id));
+            if !plan.wrote {
+                // Nothing to write — abort the empty transaction so an unchanged
+                // re-run costs zero WAL records.
+                tx.rollback_async().await?;
+                return Ok((UpsertOutcome::Unchanged, plan.node_id));
+            }
+            match tx.commit().await {
+                Err(NopalError::UniqueViolation(_)) if retry && attempt < UNIQUE_KEY_ATTEMPTS => {
+                    attempt += 1;
+                    continue;
+                }
+                r => r?,
+            }
+            self.apply_embedding_after_commit(&req, &plan).await?;
+            return Ok((plan.final_outcome(), plan.node_id));
         }
-        tx.commit().await?;
-        self.apply_embedding_after_commit(&req, &plan).await?;
-        Ok((plan.final_outcome(), plan.node_id))
+    }
+
+    /// Whether a key `reqs` resolve (a row's own, or a link target it may
+    /// create a stub for) has a unique index, so a commit refused by one of
+    /// them can be retried and resolve to the winner. A refusal by a unique
+    /// index on any other property would repeat on every attempt.
+    async fn keys_are_unique(&self, reqs: &[UpsertRequest]) -> bool {
+        if !self.index_manager.has_unique() {
+            return false;
+        }
+        for req in reqs {
+            let stubs = req.links.iter().filter(|l| l.create_target_stub);
+            let keys = stubs.map(|l| (&l.target_label, &l.target_key));
+            for (label, key) in std::iter::once((&req.label, &req.key)).chain(keys) {
+                let unique = self.index_manager.unique_properties(label).await;
+                if unique.iter().any(|(_, p)| p == key) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Upsert many nodes: one transaction (one WAL fsync) per chunk of
@@ -194,21 +240,32 @@ impl Graph {
                 guards.push(key_lock_by_id(id).lock_owned().await);
             }
 
-            let mut tx = self.begin_transaction().await?;
-            let mut state = TxState::default();
-            let mut plans = Vec::with_capacity(chunk.len());
-            for req in chunk {
-                plans.push(self.upsert_in_tx(&mut tx, req, &mut state).await?);
-            }
+            let retry = self.keys_are_unique(chunk).await;
+            let mut attempt = 1;
+            let plans = loop {
+                let mut tx = self.begin_transaction().await?;
+                let mut state = TxState::default();
+                let mut plans = Vec::with_capacity(chunk.len());
+                for req in chunk {
+                    plans.push(self.upsert_in_tx(&mut tx, req, &mut state).await?);
+                }
 
-            if plans.iter().any(|p| p.wrote) {
-                tx.commit().await?;
+                if !plans.iter().any(|p| p.wrote) {
+                    tx.rollback_async().await?;
+                    break plans;
+                }
+                match tx.commit().await {
+                    Err(NopalError::UniqueViolation(_)) if retry && attempt < UNIQUE_KEY_ATTEMPTS => {
+                        attempt += 1;
+                        continue;
+                    }
+                    r => r?,
+                }
                 for (req, plan) in chunk.iter().zip(&plans) {
                     self.apply_embedding_after_commit(req, plan).await?;
                 }
-            } else {
-                tx.rollback_async().await?;
-            }
+                break plans;
+            };
             out.extend(plans.iter().map(|p| (p.final_outcome(), p.node_id)));
             drop(guards);
         }

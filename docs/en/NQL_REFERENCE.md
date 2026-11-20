@@ -376,8 +376,16 @@ End-to-end examples in NQL, Rust and Python:
 create index on Person(email)                      // hash (default): equality lookups
 create index on Person(age) type btree             // range queries
 create index on Article(body) type fulltext        // BM25 text search, used by hybrid()
+create unique index on Person(email)               // refuses a second Person with the same email
 drop index Person_email                            // the name is Label_property
 ```
+
+A **unique** index (hash or btree) refuses any write — `add`, `update`, a
+transaction, the bulk loader — that would leave two nodes of the label with
+the same value; the statement fails with a unique-index violation and writes
+nothing. Nodes without the property, or with `null`, are not constrained.
+Creating it over data that already repeats a value fails and lists the
+repeats. See [Unique Index](../INDEXING_DOCS.MD#4-unique-index).
 
 The text of a full-text search (`hybrid(n, text = "…")`) is read as tantivy
 query syntax when it is valid (`salsa AND "mole negro"`) and as plain words
