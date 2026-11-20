@@ -16,6 +16,7 @@ como `find ... from <patrón>`. Los comentarios dentro de NQL son `// línea` y
 (a)<-(b)                    // Relación entrante
 (a)<->(b)                   // Ambos sentidos
 (a)<-[:KNOWS]->(b)          // Ambos sentidos, con tipo
+(a)-[:KNOWS]-(b)            // Igual: sin punta es cualquier sentido
 ```
 
 ### Con Variable

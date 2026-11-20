@@ -73,6 +73,8 @@ Las relaciones conectan nodos. La dirección de la flecha importa.
 - `<-[:COMPRA]-`: Relación entrante de tipo "COMPRA".
 - `<-[:COLABORA]->`: Relación de tipo "COLABORA" en cualquier dirección.
   Con corchetes la flecha se escribe `<-[...]->`; `<->` solo no lleva corchetes.
+- `-[:COLABORA]-` y `--`: también cualquier dirección, como en Cypher.
+- Las puntas no pueden encontrarse: `->[]<-`, `->[]-` y `-[]<-` son error de parseo. (`-> [:T] ->` y `<- [:T] <-` sí valen.)
 
 ### Ejemplos de Conexiones
 ```nql
@@ -345,6 +347,8 @@ Importante:
 ```nql
 add (a:Person {name: "Alice"})-[:KNOWS {since: 2020, strength: "high"}]->(b:Person {name: "Bob"})
 ```
+
+La arista va hacia donde apunta la flecha: `add (a)<-[:KNOWS]-(b)` crea b → a. Una arista tiene un solo sentido, así que `add` rechaza `-[:T]-` y `<-[:T]->`.
 
 ### UPDATE
 ```nql

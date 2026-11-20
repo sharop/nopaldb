@@ -771,7 +771,7 @@ impl AstBuilder {
     }
 
     fn build_relationship_pattern(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<RelationshipPattern> {
-        let mut arrows: Vec<String> = Vec::new();
+        let mut direction = Direction::Outgoing;
         let mut variable = None;
         let mut rel_type = None;
         let mut properties = std::collections::HashMap::new();
@@ -781,7 +781,7 @@ impl AstBuilder {
             match inner.as_rule() {
                 // Simple arrow pattern: ->, <-, <->, --
                 Rule::arrow_pattern => {
-                    arrows.push(inner.as_str().to_string());
+                    direction = direction_of_arrow(inner.as_str())?;
                 }
                 // Arrow with spec: -[...]->
                 Rule::arrow_with_spec => {
@@ -859,31 +859,13 @@ impl AstBuilder {
                         }
                     }
 
-                    // Combinar flechas para determinar dirección
                     if let (Some(left), Some(right)) = (arrow_left, arrow_right) {
-                        let combined = format!("{}{}", left, right);
-                        arrows.push(combined);
+                        direction = direction_of_arrows(&left, &right)?;
                     }
                 }
                 _ => {}
             }
         }
-
-        // Determinar dirección desde las flechas acumuladas
-        let direction = if !arrows.is_empty() {
-            let arrow = &arrows[0];
-            if arrow.contains("<-") && arrow.contains("->") {
-                Direction::Bidirectional
-            } else if arrow.ends_with("->") {
-                Direction::Outgoing
-            } else if arrow.starts_with("<-") {
-                Direction::Incoming
-            } else {
-                Direction::Outgoing
-            }
-        } else {
-            Direction::Outgoing
-        };
 
         Ok(RelationshipPattern {
             variable,
@@ -1609,6 +1591,39 @@ impl AstBuilder {
 ///   `{n}`   → min=n, max=Some(n)  (exact)
 ///   `{n,m}` → min=n, max=Some(m)  (bounded range)
 ///   `{n,}`  → min=n, max=None     (unbounded — F1 rechaza en el executor)
+/// Dirección de `<izq>[...]<der>`. La gramática acepta `->`, `<-` y `-` en
+/// cada lado; aquí se decide qué combinaciones significan algo. Sin punta en
+/// ningún lado (`-[]-`) es "cualquier dirección", como `<-[]->` y como en
+/// Cypher. `-> [:T] ->` y `<- [:T] <-` son la forma con una flecha a cada
+/// lado del tipo, documentada y muy usada: saliente y entrante. Las puntas
+/// encontradas (`->[]<-`) o con un solo lado apuntando al revés (`->[]-`,
+/// `-[]<-`) son error: antes caían en silencio en un sentido arbitrario.
+fn direction_of_arrows(left: &str, right: &str) -> Result<Direction> {
+    match (left, right) {
+        ("-", "->") | ("->", "->") => Ok(Direction::Outgoing),
+        ("<-", "-") | ("<-", "<-") => Ok(Direction::Incoming),
+        ("<-", "->") | ("-", "-") => Ok(Direction::Bidirectional),
+        _ => Err(invalid_arrow(&format!("{left}[]{right}"))),
+    }
+}
+
+/// Dirección de una flecha sin corchetes: `->`, `<-`, `<->`, `--`.
+fn direction_of_arrow(arrow: &str) -> Result<Direction> {
+    match arrow {
+        "->" => Ok(Direction::Outgoing),
+        "<-" => Ok(Direction::Incoming),
+        "<->" | "--" => Ok(Direction::Bidirectional),
+        other => Err(invalid_arrow(other)),
+    }
+}
+
+fn invalid_arrow(arrow: &str) -> NopalError {
+    NopalError::QueryParseError(format!(
+        "invalid relationship arrow `{arrow}`: use `-[]->` (outgoing), `<-[]-` (incoming) \
+         or `-[]-` / `<-[]->` (either direction)"
+    ))
+}
+
 fn build_quantifier(pair: pest::iterators::Pair<Rule>) -> Quantifier {
     let raw = pair.as_str();
     let has_comma = raw.contains(',');

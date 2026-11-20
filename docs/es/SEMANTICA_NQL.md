@@ -90,7 +90,8 @@ Lo comprueban:
 
 La dirección, el tipo de arista, las propiedades inline y la multiplicidad significan lo mismo en todos los sitios donde aparece un patrón: lectura y escritura, uno o varios saltos, con o sin búsqueda.
 
-- `->` sigue las aristas salientes, `<-` las entrantes y `<->` ambas. `(a)-[:T]->(b)` y `(b)<-[:T]-(a)` describen las mismas aristas y dan las mismas filas.
+- `->` sigue las aristas salientes, `<-` las entrantes y `<->` ambas, igual que `-[:T]-` y `--`. `(a)-[:T]->(b)` y `(b)<-[:T]-(a)` describen las mismas aristas y dan las mismas filas. Puntas encontradas (`->[]<-`, `->[]-`, `-[]<-`) son error de parseo.
+- `add` crea cada arista en el sentido de su flecha: `(a)<-[:T]-(b)` crea b → a. Un patrón sin un solo sentido (`-[:T]-`, `<-[:T]->`) es error en `add`.
 - `-[:T {w: 1}]->` solo deja las aristas cuyo `w` vale 1. `(b {x: 2})` solo deja los nodos cuyo `x` vale 2.
 - `delete` y `update` con patrón cambian exactamente las aristas (o sus extremos) que devuelve `find` con el mismo patrón. Admiten un salto. Un patrón más largo o un cuantificador es un error.
 

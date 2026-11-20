@@ -90,7 +90,8 @@ Tested by:
 
 Direction, edge type, inline properties and multiplicity mean the same thing in every place a pattern appears: reads and writes, one hop or several, with or without a search.
 
-- `->` follows outgoing edges, `<-` incoming ones, and `<->` both. `(a)-[:T]->(b)` and `(b)<-[:T]-(a)` describe the same edges and give the same rows.
+- `->` follows outgoing edges, `<-` incoming ones, and `<->` both; so do `-[:T]-` and `--`. `(a)-[:T]->(b)` and `(b)<-[:T]-(a)` describe the same edges and give the same rows. Arrowheads that point against each other (`->[]<-`, `->[]-`, `-[]<-`) are parse errors.
+- `add` creates each edge in the direction of its arrow, so `(a)<-[:T]-(b)` creates b → a. A pattern without a single direction (`-[:T]-`, `<-[:T]->`) is an error in `add`.
 - `-[:T {w: 1}]->` keeps only the edges whose `w` equals 1. `(b {x: 2})` keeps only the nodes whose `x` equals 2.
 - `delete` and `update` with a pattern change exactly the edges (or their endpoints) that `find` with the same pattern returns. They support one hop. A longer pattern or a quantifier is an error.
 
