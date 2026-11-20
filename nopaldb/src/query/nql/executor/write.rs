@@ -9,7 +9,7 @@ use crate::error::{NopalError, Result};
 use crate::graph::Graph;
 use crate::query::nql::parser::ast::{
     AddStmt, DeleteStmt, UpdateStmt, Pattern, PatternElement,
-    NodePattern, RelationshipPattern, Expression, Assignment,
+    NodePattern, RelationshipPattern, Expression, Assignment, Direction,
 };
 use crate::types::{Node, Edge, NodeId, PropertyValue};
 use crate::Transaction;
@@ -124,6 +124,18 @@ impl<'a> WriteExecutor<'a> {
             .clone()
             .unwrap_or_else(|| "RELATED_TO".to_string());
 
+        // La arista va en el sentido de la flecha: `(a) <-[:K]- (b)` es b → a.
+        // Una arista tiene un solo sentido, así que `-[]-` y `<-[]->` (que en
+        // una lectura significan "cualquiera") no dicen cuál crear.
+        let (source_id, target_id) = match rel_pattern.direction {
+            Direction::Outgoing => (source_id, target_id),
+            Direction::Incoming => (target_id, source_id),
+            Direction::Bidirectional => {
+                return Err(NopalError::query_error(
+                    "ADD needs a direction for each relationship: use `-[:TYPE]->` or `<-[:TYPE]-`",
+                ));
+            }
+        };
         let mut edge = Edge::new(source_id, target_id, rel_type);
         if !rel_pattern.properties.is_empty() {
             edge = edge.with_properties(rel_pattern.properties.clone());

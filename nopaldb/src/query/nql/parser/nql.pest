@@ -177,6 +177,10 @@ property = {
 //   -[:KNOWS]-> (tipo solo)
 //   -[r:KNOWS]-> (variable + tipo)
 //   <-[r]- (incoming con variable)
+//   -[:KNOWS]- / -- (cualquier dirección, como <-[...]-> / <->)
+//   -> [:KNOWS] ->  /  <- [:KNOWS] <-  (saliente / entrante)
+// La gramática acepta `->`, `<-` y `-` en cada lado; el parser rechaza
+// las puntas encontradas (`->[]<-`, `->[]-`, `-[]<-`).
 relationship = {
     arrow_with_spec |
     arrow_pattern

@@ -73,6 +73,8 @@ Relationships connect nodes. The arrow direction matters.
 - `<-[:PURCHASED]-`: Incoming relationship of type "PURCHASED".
 - `<-[:COLLABORATES]->`: Relationship of type "COLLABORATES" in either direction.
   With brackets the arrow is written `<-[...]->`; `<->` alone takes no brackets.
+- `-[:COLLABORATES]-` and `--`: also either direction, as in Cypher.
+- Arrowheads must not point against each other: `->[]<-`, `->[]-` and `-[]<-` are parse errors. (`-> [:T] ->` and `<- [:T] <-` are fine.)
 
 ### Connection Examples
 ```nql
@@ -340,6 +342,8 @@ Important:
 ```nql
 add (a:Person {name: "Alice"})-[:KNOWS {since: 2020, strength: "high"}]->(b:Person {name: "Bob"})
 ```
+
+The edge goes where the arrow points: `add (a)<-[:KNOWS]-(b)` creates b → a. An edge has one direction, so `-[:T]-` and `<-[:T]->` are rejected in `add`.
 
 ### UPDATE
 ```nql

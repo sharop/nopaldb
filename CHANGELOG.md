@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+**La dirección de las relaciones en NQL significa lo que se escribe** (#395).
+Cambia resultados: `-[]-` devuelve más filas y `add` con `<-` crea la arista
+en el otro sentido. Sin cambio de API ni de formato en disco.
+
+### Fixed
+- **`add` ignoraba la dirección de la flecha.** Toda arista se creaba de
+  izquierda a derecha: `add (a)<-[:K]-(b)` creaba a → b. Ahora crea b → a, y
+  `-[:K]-` / `<-[:K]->` se rechazan porque no dicen qué sentido crear (como
+  `CREATE` en Cypher). Las bases con aristas creadas así conservan el sentido
+  equivocado; no hay forma de distinguirlas.
+- **`-[]-` y `--` corrían como salientes sin avisar.** Ahora son "cualquier
+  dirección", igual que `<-[]->`, en `find`, `delete`, `update` y con
+  cuantificador (`-[:K]-{1,3}`).
+- **Las puntas encontradas se aceptaban:** `->[]<-` corría en ambos
+  sentidos, `->[]-` y `-[]<-` como salientes. Ahora son error de parseo con
+  la forma correcta en el mensaje. `-> [:T] ->` y `<- [:T] <-` siguen siendo
+  saliente y entrante.
+
 ## [0.10.16] - 2026-11-18
 
 **El crate vuelve a compilar con `reasoner` sin `owl-import`** (#393), la
