@@ -111,6 +111,7 @@ class IndexStats(TypedDict):
     label: str
     property: str
     type: str              # "Hash" | "BTree" | "FullText" | "Taxonomy"
+    unique: bool           # refuses writes that repeat a value (hash/btree)
     size: int
     analyzer: str | None   # full-text only: "default" or "spanish+stemming+…"
 
@@ -338,6 +339,7 @@ class Graph:
         property: str,
         index_type: str = "hash",
         analyzer: dict[str, Any] | None = None,
+        unique: bool = False,
     ) -> str: ...
     def drop_index(self, index_name: str) -> None: ...
     def list_indexes(self) -> list[tuple[str, str, str, str]]: ...

@@ -1382,9 +1382,11 @@ impl AstBuilder {
         let mut property = None;
         let mut index_type = IndexType::Hash; // default
         let mut options: Option<IndexOptionsAst> = None;
+        let mut unique = false;
 
         for inner in pair.into_inner() {
             match inner.as_rule() {
+                Rule::unique_kw => unique = true,
                 Rule::identifier => {
                     if label.is_none() {
                         label = Some(inner.as_str().to_string());
@@ -1419,12 +1421,18 @@ impl AstBuilder {
                 "CREATE INDEX: `with (...)` configures the full-text analyzer and only applies to `type fulltext`".into(),
             ));
         }
+        if unique && !matches!(index_type, IndexType::Hash | IndexType::BTree) {
+            return Err(NopalError::QueryParseError(
+                "CREATE UNIQUE INDEX: a unique index must be `type hash` or `type btree`".into(),
+            ));
+        }
 
         Ok(CreateIndexStmt {
             label: label.ok_or_else(|| NopalError::QueryParseError("Missing label in CREATE INDEX".into()))?,
             property: property.ok_or_else(|| NopalError::QueryParseError("Missing property in CREATE INDEX".into()))?,
             index_type,
             options,
+            unique,
         })
     }
 

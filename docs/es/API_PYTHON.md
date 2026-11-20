@@ -113,7 +113,10 @@ graph.rebuild_schema()
 index_name = graph.create_index("Persona", "email", "hash")
 graph.create_index("Persona", "edad", "btree")
 graph.create_index("Nota", "cuerpo", "fulltext", analyzer={"language": "spanish"})  # stemming + stopwords + acentos
-graph.describe_index("Nota_cuerpo")   # {'name', 'label', 'property', 'type', 'analyzer': {...}}
+graph.describe_index("Nota_cuerpo")   # {'name', 'label', 'property', 'type', 'unique', 'analyzer': {...}}
+
+# Índice único (hash o btree): rechaza dos Persona con la misma curp
+graph.create_index("Persona", "curp", unique=True)
 
 for name, label, prop, index_type in graph.list_indexes():
     print(name, label, prop, index_type)

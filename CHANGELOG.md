@@ -20,8 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `IndexMetadata::unique` lo reporta; `Graph::unique_index_duplicates` lista
   repeticiones escritas por una versión anterior. `metadata.bin` no cambia
   de forma: la marca vive en el catálogo del storage, así que una 0.10.x
-  abre la base y trata el índice como uno común. NQL y Python, en la
-  siguiente entrega.
+  abre la base y trata el índice como uno común.
+  - NQL: `create unique index on Persona(email) [type hash|btree]`.
+  - Python: `graph.create_index(label, prop, unique=True)`;
+    `describe_index()` y `get_stats()["indexes"]` traen `"unique"`
+    (`IndexSection::unique` en Rust).
+  - `upsert_node`/`upsert_batch` con clave bajo índice único ya no
+    duplican la clave aunque otra escritura (`add_node`, NQL `add`, otro
+    stub de `links`) la cree entre la búsqueda y el commit: el commit se
+    rechaza, el upsert reintenta y actualiza al ganador.
 
 ## [0.10.17] - 2026-11-20
 

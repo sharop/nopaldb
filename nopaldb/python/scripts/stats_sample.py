@@ -65,7 +65,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert all(e["done"] <= 1500 for e in events), events
 
     ix = g.get_stats()["indexes"]
-    assert ix == [{"name": name, "label": "Planta", "property": "nombre", "type": "Hash", "size": 30, "analyzer": None}], ix
+    assert ix == [{"name": name, "label": "Planta", "property": "nombre", "type": "Hash", "unique": False, "size": 30, "analyzer": None}], ix
 
     g.checkpoint()
     s = g.get_stats()

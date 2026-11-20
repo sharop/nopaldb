@@ -6113,6 +6113,9 @@ impl<'a> Executor<'a> {
             IndexType::FullText => GraphIndexType::FullText,
             IndexType::Taxonomy => GraphIndexType::Taxonomy,
         };
+        if stmt.unique {
+            return self.graph.create_unique_index(&stmt.label, &stmt.property, index_type).await;
+        }
 
         // `with (language = "x")` alone means the whole chain for that
         // language; each switch can still be turned off explicitly.

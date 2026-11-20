@@ -133,6 +133,16 @@ let err = graph.add_node(Node::new("Persona").with_property("email", "s@example.
 assert!(matches!(err, Err(NopalError::UniqueViolation(_))));
 ```
 
+```nql
+create unique index on Persona(email)              // hash (default)
+create unique index on Persona(rut) type btree     // fulltext/taxonomy: parse error
+```
+
+```python
+graph.create_index("Persona", "email", unique=True)   # 'Persona_email'
+graph.describe_index("Persona_email")["unique"]        # True
+```
+
 - **Every write path is checked:** transactions, direct writes, NQL and the
   bulk loader. The check runs before the write reaches the WAL: a refused
   commit writes nothing. Concurrent commits of the same value leave exactly
@@ -145,14 +155,18 @@ assert!(matches!(err, Err(NopalError::UniqueViolation(_))));
 - **Updates:** a node may be rewritten with its own value; taking another
   node's value is refused. Swapping two values inside one transaction works,
   and deleting a node, or moving it to another label, frees its value.
-- `list_indexes()` reports `unique: true`; `drop_index` removes the index and
-  the constraint.
+- `list_indexes()` (Rust), `describe_index()` and `stats()` report
+  `unique: true`; `drop_index` removes the index and the constraint.
+- **Upserts** keyed on a unique property (`upsert_node`, `upsert_batch`, and
+  the stubs that `links` creates) never fail with `UniqueViolation` because of
+  a race: if another write creates the key between the lookup and the commit,
+  the commit is refused and the upsert retries, finds that node and updates
+  it. Without a unique index, an upsert only serializes against other
+  upserts of the same key in the same process.
 - **Older versions** (≤ 0.10.x) open the base and keep the index as a plain
   one, without enforcing it. If they wrote repeated values, opening again
   logs a warning and `graph.unique_index_duplicates("Persona_email")` lists
   them; new repetitions are still refused.
-- NQL (`create unique index on Persona(email)`) and Python arrive in a
-  following release.
 
 ---
 

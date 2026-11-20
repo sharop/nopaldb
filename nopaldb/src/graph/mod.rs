@@ -1980,8 +1980,9 @@ impl Graph {
                 Ok(NqlResult::Write(WriteResult::from_update(&result)))
             }
             Statement::CreateIndex(idx) => {
+                let what = if idx.unique { "Unique index" } else { "Index" };
                 let name = executor.execute_create_index(idx).await?;
-                Ok(NqlResult::Index(format!("Index created: {}", name)))
+                Ok(NqlResult::Index(format!("{what} created: {name}")))
             }
             Statement::DropIndex(idx) => {
                 let name = idx.index_name.clone();
@@ -5260,6 +5261,7 @@ impl Graph {
                 label: meta.label,
                 property: meta.property,
                 kind: format!("{:?}", meta.index_type),
+                unique: meta.unique,
                 size: meta.size,
                 analyzer,
             });

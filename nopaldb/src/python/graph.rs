@@ -1056,6 +1056,12 @@ impl PyGraph {
     ///         `ascii_folding` (bools). `language` alone turns the three on.
     ///         The same analyzer is applied to every query on the index;
     ///         changing it requires `drop_index` + `create_index`.
+    ///     unique (bool): hash or btree only. No two nodes of `label` may
+    ///         hold the same value of `property`: any write that would leave
+    ///         two is refused with a "Unique index violation" error and writes
+    ///         nothing. Nodes without the property, or with None, are not
+    ///         constrained. Fails, creating nothing, if the existing nodes
+    ///         already repeat a value; the error lists them.
     ///
     /// Returns:
     ///     str: Index name
@@ -1065,7 +1071,9 @@ impl PyGraph {
     ///     'Person_name'
     ///     >>> graph.create_index("Nota", "cuerpo", "fulltext", analyzer={"language": "spanish"})
     ///     'Nota_cuerpo'
-    #[pyo3(signature = (label, property, index_type="hash", analyzer=None))]
+    ///     >>> graph.create_index("Persona", "email", unique=True)
+    ///     'Persona_email'
+    #[pyo3(signature = (label, property, index_type="hash", analyzer=None, unique=false))]
     fn create_index(
         &self,
         py: Python<'_>,
@@ -1073,6 +1081,7 @@ impl PyGraph {
         property: String,
         index_type: &str,
         analyzer: Option<&Bound<'_, pyo3::types::PyDict>>,
+        unique: bool,
     ) -> PyResult<String> {
         use crate::index::{FullTextAnalyzer, IndexOptions, IndexType};
 
@@ -1086,6 +1095,22 @@ impl PyGraph {
                 format!("Invalid index type '{}'. Use 'hash', 'btree', 'fulltext' or 'taxonomy'", index_type)
             )),
         };
+        if unique {
+            if !matches!(idx_type, IndexType::Hash | IndexType::BTree) {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "unique=True needs index_type 'hash' or 'btree', not '{index_type}'"
+                )));
+            }
+            if analyzer.is_some() {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    "analyzer applies to full-text indexes; a unique index is hash or btree",
+                ));
+            }
+            let result = crate::python::runtime::block_on(py, async move {
+                graph.create_unique_index(&label, &property, idx_type).await
+            });
+            return to_py_result(result);
+        }
         let analyzer = match analyzer {
             None => None,
             Some(dict) => {
@@ -1129,9 +1154,9 @@ impl PyGraph {
     /// Describe one index: metadata plus, for a full-text index, its analyzer.
     ///
     /// Returns:
-    ///     dict | None: {name, label, property, type, analyzer} where `analyzer`
-    ///     is {language, stemming, stopwords, ascii_folding} for a full-text
-    ///     index and None otherwise. None if no index has that name.
+    ///     dict | None: {name, label, property, type, unique, analyzer} where
+    ///     `analyzer` is {language, stemming, stopwords, ascii_folding} for a
+    ///     full-text index and None otherwise. None if no index has that name.
     #[pyo3(signature = (index_name))]
     fn describe_index(&self, py: Python<'_>, index_name: String) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
         let graph = self.graph()?;
@@ -1142,6 +1167,7 @@ impl PyGraph {
         dict.set_item("label", info.metadata.label)?;
         dict.set_item("property", info.metadata.property)?;
         dict.set_item("type", format!("{:?}", info.metadata.index_type))?;
+        dict.set_item("unique", info.metadata.unique)?;
         match info.analyzer {
             Some(a) => {
                 let an = pyo3::types::PyDict::new(py);
@@ -1301,6 +1327,7 @@ impl PyGraph {
             d.set_item("label", &ix.label)?;
             d.set_item("property", &ix.property)?;
             d.set_item("type", &ix.kind)?;
+            d.set_item("unique", ix.unique)?;
             d.set_item("size", ix.size)?;
             d.set_item("analyzer", ix.analyzer.as_deref())?;
             indexes.append(d)?;

@@ -381,8 +381,16 @@ Ejemplos completos en NQL, Rust y Python:
 create index on Persona(email)                     // hash (default): búsquedas por igualdad
 create index on Persona(edad) type btree           // rangos
 create index on Articulo(cuerpo) type fulltext     // búsqueda de texto BM25, la usa hybrid()
+create unique index on Persona(email)              // rechaza una segunda Persona con el mismo email
 drop index Persona_email                           // el nombre es Label_propiedad
 ```
+
+Un índice **único** (hash o btree) rechaza toda escritura — `add`, `update`,
+una transacción, la carga masiva — que deje dos nodos de la etiqueta con el
+mismo valor: la sentencia falla con una violación de índice único y no escribe
+nada. Los nodos sin la propiedad, o con `null`, no cuentan. Crearlo sobre
+datos que ya repiten un valor falla y lista las repeticiones. Ver
+[Unique Index](../INDEXING_DOCS.MD#4-unique-index).
 
 El texto de una búsqueda full-text (`hybrid(n, text = "…")`) se lee como
 sintaxis de consulta de tantivy cuando es válida (`salsa AND "mole negro"`) y

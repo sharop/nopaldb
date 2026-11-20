@@ -36,7 +36,7 @@ g = nopaldb.Graph.open("./data")
 | `add_node_embedding(node_id: str, vector: list[float], model: str) -> None` | One vector for a node and model; the HNSW index is built or loaded on the first search. |
 | `add_node_embeddings(model: str, items: list[tuple[str, list[float]]]) -> int` | Many vectors in one call (batch, much faster). |
 | `get_node_embedding(node_id: str, model: str) -> list[float]` | Read a stored vector. |
-| `create_index(label: str, property: str, index_type: str = "hash", analyzer: dict[str, Any] | None = None,) -> str` | Property index: `"hash"`, `"btree"` or `"fulltext"` (with `analyzer={"language": ...}`). |
+| `create_index(label: str, property: str, index_type: str = "hash", analyzer: dict[str, Any] | None = None, unique: bool = False) -> str` | Property index: `"hash"`, `"btree"` or `"fulltext"` (with `analyzer={"language": ...}`). `unique=True` (hash/btree) refuses writes that repeat a value. |
 | `drop_index(index_name: str) -> None` | Remove an index. |
 | `list_indexes() -> list[tuple[str, str, str, str]]` | What exists. |
 | `embedding_index_stats(model: str) -> HnswStats | None` | Size, tombstones and load time of the HNSW index. |

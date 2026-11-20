@@ -30,13 +30,16 @@ explain_stmt = {
 }
 
 // CREATE INDEX statement:
-//   create index on Label(property) [type hash|btree|fulltext|taxonomy]
+//   create [unique] index on Label(property) [type hash|btree|fulltext|taxonomy]
 //                   [with (language = "spanish", stemming = true, stopwords = true, ascii_folding = true)]
 // The `with (...)` clause configures the full-text analyzer (#74); the parser
-// rejects it for any other index type.
+// rejects it for any other index type. `unique` (M1-8) only applies to hash
+// and btree; the parser rejects it for the others.
 create_index_stmt = {
-    ^"create" ~ ^"index" ~ ^"on" ~ identifier ~ "(" ~ identifier ~ ")" ~ index_type_spec? ~ index_options?
+    ^"create" ~ unique_kw? ~ ^"index" ~ ^"on" ~ identifier ~ "(" ~ identifier ~ ")" ~ index_type_spec? ~ index_options?
 }
+
+unique_kw = { ^"unique" }
 
 index_type_keyword = { ^"hash" | ^"btree" | ^"fulltext" | ^"taxonomy" }
 

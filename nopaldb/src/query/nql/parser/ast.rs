@@ -60,6 +60,9 @@ pub struct CreateIndexStmt {
     pub index_type: IndexType,
     /// The `with (...)` clause; `None` when absent. Only valid with `FullText`.
     pub options: Option<IndexOptionsAst>,
+    /// `create unique index`: no two nodes of `label` may share a value of
+    /// `property`. Only valid with `Hash` and `BTree`.
+    pub unique: bool,
 }
 
 /// Full-text analyzer options as written in `create index ... with (...)`.

@@ -2,12 +2,15 @@
 //
 // Índices únicos (M1-8): ningún camino de escritura deja dos nodos de una
 // etiqueta con el mismo valor, el chequeo ocurre antes del WAL, y la marca
-// sobrevive a reabrir sin cambiar `metadata.bin`.
+// sobrevive a reabrir sin cambiar `metadata.bin`. También: `create unique
+// index` en NQL, y `upsert` que reintenta cuando pierde la clave.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use nopaldb::index::IndexType;
-use nopaldb::{Graph, Node, NodeId, NopalError, PropertyValue, Result};
+use nopaldb::{
+    Graph, LinkSpec, Node, NodeId, NopalError, NqlResult, PropertyValue, Result, UpsertOutcome, UpsertRequest,
+};
 
 fn persona(email: &str) -> Node {
     Node::new("Persona").with_property("email", email)
@@ -251,5 +254,151 @@ async fn metadata_file_keeps_its_shape() -> Result<()> {
     assert_eq!(p.len(), u.len());
     let differing = p.iter().zip(&u).filter(|(x, y)| x != y).count();
     assert!(differing <= 8, "{differing} bytes differ");
+    Ok(())
+}
+
+#[tokio::test]
+async fn nql_creates_unique_indexes() -> Result<()> {
+    let g = Graph::in_memory().await?;
+    let r = g.execute_statement("create unique index on Persona(email)").await?;
+    assert!(matches!(&r, NqlResult::Index(m) if m == "Unique index created: Persona_email"), "{r:?}");
+    let meta = g.list_indexes().await;
+    assert!(meta.len() == 1 && meta[0].unique && meta[0].index_type == IndexType::Hash, "{meta:?}");
+    g.execute_statement(r#"add (p:Persona {email: "s@ejemplo.org"})"#).await?;
+    assert!(is_violation(g.execute_statement(r#"add (p:Persona {email: "s@ejemplo.org"})"#).await));
+
+    g.execute_statement("CREATE UNIQUE INDEX ON Empresa(rfc) TYPE btree").await?;
+    let stats = g.stats().await?;
+    let flags: Vec<(String, bool)> = stats.indexes.iter().map(|i| (i.name.clone(), i.unique)).collect();
+    assert_eq!(flags, [("Empresa_rfc".to_string(), true), ("Persona_email".to_string(), true)]);
+    assert!(g.describe_index("Empresa_rfc").await.unwrap().metadata.unique);
+
+    // Un índice común sigue siendo común.
+    g.execute_statement("create index on Persona(nombre)").await?;
+    assert!(!g.describe_index("Persona_nombre").await.unwrap().metadata.unique);
+
+    for bad in [
+        "create unique index on Nota(cuerpo) type fulltext",
+        "create unique index on Nota(tema) type taxonomy",
+        r#"create unique index on Nota(cuerpo) with (language = "spanish")"#,
+    ] {
+        assert!(matches!(g.execute_statement(bad).await, Err(NopalError::QueryParseError(_))), "{bad}");
+    }
+
+    // Sobre valores repetidos falla sin crear nada.
+    g.execute_statement(r#"add (c:Ciudad {nombre: "Oaxaca"})"#).await?;
+    g.execute_statement(r#"add (c:Ciudad {nombre: "Oaxaca"})"#).await?;
+    assert!(is_violation(g.execute_statement("create unique index on Ciudad(nombre)").await));
+    assert!(g.describe_index("Ciudad_nombre").await.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn copying_the_base_keeps_the_flag() -> Result<()> {
+    use nopaldb::storage::{Storage, StorageOptions};
+
+    let src = tempfile::tempdir().unwrap();
+    {
+        let g = Graph::open(src.path()).await?;
+        g.create_unique_index("Persona", "email", IndexType::Hash).await?;
+        g.add_node(persona("s@ejemplo.org")).await?;
+        g.close().await?;
+    }
+    let dst = tempfile::tempdir().unwrap();
+    let copy = dst.path().join("copia");
+    let report = Storage::copy_database(src.path(), StorageOptions::default(), &copy, StorageOptions::default()).await?;
+    assert!(report.verified);
+    let g = Graph::open(&copy).await?;
+    assert!(g.list_indexes().await[0].unique);
+    assert!(is_violation(g.add_node(persona("s@ejemplo.org")).await));
+    Ok(())
+}
+
+fn upsert(email: &str, intento: i64) -> UpsertRequest {
+    UpsertRequest {
+        label: "Persona".into(),
+        key: "email".into(),
+        props: HashMap::from([
+            ("email".to_string(), PropertyValue::String(email.into())),
+            ("intento".to_string(), PropertyValue::Int(intento)),
+        ]),
+        embedding: None,
+        links: Vec::new(),
+    }
+}
+
+/// `add_node` no toma el candado por clave de `upsert`: puede crear la clave
+/// entre la búsqueda y el commit del upsert. Con índice único ese commit se
+/// rechaza y el upsert reintenta, encuentra al ganador y lo actualiza; nunca
+/// devuelve `UniqueViolation`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upserts_that_lose_their_key_to_a_plain_write_update_the_winner() -> Result<()> {
+    let g = unique_graph().await?;
+    let mut tasks = Vec::new();
+    for ronda in 0..20 {
+        let email = format!("r{ronda}@ejemplo.org");
+        for i in 0..6 {
+            let (g, email) = (g.clone(), email.clone());
+            tasks.push(tokio::spawn(async move {
+                if i % 2 == 0 {
+                    g.upsert_node(upsert(&email, i)).await.map(|(o, _)| Some(o))
+                } else {
+                    let mut tx = g.begin_transaction().await?;
+                    tx.add_node(persona(&email)).await?;
+                    match tx.commit().await {
+                        Err(NopalError::UniqueViolation(_)) => Ok(None),
+                        r => r.map(|_| None),
+                    }
+                }
+            }));
+        }
+    }
+    for t in tasks {
+        if let Some(outcome) = t.await.unwrap()? {
+            assert_ne!(outcome, UpsertOutcome::Unchanged, "cada upsert escribe su `intento`");
+        }
+    }
+    let e = emails(&g).await;
+    assert_eq!(e.len(), 20, "{e:?}");
+    assert_eq!(e.iter().collect::<HashSet<_>>().len(), 20);
+    Ok(())
+}
+
+/// Los stubs de `links` tampoco toman candado: dos upserts de notas distintas
+/// que enlazan al mismo destino inexistente lo crearían dos veces. Con índice
+/// único en la clave del destino, el que pierde reintenta y enlaza al stub del
+/// otro.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_stubs_of_a_unique_key_are_created_once() -> Result<()> {
+    let g = Graph::in_memory().await?;
+    g.create_unique_index("Nota", "clave", IndexType::Hash).await?;
+    let nota = |clave: String, destino: String| UpsertRequest {
+        label: "Nota".into(),
+        key: "clave".into(),
+        props: HashMap::from([("clave".to_string(), PropertyValue::String(clave))]),
+        embedding: None,
+        links: vec![LinkSpec {
+            edge_type: "MENCIONA".into(),
+            target_label: "Nota".into(),
+            target_key: "clave".into(),
+            target_key_value: PropertyValue::String(destino),
+            props: HashMap::new(),
+            create_target_stub: true,
+        }],
+    };
+    let mut tasks = Vec::new();
+    for ronda in 0..20 {
+        for i in 0..4 {
+            let g = g.clone();
+            let req = nota(format!("n{ronda}-{i}"), format!("destino{ronda}"));
+            tasks.push(tokio::spawn(async move { g.upsert_node(req).await }));
+        }
+    }
+    for t in tasks {
+        t.await.unwrap()?;
+    }
+    let notas = g.get_nodes_by_label("Nota").await?;
+    assert_eq!(notas.len(), 20 * 5, "4 notas y un solo destino por ronda");
+    assert_eq!(g.get_all_edges().await?.len(), 20 * 4);
     Ok(())
 }
