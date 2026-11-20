@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.10.17] - unreleased
 
 **La dirección de las relaciones en NQL significa lo que se escribe** (#395).
 Cambia resultados: `-[]-` devuelve más filas y `add` con `<-` crea la arista
