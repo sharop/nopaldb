@@ -125,7 +125,7 @@ async fn test_unknown_prefix_is_an_error() -> Result<()> {
         r#"find n.iri from (a:Insecto)-[:visita]->(n) where path_end_instanceOf("nadie:Arbol")"#,
     ] {
         let err = graph.execute_nql(q).await.expect_err(q).to_string();
-        assert!(err.contains("`nadie`") && err.contains("flora"), "{q}: {err}");
+        assert!(err.contains("`nadie`") && err.contains("`:`, `fauna:`, `flora:`"), "{q}: {err}");
     }
     // A label that looks prefixed is still a class (an importer collision).
     assert_eq!(iris(&graph, "fauna:Rosa").await, vec![iri("rosa_mosqueta")]);

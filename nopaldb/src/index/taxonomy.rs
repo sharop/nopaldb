@@ -183,7 +183,7 @@ impl TaxonomyIndex {
             return Ok(Some(id));
         }
         let Some(prefix) = self.unknown_prefix(name) else { return Ok(None) };
-        let known: Vec<&str> = self.prefixes.keys().map(String::as_str).collect();
+        let known: Vec<String> = self.prefixes.keys().map(|p| format!("`{p}:`")).collect();
         Err(crate::error::NopalError::QueryExecutionError(format!(
             "{predicate}(…, \"{name}\"): el prefijo `{prefix}` no está en el catálogo de prefijos \
              del grafo (conocidos: {}); usa el IRI completo o importa un documento que declare \
