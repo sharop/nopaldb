@@ -163,7 +163,7 @@ graph.describe_index("Persona_email")["unique"]        # True
   the commit is refused and the upsert retries, finds that node and updates
   it. Without a unique index, an upsert only serializes against other
   upserts of the same key in the same process.
-- **NQL `upsert`** finds its node through a unique index and is an error
+- **NQL `upsert`** finds each node of its pattern through a unique index and is an error
   without one: `upsert (p:Persona {email: "s@example.org"}) set p.visitas = 1`.
   See [UPSERT](en/NQL_REFERENCE.md#upsert).
 - **Older versions** (≤ 0.10.x) open the base and keep the index as a plain

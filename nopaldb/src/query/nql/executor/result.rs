@@ -79,7 +79,7 @@ pub struct WriteResult {
     pub properties_changed: usize,
     pub created_ids: Vec<String>,
     /// UPSERT: nodes found by their key whose values already were the
-    /// desired ones (nothing written).
+    /// desired ones (nothing written to them).
     pub nodes_unchanged: usize,
     /// UPSERT: ids of the nodes found by their key, updated or unchanged
     /// (the created ones are in `created_ids`).
@@ -117,7 +117,10 @@ impl WriteResult {
         }
     }
 
-    pub fn from_upsert(outcome: crate::graph::UpsertOutcome, id: crate::types::NodeId, properties_changed: usize) -> Self {
+    /// UPSERT: nodes and edges created or updated; nodes found unchanged go
+    /// to `nodes_unchanged`. `created_ids` and `matched_ids` hold node ids,
+    /// in the pattern's order.
+    pub(crate) fn from_upsert(outcome: &crate::graph::upsert::UpsertPatternOutcome, properties_changed: usize) -> Self {
         use crate::graph::UpsertOutcome;
         let mut w = WriteResult {
             nodes_created: 0,
@@ -131,18 +134,27 @@ impl WriteResult {
             nodes_unchanged: 0,
             matched_ids: Vec::new(),
         };
-        match outcome {
-            UpsertOutcome::Created => {
-                w.nodes_created = 1;
-                w.created_ids.push(id.to_string());
+        for (o, id) in &outcome.nodes {
+            match o {
+                UpsertOutcome::Created => {
+                    w.nodes_created += 1;
+                    w.created_ids.push(id.to_string());
+                }
+                UpsertOutcome::Updated => {
+                    w.nodes_updated += 1;
+                    w.matched_ids.push(id.to_string());
+                }
+                UpsertOutcome::Unchanged => {
+                    w.nodes_unchanged += 1;
+                    w.matched_ids.push(id.to_string());
+                }
             }
-            UpsertOutcome::Updated => {
-                w.nodes_updated = 1;
-                w.matched_ids.push(id.to_string());
-            }
-            UpsertOutcome::Unchanged => {
-                w.nodes_unchanged = 1;
-                w.matched_ids.push(id.to_string());
+        }
+        for (o, _) in &outcome.edges {
+            match o {
+                UpsertOutcome::Created => w.edges_created += 1,
+                UpsertOutcome::Updated => w.edges_updated += 1,
+                UpsertOutcome::Unchanged => {}
             }
         }
         w

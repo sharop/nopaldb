@@ -107,11 +107,6 @@ async fn needs_a_unique_index_and_a_usable_key() -> Result<()> {
     ] {
         assert!(matches!(g.execute_statement(bad).await, Err(NopalError::SemanticError(_))), "{bad}");
     }
-    // Relaciones: F3.
-    assert!(matches!(
-        g.execute_statement(r#"upsert (a:Persona {email: "a@ejemplo.org"})-[:AMIGO_DE]->(b:Persona {email: "b@ejemplo.org"})"#).await,
-        Err(NopalError::QueryParseError(_))
-    ));
     assert!(g.get_nodes_by_label("Persona").await?.is_empty());
     Ok(())
 }

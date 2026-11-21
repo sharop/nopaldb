@@ -273,15 +273,7 @@ impl AstBuilder {
             }
         }
         let pattern = pattern.ok_or_else(|| NopalError::QueryParseError("Missing pattern in UPSERT".into()))?;
-        let node = match <[PatternElement; 1]>::try_from(pattern.elements) {
-            Ok([PatternElement::Node(node)]) => node,
-            _ => {
-                return Err(NopalError::QueryParseError(
-                    "UPSERT takes a single node `(p:Label {key: value})`; relationships are not supported yet".into(),
-                ))
-            }
-        };
-        Ok(UpsertStmt { node, assignments })
+        Ok(UpsertStmt { pattern, assignments })
     }
 
     fn build_query(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Query> {

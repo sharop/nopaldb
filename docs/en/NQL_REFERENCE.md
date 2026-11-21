@@ -329,13 +329,13 @@ NQL supports CRUD for **graph content**:
 
 - `ADD`: create nodes and relationships
 - `UPDATE`: update node and edge properties
-- `UPSERT`: create a node, or update the one that already has its key
+- `UPSERT`: create nodes and relationships, or update the ones that already exist (by key)
 - `DELETE`: delete matched nodes or relationships
 - `CREATE INDEX` / `DROP INDEX`: index management
 
 Important:
 - NQL does **not** create the storage/database container. That is done through the API with `Graph.open(...)` or `Graph.in_memory()`.
-- NQL does **not** currently support `CREATE GRAPH`, `BEGIN`, `ROLLBACK`, or `MERGE` (`upsert` covers MERGE of a node). Each `add`/`update`/`upsert`/`delete` runs in its own transaction; explicit transactions are the API (`graph.begin_transaction()`).
+- NQL does **not** currently support `CREATE GRAPH`, `BEGIN`, `ROLLBACK`, or `MERGE` (`upsert` covers it, node by node). Each `add`/`update`/`upsert`/`delete` runs in its own transaction; explicit transactions are the API (`graph.begin_transaction()`).
 - The grammar has `sketch <name> = <statement>` and `commit <name>` (staged changes), but `execute_statement` (Rust) and `execute_nql` (Python) reject them with a named error since 0.9.4; sketches are the Rust API `nopaldb::query::SketchManager`. Until 0.9.3 they answered an OK message without doing anything.
 - Write patterns have one hop and honour the direction and the inline properties of nodes and edges (0.8.4): they change exactly what `find` with the same pattern returns. A longer or quantified write pattern is a named error.
 
@@ -380,10 +380,36 @@ set p.visits = p.visits + 1
   each `set` sees the previous one's result. A plain write (`add`, `update`)
   that races an upsert on the key cannot duplicate it either: the unique
   index refuses the losing commit, and the upsert retries.
-- `explain upsert (...)` shows which unique index finds the node.
+- `explain upsert (...)` shows which unique index finds each node.
 - Unlike the API's `upsert_node` / Python `graph.upsert`, whose `props`
   replace the whole property map, `upsert` keeps what it does not set.
-- One node per statement; relationships are not supported yet.
+
+**With relationships** — this is how NQL connects two nodes that already
+exist (`add` always creates its nodes):
+
+```nql
+upsert (a:Person {email: "a@example.org"})-[r:FRIEND_OF {since: 2020}]->(b:Person {email: "b@example.org"})
+set r.seen = true
+```
+
+- Each node is found or created on its own by its key, and then each edge by
+  `(source, type, target)`. A missing edge between two existing nodes creates
+  that edge, never a copy of the nodes (Cypher's `MERGE` matches the pattern
+  as a whole).
+- Like a node, an edge is created with its literal (`since`) plus `set`, and
+  when found only `set` applies. If several edges of the type already join
+  the pair, it is an `AmbiguousUpsertKey` error.
+- Each relationship needs a type and a direction: `-[:T]->` or `<-[:T]-`
+  (the arrow says which way the edge goes). `-[:T]-` and a quantifier are
+  errors.
+- Chains work: `(a)-[:T]->(b)<-[:T]-(c)`. A variable written again bare,
+  `(a)`, is the same node; two variables with the same key are an error.
+- `set` may touch any node or relationship variable of the pattern.
+- The whole statement is one transaction, written whole or not at all. The
+  result adds `edges_created` / `edges_updated`.
+- Concurrent upserts of one pattern leave one edge: each takes the locks of
+  every node's key. An edge has no unique index, so a plain `add` that
+  races it can still add a second one.
 
 ### DELETE
 ```nql
