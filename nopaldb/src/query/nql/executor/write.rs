@@ -546,7 +546,11 @@ impl<'a> WriteExecutor<'a> {
         Ok((source, rel, target, source_var, target_var))
     }
 
-    /// Match nodes by simple pattern (label filter only)
+    /// The nodes a single-node DELETE/UPDATE touches: those of the label
+    /// that hold every inline property, as `find` with the same pattern and
+    /// the one-hop form (`execute_one_hop_pattern`). Until 0.10.17 the inline
+    /// properties were ignored here, so `delete (n {k: "a"})` deleted every
+    /// node, and `update (n:N {k: "a"}) set ...` changed every `N`.
     async fn match_nodes_by_pattern(&self, pattern: &Pattern) -> Result<Vec<Node>> {
         if pattern.elements.is_empty() {
             return Ok(vec![]);
@@ -554,11 +558,15 @@ impl<'a> WriteExecutor<'a> {
 
         match &pattern.elements[0] {
             PatternElement::Node(node_pattern) => {
-                if let Some(label) = &node_pattern.label {
-                    self.graph.get_nodes_by_label(label).await
+                let mut nodes = if let Some(label) = &node_pattern.label {
+                    self.graph.get_nodes_by_label(label).await?
                 } else {
-                    self.graph.get_all_nodes().await
-                }
+                    self.graph.get_all_nodes().await?
+                };
+                nodes.retain(|n| {
+                    node_pattern.properties.iter().all(|(k, v)| n.properties.get(k) == Some(v))
+                });
+                Ok(nodes)
             }
             _ => Ok(vec![]),
         }
