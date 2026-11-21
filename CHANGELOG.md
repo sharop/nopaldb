@@ -56,7 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Abort` al WAL: terminan la transacción vacía sin tocarlo, como decía su
   documentación. Un upsert repetido deja el WAL del mismo tamaño.
 
-## [0.10.18] - unreleased
+## [0.10.18] - 2026-11-21
 
 **`delete` y `update` de un solo nodo respetan las propiedades en línea.**
 Corrige pérdida de datos. Sin cambio de API ni de formato en disco.
