@@ -4,7 +4,8 @@
 Guardia de la wheel: `create_index(..., unique=True)` existe, `describe_index`
 y `get_stats()` reportan `"unique"`, una escritura (NQL o transacción) que
 repite el valor falla y no escribe nada, `upsert` sobre la clave actualiza en
-vez de fallar, NQL `upsert` crea, actualiza o no escribe nada, y la marca
+vez de fallar, NQL `upsert` crea, actualiza o no escribe nada (también con
+relaciones entre nodos que ya existen), y la marca
 sobrevive a reabrir. Datos ficticios. Se ejecuta en CI (job python-stubs)
 tras `maturin develop`.
 """
@@ -61,6 +62,14 @@ def main() -> None:
         assert node is not None and node["properties"]["visitas"] == 2, node
         w = g.execute_nql('upsert (p:Persona {email: "s@ejemplo.org"})').write
         assert w is not None and w["nodes_unchanged"] == 1 and w["matched_ids"] == [sid], w
+
+        # Con relación: conecta dos nodos que ya existen, sin copiarlos.
+        q = 'upsert (a:Persona {email: "s@ejemplo.org"})-[:CONOCE]->(b:Persona {email: "k@ejemplo.org"})'
+        w = g.execute_nql(q).write
+        assert w is not None and (w["nodes_created"], w["nodes_unchanged"], w["edges_created"]) == (0, 2, 1), w
+        assert w["matched_ids"] == [sid, kid], w
+        w = g.execute_nql(q).write
+        assert w is not None and w["edges_created"] == 0 and w["nodes_unchanged"] == 2, w
 
         for bad in [
             lambda: g.create_index("Nota", "cuerpo", "fulltext", unique=True),

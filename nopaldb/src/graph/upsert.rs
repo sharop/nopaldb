@@ -107,6 +107,37 @@ pub struct UpsertRequest {
     pub links: Vec<LinkSpec>,
 }
 
+/// A node of [`Graph::upsert_pattern`]: its label and the properties (under
+/// a unique index) it is found by.
+#[derive(Debug, Clone)]
+pub(crate) struct UpsertNode {
+    pub label: String,
+    pub identity: Vec<(String, PropertyValue)>,
+}
+
+/// An edge of [`Graph::upsert_pattern`], between two of its nodes (indexes
+/// into the pattern's nodes), found by `(source, edge_type, target)`.
+#[derive(Debug, Clone)]
+pub(crate) struct UpsertEdge {
+    pub source: usize,
+    pub edge_type: String,
+    pub target: usize,
+}
+
+/// The property maps the nodes and edges of a pattern must end up with, in
+/// the pattern's order.
+pub(crate) struct UpsertMaps {
+    pub nodes: Vec<HashMap<String, PropertyValue>>,
+    pub edges: Vec<HashMap<String, PropertyValue>>,
+}
+
+/// What [`Graph::upsert_pattern`] did to each node and edge, in order.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct UpsertPatternOutcome {
+    pub nodes: Vec<(UpsertOutcome, NodeId)>,
+    pub edges: Vec<(UpsertOutcome, crate::types::EdgeId)>,
+}
+
 /// Process-global map of per-key locks. Keyed by a hash of `(label, key, value)`
 /// so different keys never contend; collisions across databases only serialize
 /// a little extra, which is harmless.
@@ -379,30 +410,53 @@ impl Graph {
         Ok(())
     }
 
-    /// The write core of NQL `upsert` (F2): find the node of `label` that
-    /// holds `identity` (properties under a unique index), then write
-    /// `desired(node, exists)`: the whole property map the node must end up
-    /// with, computed from the node found (`exists`), or from a new empty node
-    /// of `label` with the id it will be created with.
+    /// The write core of NQL `upsert`: find or create each node of a pattern
+    /// by its `identity` (properties under a unique index of its label), then
+    /// find or create each edge by `(source, type, target)`, all in one
+    /// transaction. `desired` gets every node and edge as found (`true`) or as
+    /// it would be created (a new empty node or edge with the id it will get),
+    /// and returns the whole property map each must end up with.
     ///
     /// Unlike [`Graph::upsert_node`], whose `props` replace the whole map, the
     /// caller decides what survives (NQL keeps the existing properties and
     /// applies its `set`). The rest is shared: the per-key locks of
-    /// `upsert_node`, so both serialize on the same key; nothing written when
-    /// the desired map equals the current one; and the retry when the commit
-    /// loses the key to a concurrent write. `identity` is unique-indexed by
-    /// construction, so a refusal always means a lost race and is retried.
+    /// `upsert_node`, taken for every node before the transaction in hash
+    /// order, so both serialize on the same keys and two patterns cannot
+    /// deadlock; nothing written when no map changes; and the retry when the
+    /// commit loses a key to a concurrent write. Every identity is
+    /// unique-indexed by construction, so a refusal always means a lost race.
     ///
-    /// Errors with `AmbiguousUpsertKey` when the identity properties point to
-    /// different nodes (or one of them to several, written by a version
-    /// without unique indexes).
-    pub(crate) async fn upsert_by_identity(
+    /// Edges have no unique index: the locks of both endpoints are what keeps
+    /// two upserts from creating the same edge twice. A write that is not an
+    /// upsert (`add_edge`, NQL `add`) can still add one in between.
+    ///
+    /// Errors with `AmbiguousUpsertKey` when the identity properties of a node
+    /// point to different nodes (or one of them to several, written by a
+    /// version without unique indexes), when two nodes of the pattern are the
+    /// same node, or when several edges already join a pair with the type.
+    pub(crate) async fn upsert_pattern(
         &self,
-        label: &str,
-        identity: &[(String, PropertyValue)],
-        desired: impl Fn(&Node, bool) -> Result<HashMap<String, PropertyValue>>,
-    ) -> Result<(UpsertOutcome, NodeId)> {
-        let mut ids: Vec<u64> = identity.iter().map(|(k, v)| key_lock_id(label, k, v)).collect();
+        nodes: &[UpsertNode],
+        edges: &[UpsertEdge],
+        desired: impl Fn(&[(Node, bool)], &[(Edge, bool)]) -> Result<UpsertMaps>,
+    ) -> Result<UpsertPatternOutcome> {
+        // Two nodes with one key would be one node created twice: the commit
+        // would lose to the unique index on every attempt.
+        let mut keys = HashSet::new();
+        for n in nodes {
+            for (k, v) in &n.identity {
+                if !keys.insert(key_id(&n.label, k, v)) {
+                    return Err(NopalError::AmbiguousUpsertKey(format!(
+                        "two nodes of the upsert have {}.{k}={v:?}; write it once and reuse its variable",
+                        n.label
+                    )));
+                }
+            }
+        }
+        let mut ids: Vec<u64> = nodes
+            .iter()
+            .flat_map(|n| n.identity.iter().map(|(k, v)| key_lock_id(&n.label, k, v)))
+            .collect();
         ids.sort_unstable();
         ids.dedup();
         let mut guards = Vec::with_capacity(ids.len());
@@ -413,47 +467,115 @@ impl Graph {
         let mut attempt = 1;
         loop {
             let mut tx = self.begin_transaction().await?;
-            let mut found: Option<Node> = None;
-            for (key, value) in identity {
-                for node in tx.get_nodes_by_label_and_property(label, key, value).await? {
-                    match &found {
-                        Some(f) if f.id != node.id => {
-                            return Err(NopalError::AmbiguousUpsertKey(format!(
-                                "{label}.{key}={value:?} is held by node {}, but another property of the \
-                                 upsert points to node {}",
-                                node.id, f.id
-                            )));
-                        }
-                        _ => found = Some(node),
-                    }
+            let mut found_nodes: Vec<(Node, bool)> = Vec::with_capacity(nodes.len());
+            for n in nodes {
+                let found = Self::find_by_identity(&tx, n).await?;
+                if let Some(f) = &found
+                    && found_nodes.iter().any(|(m, _)| m.id == f.id)
+                {
+                    return Err(NopalError::AmbiguousUpsertKey(format!(
+                        "two nodes of the upsert are node {} ({}); write it once and reuse its variable",
+                        f.id, n.label
+                    )));
                 }
+                let exists = found.is_some();
+                found_nodes.push((
+                    found.unwrap_or_else(|| Node::with_id(crate::types::fresh_id(), n.label.clone())),
+                    exists,
+                ));
             }
 
-            let exists = found.is_some();
-            let base = found.unwrap_or_else(|| Node::with_id(crate::types::fresh_id(), label.to_string()));
-            let props = desired(&base, exists)?;
-            let outcome = match exists {
-                false => UpsertOutcome::Created,
-                true if base.properties == props => {
-                    // Nothing to write. The tx has logged nothing (records go to
-                    // the WAL at commit), so the sync rollback ends it without the
-                    // `Abort` record `rollback_async` would append: an unchanged
-                    // upsert leaves the WAL as it was.
-                    tx.rollback()?;
-                    return Ok((UpsertOutcome::Unchanged, base.id));
+            let mut found_edges: Vec<(Edge, bool)> = Vec::with_capacity(edges.len());
+            for e in edges {
+                let (source, target) = (&found_nodes[e.source], &found_nodes[e.target]);
+                let existing = match (source.1, target.1) {
+                    (true, true) => self
+                        .get_outgoing_edges(source.0.id)
+                        .await?
+                        .into_iter()
+                        .filter(|x| x.edge_type == e.edge_type && x.target == target.0.id)
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                if existing.len() > 1 {
+                    return Err(NopalError::AmbiguousUpsertKey(format!(
+                        "{} edges {} join node {} to node {}; deduplicate before upserting",
+                        existing.len(),
+                        e.edge_type,
+                        source.0.id,
+                        target.0.id
+                    )));
                 }
-                true => UpsertOutcome::Updated,
+                let found = existing.into_iter().next();
+                let exists = found.is_some();
+                found_edges.push((
+                    found.unwrap_or_else(|| Edge::new(source.0.id, target.0.id, e.edge_type.clone())),
+                    exists,
+                ));
+            }
+
+            let maps = desired(&found_nodes, &found_edges)?;
+            let outcome = |exists: bool, before: &HashMap<String, PropertyValue>, after: &HashMap<String, PropertyValue>| {
+                match exists {
+                    false => UpsertOutcome::Created,
+                    true if before == after => UpsertOutcome::Unchanged,
+                    true => UpsertOutcome::Updated,
+                }
             };
-            let id = base.id;
-            tx.add_node(Node::with_id(id, label.to_string()).with_properties(props)).await?;
+            let mut out = UpsertPatternOutcome::default();
+            for ((node, exists), props) in found_nodes.into_iter().zip(maps.nodes) {
+                let o = outcome(exists, &node.properties, &props);
+                if o != UpsertOutcome::Unchanged {
+                    tx.add_node(Node::with_id(node.id, node.label).with_properties(props)).await?;
+                }
+                out.nodes.push((o, node.id));
+            }
+            for ((mut edge, exists), props) in found_edges.into_iter().zip(maps.edges) {
+                let o = outcome(exists, &edge.properties, &props);
+                if o != UpsertOutcome::Unchanged {
+                    edge.properties = props;
+                    tx.add_edge(edge.clone())?;
+                }
+                out.edges.push((o, edge.id));
+            }
+
+            if out.nodes.iter().chain(&out.edges).all(|(o, _)| *o == UpsertOutcome::Unchanged) {
+                // Nothing to write. The tx has logged nothing (records go to
+                // the WAL at commit), so the sync rollback ends it without the
+                // `Abort` record `rollback_async` would append: an unchanged
+                // upsert leaves the WAL as it was.
+                tx.rollback()?;
+                return Ok(out);
+            }
             match tx.commit().await {
                 Err(NopalError::UniqueViolation(_)) if attempt < UNIQUE_KEY_ATTEMPTS => attempt += 1,
                 r => {
                     r?;
-                    return Ok((outcome, id));
+                    return Ok(out);
                 }
             }
         }
+    }
+
+    /// The committed node of `n.label` that holds `n.identity`, if any. Every
+    /// identity property must lead to that same node (or to none).
+    async fn find_by_identity(tx: &Transaction, n: &UpsertNode) -> Result<Option<Node>> {
+        let mut found: Option<Node> = None;
+        for (key, value) in &n.identity {
+            for node in tx.get_nodes_by_label_and_property(&n.label, key, value).await? {
+                match &found {
+                    Some(f) if f.id != node.id => {
+                        return Err(NopalError::AmbiguousUpsertKey(format!(
+                            "{}.{key}={value:?} is held by node {}, but another property of the \
+                             upsert points to node {}",
+                            n.label, node.id, f.id
+                        )));
+                    }
+                    _ => found = Some(node),
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// Delete the node identified by a business key `(label, key, value)` — the

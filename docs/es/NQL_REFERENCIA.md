@@ -334,13 +334,13 @@ NQL ya soporta CRUD sobre el **contenido** del grafo:
 
 - `ADD`: crea nodos y relaciones
 - `UPDATE`: actualiza propiedades de nodos y aristas
-- `UPSERT`: crea un nodo, o actualiza el que ya tiene su clave
+- `UPSERT`: crea nodos y relaciones, o actualiza los que ya existen (por clave)
 - `DELETE`: borra nodos o relaciones matched
 - `CREATE INDEX` / `DROP INDEX`: administración de índices
 
 Importante:
 - NQL **no** crea el storage o base en sí. Eso se hace vía API con `Graph.open(...)` o `Graph.in_memory()`.
-- NQL **no** soporta todavía `CREATE GRAPH`, `BEGIN`, `ROLLBACK` ni `MERGE` (`upsert` cubre el MERGE de un nodo). Cada `add`/`update`/`upsert`/`delete` corre en su propia transacción; las transacciones explícitas son de la API (`graph.begin_transaction()`).
+- NQL **no** soporta todavía `CREATE GRAPH`, `BEGIN`, `ROLLBACK` ni `MERGE` (`upsert` lo cubre, nodo por nodo). Cada `add`/`update`/`upsert`/`delete` corre en su propia transacción; las transacciones explícitas son de la API (`graph.begin_transaction()`).
 - La gramática tiene `sketch <nombre> = <sentencia>` y `commit <nombre>` (cambios preparados), pero `execute_statement` (Rust) y `execute_nql` (Python) los rechazan con un error con nombre desde 0.9.4; los sketches son la API Rust `nopaldb::query::SketchManager`. Hasta 0.9.3 contestaban un mensaje OK sin hacer nada.
 - Los patrones de escritura tienen un salto y respetan la dirección y las propiedades inline de nodos y aristas (0.8.4): cambian exactamente lo que devuelve `find` con el mismo patrón. Un patrón de escritura más largo o con cuantificador es un error con nombre.
 
@@ -385,10 +385,36 @@ set p.visitas = p.visitas + 1
   y cada `set` ve el resultado del anterior. Una escritura común (`add`,
   `update`) que compite con un upsert por la clave tampoco la duplica: el
   índice único rechaza el commit perdedor y el upsert reintenta.
-- `explain upsert (...)` muestra qué índice único encuentra el nodo.
+- `explain upsert (...)` muestra qué índice único encuentra cada nodo.
 - A diferencia de `upsert_node` de la API y `graph.upsert` de Python, cuyos
   `props` reemplazan todas las propiedades, `upsert` conserva lo que no toca.
-- Un nodo por sentencia; las relaciones todavía no.
+
+**Con relaciones** — así conecta NQL dos nodos que ya existen (`add` siempre
+crea sus nodos):
+
+```nql
+upsert (a:Persona {email: "a@ejemplo.org"})-[r:AMIGO_DE {desde: 2020}]->(b:Persona {email: "b@ejemplo.org"})
+set r.visto = true
+```
+
+- Cada nodo se encuentra o se crea por separado, por su clave, y después cada
+  arista por `(origen, tipo, destino)`. Una arista que falta entre dos nodos
+  que existen crea esa arista, nunca una copia de los nodos (el `MERGE` de
+  Cypher busca el patrón entero).
+- Como un nodo, una arista se crea con su literal (`desde`) y `set`, y si ya
+  existe solo se aplica `set`. Si ya hay varias aristas del tipo entre el par,
+  es un error `AmbiguousUpsertKey`.
+- Cada relación necesita tipo y dirección: `-[:T]->` o `<-[:T]-` (la flecha
+  dice hacia dónde va la arista). `-[:T]-` y un cuantificador son error.
+- Se pueden encadenar: `(a)-[:T]->(b)<-[:T]-(c)`. Una variable escrita de
+  nuevo sola, `(a)`, es el mismo nodo; dos variables con la misma clave son
+  un error.
+- `set` puede tocar cualquier variable de nodo o de relación del patrón.
+- Toda la sentencia es una transacción: se escribe completa o nada. El
+  resultado suma `edges_created` / `edges_updated`.
+- Upserts simultáneos de un patrón dejan una sola arista: cada uno toma los
+  candados de las claves de todos sus nodos. Una arista no tiene índice
+  único, así que un `add` que compite puede agregar una segunda.
 
 ### DELETE
 ```nql

@@ -234,28 +234,31 @@ pub struct AddStmt {
     pub pattern: Pattern,
 }
 
-/// Upsert statement - create a node or update the one with its key (F2)
+/// Upsert statement - create or update nodes by their key, and the edges
+/// between them (F2, F3)
 ///
 /// Syntax:
 /// ```nql
-/// upsert (<var>:<Label> {<props>}) [set <var>.<prop> = <expr>, ...]
+/// upsert (<var>:<Label> {<props>}) [-[<var>:<TYPE> {<props>}]-> (...)]... [set <var>.<prop> = <expr>, ...]
 /// ```
 ///
-/// The identity is the property of the literal under a unique index of the
-/// label (`create unique index on Persona(email)`). When no node holds it, the
-/// node is created with the literal plus `set`; when one does, only `set` is
-/// applied over its current properties, and nothing is written if that
-/// changes no value. Unlike `Graph::upsert_node`, the existing properties are
-/// kept, not replaced.
+/// Each node is found by the property of its literal under a unique index of
+/// its label (`create unique index on Persona(email)`), and each edge by
+/// `(source, type, target)`. What is not found is created with its literal
+/// plus `set`; what is found gets only `set`, over its current properties.
+/// Nothing is written if no value changes. Unlike `Graph::upsert_node`, the
+/// existing properties are kept, not replaced. A variable written again later
+/// in the pattern, bare (`(a)`), is the same node.
 ///
 /// Example:
 /// ```nql
 /// upsert (p:Persona {email: "s@ejemplo.org", nombre: "Sergio"}) set p.visitas = p.visitas + 1
+/// upsert (a:Persona {email: "a@ejemplo.org"})-[r:AMIGO_DE {desde: 2020}]->(b:Persona {email: "b@ejemplo.org"})
+///   set r.visto = true
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct UpsertStmt {
-    /// Always a single node today; relationships arrive with F3.
-    pub node: NodePattern,
+    pub pattern: Pattern,
     pub assignments: Vec<Assignment>,
 }
 

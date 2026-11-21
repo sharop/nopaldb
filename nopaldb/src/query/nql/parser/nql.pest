@@ -93,11 +93,10 @@ add_stmt = {
     ^"add" ~ pattern
 }
 
-// UPSERT statement (F2): upsert <node> [set <assignments>]
-// The node's identity is the literal property under a unique index; the rest
-// of the literal is written only when the node is created, and `set` always.
-// The pattern is the general one so relationships (F3) extend the builder,
-// not the grammar; today the builder accepts a single node.
+// UPSERT statement (F2, F3): upsert <pattern> [set <assignments>]
+// Each node's identity is the literal property under a unique index, each
+// edge's is (source, type, target); the rest of a literal is written only
+// when its node or edge is created, and `set` always.
 upsert_stmt = {
     ^"upsert" ~ pattern ~ (^"set" ~ assignment_list)?
 }

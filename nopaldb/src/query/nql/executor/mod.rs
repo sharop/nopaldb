@@ -6104,38 +6104,56 @@ impl<'a> Executor<'a> {
         write_executor.execute_update(update, tx).await
     }
 
-    /// Execute UPSERT (F2); runs its own transaction.
+    /// Execute UPSERT (F2, F3); runs its own transaction.
     pub async fn execute_upsert(&self, upsert: &UpsertStmt) -> Result<result::WriteResult> {
-        let (outcome, id, changed) = WriteExecutor::new(self.graph).execute_upsert(upsert).await?;
-        Ok(result::WriteResult::from_upsert(outcome, id, changed))
+        let (outcome, changed) = WriteExecutor::new(self.graph).execute_upsert(upsert).await?;
+        Ok(result::WriteResult::from_upsert(&outcome, changed))
     }
 
-    /// EXPLAIN of an UPSERT: which unique index finds the node, and what is
-    /// written when it is created or found. Reads nothing but the catalog.
+    /// EXPLAIN of an UPSERT: which unique index finds each node, how each
+    /// edge is found, and what is written when created or found. Reads
+    /// nothing but the catalog.
     async fn explain_upsert(&self, upsert: &UpsertStmt) -> Result<String> {
-        crate::query::nql::validator::check_upsert_shape(upsert)?;
-        let label = upsert.node.label.as_deref().unwrap_or_default();
-        let mut keys: Vec<String> = self
-            .graph
-            .unique_properties(label)
-            .await
-            .into_iter()
-            .filter(|(_, p)| upsert.node.properties.contains_key(p))
-            .map(|(index, p)| format!("{label}.{p} (unique index {index})"))
-            .collect();
-        keys.sort();
-        if keys.is_empty() {
-            return Ok(format!(
-                "UPSERT {label}: no unique index on the literal's properties; executing it is an error"
+        let shape = crate::query::nql::validator::upsert_shape(upsert)?;
+        let name = |i: usize| {
+            let n = shape.nodes[i];
+            n.variable.clone().unwrap_or_else(|| format!("({})", n.label.as_deref().unwrap_or_default()))
+        };
+        let mut out = vec!["UPSERT".to_string()];
+        for (i, node) in shape.nodes.iter().enumerate() {
+            let label = node.label.as_deref().unwrap_or_default();
+            let mut keys: Vec<String> = self
+                .graph
+                .unique_properties(label)
+                .await
+                .into_iter()
+                .filter(|(_, p)| node.properties.contains_key(p))
+                .map(|(index, p)| format!("{label}.{p} (unique index {index})"))
+                .collect();
+            keys.sort();
+            out.push(if keys.is_empty() {
+                format!(
+                    "  node {}: no unique index on the literal's properties; executing it is an error",
+                    name(i)
+                )
+            } else {
+                format!("  node {}: find by {}", name(i), keys.join(", "))
+            });
+        }
+        for (source, rel, target) in &shape.edges {
+            out.push(format!(
+                "  edge {}{} -> {}: find by (source, {}, target)",
+                rel.variable.as_ref().map(|v| format!("{v} ")).unwrap_or_default(),
+                name(*source),
+                name(*target),
+                rel.rel_type.as_deref().unwrap_or_default()
             ));
         }
         let set: Vec<String> = upsert.assignments.iter().map(|a| format!("{}.{}", a.variable, a.property)).collect();
         let set = if set.is_empty() { "nothing".to_string() } else { set.join(", ") };
-        Ok(format!(
-            "UPSERT {label}\n  find by: {}\n  if absent: create with the literal, then set {set}\n  \
-             if found: set {set} over its properties (no write if no value changes)",
-            keys.join(", ")
-        ))
+        out.push(format!("  if absent: create with the literal, then set {set}"));
+        out.push(format!("  if found: set {set} over its properties (no write if no value changes)"));
+        Ok(out.join("\n"))
     }
 
     /// Execute CREATE INDEX

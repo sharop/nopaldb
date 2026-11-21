@@ -6,7 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 use crate::error::{NopalError, Result};
-use crate::graph::{Graph, UpsertOutcome};
+use crate::graph::upsert::{UpsertEdge, UpsertMaps, UpsertNode, UpsertPatternOutcome};
+use crate::graph::Graph;
+use crate::query::nql::validator::UpsertShape;
 use crate::query::nql::parser::ast::{
     AddStmt, DeleteStmt, UpdateStmt, UpsertStmt, Pattern, PatternElement,
     NodePattern, RelationshipPattern, Expression, Assignment, Direction,
@@ -300,73 +302,120 @@ impl<'a> WriteExecutor<'a> {
     // UPDATE OPERATION — supports relationship patterns (P0-B)
     // ═══════════════════════════════════════════════════════════
 
-    /// UPSERT (F2): find the node by the literal's properties under a unique
-    /// index; create it with the literal plus `set`, or apply `set` over its
-    /// current properties. See [`UpsertStmt`]. Runs its own transaction (one
-    /// per attempt, see `Graph::upsert_by_identity`), so it takes no `tx`.
+    /// UPSERT (F2, F3): find each node by the literal's properties under a
+    /// unique index and each edge by `(source, type, target)`; create what is
+    /// missing with its literal plus `set`, or apply `set` over what is there.
+    /// See [`UpsertStmt`]. Runs its own transaction (one per attempt, see
+    /// `Graph::upsert_pattern`), so it takes no `tx`.
     ///
-    /// Without a unique index among the literal's properties it is an error,
+    /// Without a unique index among a literal's properties it is an error,
     /// not a lookup by every property of the literal (Cypher's MERGE): that
     /// lookup misses as soon as any non-key value differs and creates a
     /// duplicate, and without the index two concurrent upserts can both
-    /// create. `set` cannot assign an identity property: the node would stop
-    /// being found by the literal it was upserted with.
-    pub async fn execute_upsert(&self, upsert: &UpsertStmt) -> Result<(UpsertOutcome, NodeId, usize)> {
-        crate::query::nql::validator::check_upsert_shape(upsert)?;
-        let node = &upsert.node;
-        let label = node.label.as_deref().unwrap_or_default();
-        let unique = self.graph.unique_properties(label).await;
-
-        let mut identity: Vec<(String, PropertyValue)> = node
-            .properties
+    /// create. Nodes and edges are resolved one by one, not the pattern as a
+    /// whole as MERGE does: a missing edge between two existing nodes creates
+    /// that edge, not a copy of both nodes. `set` cannot assign an identity
+    /// property: the node would stop being found by the literal it was
+    /// upserted with.
+    pub(crate) async fn execute_upsert(&self, upsert: &UpsertStmt) -> Result<(UpsertPatternOutcome, usize)> {
+        let shape = crate::query::nql::validator::upsert_shape(upsert)?;
+        let nodes = self.upsert_identities(&shape).await?;
+        for a in &upsert.assignments {
+            if let Some(i) = shape.node_of(&a.variable)
+                && nodes[i].identity.iter().any(|(k, _)| *k == a.property)
+            {
+                return Err(NopalError::SemanticError(format!(
+                    "SET {}.{}: UPSERT cannot change the key it finds the node by",
+                    a.variable, a.property
+                )));
+            }
+        }
+        let edges: Vec<UpsertEdge> = shape
+            .edges
             .iter()
-            .filter(|(k, _)| unique.iter().any(|(_, p)| p == *k))
-            .map(|(k, v)| (k.clone(), v.clone()))
+            .map(|(source, rel, target)| UpsertEdge {
+                source: *source,
+                edge_type: rel.rel_type.clone().unwrap_or_default(),
+                target: *target,
+            })
             .collect();
-        identity.sort_by(|a, b| a.0.cmp(&b.0));
-        if identity.is_empty() {
-            let mut props: Vec<&str> = node.properties.keys().map(String::as_str).collect();
-            props.sort_unstable();
-            return Err(NopalError::SemanticError(format!(
-                "UPSERT finds its node through a unique index, and {label} has none on {}: \
-                 create unique index on {label}({})",
-                props.join(", "),
-                props[0]
-            )));
-        }
-        if let Some((k, _)) = identity.iter().find(|(_, v)| matches!(v, PropertyValue::Null)) {
-            return Err(NopalError::SemanticError(format!(
-                "UPSERT: the key {label}.{k} cannot be null"
-            )));
-        }
-        if let Some(a) = upsert.assignments.iter().find(|a| identity.iter().any(|(k, _)| *k == a.property)) {
-            return Err(NopalError::SemanticError(format!(
-                "SET {}.{}: UPSERT cannot change the key it finds the node by",
-                a.variable, a.property
-            )));
-        }
 
+        // `set` reads each node or edge as it is before the statement (or as
+        // its literal, when created): `set a.x = a.y, a.y = a.x` swaps.
         let changed = std::sync::atomic::AtomicUsize::new(0);
-        let (outcome, id) = self
+        let outcome = self
             .graph
-            .upsert_by_identity(label, &identity, |base, exists| {
-                let mut target = base.clone();
-                if !exists {
-                    target.properties = node.properties.clone();
+            .upsert_pattern(&nodes, &edges, |found_nodes, found_edges| {
+                fn diff(a: &HashMap<String, PropertyValue>, b: &HashMap<String, PropertyValue>) -> usize {
+                    let keys: HashSet<&String> = a.keys().chain(b.keys()).collect();
+                    keys.into_iter().filter(|k| a.get(*k) != b.get(*k)).count()
                 }
-                let before = target.clone();
-                for a in &upsert.assignments {
-                    let value = self.assignment_value_for_node(&before, &a.variable, &a.value)?;
-                    target.properties.insert(a.property.clone(), value);
+                let mut total = 0;
+                let mut maps = UpsertMaps { nodes: Vec::new(), edges: Vec::new() };
+                for (pattern, (base, exists)) in shape.nodes.iter().zip(found_nodes) {
+                    let mut before = base.clone();
+                    if !exists {
+                        before.properties = pattern.properties.clone();
+                    }
+                    let mut props = before.properties.clone();
+                    for a in upsert.assignments.iter().filter(|a| pattern.variable.as_ref() == Some(&a.variable)) {
+                        props.insert(a.property.clone(), self.assignment_value_for_node(&before, &a.variable, &a.value)?);
+                    }
+                    total += diff(&base.properties, &props);
+                    maps.nodes.push(props);
                 }
-                let differs = |k: &String| base.properties.get(k) != target.properties.get(k);
-                let keys: HashSet<&String> = base.properties.keys().chain(target.properties.keys()).collect();
-                changed.store(keys.into_iter().filter(|k| differs(k)).count(), std::sync::atomic::Ordering::Relaxed);
-                Ok(target.properties)
+                for ((_, rel, _), (base, exists)) in shape.edges.iter().zip(found_edges) {
+                    let mut before = base.clone();
+                    if !exists {
+                        before.properties = rel.properties.clone();
+                    }
+                    let mut props = before.properties.clone();
+                    for a in upsert.assignments.iter().filter(|a| rel.variable.as_ref() == Some(&a.variable)) {
+                        props.insert(a.property.clone(), self.assignment_value_for_edge(&before, &a.variable, &a.value)?);
+                    }
+                    total += diff(&base.properties, &props);
+                    maps.edges.push(props);
+                }
+                changed.store(total, std::sync::atomic::Ordering::Relaxed);
+                Ok(maps)
             })
             .await?;
-        let changed = if outcome == UpsertOutcome::Unchanged { 0 } else { changed.into_inner() };
-        Ok((outcome, id, changed))
+        Ok((outcome, changed.into_inner()))
+    }
+
+    /// The identity of each node of an UPSERT: the properties of its literal
+    /// under a unique index of its label, sorted by name. Errors when a node
+    /// has none, or when one of them is `null`.
+    pub(crate) async fn upsert_identities(&self, shape: &UpsertShape<'_>) -> Result<Vec<UpsertNode>> {
+        let mut nodes = Vec::with_capacity(shape.nodes.len());
+        for node in &shape.nodes {
+            let label = node.label.clone().unwrap_or_default();
+            let unique = self.graph.unique_properties(&label).await;
+            let mut identity: Vec<(String, PropertyValue)> = node
+                .properties
+                .iter()
+                .filter(|(k, _)| unique.iter().any(|(_, p)| p == *k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            identity.sort_by(|a, b| a.0.cmp(&b.0));
+            if identity.is_empty() {
+                let mut props: Vec<&str> = node.properties.keys().map(String::as_str).collect();
+                props.sort_unstable();
+                return Err(NopalError::SemanticError(format!(
+                    "UPSERT finds its node through a unique index, and {label} has none on {}: \
+                     create unique index on {label}({})",
+                    props.join(", "),
+                    props[0]
+                )));
+            }
+            if let Some((k, _)) = identity.iter().find(|(_, v)| matches!(v, PropertyValue::Null)) {
+                return Err(NopalError::SemanticError(format!(
+                    "UPSERT: the key {label}.{k} cannot be null"
+                )));
+            }
+            nodes.push(UpsertNode { label, identity });
+        }
+        Ok(nodes)
     }
 
     /// Execute UPDATE statement

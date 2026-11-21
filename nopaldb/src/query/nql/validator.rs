@@ -2964,33 +2964,134 @@ pub(crate) fn check_update_values(update: &UpdateStmt) -> Result<()> {
     check_assignment_values(&update.assignments)
 }
 
-/// What UPSERT needs before looking at the graph: a label, a literal to take
-/// the identity from, a `set` that only touches the upserted node, and the
-/// value rules of UPDATE's `set`. Whether a property of the literal has a
-/// unique index is checked at execution, against the graph.
-pub(crate) fn check_upsert_shape(upsert: &UpsertStmt) -> Result<()> {
-    let node = &upsert.node;
-    if node.label.is_none() {
-        return Err(NopalError::SemanticError(
-            "UPSERT needs a label: `upsert (p:Persona {email: ...})`".into(),
-        ));
+/// The nodes and edges of an UPSERT pattern, each written once: a variable
+/// repeated bare (`(a)`) is the node it named first.
+pub(crate) struct UpsertShape<'s> {
+    pub nodes: Vec<&'s NodePattern>,
+    /// `(source, relationship, target)`, indexes into `nodes`, in the
+    /// arrow's direction: `(a)<-[:R]-(b)` is b → a.
+    pub edges: Vec<(usize, &'s RelationshipPattern, usize)>,
+}
+
+impl UpsertShape<'_> {
+    pub fn node_of(&self, var: &str) -> Option<usize> {
+        self.nodes.iter().position(|n| n.variable.as_deref() == Some(var))
     }
-    if node.properties.is_empty() {
-        return Err(NopalError::SemanticError(
-            "UPSERT needs the node's key in the literal: `upsert (p:Persona {email: ...})`".into(),
-        ));
+
+    pub fn edge_of(&self, var: &str) -> Option<usize> {
+        self.edges.iter().position(|(_, r, _)| r.variable.as_deref() == Some(var))
     }
+}
+
+/// What UPSERT needs before looking at the graph: a label and a literal to
+/// take each node's identity from, a type and a direction for each edge, a
+/// `set` that only touches variables of the pattern, and the value rules of
+/// UPDATE's `set`. Whether a property of a literal has a unique index is
+/// checked at execution, against the graph.
+pub(crate) fn upsert_shape(upsert: &UpsertStmt) -> Result<UpsertShape<'_>> {
+    let mut shape = UpsertShape { nodes: Vec::new(), edges: Vec::new() };
+    // The node a pattern node reuses (`Some`), or `None` for a new one.
+    fn reused(shape: &UpsertShape<'_>, node: &NodePattern) -> Result<Option<usize>> {
+        if let Some(var) = &node.variable {
+            if shape.edge_of(var).is_some() {
+                return Err(NopalError::SemanticError(format!(
+                    "UPSERT: `{var}` names a relationship and a node"
+                )));
+            }
+            if let Some(i) = shape.node_of(var) {
+                if node.label.is_some() || !node.properties.is_empty() {
+                    return Err(NopalError::SemanticError(format!(
+                        "UPSERT: `{var}` is already in the pattern; write it bare, `({var})`, to reuse it"
+                    )));
+                }
+                return Ok(Some(i));
+            }
+        }
+        if node.label.is_none() {
+            return Err(NopalError::SemanticError(
+                "UPSERT needs a label: `upsert (p:Persona {email: ...})`".into(),
+            ));
+        }
+        if node.properties.is_empty() {
+            return Err(NopalError::SemanticError(
+                "UPSERT needs the node's key in the literal: `upsert (p:Persona {email: ...})`".into(),
+            ));
+        }
+        Ok(None)
+    }
+
+    let mut prev = None;
+    let mut pending: Option<&RelationshipPattern> = None;
+    for element in &upsert.pattern.elements {
+        match element {
+            PatternElement::Node(node) => {
+                let i = match reused(&shape, node)? {
+                    Some(i) => i,
+                    None => {
+                        shape.nodes.push(node);
+                        shape.nodes.len() - 1
+                    }
+                };
+                if let (Some(rel), Some(p)) = (pending.take(), prev) {
+                    let (source, target) = match rel.direction {
+                        Direction::Outgoing => (p, i),
+                        Direction::Incoming => (i, p),
+                        Direction::Bidirectional => {
+                            return Err(NopalError::SemanticError(
+                                "UPSERT needs a direction for each relationship: use `-[:TYPE]->` or `<-[:TYPE]-`"
+                                    .into(),
+                            ))
+                        }
+                    };
+                    let rel_type = rel.rel_type.as_deref().unwrap_or_default();
+                    if shape.edges.iter().any(|(s, r, t)| (*s, r.rel_type.as_deref(), *t) == (source, Some(rel_type), target)) {
+                        return Err(NopalError::SemanticError(format!(
+                            "UPSERT: the relationship {rel_type} between the same two nodes appears twice"
+                        )));
+                    }
+                    shape.edges.push((source, rel, target));
+                }
+                prev = Some(i);
+            }
+            PatternElement::Relationship(rel) => {
+                if rel.quantifier.is_some() {
+                    return Err(NopalError::SemanticError(
+                        "UPSERT relationships take no quantifier: one edge per arrow".into(),
+                    ));
+                }
+                if rel.rel_type.is_none() {
+                    return Err(NopalError::SemanticError(
+                        "UPSERT needs the type of each relationship: `-[:TYPE]->`; an edge is found by \
+                         its source, type and target"
+                            .into(),
+                    ));
+                }
+                if let Some(var) = &rel.variable
+                    && (shape.node_of(var).is_some() || shape.edge_of(var).is_some())
+                {
+                    return Err(NopalError::SemanticError(format!(
+                        "UPSERT: `{var}` is already in the pattern; a relationship variable names one edge"
+                    )));
+                }
+                pending = Some(rel);
+            }
+        }
+    }
+
     for a in &upsert.assignments {
-        if node.variable.as_deref() != Some(a.variable.as_str()) {
+        if shape.node_of(&a.variable).is_none() && shape.edge_of(&a.variable).is_none() {
             return Err(NopalError::SemanticError(format!(
-                "SET {}.{}: UPSERT can only set properties of its node{}",
-                a.variable,
-                a.property,
-                node.variable.as_ref().map(|v| format!(" `{v}`")).unwrap_or_default()
+                "SET {}.{}: UPSERT can only set properties of the nodes and relationships of its pattern",
+                a.variable, a.property
             )));
         }
     }
-    check_assignment_values(&upsert.assignments)
+    check_assignment_values(&upsert.assignments)?;
+    Ok(shape)
+}
+
+pub(crate) fn check_upsert_shape(upsert: &UpsertStmt) -> Result<()> {
+    upsert_shape(upsert).map(|_| ())
 }
 
 /// The `set` rules of [`check_update_values`], shared with UPSERT.

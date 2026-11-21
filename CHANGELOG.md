@@ -38,8 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `upsert_node` el candado por clave y el reintento ante el índice único:
   upserts concurrentes de una clave dejan un nodo y no pierden incrementos.
   `explain upsert` dice qué índice lo resuelve. `WriteResult` gana
-  `nodes_unchanged` y `matched_ids` (también en el dict de Python). Un nodo
-  por sentencia; las relaciones llegan después.
+  `nodes_unchanged` y `matched_ids` (también en el dict de Python).
+- **`upsert` en NQL con relaciones** (F3): `upsert (a:Persona {email: …})
+  -[r:AMIGO_DE {desde: 2020}]->(b:Persona {email: …}) [set r.visto = true]`.
+  Cada nodo se encuentra o crea por su clave única y después cada arista por
+  `(origen, tipo, destino)`: una arista que falta entre nodos que existen crea
+  solo la arista. NQL ya puede conectar dos nodos existentes (`add` siempre
+  crea los suyos). La arista sigue la regla del nodo: el literal al crear y
+  `set` siempre. Cada relación exige tipo y dirección; se pueden encadenar y
+  reusar una variable sola, `(a)`. Toda la sentencia es una transacción y
+  upserts simultáneos de un patrón dejan una sola arista. Varias aristas del
+  tipo entre el par, o dos nodos del patrón con la misma clave, son
+  `AmbiguousUpsertKey`. `UpsertStmt` pasa de `node` a `pattern`.
 
 ### Fixed
 - `upsert_node`/`upsert_batch` sin cambios ya no escriben un registro
