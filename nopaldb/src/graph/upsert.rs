@@ -176,9 +176,11 @@ impl Graph {
             let plan = self.upsert_in_tx(&mut tx, &req, &mut state).await?;
 
             if !plan.wrote {
-                // Nothing to write — abort the empty transaction so an unchanged
-                // re-run costs zero WAL records.
-                tx.rollback_async().await?;
+                // Nothing to write. The tx has not touched the WAL (it writes at
+                // commit), so the sync rollback ends it without the `Abort`
+                // record `rollback_async` would append: an unchanged re-run
+                // costs zero WAL records.
+                tx.rollback()?;
                 return Ok((UpsertOutcome::Unchanged, plan.node_id));
             }
             match tx.commit().await {
@@ -251,7 +253,8 @@ impl Graph {
                 }
 
                 if !plans.iter().any(|p| p.wrote) {
-                    tx.rollback_async().await?;
+                    // Sync rollback: no `Abort` record, as in `upsert_node`.
+                    tx.rollback()?;
                     break plans;
                 }
                 match tx.commit().await {
@@ -374,6 +377,83 @@ impl Graph {
             self.add_node_embedding(plan.node_id, vector.clone(), model).await?;
         }
         Ok(())
+    }
+
+    /// The write core of NQL `upsert` (F2): find the node of `label` that
+    /// holds `identity` (properties under a unique index), then write
+    /// `desired(node, exists)`: the whole property map the node must end up
+    /// with, computed from the node found (`exists`), or from a new empty node
+    /// of `label` with the id it will be created with.
+    ///
+    /// Unlike [`Graph::upsert_node`], whose `props` replace the whole map, the
+    /// caller decides what survives (NQL keeps the existing properties and
+    /// applies its `set`). The rest is shared: the per-key locks of
+    /// `upsert_node`, so both serialize on the same key; nothing written when
+    /// the desired map equals the current one; and the retry when the commit
+    /// loses the key to a concurrent write. `identity` is unique-indexed by
+    /// construction, so a refusal always means a lost race and is retried.
+    ///
+    /// Errors with `AmbiguousUpsertKey` when the identity properties point to
+    /// different nodes (or one of them to several, written by a version
+    /// without unique indexes).
+    pub(crate) async fn upsert_by_identity(
+        &self,
+        label: &str,
+        identity: &[(String, PropertyValue)],
+        desired: impl Fn(&Node, bool) -> Result<HashMap<String, PropertyValue>>,
+    ) -> Result<(UpsertOutcome, NodeId)> {
+        let mut ids: Vec<u64> = identity.iter().map(|(k, v)| key_lock_id(label, k, v)).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut guards = Vec::with_capacity(ids.len());
+        for id in ids {
+            guards.push(key_lock_by_id(id).lock_owned().await);
+        }
+
+        let mut attempt = 1;
+        loop {
+            let mut tx = self.begin_transaction().await?;
+            let mut found: Option<Node> = None;
+            for (key, value) in identity {
+                for node in tx.get_nodes_by_label_and_property(label, key, value).await? {
+                    match &found {
+                        Some(f) if f.id != node.id => {
+                            return Err(NopalError::AmbiguousUpsertKey(format!(
+                                "{label}.{key}={value:?} is held by node {}, but another property of the \
+                                 upsert points to node {}",
+                                node.id, f.id
+                            )));
+                        }
+                        _ => found = Some(node),
+                    }
+                }
+            }
+
+            let exists = found.is_some();
+            let base = found.unwrap_or_else(|| Node::with_id(crate::types::fresh_id(), label.to_string()));
+            let props = desired(&base, exists)?;
+            let outcome = match exists {
+                false => UpsertOutcome::Created,
+                true if base.properties == props => {
+                    // Nothing to write. The tx has logged nothing (records go to
+                    // the WAL at commit), so the sync rollback ends it without the
+                    // `Abort` record `rollback_async` would append: an unchanged
+                    // upsert leaves the WAL as it was.
+                    tx.rollback()?;
+                    return Ok((UpsertOutcome::Unchanged, base.id));
+                }
+                true => UpsertOutcome::Updated,
+            };
+            let id = base.id;
+            tx.add_node(Node::with_id(id, label.to_string()).with_properties(props)).await?;
+            match tx.commit().await {
+                Err(NopalError::UniqueViolation(_)) if attempt < UNIQUE_KEY_ATTEMPTS => attempt += 1,
+                r => {
+                    r?;
+                    return Ok((outcome, id));
+                }
+            }
+        }
     }
 
     /// Delete the node identified by a business key `(label, key, value)` — the

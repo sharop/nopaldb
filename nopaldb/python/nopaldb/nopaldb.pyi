@@ -22,6 +22,8 @@ class WriteResult(TypedDict):
     edges_updated: int
     properties_changed: int
     created_ids: list[str]
+    nodes_unchanged: int    # upsert: found by its key, nothing to write
+    matched_ids: list[str]  # upsert: ids found by their key (updated or unchanged)
 
 # A node / an edge as every retrieval call returns them (get_node(s),
 # neighbors, neighborhood, and the `hydrate` option of the searches).

@@ -97,6 +97,9 @@ impl AstBuilder {
                 Rule::add_stmt => {
                     return Ok(Statement::Add(self.build_add_stmt(inner)?));
                 }
+                Rule::upsert_stmt => {
+                    return Ok(Statement::Upsert(self.build_upsert_stmt(inner)?));
+                }
                 Rule::query => {
                     return Ok(Statement::Query(self.build_query(inner)?));
                 }
@@ -253,6 +256,32 @@ impl AstBuilder {
         }
 
         Err(NopalError::QueryParseError("Missing pattern in ADD".into()))
+    }
+
+    fn build_upsert_stmt(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<UpsertStmt> {
+        let mut pattern = None;
+        let mut assignments = Vec::new();
+        for inner in pair.into_inner() {
+            match inner.as_rule() {
+                Rule::pattern => pattern = Some(self.build_pattern(inner)?),
+                Rule::assignment_list => {
+                    for a in inner.into_inner().filter(|a| a.as_rule() == Rule::assignment) {
+                        assignments.push(self.build_assignment(a)?);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let pattern = pattern.ok_or_else(|| NopalError::QueryParseError("Missing pattern in UPSERT".into()))?;
+        let node = match <[PatternElement; 1]>::try_from(pattern.elements) {
+            Ok([PatternElement::Node(node)]) => node,
+            _ => {
+                return Err(NopalError::QueryParseError(
+                    "UPSERT takes a single node `(p:Label {key: value})`; relationships are not supported yet".into(),
+                ))
+            }
+        };
+        Ok(UpsertStmt { node, assignments })
     }
 
     fn build_query(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<Query> {
@@ -1562,6 +1591,10 @@ impl AstBuilder {
                 Rule::query => {
                     let query = self.build_query(inner)?;
                     return Ok(Statement::Explain(Box::new(Statement::Query(query))));
+                }
+                Rule::upsert_stmt => {
+                    let upsert = self.build_upsert_stmt(inner)?;
+                    return Ok(Statement::Explain(Box::new(Statement::Upsert(upsert))));
                 }
                 Rule::delete_stmt => {
                     let delete = self.build_delete_stmt(inner)?;

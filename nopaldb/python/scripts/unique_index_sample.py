@@ -4,8 +4,9 @@
 Guardia de la wheel: `create_index(..., unique=True)` existe, `describe_index`
 y `get_stats()` reportan `"unique"`, una escritura (NQL o transacción) que
 repite el valor falla y no escribe nada, `upsert` sobre la clave actualiza en
-vez de fallar, y la marca sobrevive a reabrir. Datos ficticios. Se ejecuta en
-CI (job python-stubs) tras `maturin develop`.
+vez de fallar, NQL `upsert` crea, actualiza o no escribe nada, y la marca
+sobrevive a reabrir. Datos ficticios. Se ejecuta en CI (job python-stubs)
+tras `maturin develop`.
 """
 
 import os
@@ -46,8 +47,20 @@ def main() -> None:
             assert "Unique index violation" in str(e), e
         assert personas(g) == ["s@ejemplo.org"], personas(g)
 
-        status, _ = g.upsert("Persona", "email", {"email": "s@ejemplo.org", "nombre": "Sergio"})
+        status, sid = g.upsert("Persona", "email", {"email": "s@ejemplo.org", "nombre": "Sergio"})
         assert status == "updated", status
+
+        # NQL `upsert`: el literal solo al crear, `set` siempre, nada si no cambia.
+        q = 'upsert (p:Persona {email: "k@ejemplo.org", visitas: 0}) set p.visitas = p.visitas + 1'
+        w = g.execute_nql(q).write
+        assert w is not None and w["nodes_created"] == 1 and w["matched_ids"] == [], w
+        kid = w["created_ids"][0]
+        w = g.execute_nql(q).write
+        assert w is not None and w["nodes_updated"] == 1 and w["matched_ids"] == [kid], w
+        node = g.get_node(kid)
+        assert node is not None and node["properties"]["visitas"] == 2, node
+        w = g.execute_nql('upsert (p:Persona {email: "s@ejemplo.org"})').write
+        assert w is not None and w["nodes_unchanged"] == 1 and w["matched_ids"] == [sid], w
 
         for bad in [
             lambda: g.create_index("Nota", "cuerpo", "fulltext", unique=True),

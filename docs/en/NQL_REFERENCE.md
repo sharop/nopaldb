@@ -329,12 +329,13 @@ NQL supports CRUD for **graph content**:
 
 - `ADD`: create nodes and relationships
 - `UPDATE`: update node and edge properties
+- `UPSERT`: create a node, or update the one that already has its key
 - `DELETE`: delete matched nodes or relationships
 - `CREATE INDEX` / `DROP INDEX`: index management
 
 Important:
 - NQL does **not** create the storage/database container. That is done through the API with `Graph.open(...)` or `Graph.in_memory()`.
-- NQL does **not** currently support `CREATE GRAPH`, `BEGIN`, `ROLLBACK`, or `MERGE`. Each `add`/`update`/`delete` runs in its own transaction; explicit transactions are the API (`graph.begin_transaction()`).
+- NQL does **not** currently support `CREATE GRAPH`, `BEGIN`, `ROLLBACK`, or `MERGE` (`upsert` covers MERGE of a node). Each `add`/`update`/`upsert`/`delete` runs in its own transaction; explicit transactions are the API (`graph.begin_transaction()`).
 - The grammar has `sketch <name> = <statement>` and `commit <name>` (staged changes), but `execute_statement` (Rust) and `execute_nql` (Python) reject them with a named error since 0.9.4; sketches are the Rust API `nopaldb::query::SketchManager`. Until 0.9.3 they answered an OK message without doing anything.
 - Write patterns have one hop and honour the direction and the inline properties of nodes and edges (0.8.4): they change exactly what `find` with the same pattern returns. A longer or quantified write pattern is a named error.
 
@@ -353,6 +354,36 @@ where a.name = "Alice" and b.name = "Bob"
 ```
 
 The value in `set` is a literal, a property of the same variable, or arithmetic over them: `set r.servings = r.servings + 1` ([#269](https://github.com/sharop/nopaldb/issues/269)). Every value is read from the element as it was before the `update` (`set n.a = n.b, n.b = n.a` swaps them), and arithmetic over a missing property writes `null`. An error, such as an overflow, writes nothing. Reading another variable of the pattern (`set b.city = a.city`) or calling a function is an error: one node can take part in several matches. Until 0.10.4 only literals were accepted; until 0.10.2 anything else answered OK and updated nothing.
+
+### UPSERT
+```nql
+create unique index on Person(email)
+
+upsert (p:Person {email: "s@example.org", name: "Sergio", visits: 0})
+set p.visits = p.visits + 1
+```
+
+- **Identity:** the property of the literal that has a unique index on the
+  label (`email` here). Without one, `upsert` is an error whose message gives
+  the `create unique index` to run. The key cannot be `null`. If the literal
+  holds two unique keys, both must lead to the same node (or to none).
+- **Created** when no node has the key: with the literal, then `set`.
+- **Found:** only `set` is applied, over the node's current properties. The
+  rest of the literal (`name` above) is ignored and the other properties are
+  kept. If no value changes, nothing is written, not even to the WAL.
+- `set` follows the rules of `update` and may only touch the upserted node,
+  never its key. Arithmetic over a missing property writes `null`, so the
+  initial value goes in the literal (`visits: 0`).
+- **Result:** `nodes_created` + `created_ids`, or `nodes_updated` /
+  `nodes_unchanged` + `matched_ids`.
+- **Concurrency:** concurrent upserts of the same key leave one node, and
+  each `set` sees the previous one's result. A plain write (`add`, `update`)
+  that races an upsert on the key cannot duplicate it either: the unique
+  index refuses the losing commit, and the upsert retries.
+- `explain upsert (...)` shows which unique index finds the node.
+- Unlike the API's `upsert_node` / Python `graph.upsert`, whose `props`
+  replace the whole property map, `upsert` keeps what it does not set.
+- One node per statement; relationships are not supported yet.
 
 ### DELETE
 ```nql

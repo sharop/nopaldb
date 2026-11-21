@@ -201,6 +201,11 @@ impl Graph {
         }
     }
 
+    /// `(index, property)` of the unique indexes of `label`.
+    pub(crate) async fn unique_properties(&self, label: &str) -> Vec<(String, String)> {
+        self.index_manager.unique_properties(label).await
+    }
+
     /// Drop a unique index's flag from the catalog after the index is gone.
     pub(crate) async fn forget_unique_index(&self) -> Result<()> {
         crate::index::save_unique_names(&self.storage, &self.index_manager.unique_names().await).await
