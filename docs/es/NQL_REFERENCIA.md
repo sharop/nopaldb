@@ -342,7 +342,7 @@ Importante:
 - NQL **no** crea el storage o base en sí. Eso se hace vía API con `Graph.open(...)` o `Graph.in_memory()`.
 - NQL **no** soporta todavía `CREATE GRAPH`, `BEGIN`, `ROLLBACK` ni `MERGE` (`upsert` lo cubre, nodo por nodo). Cada `add`/`update`/`upsert`/`delete` corre en su propia transacción; las transacciones explícitas son de la API (`graph.begin_transaction()`).
 - La gramática tiene `sketch <nombre> = <sentencia>` y `commit <nombre>` (cambios preparados), pero `execute_statement` (Rust) y `execute_nql` (Python) los rechazan con un error con nombre desde 0.9.4; los sketches son la API Rust `nopaldb::query::SketchManager`. Hasta 0.9.3 contestaban un mensaje OK sin hacer nada.
-- Los patrones de escritura tienen un salto y respetan la dirección y las propiedades inline de nodos y aristas (0.8.4): cambian exactamente lo que devuelve `find` con el mismo patrón. Un patrón de escritura más largo o con cuantificador es un error con nombre.
+- Los patrones de escritura tienen un salto y respetan la dirección y las propiedades inline de nodos y aristas (0.8.4; el `delete`/`update` de un solo nodo las ignoraba hasta 0.10.17 y tocaba todos los nodos de la etiqueta): cambian exactamente lo que devuelve `find` con el mismo patrón. Un patrón de escritura más largo o con cuantificador es un error con nombre.
 
 ### ADD
 ```nql
