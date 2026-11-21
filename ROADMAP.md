@@ -8,8 +8,9 @@ the order we expect to land them, and — just as important — what NopalDB wil
 [issues](https://github.com/sharop/nopaldb/issues) by label (`rdf`, `retrieval`,
 `durability`, `reliability`); shipped work is in the [CHANGELOG](CHANGELOG.md).
 
-NopalDB is an embedded property graph with native embeddings, MVCC
-transactions and a query language of its own (NQL). Everything below serves
+NopalDB is an embedded property graph that stores and searches the vector
+embeddings you compute (it does not generate them), with MVCC transactions and
+a query language of its own (NQL). Everything below serves
 that shape.
 
 ## Themes
@@ -123,8 +124,9 @@ a ser. Nada de aquí es un compromiso de fecha. El avance se sigue en
 `retrieval`, `durability`, `reliability`); lo entregado está en el
 [CHANGELOG](CHANGELOG.md).
 
-NopalDB es un property graph embebido con embeddings nativos, transacciones
-MVCC y su propio lenguaje de consulta (NQL). Todo lo de abajo sirve a esa forma.
+NopalDB es un property graph embebido que guarda y busca los embeddings que tú
+calculas (no los genera), con transacciones MVCC y su propio lenguaje de
+consulta (NQL). Todo lo de abajo sirve a esa forma.
 
 ## Temas
 

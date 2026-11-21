@@ -264,7 +264,7 @@ The class can be named three ways; the first form that resolves wins:
 | Form | Example | Resolved through |
 |---|---|---|
 | Label | `"Arbol"` | the class node's label (the only form for graphs built by hand) |
-| Prefixed name | `"flora:Arbol"` | the prefix catalog of the imported documents (`graph.rdf_prefixes()`); an unknown prefix falls back to the label, which is how a class whose local name collided is labelled (`fauna:Rosa`) |
+| Prefixed name | `"flora:Arbol"` | the prefix catalog of the imported documents (`graph.rdf_prefixes()`); an unknown prefix falls back to the label, which is how a class whose local name collided is labelled (`fauna:Rosa`); a prefix that is neither in the catalog nor part of a label is an error that lists the known prefixes (0.11.0; until 0.10.18 it gave no rows) |
 | Full IRI | `"http://plantas.example/flora#Arbol"` | the class node's `iri` property |
 
 ```nql

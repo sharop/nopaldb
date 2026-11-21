@@ -106,7 +106,29 @@ async fn test_instanceof_accepts_label_prefix_and_iri() -> Result<()> {
     assert!(iris(&graph, "Hongo").await.is_empty());
     assert!(iris(&graph, "flora:Hongo").await.is_empty());
     assert!(iris(&graph, "http://plantas.example/flora#Hongo").await.is_empty());
-    assert!(iris(&graph, "nadie:Arbol").await.is_empty());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// A prefix the catalog lacks names nothing: an error, not an empty answer
+// that reads like "no instances" (until 0.10.18 it was silently empty).
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn test_unknown_prefix_is_an_error() -> Result<()> {
+    let graph = Graph::in_memory().await?;
+    graph.import_turtle(FLORA).await?;
+
+    for q in [
+        r#"find n.iri from (n) where instanceOf(n, "nadie:Arbol")"#,
+        r#"find n.iri from (n) where subClassOf(n, "nadie:Planta")"#,
+        r#"find n.iri from (n) where n.iri = "x" or instanceOf(n, "nadie:Arbol")"#,
+        r#"find n.iri from (a:Insecto)-[:visita]->(n) where path_end_instanceOf("nadie:Arbol")"#,
+    ] {
+        let err = graph.execute_nql(q).await.expect_err(q).to_string();
+        assert!(err.contains("`nadie`") && err.contains("flora"), "{q}: {err}");
+    }
+    // A label that looks prefixed is still a class (an importer collision).
+    assert_eq!(iris(&graph, "fauna:Rosa").await, vec![iri("rosa_mosqueta")]);
     Ok(())
 }
 

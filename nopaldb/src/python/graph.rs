@@ -552,6 +552,11 @@ impl PyGraph {
     /// The neighbourhood of `ids` up to `depth` hops, in one call: the
     /// context subgraph of a GraphRAG.
     ///
+    /// `direction` is "out" (the default: only the edges leaving each node),
+    /// "in" or "both". Seeded at a node that only receives edges, such as an
+    /// entity that documents MENTION, "out" returns the seed alone: pass
+    /// direction="both" for the context around it.
+    ///
     /// BFS by node: a node reachable by several paths appears once, at its
     /// minimum depth; seeds are depth 0. Edge ids come from the in-memory
     /// adjacency, edges are filtered by type BEFORE their target node is

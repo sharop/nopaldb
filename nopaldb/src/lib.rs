@@ -1,4 +1,5 @@
-//! NopalDB: an embedded property graph with native embeddings, MVCC
+//! NopalDB: an embedded property graph that stores and searches the vector
+//! embeddings you compute (it does not generate them), with MVCC
 //! transactions and its own query language (NQL).
 //!
 //! One process opens a directory and owns it; everything else — nodes, edges,

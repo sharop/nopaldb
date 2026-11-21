@@ -162,6 +162,36 @@ impl TaxonomyIndex {
         self.find_by_label(name)
     }
 
+    /// The prefix of `name` when it is written `prefix:Local` with a prefix
+    /// the catalog does not know and no class has `name` as its label. Such a
+    /// name can match nothing, so NQL reports it instead of answering an
+    /// empty result that reads like "no instances" (until 0.10.18,
+    /// `instanceOf(n, "sdo:CreativeWork")` without `sdo` was silently empty).
+    pub fn unknown_prefix<'n>(&self, name: &'n str) -> Option<&'n str> {
+        if name.contains("://") || name.starts_with("_:") {
+            return None;
+        }
+        let (prefix, _) = name.split_once(':')?;
+        (!self.prefixes.contains_key(prefix) && self.find_by_label(name).is_none()).then_some(prefix)
+    }
+
+    /// [`Self::resolve_class`] for an NQL ontology predicate (`predicate` names
+    /// it in the message): `Ok(None)` is a class that does not exist, an
+    /// empty answer; an [`Self::unknown_prefix`] is an error.
+    pub fn resolve_class_in_query(&self, predicate: &str, name: &str) -> crate::error::Result<Option<NodeId>> {
+        if let Some(id) = self.resolve_class(name) {
+            return Ok(Some(id));
+        }
+        let Some(prefix) = self.unknown_prefix(name) else { return Ok(None) };
+        let known: Vec<&str> = self.prefixes.keys().map(String::as_str).collect();
+        Err(crate::error::NopalError::QueryExecutionError(format!(
+            "{predicate}(…, \"{name}\"): el prefijo `{prefix}` no está en el catálogo de prefijos \
+             del grafo (conocidos: {}); usa el IRI completo o importa un documento que declare \
+             `@prefix {prefix}:`",
+            if known.is_empty() { "ninguno".to_string() } else { known.join(", ") }
+        )))
+    }
+
     /// The NQL `instanceOf(n, C)` test for an individual: some declared type
     /// `T` of the node is `C` itself or a transitive subclass of `C`.
     ///
@@ -568,6 +598,19 @@ mod tests {
         assert_eq!(idx.resolve_class("Hongo"), None);
         // Empty prefix expands too.
         assert_eq!(idx.resolve_class(":Arbol"), None); // no class under the default namespace
+    }
+
+    #[test]
+    fn test_unknown_prefix_only_when_the_name_matches_nothing() {
+        let (idx, ..) = flora();
+        assert_eq!(idx.unknown_prefix("sdo:CreativeWork"), Some("sdo"));
+        // A label that looks prefixed (an importer collision) is a class.
+        assert_eq!(idx.unknown_prefix("fauna:Rosa"), None);
+        // A known prefix with a missing class is just an empty answer.
+        assert_eq!(idx.unknown_prefix("flora:Hongo"), None);
+        assert_eq!(idx.unknown_prefix("Hongo"), None);
+        assert_eq!(idx.unknown_prefix("http://plantas.example/flora#Hongo"), None);
+        assert_eq!(idx.unknown_prefix("_:b0"), None);
     }
 
     #[test]

@@ -55,6 +55,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `upsert_node`/`upsert_batch` sin cambios ya no escriben un registro
   `Abort` al WAL: terminan la transacción vacía sin tocarlo, como decía su
   documentación. Un upsert repetido deja el WAL del mismo tamaño.
+- **`instanceOf`/`subClassOf` con un prefijo desconocido es un error**, no
+  un resultado vacío. `instanceOf(n, "sdo:CreativeWork")` sin `sdo` en el
+  catálogo de prefijos del grafo devolvía cero filas, que se leía como "no
+  hay instancias"; ahora es `QueryExecutionError` con los prefijos conocidos
+  y cómo arreglarlo. También en `path_*_instanceOf`. Un nombre con `:` que es
+  el label de una clase (`fauna:Rosa`, una colisión del importador) y una
+  clase inexistente con prefijo conocido (`flora:Hongo`) siguen igual.
+- `import_turtle` ya no avisa "el documento no declara `@prefix :`" a un
+  documento que nunca usa el prefijo vacío: solo cuando algún `:Foo` sí quedó
+  bajo el namespace asumido.
+
+### Docs
+- El docstring de `Graph.neighborhood` en Python explica `direction`
+  (`"out"` por omisión, `"in"`, `"both"`): sembrado en un nodo que solo
+  recibe aristas, `"out"` devuelve la semilla sola.
+- La descripción del crate y el ROADMAP ya no dicen "embeddings nativos":
+  NopalDB guarda y busca los embeddings que calcula quien lo usa, no los
+  genera.
 
 ## [0.10.18] - 2026-11-21
 

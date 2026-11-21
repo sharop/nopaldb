@@ -168,11 +168,6 @@ pub(crate) struct ParsedDocument {
 pub(crate) fn parse_turtle(source: &str) -> Result<ParsedDocument> {
     let mut warnings = Vec::new();
 
-    if !declares_empty_prefix(source) {
-        warnings.push(format!(
-            "el documento no declara `@prefix :` — se asumió `{DEFAULT_NAMESPACE}`"
-        ));
-    }
     if !declares_base(source) && has_relative_iri_ref(source) {
         warnings.push(format!(
             "el documento usa IRIs relativos sin `@base` — se resolvieron contra `{DEFAULT_BASE}`"
@@ -200,6 +195,16 @@ pub(crate) fn parse_turtle(source: &str) -> Result<ParsedDocument> {
                 e.message()
             ))
         })?;
+
+    // Only a document that wrote `:Foo` ended up with an assumed IRI; one
+    // that never uses the empty prefix gets no warning (until 0.10.18 every
+    // document without `@prefix :` got it).
+    if !declares_empty_prefix(source) && triples.iter().any(uses_default_namespace) {
+        warnings.insert(
+            0,
+            format!("el documento no declara `@prefix :` — se asumió `{DEFAULT_NAMESPACE}`"),
+        );
+    }
 
     let prefixes = parser
         .prefixes()
@@ -229,6 +234,15 @@ fn declares_base(source: &str) -> bool {
         let l = line.trim_start();
         l.starts_with("@base") || l.to_ascii_lowercase().starts_with("base ")
     })
+}
+
+/// Does the triple name an IRI under [`DEFAULT_NAMESPACE`], that is, one the
+/// seeded empty prefix produced from `:Foo`?
+fn uses_default_namespace(t: &Triple) -> bool {
+    let named = |iri: &str| iri.starts_with(DEFAULT_NAMESPACE);
+    matches!(&t.subject, NamedOrBlankNode::NamedNode(n) if named(n.as_str()))
+        || named(t.predicate.as_str())
+        || matches!(&t.object, Term::NamedNode(n) if named(n.as_str()))
 }
 
 /// A `<...>` reference with no scheme (`<foo>`, `<#bar>`, `</x/y>`) is
@@ -1416,6 +1430,24 @@ _:anon a :Planta ; :nombreComun "sin nombre" .
 
         let fido = by_iri(&graph, &format!("{DEFAULT_NAMESPACE}fido")).await;
         assert_eq!(fido.label, "Animal");
+    }
+
+    /// A document that never writes `:Foo` assumed nothing, so it gets no
+    /// warning, whether or not it declares `@prefix :`.
+    #[tokio::test]
+    async fn test_unused_default_prefix_is_not_reported() {
+        let (graph, _dir) = open_temp_graph().await;
+        let mut taxonomy = TaxonomyIndex::new();
+
+        let source = r#"
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix zoo: <http://zoo.example/> .
+zoo:Animal a owl:Class .
+<http://zoo.example/fido> a zoo:Animal .
+"#;
+        let report = import_turtle(&graph, &mut taxonomy, source).await.unwrap();
+        assert_eq!(report.instances_added, 1);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     }
 
     // -----------------------------------------------------------------------
