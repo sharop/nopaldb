@@ -18,7 +18,7 @@ use crate::query::nql::parser::{parse_vm_assignment, parse_vm_expression};
 use crate::query::nql::parser::ast::{
     Query, Expression, Pattern, PatternElement, BinaryOperator, Projection,
     AddStmt, DeleteStmt, UpdateStmt, Statement,
-    CreateIndexStmt, DropIndexStmt, IndexType,
+    CreateIndexStmt, DropIndexStmt, IndexType, UpsertStmt,
     OrderByClause, SortOrder, GroupByClause, Direction,
     RelationshipPattern, NodePattern, Quantifier, UnaryOperator,
 };
@@ -6104,6 +6104,40 @@ impl<'a> Executor<'a> {
         write_executor.execute_update(update, tx).await
     }
 
+    /// Execute UPSERT (F2); runs its own transaction.
+    pub async fn execute_upsert(&self, upsert: &UpsertStmt) -> Result<result::WriteResult> {
+        let (outcome, id, changed) = WriteExecutor::new(self.graph).execute_upsert(upsert).await?;
+        Ok(result::WriteResult::from_upsert(outcome, id, changed))
+    }
+
+    /// EXPLAIN of an UPSERT: which unique index finds the node, and what is
+    /// written when it is created or found. Reads nothing but the catalog.
+    async fn explain_upsert(&self, upsert: &UpsertStmt) -> Result<String> {
+        crate::query::nql::validator::check_upsert_shape(upsert)?;
+        let label = upsert.node.label.as_deref().unwrap_or_default();
+        let mut keys: Vec<String> = self
+            .graph
+            .unique_properties(label)
+            .await
+            .into_iter()
+            .filter(|(_, p)| upsert.node.properties.contains_key(p))
+            .map(|(index, p)| format!("{label}.{p} (unique index {index})"))
+            .collect();
+        keys.sort();
+        if keys.is_empty() {
+            return Ok(format!(
+                "UPSERT {label}: no unique index on the literal's properties; executing it is an error"
+            ));
+        }
+        let set: Vec<String> = upsert.assignments.iter().map(|a| format!("{}.{}", a.variable, a.property)).collect();
+        let set = if set.is_empty() { "nothing".to_string() } else { set.join(", ") };
+        Ok(format!(
+            "UPSERT {label}\n  find by: {}\n  if absent: create with the literal, then set {set}\n  \
+             if found: set {set} over its properties (no write if no value changes)",
+            keys.join(", ")
+        ))
+    }
+
     /// Execute CREATE INDEX
     pub async fn execute_create_index(&self, stmt: CreateIndexStmt) -> Result<String> {
         // Convertir IndexType del AST a IndexType del graph
@@ -6316,6 +6350,7 @@ impl<'a> Executor<'a> {
                 // Antes: Debug dump del AST completo. Mensaje claro en su lugar.
                 let kind = match &other {
                     Statement::Add(_) => "ADD",
+                    Statement::Upsert(u) => return self.explain_upsert(u).await,
                     Statement::Update(_) => "UPDATE",
                     Statement::Delete(_) => "DELETE",
                     Statement::CreateIndex(_) => "CREATE INDEX",

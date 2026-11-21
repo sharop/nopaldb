@@ -6,9 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 use crate::error::{NopalError, Result};
-use crate::graph::Graph;
+use crate::graph::{Graph, UpsertOutcome};
 use crate::query::nql::parser::ast::{
-    AddStmt, DeleteStmt, UpdateStmt, Pattern, PatternElement,
+    AddStmt, DeleteStmt, UpdateStmt, UpsertStmt, Pattern, PatternElement,
     NodePattern, RelationshipPattern, Expression, Assignment, Direction,
 };
 use crate::types::{Node, Edge, NodeId, PropertyValue};
@@ -299,6 +299,75 @@ impl<'a> WriteExecutor<'a> {
     // ═══════════════════════════════════════════════════════════
     // UPDATE OPERATION — supports relationship patterns (P0-B)
     // ═══════════════════════════════════════════════════════════
+
+    /// UPSERT (F2): find the node by the literal's properties under a unique
+    /// index; create it with the literal plus `set`, or apply `set` over its
+    /// current properties. See [`UpsertStmt`]. Runs its own transaction (one
+    /// per attempt, see `Graph::upsert_by_identity`), so it takes no `tx`.
+    ///
+    /// Without a unique index among the literal's properties it is an error,
+    /// not a lookup by every property of the literal (Cypher's MERGE): that
+    /// lookup misses as soon as any non-key value differs and creates a
+    /// duplicate, and without the index two concurrent upserts can both
+    /// create. `set` cannot assign an identity property: the node would stop
+    /// being found by the literal it was upserted with.
+    pub async fn execute_upsert(&self, upsert: &UpsertStmt) -> Result<(UpsertOutcome, NodeId, usize)> {
+        crate::query::nql::validator::check_upsert_shape(upsert)?;
+        let node = &upsert.node;
+        let label = node.label.as_deref().unwrap_or_default();
+        let unique = self.graph.unique_properties(label).await;
+
+        let mut identity: Vec<(String, PropertyValue)> = node
+            .properties
+            .iter()
+            .filter(|(k, _)| unique.iter().any(|(_, p)| p == *k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        identity.sort_by(|a, b| a.0.cmp(&b.0));
+        if identity.is_empty() {
+            let mut props: Vec<&str> = node.properties.keys().map(String::as_str).collect();
+            props.sort_unstable();
+            return Err(NopalError::SemanticError(format!(
+                "UPSERT finds its node through a unique index, and {label} has none on {}: \
+                 create unique index on {label}({})",
+                props.join(", "),
+                props[0]
+            )));
+        }
+        if let Some((k, _)) = identity.iter().find(|(_, v)| matches!(v, PropertyValue::Null)) {
+            return Err(NopalError::SemanticError(format!(
+                "UPSERT: the key {label}.{k} cannot be null"
+            )));
+        }
+        if let Some(a) = upsert.assignments.iter().find(|a| identity.iter().any(|(k, _)| *k == a.property)) {
+            return Err(NopalError::SemanticError(format!(
+                "SET {}.{}: UPSERT cannot change the key it finds the node by",
+                a.variable, a.property
+            )));
+        }
+
+        let changed = std::sync::atomic::AtomicUsize::new(0);
+        let (outcome, id) = self
+            .graph
+            .upsert_by_identity(label, &identity, |base, exists| {
+                let mut target = base.clone();
+                if !exists {
+                    target.properties = node.properties.clone();
+                }
+                let before = target.clone();
+                for a in &upsert.assignments {
+                    let value = self.assignment_value_for_node(&before, &a.variable, &a.value)?;
+                    target.properties.insert(a.property.clone(), value);
+                }
+                let differs = |k: &String| base.properties.get(k) != target.properties.get(k);
+                let keys: HashSet<&String> = base.properties.keys().chain(target.properties.keys()).collect();
+                changed.store(keys.into_iter().filter(|k| differs(k)).count(), std::sync::atomic::Ordering::Relaxed);
+                Ok(target.properties)
+            })
+            .await?;
+        let changed = if outcome == UpsertOutcome::Unchanged { 0 } else { changed.into_inner() };
+        Ok((outcome, id, changed))
+    }
 
     /// Execute UPDATE statement
     ///

@@ -35,12 +35,14 @@ async fn create_then_unchanged_is_a_noop() -> nopaldb::Result<()> {
     assert_eq!(o1, UpsertOutcome::Created);
     let count_after_create = graph.get_all_nodes().await?.len();
 
-    // Identical re-run → Unchanged, same id, no new node.
+    // Identical re-run → Unchanged, same id, no new node, not a WAL byte.
+    let wal = graph.wal_bytes().await;
     let (o2, id2) = graph
         .upsert_node(req("Chunk", "key", &[("key", "note:a"), ("path", "a.md")]))
         .await?;
     assert_eq!(o2, UpsertOutcome::Unchanged);
     assert_eq!(id1, id2);
+    assert_eq!(graph.wal_bytes().await, wal);
     assert_eq!(graph.get_all_nodes().await?.len(), count_after_create);
     Ok(())
 }

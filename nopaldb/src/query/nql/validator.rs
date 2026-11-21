@@ -63,6 +63,9 @@ impl SemanticValidator {
             Statement::Add(create) => {
                 self.validate_add(create)?;
             }
+            Statement::Upsert(upsert) => {
+                check_upsert_shape(upsert)?;
+            }
             Statement::CreateIndex(_) => {}, // Always valid
             Statement::DropIndex(_) => {},   // Always valid
             Statement::Explain(inner) => {
@@ -2958,7 +2961,41 @@ mod tests {
 /// error: one node can take part in several matches with different values.
 /// Functions (`degree(n)`) are not evaluated in SET.
 pub(crate) fn check_update_values(update: &UpdateStmt) -> Result<()> {
-    check_known_functions(update.assignments.iter().map(|a| &a.value))?;
+    check_assignment_values(&update.assignments)
+}
+
+/// What UPSERT needs before looking at the graph: a label, a literal to take
+/// the identity from, a `set` that only touches the upserted node, and the
+/// value rules of UPDATE's `set`. Whether a property of the literal has a
+/// unique index is checked at execution, against the graph.
+pub(crate) fn check_upsert_shape(upsert: &UpsertStmt) -> Result<()> {
+    let node = &upsert.node;
+    if node.label.is_none() {
+        return Err(NopalError::SemanticError(
+            "UPSERT needs a label: `upsert (p:Persona {email: ...})`".into(),
+        ));
+    }
+    if node.properties.is_empty() {
+        return Err(NopalError::SemanticError(
+            "UPSERT needs the node's key in the literal: `upsert (p:Persona {email: ...})`".into(),
+        ));
+    }
+    for a in &upsert.assignments {
+        if node.variable.as_deref() != Some(a.variable.as_str()) {
+            return Err(NopalError::SemanticError(format!(
+                "SET {}.{}: UPSERT can only set properties of its node{}",
+                a.variable,
+                a.property,
+                node.variable.as_ref().map(|v| format!(" `{v}`")).unwrap_or_default()
+            )));
+        }
+    }
+    check_assignment_values(&upsert.assignments)
+}
+
+/// The `set` rules of [`check_update_values`], shared with UPSERT.
+pub(crate) fn check_assignment_values(assignments: &[Assignment]) -> Result<()> {
+    check_known_functions(assignments.iter().map(|a| &a.value))?;
     fn first_unsupported<'e>(expr: &'e Expression, var: &str) -> Option<&'e Expression> {
         match expr {
             Expression::Literal(_) => None,
@@ -2970,7 +3007,7 @@ pub(crate) fn check_update_values(update: &UpdateStmt) -> Result<()> {
             other => Some(other),
         }
     }
-    for a in &update.assignments {
+    for a in assignments {
         let Some(bad) = first_unsupported(&a.value, &a.variable) else { continue };
         let why = match bad {
             Expression::Property { variable, .. } => format!(

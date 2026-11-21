@@ -151,11 +151,13 @@ async fn links_between_rows_of_one_batch_resolve_to_the_same_nodes() {
     a.links.push(link("b", true));
     let mut c = req("Nota", "c", None);
     c.links.push(link("a", false));
+    let wal = g.wal_bytes().await;
     let again = g
         .upsert_batch(vec![a, req("Nota", "b", Some(("title", "B"))), c])
         .await
         .unwrap();
     assert!(again.iter().all(|(o, _)| *o == UpsertOutcome::Unchanged), "{again:?}");
+    assert_eq!(g.wal_bytes().await, wal);
     assert_eq!(g.get_outgoing_edges(out[0].1).await.unwrap().len(), 1);
 }
 

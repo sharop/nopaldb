@@ -1979,6 +1979,7 @@ impl Graph {
                 tx.commit().await?;
                 Ok(NqlResult::Write(WriteResult::from_update(&result)))
             }
+            Statement::Upsert(ups) => Ok(NqlResult::Write(executor.execute_upsert(&ups).await?)),
             Statement::CreateIndex(idx) => {
                 let what = if idx.unique { "Unique index" } else { "Index" };
                 let name = executor.execute_create_index(idx).await?;

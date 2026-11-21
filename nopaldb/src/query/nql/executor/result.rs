@@ -43,10 +43,16 @@ impl NqlResult {
     pub fn summary(&self) -> String {
         match self {
             NqlResult::Query(r) => format!("{} rows returned", r.len()),
-            NqlResult::Write(w) => format!(
-                "{} nodes created, {} edges created, {} nodes deleted, {} edges deleted, {} nodes updated, {} edges updated",
-                w.nodes_created, w.edges_created, w.nodes_deleted, w.edges_deleted, w.nodes_updated, w.edges_updated
-            ),
+            NqlResult::Write(w) => {
+                let mut s = format!(
+                    "{} nodes created, {} edges created, {} nodes deleted, {} edges deleted, {} nodes updated, {} edges updated",
+                    w.nodes_created, w.edges_created, w.nodes_deleted, w.edges_deleted, w.nodes_updated, w.edges_updated
+                );
+                if w.nodes_unchanged > 0 {
+                    s.push_str(&format!(", {} nodes unchanged", w.nodes_unchanged));
+                }
+                s
+            }
             NqlResult::Index(msg) => msg.clone(),
             NqlResult::Explain(plan) => plan.clone(),
             NqlResult::Profile(profile) => format!(
@@ -72,6 +78,12 @@ pub struct WriteResult {
     pub edges_updated: usize,
     pub properties_changed: usize,
     pub created_ids: Vec<String>,
+    /// UPSERT: nodes found by their key whose values already were the
+    /// desired ones (nothing written).
+    pub nodes_unchanged: usize,
+    /// UPSERT: ids of the nodes found by their key, updated or unchanged
+    /// (the created ones are in `created_ids`).
+    pub matched_ids: Vec<String>,
 }
 
 impl WriteResult {
@@ -85,6 +97,8 @@ impl WriteResult {
             edges_updated: 0,
             properties_changed: 0,
             created_ids: add.created_ids.clone(),
+            nodes_unchanged: 0,
+            matched_ids: Vec::new(),
         }
     }
 
@@ -98,7 +112,40 @@ impl WriteResult {
             edges_updated: 0,
             properties_changed: 0,
             created_ids: Vec::new(),
+            nodes_unchanged: 0,
+            matched_ids: Vec::new(),
         }
+    }
+
+    pub fn from_upsert(outcome: crate::graph::UpsertOutcome, id: crate::types::NodeId, properties_changed: usize) -> Self {
+        use crate::graph::UpsertOutcome;
+        let mut w = WriteResult {
+            nodes_created: 0,
+            edges_created: 0,
+            nodes_deleted: 0,
+            edges_deleted: 0,
+            nodes_updated: 0,
+            edges_updated: 0,
+            properties_changed,
+            created_ids: Vec::new(),
+            nodes_unchanged: 0,
+            matched_ids: Vec::new(),
+        };
+        match outcome {
+            UpsertOutcome::Created => {
+                w.nodes_created = 1;
+                w.created_ids.push(id.to_string());
+            }
+            UpsertOutcome::Updated => {
+                w.nodes_updated = 1;
+                w.matched_ids.push(id.to_string());
+            }
+            UpsertOutcome::Unchanged => {
+                w.nodes_unchanged = 1;
+                w.matched_ids.push(id.to_string());
+            }
+        }
+        w
     }
 
     pub fn from_update(upd: &UpdateResult) -> Self {
@@ -111,6 +158,8 @@ impl WriteResult {
             edges_updated: upd.edges_updated,
             properties_changed: upd.properties_changed,
             created_ids: Vec::new(),
+            nodes_unchanged: 0,
+            matched_ids: Vec::new(),
         }
     }
 }

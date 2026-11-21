@@ -15,7 +15,7 @@ block_comment = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
 // Top-level statement (can be Query, Sketch, Commit, Delete, Update, Add)
 statement = {
     SOI ~
-    (profile_stmt | explain_stmt | create_index_stmt | drop_index_stmt |sketch_stmt | commit_stmt | delete_stmt | update_stmt | add_stmt | query) ~
+    (profile_stmt | explain_stmt | create_index_stmt | drop_index_stmt |sketch_stmt | commit_stmt | delete_stmt | update_stmt | add_stmt | upsert_stmt | query) ~
     EOI
 }
 
@@ -26,7 +26,7 @@ profile_stmt = {
 
 // EXPLAIN statement: explain <query>
 explain_stmt = {
-    ^"explain" ~ query
+    ^"explain" ~ (upsert_stmt | query)
 }
 
 // CREATE INDEX statement:
@@ -91,6 +91,15 @@ assignment = {
 // ADD statement: add <pattern>
 add_stmt = {
     ^"add" ~ pattern
+}
+
+// UPSERT statement (F2): upsert <node> [set <assignments>]
+// The node's identity is the literal property under a unique index; the rest
+// of the literal is written only when the node is created, and `set` always.
+// The pattern is the general one so relationships (F3) extend the builder,
+// not the grammar; today the builder accepts a single node.
+upsert_stmt = {
+    ^"upsert" ~ pattern ~ (^"set" ~ assignment_list)?
 }
 
 // ═══════════════════════════════════════════════════════════

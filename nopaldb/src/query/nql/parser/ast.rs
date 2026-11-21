@@ -47,6 +47,7 @@ pub enum Statement {
     /// Add nodes/edges (Add pattern)
     Add(AddStmt),
 
+    Upsert(UpsertStmt),
     CreateIndex(CreateIndexStmt),
     DropIndex(DropIndexStmt),
     Explain(Box<Statement>),
@@ -231,6 +232,31 @@ pub struct Assignment {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AddStmt {
     pub pattern: Pattern,
+}
+
+/// Upsert statement - create a node or update the one with its key (F2)
+///
+/// Syntax:
+/// ```nql
+/// upsert (<var>:<Label> {<props>}) [set <var>.<prop> = <expr>, ...]
+/// ```
+///
+/// The identity is the property of the literal under a unique index of the
+/// label (`create unique index on Persona(email)`). When no node holds it, the
+/// node is created with the literal plus `set`; when one does, only `set` is
+/// applied over its current properties, and nothing is written if that
+/// changes no value. Unlike `Graph::upsert_node`, the existing properties are
+/// kept, not replaced.
+///
+/// Example:
+/// ```nql
+/// upsert (p:Persona {email: "s@ejemplo.org", nombre: "Sergio"}) set p.visitas = p.visitas + 1
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpsertStmt {
+    /// Always a single node today; relationships arrive with F3.
+    pub node: NodePattern,
+    pub assignments: Vec<Assignment>,
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -514,7 +540,7 @@ impl Statement {
     pub fn is_write(&self) -> bool {
         matches!(
             self,
-            Statement::Delete(_) | Statement::Update(_) | Statement::Add(_) | Statement::Commit(_)
+            Statement::Delete(_) | Statement::Update(_) | Statement::Add(_) | Statement::Upsert(_) | Statement::Commit(_)
         )
     }
 
@@ -801,6 +827,7 @@ impl std::fmt::Display for Statement {
             Statement::Delete(_) => write!(f, "Delete"),
             Statement::Update(_) => write!(f, "Update"),
             Statement::Add(_) => write!(f, "Add"),
+            Statement::Upsert(_) => write!(f, "Upsert"),
             Statement::CreateIndex(_) => write!(f, "CreateIndex"),
             Statement::DropIndex(_) => write!(f, "DropIndex"),
             Statement::Explain(_) => write!(f, "Explain"),

@@ -29,6 +29,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     duplican la clave aunque otra escritura (`add_node`, NQL `add`, otro
     stub de `links`) la cree entre la búsqueda y el commit: el commit se
     rechaza, el upsert reintenta y actualiza al ganador.
+- **`upsert` en NQL** (F2): `upsert (p:Persona {email: "…", nombre: "…"})
+  [set p.visitas = p.visitas + 1]`. La identidad es la propiedad del literal
+  con índice único en la etiqueta; sin índice es error y el mensaje trae el
+  `create unique index` que falta. Si no existe, crea el nodo con el literal y
+  `set`. Si existe, aplica solo `set` sobre sus propiedades, que se conservan,
+  y no escribe nada (tampoco al WAL) si ningún valor cambia. Comparte con
+  `upsert_node` el candado por clave y el reintento ante el índice único:
+  upserts concurrentes de una clave dejan un nodo y no pierden incrementos.
+  `explain upsert` dice qué índice lo resuelve. `WriteResult` gana
+  `nodes_unchanged` y `matched_ids` (también en el dict de Python). Un nodo
+  por sentencia; las relaciones llegan después.
+
+### Fixed
+- `upsert_node`/`upsert_batch` sin cambios ya no escriben un registro
+  `Abort` al WAL: terminan la transacción vacía sin tocarlo, como decía su
+  documentación. Un upsert repetido deja el WAL del mismo tamaño.
 
 ## [0.10.17] - 2026-11-20
 

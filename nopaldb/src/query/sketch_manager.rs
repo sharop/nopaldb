@@ -216,6 +216,9 @@ impl SketchManager {
             Statement::Add(add) => {
                 self.preview_add(add)?
             }
+            Statement::Upsert(_) => {
+                return Err(NopalError::InvalidSketch("UPSERT cannot be sketched yet".to_string()));
+            }
             Statement::CreateIndex(_) => {
                 SketchPreview{
                     preview_type: PreviewType::Other("CREATE INDEX operation".to_string()),
@@ -300,6 +303,9 @@ impl SketchManager {
             }
             Statement::DropIndex(_) => {
                 return Err(NopalError::custom("DropIndex not supported in sketches yet"));
+            }
+            Statement::Upsert(_) => {
+                return Err(NopalError::custom("Upsert not supported in sketches yet"));
             }
             Statement::Explain(_) => {
                 return Err(NopalError::custom("Explain not supported in sketches yet"));
@@ -484,6 +490,9 @@ impl SketchManager {
             Statement::Explain(_) => Ok(()),
             Statement::Profile(_) => Ok(()),
             Statement::Add(_) => Ok(()),
+            Statement::Upsert(_) => Err(NopalError::InvalidSketch(
+                "UPSERT cannot be sketched yet".to_string()
+            )),
             Statement::Sketch(_) => {
                 Err(NopalError::InvalidSketch(
                     "Cannot sketch a sketch (no nested sketches)".to_string()

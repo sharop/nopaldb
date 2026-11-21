@@ -305,5 +305,7 @@ fn write_result_to_py<'py>(py: Python<'py>, result: &RustWriteResult) -> PyResul
     dict.set_item("edges_updated", result.edges_updated)?;
     dict.set_item("properties_changed", result.properties_changed)?;
     dict.set_item("created_ids", result.created_ids.clone())?;
+    dict.set_item("nodes_unchanged", result.nodes_unchanged)?;
+    dict.set_item("matched_ids", result.matched_ids.clone())?;
     Ok(dict)
 }
