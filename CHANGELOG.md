@@ -56,6 +56,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Abort` al WAL: terminan la transacción vacía sin tocarlo, como decía su
   documentación. Un upsert repetido deja el WAL del mismo tamaño.
 
+## [0.10.18] - unreleased
+
+**`delete` y `update` de un solo nodo respetan las propiedades en línea.**
+Corrige pérdida de datos. Sin cambio de API ni de formato en disco.
+
+### Fixed
+- **`delete (n {k: "a"})` borraba todos los nodos**, y `update (n {k: "a"})
+  set …` los cambiaba todos. Con etiqueta, `(n:N {k: "a"})`, alcanzaba a
+  todos los `N`. La forma de un solo nodo filtraba solo por la etiqueta e
+  ignoraba las propiedades en línea, aunque `find` con el mismo patrón sí
+  las aplica y la forma de un salto también. Ahora `delete` y `update`
+  tocan exactamente los nodos que `find` devuelve con ese patrón; `where` y
+  `limit` se aplican después. Venía así desde la primera versión pública.
+  Quien haya usado esta forma en 0.10.17 o antes debe revisar sus datos: el
+  filtro con `where` (`delete (n) where n.k = "a"`) sí funcionaba.
+
 ## [0.10.17] - 2026-11-20
 
 **La dirección de las relaciones en NQL significa lo que se escribe** (#395).
