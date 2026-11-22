@@ -269,7 +269,7 @@ La clase se puede nombrar de tres formas; gana la primera que resuelve:
 | Forma | Ejemplo | Se resuelve por |
 |---|---|---|
 | Label | `"Arbol"` | el label del nodo clase (la única forma en grafos construidos a mano) |
-| Nombre con prefijo | `"flora:Arbol"` | el catálogo de prefijos de los documentos importados (`graph.rdf_prefixes()`); si el prefijo no existe se prueba como label, que es como el importer etiqueta una clase cuyo local name colisionó (`fauna:Rosa`) |
+| Nombre con prefijo | `"flora:Arbol"` | el catálogo de prefijos de los documentos importados (`graph.rdf_prefixes()`); si el prefijo no existe se prueba como label, que es como el importer etiqueta una clase cuyo local name colisionó (`fauna:Rosa`); un prefijo que no está en el catálogo ni forma parte de un label es un error que lista los prefijos conocidos (0.11.0; hasta 0.10.18 no daba filas) |
 | IRI completo | `"http://plantas.example/flora#Arbol"` | la propiedad `iri` del nodo clase |
 
 ```nql

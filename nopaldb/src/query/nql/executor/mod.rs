@@ -4701,7 +4701,7 @@ impl<'a> Executor<'a> {
             Expression::FunctionCall { name, args }
                 if matches!(name.to_lowercase().as_str(), "instanceof" | "subclassof") =>
             {
-                Ok(Some(PropertyValue::Bool(self.evaluate_ontology_predicate(node, name, args, variable))))
+                Ok(Some(PropertyValue::Bool(self.evaluate_ontology_predicate(node, name, args, variable)?)))
             }
             _ => self.evaluate_expression(node, expr, variable),
         }
@@ -4709,37 +4709,38 @@ impl<'a> Executor<'a> {
 
     /// Evaluate `instanceOf(var, "ClassName")` and `subClassOf(var, "ClassName")` predicates.
     ///
-    /// Returns `false` if no TaxonomyIndex is registered or the class is unknown.
+    /// Returns `false` if no TaxonomyIndex is registered or the class is
+    /// unknown, and an error if the class has a prefix the catalog lacks.
     fn evaluate_ontology_predicate(
         &self,
         node: &crate::types::Node,
         name: &str,
         args: &[Expression],
         variable: &str,
-    ) -> bool {
+    ) -> Result<bool> {
         if args.len() != 2 {
-            return false;
+            return Ok(false);
         }
         // Second argument must be a string literal naming the target class.
         let class_name = match &args[1] {
             Expression::Literal(crate::types::PropertyValue::String(s)) => s.clone(),
-            _ => return false,
+            _ => return Ok(false),
         };
         // First argument must reference the correct variable (or be ignored if not applicable).
         if let Expression::Property { variable: var, .. } = &args[0] && var != variable {
-            return false;
+            return Ok(false);
         }
 
         // Get taxonomy snapshot (non-blocking clone). The class may be named by
         // label, `prefix:Local` or full IRI.
         let Some(mut tax) = self.graph.get_taxonomy_sync() else {
-            return false;
+            return Ok(false);
         };
-        let Some(class_id) = tax.resolve_class(&class_name) else {
-            return false;
+        let Some(class_id) = tax.resolve_class_in_query(name, &class_name)? else {
+            return Ok(false);
         };
 
-        self.evaluate_node_ontology_predicate(node, name, &mut tax, class_id)
+        Ok(self.evaluate_node_ontology_predicate(node, name, &mut tax, class_id))
     }
 
     fn evaluate_node_ontology_predicate(
@@ -4794,7 +4795,7 @@ impl<'a> Executor<'a> {
         let Some(mut tax) = self.graph.get_taxonomy_sync() else {
             return Ok(PropertyValue::Bool(false));
         };
-        let Some(parent_id) = tax.resolve_class(&class_name) else {
+        let Some(parent_id) = tax.resolve_class_in_query(name, &class_name)? else {
             return Ok(PropertyValue::Bool(false));
         };
 

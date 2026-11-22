@@ -704,7 +704,7 @@ pub fn eval_condition_with_graph(
             // the taxonomy snapshot resolves all three (`resolve_class`) and
             // knows every declared type of the node, not just its label.
             let Some(mut tax) = graph.get_taxonomy_sync() else { return Ok(false); };
-            let Some(class_id) = tax.resolve_class(&class_name) else { return Ok(false); };
+            let Some(class_id) = tax.resolve_class_in_query(name, &class_name)? else { return Ok(false); };
             let result = match name.to_lowercase().as_str() {
                 "instanceof" => {
                     node.kind == crate::types::NodeKind::Individual
