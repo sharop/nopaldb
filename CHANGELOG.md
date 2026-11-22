@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.11.0] - unreleased
+
+Índices únicos y `upsert` en NQL, con relaciones (#400, #401, #402, #403):
+NQL ya puede crear o actualizar por clave y conectar nodos existentes sin
+duplicarlos. El formato en disco no cambia y una 0.10.x abre una base de
+0.11.0 (trata un índice único como uno común). Rompe compatibilidad en la
+API de Rust en dos puntos: `WriteResult` gana `nodes_unchanged` y `matched_ids`
+(quien lo construya con literal debe agregarlos) y `UpsertStmt` pasa de
+`node` a `pattern`. En NQL, `instanceOf`/`subClassOf` con un prefijo
+desconocido ahora es error en vez de cero filas (#409).
 
 ### Added
 - **Índices únicos** (M1-8): `Graph::create_unique_index(label, propiedad,
