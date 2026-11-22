@@ -12,7 +12,7 @@ el crate `arrow` en la misma versión mayor que NopalDB, además de la feature
 
 ```toml
 [dependencies]
-nopaldb = { version = "0.10", features = ["core"] }
+nopaldb = { version = "0.11", features = ["core"] }
 arrow = "59"
 tokio = { version = "1", features = ["full"] }
 ```
