@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **El cuantificador también va en la flecha corta** (#415): `(a)->{1,3}(b)`,
+  `<-{1,3}`, `<->{1,3}` y `--{1,3}` significan lo mismo que su forma con
+  corchetes vacíos (`-[]->{1,3}`, …). Hasta 0.11.0 solo la forma con
+  corchetes parseaba y la corta daba un error de sintaxis sin pista.
+- **El `*1..2` de Cypher trae una pista**: el error de parseo de
+  `-[:R*1..2]->` sugiere la forma NQL, `-[:R]->{1,2}`, conservando las
+  puntas y la especificación; sin límite superior (`*`, `*2..`) pide uno.
+  NQL no acepta `*` como alias: serían dos sintaxis para lo mismo.
+
 ## [0.11.0] - 2026-11-22
 
 Índices únicos y `upsert` en NQL, con relaciones (#400, #401, #402, #403):

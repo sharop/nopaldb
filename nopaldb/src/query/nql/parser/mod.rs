@@ -14,8 +14,10 @@ struct NQLParser;
 
 /// Parse NQL string into Statement AST
 pub fn parse(input: &str) -> Result<Statement> {
-    let pairs = NQLParser::parse(Rule::statement, input)
-        .map_err(|e| NopalError::QueryParseError(format!("Parse error: {}", e)))?;
+    let pairs = NQLParser::parse(Rule::statement, input).map_err(|e| {
+        let hint = cypher_quantifier_hint(input).unwrap_or_default();
+        NopalError::QueryParseError(format!("Parse error: {e}{hint}"))
+    })?;
 
     let mut ast_builder = AstBuilder::new();
 
@@ -26,6 +28,45 @@ pub fn parse(input: &str) -> Result<Statement> {
     }
 
     Err(NopalError::QueryParseError("Invalid statement structure".into()))
+}
+
+/// For a query that failed to parse: if a relationship carries a Cypher
+/// length (`-[:R*1..2]->`, `-[*]->`), the NQL form to use instead. NQL does
+/// not accept `*` as an alias on purpose (two syntaxes for one thing); the
+/// hint is what saves the round trip.
+fn cypher_quantifier_hint(input: &str) -> Option<String> {
+    let mut from = 0;
+    while let Some(at) = input[from..].find("-[") {
+        let open = from + at + 1;
+        let close = open + input[open..].find(']')?;
+        let spec = &input[open + 1..close];
+        from = close;
+        let Some(star) = spec.find('*') else { continue };
+        let length = spec[star + 1..].trim();
+        let (min, max) = match length.split_once("..") {
+            Some((a, b)) => (a.trim(), b.trim()),
+            None => (length, length),
+        };
+        if !min.chars().chain(max.chars()).all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let min = if min.is_empty() { "1" } else { min };
+        let left = if input[..open].ends_with("<-") { "<-" } else { "-" };
+        let right = if input[close + 1..].starts_with("->") { "->" } else { "-" };
+        let rel = format!("{left}[{}]{right}", spec[..star].trim());
+        return Some(if max.is_empty() {
+            format!(
+                "\n  hint: `*{length}` is Cypher, not NQL; the quantifier goes after the \
+                 relationship and needs an upper bound: `{rel}{{{min},5}}`"
+            )
+        } else {
+            format!(
+                "\n  hint: `*{length}` is Cypher, not NQL; the quantifier goes after the \
+                 relationship: `{rel}{{{min},{max}}}`"
+            )
+        });
+    }
+    None
 }
 
 /// Parse NQL query (legacy, for backward compatibility)
@@ -803,6 +844,10 @@ impl AstBuilder {
                 // Simple arrow pattern: ->, <-, <->, --
                 Rule::arrow_pattern => {
                     direction = direction_of_arrow(inner.as_str())?;
+                }
+                // Its quantifier: `->{1,3}` (until 0.11.0 only `-[]->{1,3}`).
+                Rule::quantifier => {
+                    quantifier = Some(build_quantifier(inner));
                 }
                 // Arrow with spec: -[...]->
                 Rule::arrow_with_spec => {

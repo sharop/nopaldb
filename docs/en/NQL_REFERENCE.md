@@ -75,6 +75,7 @@ Relationships connect nodes. The arrow direction matters.
   With brackets the arrow is written `<-[...]->`; `<->` alone takes no brackets.
 - `-[:COLLABORATES]-` and `--`: also either direction, as in Cypher.
 - Arrowheads must not point against each other: `->[]<-`, `->[]-` and `-[]<-` are parse errors. (`-> [:T] ->` and `<- [:T] <-` are fine.)
+- Variable length: a quantifier after the relationship, `-[:KNOWS]->{1,3}` (one to three hops), `{2}` (exactly two). It also goes on a short arrow, `->{1,3}`, `<->{1,3}` (0.11.1; before, only with brackets: `<-[]->{1,3}`). The bound is required. The Cypher `*1..3` is not NQL; the parse error suggests the NQL form.
 
 ### Connection Examples
 ```nql
