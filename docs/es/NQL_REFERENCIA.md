@@ -75,6 +75,7 @@ Las relaciones conectan nodos. La dirección de la flecha importa.
   Con corchetes la flecha se escribe `<-[...]->`; `<->` solo no lleva corchetes.
 - `-[:COLABORA]-` y `--`: también cualquier dirección, como en Cypher.
 - Las puntas no pueden encontrarse: `->[]<-`, `->[]-` y `-[]<-` son error de parseo. (`-> [:T] ->` y `<- [:T] <-` sí valen.)
+- Longitud variable: un cuantificador después de la relación, `-[:CONOCE]->{1,3}` (de uno a tres saltos), `{2}` (exactamente dos). También va en la flecha corta, `->{1,3}`, `<->{1,3}` (0.11.1; antes solo con corchetes: `<-[]->{1,3}`). El límite superior es obligatorio. El `*1..3` de Cypher no es NQL; el error de parseo sugiere la forma NQL.
 
 ### Ejemplos de Conexiones
 ```nql

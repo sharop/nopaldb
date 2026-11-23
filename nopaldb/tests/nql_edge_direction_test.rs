@@ -171,3 +171,46 @@ async fn delete_and_update_accept_undirected_patterns() -> Result<()> {
     assert_eq!(edges(&g).await, Vec::<(String, String)>::new());
     Ok(())
 }
+
+/// The quantifier also goes on a short arrow (#415), with the meaning of its
+/// form with empty brackets: `<->{1,2}` is `<-[]->{1,2}`. Until 0.11.0 only
+/// the bracket form parsed.
+#[tokio::test]
+async fn short_arrows_take_a_quantifier() -> Result<()> {
+    let g = chain().await?;
+    for (short, long, from, expected) in [
+        ("->{1,2}", "-[]->{1,2}", "a", vec!["b", "c"]),
+        ("<-{1,2}", "<-[]-{1,2}", "c", vec!["a", "b"]),
+        ("<->{1,2}", "<-[]->{1,2}", "b", vec!["a", "c"]),
+        ("--{1,2}", "-[]-{1,2}", "a", vec!["b", "c"]),
+        ("->{2}", "-[]->{2}", "a", vec!["c"]),
+    ] {
+        let q = |arrow: &str| format!(r#"find distinct y.name from (x) {arrow} (y) where x.name = "{from}""#);
+        assert_eq!(names(&g, &q(short)).await, expected, "{short}");
+        assert_eq!(names(&g, &q(long)).await, expected, "{long}");
+        // No space between the arrow and its quantifier is the usual spelling.
+        let tight = format!(r#"find distinct y.name from (x){short}(y) where x.name = "{from}""#);
+        assert_eq!(names(&g, &tight).await, expected, "{tight}");
+    }
+    Ok(())
+}
+
+/// A Cypher length (`*1..2`) is not NQL; the parse error names the NQL form,
+/// keeping the arrows and the relationship spec.
+#[test]
+fn cypher_length_gets_a_hint() {
+    for (cypher, hint) in [
+        ("-[:K*1..2]->", "`-[:K]->{1,2}`"),
+        ("<-[:K*1..3]-", "`<-[:K]-{1,3}`"),
+        ("-[*2]-", "`-[]-{2,2}`"),
+        ("-[r:K*..3]->", "`-[r:K]->{1,3}`"),
+        ("-[:K*]->", "needs an upper bound: `-[:K]->{1,5}`"),
+    ] {
+        let nql = format!("find b from (a){cypher}(b)");
+        let err = parse(&nql).expect_err(&nql).to_string();
+        assert!(err.contains("is Cypher, not NQL") && err.contains(hint), "{cypher}: {err}");
+    }
+    // Any other parse error is left alone.
+    let err = parse("find b from (a)-[:K]->(b) wher").unwrap_err().to_string();
+    assert!(!err.contains("hint"), "{err}");
+}
