@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.11.0] - unreleased
+## [0.11.0] - 2026-11-22
 
 Índices únicos y `upsert` en NQL, con relaciones (#400, #401, #402, #403):
 NQL ya puede crear o actualizar por clave y conectar nodos existentes sin
