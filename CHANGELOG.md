@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.11.1] - unreleased
 
 ### Fixed
 - **El cuantificador también va en la flecha corta** (#415): `(a)->{1,3}(b)`,
