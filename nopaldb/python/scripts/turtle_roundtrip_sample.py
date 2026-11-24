@@ -38,6 +38,7 @@ def main() -> None:
         assert report["skipped"] == [], report
         assert report["edges"] == 1 and report["classes"] == 3, report
         assert g.rdf_prefixes()[""] == "http://cocina.example/"
+        assert g.rdf_properties()["nombre"] == "http://cocina.example/nombre"
 
         path = os.path.join(tmp, "out.ttl")
         file_report = g.export_owl_file(path)

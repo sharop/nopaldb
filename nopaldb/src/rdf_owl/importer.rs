@@ -496,6 +496,13 @@ struct Import<'a> {
     /// Nodes whose stored `iri` is a pre-0.5.10 raw token, seen while looking
     /// for a node this document names. Reported once, at the end.
     legacy_seen: usize,
+    /// The graph's property catalog (`key → predicate IRI`) plus the keys this
+    /// import claims; see [`Import::property_key`].
+    property_owner: BTreeMap<String, String>,
+    /// Data predicate IRI → its property key, decided once per predicate.
+    property_keys: HashMap<String, String>,
+    /// Keys this import added to the catalog, written back at the end.
+    claimed_properties: BTreeMap<String, String>,
 }
 
 impl Import<'_> {
@@ -531,6 +538,46 @@ impl Import<'_> {
             .count();
         self.legacy_seen += hits;
         Ok(())
+    }
+
+    /// The property key for the data predicate `pred`, decided once per
+    /// predicate and kept in the graph's catalog so the next import and the
+    /// exporter agree. The local name (`fecha`) is the key unless another
+    /// predicate already owns it or it is one the importer reserves (`iri`,
+    /// `rdfs_label`, …); then the key is qualified, `vet:fecha`, as a class
+    /// whose local name collided is labelled (`fauna:Rosa`), with a warning.
+    /// Until 0.11.1 both predicates wrote `fecha` and their values merged into
+    /// one list with no way to tell them apart (#412). Keys written by an
+    /// import older than 0.11.2 are not in the catalog, so the first import
+    /// after upgrading claims them whatever the old data under them was.
+    fn property_key(&mut self, pred: &str) -> String {
+        if let Some(key) = self.property_keys.get(pred) {
+            return key.clone();
+        }
+        let owned = self.property_owner.iter().find(|(_, iri)| iri.as_str() == pred).map(|(k, _)| k.clone());
+        let key = owned.unwrap_or_else(|| {
+            let local = local_name(pred);
+            let reserved = [PROP_IRI, PROP_PLACEHOLDER, PROP_RDFS_LABEL, PROP_RDFS_COMMENT].contains(&local.as_str());
+            let key = match self.property_owner.get(&local) {
+                None if !reserved => local,
+                owner => {
+                    let q = qualified_name(pred, self.prefixes);
+                    let why = match owner {
+                        Some(o) => format!("ya es de `{o}`"),
+                        None => "es una propiedad reservada del importador".to_string(),
+                    };
+                    self.report.warnings.push(format!(
+                        "el predicado `{pred}` tiene local name `{local}`, que {why}: sus valores se escribieron en la propiedad `{q}`"
+                    ));
+                    q
+                }
+            };
+            self.property_owner.insert(key.clone(), pred.to_string());
+            self.claimed_properties.insert(key.clone(), pred.to_string());
+            key
+        });
+        self.property_keys.insert(pred.to_string(), key.clone());
+        key
     }
 
     /// The class node for `iri`, creating it if needed. `declared` says
@@ -711,6 +758,9 @@ pub async fn import_turtle(
         typed: HashMap::new(),
         vocabulary_subjects: HashSet::new(),
         legacy_seen: 0,
+        property_owner: graph.rdf_properties().await?,
+        property_keys: HashMap::new(),
+        claimed_properties: BTreeMap::new(),
     };
 
     // Pass 0 — classify subjects by their rdf:type, in document order.
@@ -925,6 +975,7 @@ pub async fn import_turtle(
         match object_of(&t.object, hash) {
             Object::Literal(l) => {
                 let v = literal_to_property_value(l, &mut im.report.warnings);
+                let key = if pred == rdfs::LABEL.as_str() || pred == rdfs::COMMENT.as_str() { key } else { im.property_key(pred) };
                 props.entry(subj).or_default().entry(key).or_default().push(v);
             }
             Object::Resource(obj) => {
@@ -964,6 +1015,7 @@ pub async fn import_turtle(
     // Prefix catalog: the document's prefixes join the graph's (later import wins),
     // and the taxonomy snapshot gets the merged catalog so NQL can say `flora:Rosa`.
     im.graph.merge_rdf_prefixes(&doc.prefixes).await?;
+    im.graph.merge_rdf_properties(&im.claimed_properties).await?;
     let catalog = im.graph.rdf_prefixes().await?;
     im.taxonomy.set_prefixes(catalog);
 

@@ -136,7 +136,7 @@ pub(crate) mod kv;
 /// la advertencia de formato en la cabecera del módulo.
 mod keys;
 #[cfg(feature = "owl-import")]
-pub(crate) use keys::v2::META_RDF_PREFIXES;
+pub(crate) use keys::v2::{META_RDF_PREFIXES, META_RDF_PROPERTIES};
 
 /// Marcas reloj-de-pared → reloj-lógico para los cortes de GC por
 /// antigüedad (`GCConfig::older_than_ms`).

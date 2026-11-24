@@ -103,7 +103,9 @@ pub async fn export_turtle(graph: &Graph) -> Result<TurtleExport> {
     let all_nodes = graph.get_all_nodes().await?;
     let all_edges = graph.get_all_edges().await?;
     let prefixes = graph.rdf_prefixes().await?;
-    Export::new(all_nodes, all_edges, prefixes).run()
+    let mut export = Export::new(all_nodes, all_edges, prefixes);
+    export.properties = graph.rdf_properties().await?;
+    export.run()
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +119,9 @@ struct Export {
     /// Namespace behind the empty prefix, used for every term the graph has no
     /// IRI for (property keys, edge types without `iri`, legacy labels).
     export_ns: String,
+    /// Property key → the data predicate it came from (`Graph::rdf_properties`).
+    /// A key not in it is written under `export_ns`.
+    properties: BTreeMap<String, String>,
     /// Exported node → its RDF term. A node absent here is not exported.
     terms: HashMap<NodeId, NamedOrBlankNode>,
     is_class: HashMap<NodeId, bool>,
@@ -139,6 +144,7 @@ impl Export {
             edges,
             prefixes,
             export_ns,
+            properties: BTreeMap::new(),
             terms: HashMap::new(),
             is_class: HashMap::new(),
             class_by_label: HashMap::new(),
@@ -343,6 +349,7 @@ impl Export {
         match key {
             k if k == PROP_RDFS_LABEL => Some(rdfs::LABEL.into_owned()),
             k if k == PROP_RDFS_COMMENT => Some(rdfs::COMMENT.into_owned()),
+            k if self.properties.contains_key(k) => named_node(&self.properties[k]),
             k => named_node(&format!("{}{}", self.export_ns, iri_safe(k))),
         }
     }

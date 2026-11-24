@@ -1987,6 +1987,23 @@ impl PyGraph {
         Ok(dict.into())
     }
 
+    /// Qué predicado de datos guarda cada propiedad (`{clave: IRI}`), desde
+    /// 0.11.2: dos predicados con el mismo local name escriben `fecha` y
+    /// `vet:fecha`, no una lista mezclada. El export lo usa para escribir cada
+    /// propiedad con su predicado. Vacío si nunca se importó Turtle.
+    #[cfg(feature = "python-owl")]
+    fn rdf_properties(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        let graph = self.graph()?;
+        let map = to_py_result(
+            crate::python::runtime::block_on(py, async move { graph.rdf_properties().await })
+        )?;
+        let dict = pyo3::types::PyDict::new(py);
+        for (k, v) in map {
+            dict.set_item(k, v)?;
+        }
+        Ok(dict.into())
+    }
+
     /// String representation
     fn __repr__(&self) -> String {
         let closed = self.inner.lock()

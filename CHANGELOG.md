@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Dos predicados de datos con el mismo nombre local ya no se mezclan**
+  (#412). `zoo:fecha "…"` y `vet:fecha "…"` sobre un sujeto terminaban en
+  `fecha: [..]` sin aviso y sin forma de saber qué valor era de quién. Ahora
+  el primero escribe `fecha` y el segundo `vet:fecha`, con un aviso que nombra
+  los dos IRIs, como ya pasaba con dos clases (`fauna:Rosa`). Un predicado
+  cuyo nombre local es una clave del importador (`iri`, `rdfs_label`, …) ya no
+  la sobrescribe: también se califica. Las aristas no cambian: cada una
+  guarda su IRI, aunque `zoo:p` y `vet:p` siguen compartiendo el tipo `p`.
+  Cambia qué propiedad recibe los valores en ese caso; los demás imports
+  quedan igual.
+
+### Added
+- `Graph::rdf_properties()` (Python: `graph.rdf_properties()`): qué predicado
+  de datos guarda cada propiedad (`{clave: IRI}`). Lo escribe `import_turtle`
+  y lo lee el export, que ahora escribe cada propiedad con su predicado
+  original (`zoo:fecha`) en vez de bajo el namespace del export. Un grafo
+  importado antes de 0.11.2 no lo tiene: el primer import tras actualizar
+  reclama los nombres, sin saber de qué predicado venían los datos viejos.
+
 ## [0.11.1] - 2026-11-23
 
 ### Fixed

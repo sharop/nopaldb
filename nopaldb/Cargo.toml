@@ -197,6 +197,10 @@ required-features = ["owl-import"]
 name = "rdf_export_symmetry_test"
 required-features = ["owl-import"]
 
+[[test]]
+name = "rdf_property_names_test"
+required-features = ["owl-import"]
+
 # Existía sin registrar: compilaba vacío (su `cfg` interno) y ningún job lo
 # corría. Es el test que más se parece a un uso real del puente.
 [[test]]
