@@ -267,7 +267,7 @@ pub async fn execute_one_hop_pattern(
     let mut traversal = TraverseStream::new(
         graph,
         source_stream,
-        rel.rel_type.clone(),
+        rel.rel_types.clone(),
         target.label.clone(),
         target.properties.clone(),
     )
@@ -293,7 +293,8 @@ pub struct PatternMatch {
 pub struct TraverseStream<'a> {
     graph: &'a Graph,
     source_stream: Box<dyn NodeStream + 'a>,
-    rel_type: Option<String>,
+    /// Tipos aceptados; vacío = cualquiera (`-[:A|B]->` da dos).
+    rel_types: Vec<String>,
     target_label: Option<String>,
     /// Filtros inline sobre propiedades del nodo destino, e.g. `(b {active: true})`.
     target_properties: HashMap<String, PropertyValue>,
@@ -312,14 +313,14 @@ impl<'a> TraverseStream<'a> {
     pub fn new(
         graph: &'a Graph,
         source_stream: Box<dyn NodeStream + 'a>,
-        rel_type: Option<String>,
+        rel_types: Vec<String>,
         target_label: Option<String>,
         target_properties: HashMap<String, PropertyValue>,
     ) -> Self {
         Self {
             graph,
             source_stream,
-            rel_type,
+            rel_types,
             target_label,
             target_properties,
             edge_properties: HashMap::new(),
@@ -349,7 +350,7 @@ impl<'a> PatternMatchStream for TraverseStream<'a> {
                 if let Some(iter) = &mut self.edge_iter
                     && let Some(edge) = iter.next()
                 {
-                    if let Some(rt) = &self.rel_type && edge.edge_type != *rt { continue; }
+                    if !self.rel_types.is_empty() && !self.rel_types.contains(&edge.edge_type) { continue; }
                     // Filtrar por propiedades inline de la arista, e.g. -[r:TRANS {amount: 1000}]->
                     if !self.edge_properties.is_empty()
                         && self.edge_properties.iter().any(|(k, v)| edge.properties.get(k) != Some(v))

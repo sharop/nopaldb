@@ -121,9 +121,17 @@ impl<'a> WriteExecutor<'a> {
         target_id: NodeId,
         rel_pattern: &RelationshipPattern,
     ) -> Result<Edge> {
+        // Una arista tiene un tipo: la unión `-[:A|B]->` solo sirve para leer.
+        if rel_pattern.rel_types.len() > 1 {
+            return Err(NopalError::query_error(format!(
+                "ADD: `:{}` is a union of edge types, which only a read can match; \
+                 a new edge has one type: `-[:TYPE]->`",
+                rel_pattern.rel_types.join("|")
+            )));
+        }
         let rel_type = rel_pattern
-            .rel_type
-            .clone()
+            .single_type()
+            .map(str::to_string)
             .unwrap_or_else(|| "RELATED_TO".to_string());
 
         // La arista va en el sentido de la flecha: `(a) <-[:K]- (b)` es b → a.
@@ -335,7 +343,7 @@ impl<'a> WriteExecutor<'a> {
             .iter()
             .map(|(source, rel, target)| UpsertEdge {
                 source: *source,
-                edge_type: rel.rel_type.clone().unwrap_or_default(),
+                edge_type: rel.single_type().unwrap_or_default().to_string(),
                 target: *target,
             })
             .collect();

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Unión de tipos de arista en NQL: `-[:A|B]->`** (#414). Una arista de
+  cualquiera de los tipos, con y sin cuantificador (`-[:A|B]->{1,3}`), en un
+  salto, en cadena y en `delete`/`update` con patrón; también `:A|:B`.
+  `-[r:A|B]->` liga la arista y `r.type` dice de qué tipo fue. Cada salto
+  sigue la adyacencia del nodo como con un tipo, sin recorrer todas las
+  aristas. `explain` lo dice en una línea `Edge types: …`; sin unión el plan
+  no cambia. `add` y `upsert` la rechazan con un error que la nombra: una
+  arista nueva tiene un tipo. Hasta 0.11.2 era error de parseo y hacía falta
+  una consulta por tipo.
+
+### Changed
+- **API de Rust:** `RelationshipPattern.rel_type: Option<String>` pasa a
+  `rel_types: Vec<String>` (vacío = cualquier tipo), con
+  `matches_type(&str)` y `single_type()`; `TraverseStream::new` recibe la
+  lista. Quien lea o construya el AST de NQL debe actualizarse (sale en
+  0.11.3 por decisión del proyecto, aunque rompe esa parte de la API).
+
 ## [0.11.2] - 2026-11-24
 
 ### Fixed
