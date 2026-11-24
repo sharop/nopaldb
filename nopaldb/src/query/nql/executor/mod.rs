@@ -1827,7 +1827,7 @@ impl<'a> Executor<'a> {
             operators::TraverseStream::new(
                 self.graph,
                 source_stream,
-                rel_pattern.rel_type.clone(),
+                rel_pattern.rel_types.clone(),
                 target_pattern.label.clone(),
                 target_pattern.properties.clone(),
             )
@@ -3159,10 +3159,9 @@ impl<'a> Executor<'a> {
 
             let candidate_edges = self.get_edges_for_direction(current_node.id, &rel.direction).await?;
             for edge in candidate_edges {
-                if let Some(rel_type) = &rel.rel_type
-                    && edge.edge_type != *rel_type {
-                        continue;
-                    }
+                if !rel.matches_type(&edge.edge_type) {
+                    continue;
+                }
                 // Propiedades inline de la arista, `-[:T {w: 1}]->`. Hasta
                 // 0.8.3 este salto no las miraba (un salto y los
                 // cuantificadores sí).
@@ -3287,10 +3286,9 @@ impl<'a> Executor<'a> {
 
                 for edge in candidate_edges {
                     // Filtrar por tipo de relación
-                    if let Some(rel_type) = &rel.rel_type
-                        && edge.edge_type != *rel_type {
-                            continue;
-                        }
+                    if !rel.matches_type(&edge.edge_type) {
+                        continue;
+                    }
 
                     // Filtrar por propiedades de arista (cada hop debe satisfacerlas)
                     let mut props_ok = true;
@@ -6147,7 +6145,7 @@ impl<'a> Executor<'a> {
                 rel.variable.as_ref().map(|v| format!("{v} ")).unwrap_or_default(),
                 name(*source),
                 name(*target),
-                rel.rel_type.as_deref().unwrap_or_default()
+                rel.single_type().unwrap_or_default()
             ));
         }
         let set: Vec<String> = upsert.assignments.iter().map(|a| format!("{}.{}", a.variable, a.property)).collect();
@@ -6526,6 +6524,24 @@ impl<'a> Executor<'a> {
                     .to_string()
                 };
                 out.push_str(&format!("Strategy: {strategy}\n  Reason: {reason}\n"));
+                // Una unión `-[:A|B]->` se dice aparte; sin unión el texto
+                // no cambia (hay integradores que lo leen).
+                let unions: Vec<String> = query
+                    .from
+                    .patterns
+                    .iter()
+                    .flat_map(|p| p.elements.iter())
+                    .filter_map(|e| match e {
+                        PatternElement::Relationship(r) if r.rel_types.len() > 1 => Some(r.rel_types.join("|")),
+                        _ => None,
+                    })
+                    .collect();
+                if !unions.is_empty() {
+                    out.push_str(&format!(
+                        "  Edge types: {} (each hop follows the edges of either type from the node's adjacency)\n",
+                        unions.iter().map(|u| format!("`:{u}`")).collect::<Vec<_>>().join(", ")
+                    ));
+                }
             }
         }
         Ok(out)

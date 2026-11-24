@@ -2017,7 +2017,7 @@ mod tests {
                         }),
                         PatternElement::Relationship(RelationshipPattern {
                             variable: None,
-                            rel_type: Some("TRANSFER".to_string()),
+                            rel_types: vec!["TRANSFER".to_string()],
                             properties: HashMap::new(),
                             direction: Direction::Outgoing,
                             quantifier: None,
@@ -2070,7 +2070,7 @@ mod tests {
                     }),
                     PatternElement::Relationship(RelationshipPattern {
                         variable: None,
-                        rel_type: Some("TRANSFER".to_string()),
+                        rel_types: vec!["TRANSFER".to_string()],
                         properties: HashMap::new(),
                         direction: Direction::Outgoing,
                         quantifier: None,
@@ -3043,8 +3043,8 @@ pub(crate) fn upsert_shape(upsert: &UpsertStmt) -> Result<UpsertShape<'_>> {
                             ))
                         }
                     };
-                    let rel_type = rel.rel_type.as_deref().unwrap_or_default();
-                    if shape.edges.iter().any(|(s, r, t)| (*s, r.rel_type.as_deref(), *t) == (source, Some(rel_type), target)) {
+                    let rel_type = rel.single_type().unwrap_or_default();
+                    if shape.edges.iter().any(|(s, r, t)| (*s, r.single_type(), *t) == (source, Some(rel_type), target)) {
                         return Err(NopalError::SemanticError(format!(
                             "UPSERT: the relationship {rel_type} between the same two nodes appears twice"
                         )));
@@ -3059,7 +3059,14 @@ pub(crate) fn upsert_shape(upsert: &UpsertStmt) -> Result<UpsertShape<'_>> {
                         "UPSERT relationships take no quantifier: one edge per arrow".into(),
                     ));
                 }
-                if rel.rel_type.is_none() {
+                if rel.rel_types.len() > 1 {
+                    return Err(NopalError::SemanticError(format!(
+                        "UPSERT: `:{}` is a union of edge types, which only a read can match; \
+                         an upserted edge has one type: `-[:TYPE]->`",
+                        rel.rel_types.join("|")
+                    )));
+                }
+                if rel.rel_types.is_empty() {
                     return Err(NopalError::SemanticError(
                         "UPSERT needs the type of each relationship: `-[:TYPE]->`; an edge is found by \
                          its source, type and target"

@@ -835,7 +835,7 @@ impl AstBuilder {
     fn build_relationship_pattern(&mut self, pair: pest::iterators::Pair<Rule>) -> Result<RelationshipPattern> {
         let mut direction = Direction::Outgoing;
         let mut variable = None;
-        let mut rel_type = None;
+        let mut rel_types = Vec::new();
         let mut properties = std::collections::HashMap::new();
         let mut quantifier: Option<Quantifier> = None;
 
@@ -866,16 +866,18 @@ impl AstBuilder {
                                 quantifier = Some(build_quantifier(spec_part));
                             }
                             Rule::relationship_spec => {
-                                // Detectar si el spec empieza con ':' (sin variable)
-                                let spec_str = spec_part.as_str();
-                                let has_colon_prefix = spec_str.starts_with(':');
-
-                                let mut identifiers = Vec::new();
-
                                 for spec_inner in spec_part.into_inner() {
                                     match spec_inner.as_rule() {
+                                        // `[r]` / `[r:T]`: el identificador suelto es la variable.
                                         Rule::identifier => {
-                                            identifiers.push(spec_inner.as_str().to_string());
+                                            variable = Some(spec_inner.as_str().to_string());
+                                        }
+                                        // `[:T]`, `[:A|B]`
+                                        Rule::rel_types => {
+                                            rel_types = spec_inner
+                                                .into_inner()
+                                                .map(|t| t.as_str().to_string())
+                                                .collect();
                                         }
                                         // Parsear property_map inline: {k: v, ...}
                                         Rule::property_map => {
@@ -905,21 +907,6 @@ impl AstBuilder {
                                         _ => {}
                                     }
                                 }
-
-                                // Asignar variable y tipo según el patrón detectado
-                                if has_colon_prefix {
-                                    // [:TYPE] o [:TYPE {props}]
-                                    if !identifiers.is_empty() {
-                                        rel_type = Some(identifiers[0].clone());
-                                    }
-                                } else if identifiers.len() >= 2 {
-                                    // [variable:TYPE] o [variable:TYPE {props}]
-                                    variable = Some(identifiers[0].clone());
-                                    rel_type = Some(identifiers[1].clone());
-                                } else if identifiers.len() == 1 {
-                                    // [variable] - solo variable
-                                    variable = Some(identifiers[0].clone());
-                                }
                             }
                             _ => {}
                         }
@@ -935,7 +922,7 @@ impl AstBuilder {
 
         Ok(RelationshipPattern {
             variable,
-            rel_type,
+            rel_types,
             direction,
             quantifier,
             properties,

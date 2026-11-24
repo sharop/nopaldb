@@ -76,6 +76,7 @@ Las relaciones conectan nodos. La dirección de la flecha importa.
 - `-[:COLABORA]-` y `--`: también cualquier dirección, como en Cypher.
 - Las puntas no pueden encontrarse: `->[]<-`, `->[]-` y `-[]<-` son error de parseo. (`-> [:T] ->` y `<- [:T] <-` sí valen.)
 - Longitud variable: un cuantificador después de la relación, `-[:CONOCE]->{1,3}` (de uno a tres saltos), `{2}` (exactamente dos). También va en la flecha corta, `->{1,3}`, `<->{1,3}` (0.11.1; antes solo con corchetes: `<-[]->{1,3}`). El límite superior es obligatorio. El `*1..3` de Cypher no es NQL; el error de parseo sugiere la forma NQL.
+- Unión de tipos de arista: `-[:COME|PERSIGUE]->` sigue una arista de cualquiera de los tipos, con y sin cuantificador (`-[:COME|PERSIGUE]->{1,3}`); `-[r:COME|PERSIGUE]->` liga la arista y `r.type` dice cuál fue (0.11.3). Solo en lecturas: `add` y `upsert` la rechazan, porque una arista nueva tiene un tipo.
 
 ### Ejemplos de Conexiones
 ```nql

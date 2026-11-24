@@ -187,6 +187,7 @@ property = {
 //   -[r]-> (   variable sola)
 //   -[:KNOWS]-> (tipo solo)
 //   -[r:KNOWS]-> (variable + tipo)
+//   -[:KNOWS|LIKES]-> (unión: una arista de cualquiera de los tipos)
 //   <-[r]- (incoming con variable)
 //   -[:KNOWS]- / -- (cualquier dirección, como <-[...]-> / <->)
 //   -> [:KNOWS] ->  /  <- [:KNOWS] <-  (saliente / entrante)
@@ -228,8 +229,13 @@ arrow_pattern = @{
 
 // Especificación de relación: [variable] o [:type] o [variable:type] o [variable:type {props}]
 relationship_spec = {
-    identifier ~ (":" ~ identifier)? ~ property_map? |
-    ":" ~ identifier ~ property_map?
+    identifier ~ (":" ~ rel_types)? ~ property_map? |
+    ":" ~ rel_types ~ property_map?
+}
+
+// Tipo de la arista o unión de tipos: `:A`, `:A|B`, `:A|:B`.
+rel_types = {
+    identifier ~ ("|" ~ ":"? ~ identifier)*
 }
 
 quantifier = {

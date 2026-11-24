@@ -349,11 +349,30 @@ pub struct NodePattern {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelationshipPattern {
     pub variable: Option<String>,
-    pub rel_type: Option<String>,
+    /// Tipos de arista: `-[:A]->` da `["A"]`, `-[:A|B]->` da `["A", "B"]`
+    /// (una arista de cualquiera de ellos) y sin tipo queda vacío (cualquier
+    /// tipo). Hasta 0.11.2 era `rel_type: Option<String>`.
+    pub rel_types: Vec<String>,
     pub direction: Direction,
     pub quantifier: Option<Quantifier>,
     /// Filtros inline sobre propiedades de la arista, ej. -[r:TRANS {amount: 1000}]->
     pub properties: HashMap<String, PropertyValue>,
+}
+
+impl RelationshipPattern {
+    /// Si una arista de tipo `edge_type` cumple el tipo del patrón.
+    pub fn matches_type(&self, edge_type: &str) -> bool {
+        self.rel_types.is_empty() || self.rel_types.iter().any(|t| t == edge_type)
+    }
+
+    /// El tipo cuando el patrón nombra exactamente uno; `None` sin tipo o
+    /// con una unión (`-[:A|B]->`).
+    pub fn single_type(&self) -> Option<&str> {
+        match self.rel_types.as_slice() {
+            [t] => Some(t),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
