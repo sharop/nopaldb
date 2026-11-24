@@ -3881,6 +3881,44 @@ impl Graph {
         Ok(())
     }
 
+    /// Which data predicate each property key holds (`key → predicate IRI`),
+    /// recorded by `import_turtle` since 0.11.2. A key is owned by the first
+    /// predicate that wrote it; a second predicate with the same local name
+    /// gets a qualified key (`vet:fecha`) instead of sharing it. The exporter
+    /// reads it to write each property with its original predicate. Empty for
+    /// a graph that never imported Turtle, and it knows nothing about imports
+    /// made before 0.11.2.
+    #[cfg(feature = "owl-import")]
+    pub async fn rdf_properties(&self) -> Result<std::collections::BTreeMap<String, String>> {
+        use crate::storage::META_RDF_PROPERTIES;
+        match self.storage.get_meta_bytes(META_RDF_PROPERTIES).await? {
+            Some(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| NopalError::SerializationError(format!("catálogo de propiedades RDF ilegible: {e}"))),
+            None => Ok(Default::default()),
+        }
+    }
+
+    /// Add keys to the property catalog. A key never changes owner: the
+    /// importer only adds keys it claimed, so an existing entry is kept.
+    #[cfg(feature = "owl-import")]
+    pub(crate) async fn merge_rdf_properties(
+        &self,
+        properties: &std::collections::BTreeMap<String, String>,
+    ) -> Result<()> {
+        use crate::storage::META_RDF_PROPERTIES;
+        let mut merged = self.rdf_properties().await?;
+        let before = merged.len();
+        for (k, iri) in properties {
+            merged.entry(k.clone()).or_insert_with(|| iri.clone());
+        }
+        if merged.len() != before {
+            let bytes = serde_json::to_vec(&merged)
+                .map_err(|e| NopalError::SerializationError(format!("catálogo de propiedades RDF: {e}")))?;
+            self.storage.put_meta_bytes(META_RDF_PROPERTIES, &bytes).await?;
+        }
+        Ok(())
+    }
+
     /// Validate the graph against SHACL shapes written in Turtle.
     ///
     /// Returns the [`ValidationReport`](crate::shacl::ValidationReport)

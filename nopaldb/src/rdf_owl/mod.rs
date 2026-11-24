@@ -27,7 +27,7 @@
 //! | `:X rdfs:subClassOf :Y` | edge `X → Y` of type `subClassOf`, plus the taxonomy index |
 //! | `:x a :X` (every type) | node with label = local name of the **first** type, `iri`; one edge `x → X` of type `instanceOf` per type |
 //! | `:x :p :y` (resource object) | edge `x → y` of type `p` (local name), with the predicate IRI in the edge's `iri` property |
-//! | `:x :p "literal"` | property `p` on the node, typed by datatype (table below); the same predicate twice → a `List` |
+//! | `:x :p "literal"` | property `p` on the node, typed by datatype (table below); the same predicate twice → a `List`; another predicate with local name `p` (`vet:p`) → property `vet:p`, with a warning, and `Graph::rdf_properties` records which predicate owns each key |
 //! | `rdfs:label` / `rdfs:comment` on anything | properties `rdfs_label` / `rdfs_comment` (`label` is the `Node` field, and `n.label` in NQL must keep meaning that) |
 //! | `:x a :Z` with `Z` never declared | the class `Z` is created, and the import reports it |
 //! | `:x :p :y` with `:y` never described | a **placeholder** node for `:y` (`iri`, `rdf_placeholder = true`), upgraded in place when a later document types it — edges pointing at it stay valid |
@@ -110,6 +110,7 @@
 //! | `disjointWith` edge | `owl:disjointWith` (an `owl:AllDisjointClasses` comes back as its pairs) |
 //! | `instanceOf` edge | `a <C>`, one per edge (no edges: the label is the class; a placeholder gets no type) |
 //! | any other edge to an exported node | one triple, predicate = the edge's `iri`, or the export namespace + edge type when it has none |
+//! | property | predicate = the one `rdf_properties()` records for the key, or the export namespace + key when none does |
 //! | `Int` / `Float` / `Bool` / `String` | `xsd:integer` / `xsd:double` / `xsd:boolean` / plain literal |
 //! | `List` | one triple per element (the inverse of how the import builds a list) |
 //!

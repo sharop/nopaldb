@@ -537,6 +537,10 @@ pub(crate) mod v2 {
     /// persiste; JSON `{prefijo: IRI}`). Primera meta que no es un u64.
     #[cfg(feature = "owl-import")]
     pub(crate) const META_RDF_PREFIXES: &str = "rdf_prefixes";
+    /// Nombre meta del catálogo de propiedades RDF: clave de propiedad →
+    /// IRI del predicado de datos que la escribió (JSON `{clave: IRI}`).
+    #[cfg(feature = "owl-import")]
+    pub(crate) const META_RDF_PROPERTIES: &str = "rdf_properties";
 
     /// Entrada meta del catalog: `m` + nombre UTF-8 (sin separador: el
     /// namespace `m` solo contiene metas y el nombre es el resto de la clave).
