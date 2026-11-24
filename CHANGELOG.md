@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.11.2] - unreleased
+## [0.11.2] - 2026-11-24
 
 ### Fixed
 - **Dos predicados de datos con el mismo nombre local ya no se mezclan**
