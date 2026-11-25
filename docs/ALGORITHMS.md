@@ -14,7 +14,7 @@ needs the Rust API).
 | **Betweenness** | O(V·E) | Bridge detection | `betweenness(n)` |
 | **Clustering** | O(V·d²) | Community cohesion | `clustering(n)` |
 | **Degree** | O(E) | Connectivity | `degree(n)` |
-| **Shortest Path** | O(E·log V) | Path finding | `shortestPath("src-uuid", "dst-uuid")` (distance) / Rust API (path) |
+| **Shortest Path** | O(E·log V) | Path finding | `shortestPath("src-uuid", "dst-uuid")` (distance); `path(a, b)` / `shortestPath(a, b)` over variables (0.11.4) |
 | **Community (Louvain)** | O(E·log² V) | Community detection | `community(n)` |
 | **Community (Leiden)** | ~O(E · levels · iterations) | Well-connected communities, hierarchy | `leiden(n)` |
 

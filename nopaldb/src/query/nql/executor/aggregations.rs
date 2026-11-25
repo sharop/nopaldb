@@ -165,6 +165,9 @@ pub fn has_algorithm_projections(projections: &[Projection]) -> bool {
 }
 
 fn is_aggregation_or_algorithm_expr(expr: &Expression) -> bool {
+    if expr.is_path_call() {
+        return false;
+    }
     match expr {
         Expression::FunctionCall { name, .. } => {
             if matches!(name.as_str(), "count" | "sum" | "avg" | "min" | "max") {

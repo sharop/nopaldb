@@ -48,6 +48,12 @@ class NeighborhoodResult(TypedDict):
     score: dict[str, float]
     truncated: bool
 
+# `Graph.shortest_path` (0.11.4): edges[i] joins nodes[i] and nodes[i + 1].
+class PathResult(TypedDict):
+    nodes: list[NodeDict]
+    edges: list[EdgeDict]
+    length: int
+
 # A KNN hit with `hydrate=True`.
 class KnnHit(TypedDict):
     node_id: str
@@ -264,6 +270,14 @@ class Graph:
         seed_weights: Optional[dict[str, float]] = None,
         within: Optional[list[str]] = None,
     ) -> NeighborhoodResult: ...
+    def shortest_path(
+        self,
+        a: str,
+        b: str,
+        edge_types: Optional[list[str]] = None,
+        direction: str = "out",
+        max_depth: Optional[int] = None,
+    ) -> Optional[PathResult]: ...
 
     # ── Idempotent upsert (M1-4) ────────────────────────────────────
     def upsert(

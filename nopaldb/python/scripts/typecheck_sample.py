@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from nopaldb import Graph
 
 if TYPE_CHECKING:  # type-only names: they exist in the stub, not at runtime
-    from nopaldb.nopaldb import BulkLoadStats, IndexStats, NeighborhoodResult, NodeDict, Stats
+    from nopaldb.nopaldb import BulkLoadStats, IndexStats, NeighborhoodResult, NodeDict, PathResult, Stats
 
 
 def main() -> None:
@@ -56,6 +56,13 @@ def main() -> None:
     around: list[NodeDict] = graph.neighbors(a, direction="both")
     deg: int = graph.degree(a)
     print(node and node["label"], len(many), nb["truncated"], len(around), deg)
+    # Shortest path with its edges (0.11.4): Optional, so check before use.
+    path: PathResult | None = graph.shortest_path(a, b, edge_types=["LINKS"], max_depth=3)
+    assert path is not None and path["length"] == 1 and path["edges"][0]["id"] == eid
+    print(path["nodes"][0]["id"] == a, graph.shortest_path(b, a))
+    # The same path from NQL: one row per pair, the path as a dict (#416).
+    rows = list(graph.execute_nql('find path(a, b) as p from (a:Chunk {key: "note:c"}), (b:Chunk {key: "note:d"})'))
+    assert rows[0]["p"]["length"] == 1 and rows[0]["p"]["edges"][0]["id"] == eid, rows
 
     # Counts and stats.
     n: int = graph.node_count()

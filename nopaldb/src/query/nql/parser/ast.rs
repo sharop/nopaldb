@@ -780,13 +780,31 @@ impl Expression {
     /// agregaciones, semánticamente NO son agregaciones — son válidas en WHERE
     /// y en proyecciones non-aggregated.
     pub fn is_algorithm(&self) -> bool {
-        matches!(
-            self,
-            Expression::FunctionCall { name, .. }
-                if matches!(name.to_lowercase().as_str(),
-                    "pagerank" | "betweenness" | "clustering" | "degree"
-                    | "community" | "community_fast" | "leiden" | "shortestpath")
-        )
+        !self.is_path_call()
+            && matches!(
+                self,
+                Expression::FunctionCall { name, .. }
+                    if matches!(name.to_lowercase().as_str(),
+                        "pagerank" | "betweenness" | "clustering" | "degree"
+                        | "community" | "community_fast" | "leiden" | "shortestpath")
+            )
+    }
+
+    /// `path(a, b, …)` o `shortestPath(a, b, …)` sobre variables del `FROM`
+    /// (#416, 0.11.4): un valor por fila, del camino entre los dos nodos de
+    /// esa fila. `shortestPath("uuid", "uuid")` con literales sigue siendo el
+    /// algoritmo de antes, que se calcula una vez para la consulta.
+    pub fn is_path_call(&self) -> bool {
+        match self {
+            Expression::FunctionCall { name, args } => {
+                name == "path"
+                    || (name.eq_ignore_ascii_case("shortestpath")
+                        && args.iter().any(|a| {
+                            !matches!(a, Expression::Literal(PropertyValue::String(_)) | Expression::NamedArg { .. })
+                        }))
+            }
+            _ => false,
+        }
     }
 }
 
@@ -815,6 +833,8 @@ pub(crate) const NQL_FUNCTIONS: &[&str] = &[
     // Per-node algorithms.
     "pagerank", "betweenness", "clustering", "degree", "community", "community_fast", "leiden",
     "shortestPath",
+    // Path between the two nodes of a row: `path(a, b)` (#416).
+    "path",
     // Ontology.
     "instanceOf", "subClassOf",
     // Search and communities.
