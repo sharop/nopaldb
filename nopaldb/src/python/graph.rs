@@ -1019,7 +1019,9 @@ impl PyGraph {
     ///     label (str): The node label
     ///
     /// Returns:
-    ///     int: Number of nodes with this label
+    ///     int: Number of nodes with this label. Since 0.11.5 class nodes
+    ///     (an RDF `owl:Class` imported as `Felino`) are not counted, as
+    ///     `(n:Felino)` in NQL leaves them out (#411).
     ///
     /// Example:
     ///     >>> count = graph.get_label_count("Person")

@@ -45,8 +45,13 @@ pub struct SchemaInfo {
     /// Properties per edge type
     pub edge_properties: HashMap<String, HashSet<String>>,
 
-    /// Node count per label
+    /// Node count per label, class nodes included (`NodeKind::Class`).
     pub node_counts: HashMap<String, usize>,
+
+    /// Class nodes per label (#411, 0.11.5): `get_label_count` and
+    /// `nodes_per_label` subtract them, like `(n:Label)` leaves them out.
+    #[serde(default)]
+    pub class_counts: HashMap<String, usize>,
 
     /// Edge count per type
     pub edge_counts: HashMap<String, usize>,
@@ -104,6 +109,31 @@ impl SchemaInfo {
         self.total_nodes += 1;
     }
 
+    /// Nodes of `label` without the class nodes (#411): what `(n:Label)` reads.
+    pub fn instance_count(&self, label: &str) -> usize {
+        let all = self.node_counts.get(label).copied().unwrap_or(0);
+        all.saturating_sub(self.class_counts.get(label).copied().unwrap_or(0))
+    }
+
+    fn increment_class_count(&mut self, node: &Node) {
+        if node.kind == crate::types::NodeKind::Class {
+            *self.class_counts.entry(node.label.clone()).or_insert(0) += 1;
+        }
+    }
+
+    /// `false` if a class node is removed that was never counted.
+    fn decrement_class_count(&mut self, node: &Node) -> bool {
+        if node.kind != crate::types::NodeKind::Class {
+            return true;
+        }
+        let Some(c) = self.class_counts.get_mut(&node.label) else { return false };
+        *c = c.saturating_sub(1);
+        if *c == 0 {
+            self.class_counts.remove(&node.label);
+        }
+        true
+    }
+
     /// Increment edge count for a type
     pub fn increment_edge_count(&mut self, edge_type: &str) {
         *self.edge_counts.entry(edge_type.to_string()).or_insert(0) += 1;
@@ -150,14 +180,15 @@ impl SchemaInfo {
     /// escribe el registro antes de que el apply lo mire, así que el booleano
     /// mentiría; el par no. Idempotente: `old == new` es delta cero.
     pub fn apply_node_upsert(&mut self, old: Option<&Node>, new: &Node) -> bool {
-        let mut ok = true;
+        let mut ok = old.is_none_or(|o| self.decrement_class_count(o));
+        self.increment_class_count(new);
         match old {
             None => {
                 self.add_node_label(new.label.clone());
                 self.increment_node_count(&new.label);
             }
             Some(o) if o.label != new.label => {
-                ok = self.decrement_node_count(&o.label);
+                ok &= self.decrement_node_count(&o.label);
                 self.add_node_label(new.label.clone());
                 self.increment_node_count(&new.label);
             }
@@ -172,7 +203,7 @@ impl SchemaInfo {
     /// Delta de una baja de nodo (sus aristas incidentes se descuentan
     /// aparte, por tipo, desde la purga de adyacencia).
     pub fn apply_node_delete(&mut self, node: &Node) -> bool {
-        self.decrement_node_count(&node.label)
+        self.decrement_class_count(node) & self.decrement_node_count(&node.label)
     }
 
     /// Delta de una alta o sobrescritura de arista; ver [`Self::apply_node_upsert`].
@@ -205,7 +236,10 @@ impl SchemaInfo {
 /// Versión del blob persistido (`META_SCHEMA_SNAPSHOT`). Un formato
 /// desconocido se descarta y el esquema se reconstruye: nunca es un error de
 /// apertura.
-pub(crate) const SCHEMA_SNAPSHOT_FORMAT: u32 = 1;
+///
+/// 2 (0.11.5, #411): `class_counts`. Un blob de formato 1 no los tiene, así
+/// que al abrir se reconstruye una vez en lugar de tomarlos como cero.
+pub(crate) const SCHEMA_SNAPSHOT_FORMAT: u32 = 2;
 
 /// Lo que va al keyspace de metadatos en cada checkpoint: MessagePack, como
 /// los valores del KV.
@@ -311,6 +345,7 @@ impl SchemaManager {
             let label = node.label.clone();
             info.add_node_label(label.clone());
             info.increment_node_count(&label);
+            info.increment_class_count(&node);
             for key in node.properties.keys() {
                 info.add_node_property(&label, key.clone());
             }

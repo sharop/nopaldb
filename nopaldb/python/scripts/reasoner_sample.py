@@ -63,7 +63,8 @@ def in_memory() -> None:
 
 
 def class_id(g: nopaldb.Graph, label: str) -> str:
-    rows = list(g.execute_nql(f"find c.id from (c:{label})"))
+    # `(c:Label)` reads the instances; the class node is asked for (0.11.5).
+    rows = list(g.execute_nql(f"find c.id from (c:{label}) where is_class(c)"))
     assert len(rows) == 1, (label, rows)
     return str(rows[0]["c.id"])
 

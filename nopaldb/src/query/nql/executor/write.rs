@@ -19,6 +19,7 @@ use crate::Transaction;
 // Import result types from result.rs
 use super::result::{AddResult, DeleteResult, UpdateResult};
 use super::operators;
+use super::ClassRule;
 use super::value_ops;
 
 
@@ -221,7 +222,7 @@ impl<'a> WriteExecutor<'a> {
         delete: &DeleteStmt,
         tx: &mut Transaction,
     ) -> Result<DeleteResult> {
-        let nodes = self.match_nodes_by_pattern(&delete.pattern).await?;
+        let nodes = self.match_nodes_by_pattern(&delete.pattern, &class_rule(&delete.filter)).await?;
 
         let filtered = if let Some(filter) = &delete.filter {
             let mut kept = Vec::with_capacity(nodes.len());
@@ -268,7 +269,8 @@ impl<'a> WriteExecutor<'a> {
         let (source, rel, target, source_var, target_var) =
             self.extract_pattern_parts(&delete.pattern)?;
 
-        let matches = operators::execute_one_hop_pattern(self.graph, source, rel, target).await?;
+        let matches =
+            operators::execute_one_hop_pattern_with(self.graph, source, rel, target, &class_rule(&delete.filter)).await?;
 
         // Apply WHERE filter
         let filtered: Vec<_> = if let Some(filter) = &delete.filter {
@@ -462,7 +464,7 @@ impl<'a> WriteExecutor<'a> {
         update: &UpdateStmt,
         tx: &mut Transaction,
     ) -> Result<UpdateResult> {
-        let nodes = self.match_nodes_by_pattern(&update.pattern).await?;
+        let nodes = self.match_nodes_by_pattern(&update.pattern, &class_rule(&update.filter)).await?;
 
         let filtered = if let Some(filter) = &update.filter {
             let mut kept = Vec::with_capacity(nodes.len());
@@ -500,7 +502,8 @@ impl<'a> WriteExecutor<'a> {
         let (source, rel, target, source_var, target_var) =
             self.extract_pattern_parts(&update.pattern)?;
 
-        let matches = operators::execute_one_hop_pattern(self.graph, source, rel, target).await?;
+        let matches =
+            operators::execute_one_hop_pattern_with(self.graph, source, rel, target, &class_rule(&update.filter)).await?;
 
         let filtered: Vec<_> = if let Some(filter) = &update.filter {
             let mut kept = Vec::with_capacity(matches.len());
@@ -672,12 +675,13 @@ impl<'a> WriteExecutor<'a> {
         Ok((source, rel, target, source_var, target_var))
     }
 
-    /// The nodes a single-node DELETE/UPDATE touches: those of the label
+    /// The nodes a single-node DELETE/UPDATE touches (a labeled pattern
+    /// leaves class nodes out unless the `where` asks about them, #411): those of the label
     /// that hold every inline property, as `find` with the same pattern and
     /// the one-hop form (`execute_one_hop_pattern`). Until 0.10.17 the inline
     /// properties were ignored here, so `delete (n {k: "a"})` deleted every
     /// node, and `update (n:N {k: "a"}) set ...` changed every `N`.
-    async fn match_nodes_by_pattern(&self, pattern: &Pattern) -> Result<Vec<Node>> {
+    async fn match_nodes_by_pattern(&self, pattern: &Pattern, rule: &ClassRule) -> Result<Vec<Node>> {
         if pattern.elements.is_empty() {
             return Ok(vec![]);
         }
@@ -690,7 +694,8 @@ impl<'a> WriteExecutor<'a> {
                     self.graph.get_all_nodes().await?
                 };
                 nodes.retain(|n| {
-                    node_pattern.properties.iter().all(|(k, v)| n.properties.get(k) == Some(v))
+                    rule.admits_pattern(node_pattern, n)
+                        && node_pattern.properties.iter().all(|(k, v)| n.properties.get(k) == Some(v))
                 });
                 Ok(nodes)
             }
@@ -706,6 +711,7 @@ impl<'a> WriteExecutor<'a> {
             Expression::Literal(v) => Ok(Some(v.clone())),
             // The pattern has one variable: every property is of `node`.
             Expression::Property { property, .. } => Ok(node_field(node, property)),
+            e if super::is_class_call(e).is_some() => Ok(Some(PropertyValue::Bool(node.kind == crate::types::NodeKind::Class))),
             other => Err(operators::unsupported_here(other)),
         })
     }
@@ -801,4 +807,10 @@ fn node_field(node: &Node, property: &str) -> Option<PropertyValue> {
         "label" => Some(PropertyValue::String(node.label.clone())),
         p => node.properties.get(p).cloned(),
     }
+}
+
+/// `delete (n:Felino)` / `update (n:Felino)` no tocan el nodo de la clase
+/// (#411), salvo que el `where` pregunte por ella (`is_class(n)`).
+fn class_rule(filter: &Option<crate::query::nql::parser::ast::WhereClause>) -> ClassRule {
+    ClassRule::of(filter.iter().map(|f| &f.condition))
 }

@@ -1844,6 +1844,8 @@ impl Graph {
     /// Get all nodes with label filter (for query executor)
     ///
     /// Usa el índice de etiquetas (#207): lee solo los nodos de `label`.
+    /// Lectura cruda: incluye los nodos de clase, que `(n:Label)` en NQL y
+    /// `get_label_count` dejan fuera (#411).
     pub async fn get_nodes_by_label(&self, label: &str) -> Result<Vec<Node>> {
         self.storage.get_nodes_by_label(label).await
     }
@@ -4400,6 +4402,10 @@ impl Graph {
 
     /// Get node count for a specific label
     ///
+    /// Since 0.11.5 (#411) class nodes (`NodeKind::Class`) are not counted:
+    /// after an RDF import the class `zoo:Felino` has the label `Felino`, like
+    /// its instances, and this is the count of `(n:Felino)`, the instances.
+    ///
     /// # Arguments
     /// * `label` - The node label to count
     ///
@@ -4414,7 +4420,7 @@ impl Graph {
     /// # }
     /// ```
     pub async fn get_label_count(&self, label: &str) -> Result<usize> {
-        self.schema_manager.with_info(self, |s| s.node_counts.get(label).copied().unwrap_or(0)).await
+        self.schema_manager.with_info(self, |s| s.instance_count(label)).await
     }
 
     /// Get all properties for a specific edge type
@@ -5221,7 +5227,9 @@ impl Graph {
                 let mut stats = GraphStats::new();
                 stats.total_nodes = schema.total_nodes;
                 stats.total_edges = schema.total_edges;
-                stats.nodes_per_label = schema.node_counts.clone();
+                // Sin los nodos de clase, como `get_label_count` (#411).
+                stats.nodes_per_label =
+                    schema.node_counts.keys().map(|l| (l.clone(), schema.instance_count(l))).collect();
                 stats.edges_per_type = schema.edge_counts.clone();
                 if stats.total_nodes > 0 {
                     stats.avg_degree = stats.total_edges as f64 / stats.total_nodes as f64;

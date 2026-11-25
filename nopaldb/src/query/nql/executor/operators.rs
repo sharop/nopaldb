@@ -263,7 +263,21 @@ pub async fn execute_one_hop_pattern(
     rel: &crate::query::nql::parser::ast::RelationshipPattern,
     target: &crate::query::nql::parser::ast::NodePattern,
 ) -> Result<Vec<PatternMatch>> {
-    let source_stream = Box::new(ScanNodesStream::new(Arc::new(graph.clone()), source.label.clone(), 512));
+    execute_one_hop_pattern_with(graph, source, rel, target, &super::ClassRule::default()).await
+}
+
+/// [`execute_one_hop_pattern`] con las variables que admiten nodos de clase
+/// (#411): las que el `where` del DELETE/UPDATE pregunta con `is_class`.
+pub(crate) async fn execute_one_hop_pattern_with(
+    graph: &Graph,
+    source: &crate::query::nql::parser::ast::NodePattern,
+    rel: &crate::query::nql::parser::ast::RelationshipPattern,
+    target: &crate::query::nql::parser::ast::NodePattern,
+    classes: &super::ClassRule,
+) -> Result<Vec<PatternMatch>> {
+    let scan = Box::new(ScanNodesStream::new(Arc::new(graph.clone()), source.label.clone(), 512));
+    let (rule, pattern) = (classes.clone(), source.clone());
+    let source_stream = Box::new(FilterNodesStream::new(scan, move |n| Ok(rule.admits_pattern(&pattern, n))));
     let mut traversal = TraverseStream::new(
         graph,
         source_stream,
@@ -272,7 +286,8 @@ pub async fn execute_one_hop_pattern(
         target.properties.clone(),
     )
     .with_edge_properties(rel.properties.clone())
-    .with_direction(rel.direction.clone());
+    .with_direction(rel.direction.clone())
+    .with_target_classes(classes.includes(target.variable.as_deref()));
 
     let mut matches = Vec::new();
     while let Some(m) = traversal.next().await? {
@@ -305,6 +320,9 @@ pub struct TraverseStream<'a> {
     /// recorrían las aristas salientes hacia `edge.target`, así que
     /// `(e)<-[:T]-(c)` no devolvía nada y `(c)<-[:T]-(e)` devolvía filas.
     direction: crate::query::nql::parser::ast::Direction,
+    /// Si un destino con etiqueta puede ser un nodo de clase (#411): solo
+    /// cuando la consulta pregunta por su clase.
+    target_classes: bool,
     current_source: Option<Node>,
     edge_iter: Option<std::vec::IntoIter<Edge>>,
 }
@@ -325,6 +343,7 @@ impl<'a> TraverseStream<'a> {
             target_properties,
             edge_properties: HashMap::new(),
             direction: crate::query::nql::parser::ast::Direction::Outgoing,
+            target_classes: false,
             current_source: None,
             edge_iter: None,
         }
@@ -339,6 +358,12 @@ impl<'a> TraverseStream<'a> {
     /// Sentido de la flecha: `->` (por defecto), `<-` o `<->`.
     pub fn with_direction(mut self, direction: crate::query::nql::parser::ast::Direction) -> Self {
         self.direction = direction;
+        self
+    }
+
+    /// Admite nodos de clase como destino con etiqueta (#411; por defecto no).
+    pub fn with_target_classes(mut self, classes: bool) -> Self {
+        self.target_classes = classes;
         self
     }
 }
@@ -367,7 +392,12 @@ impl<'a> PatternMatchStream for TraverseStream<'a> {
                         }
                     };
                     if let Ok(target) = self.graph.get_node(other).await {
-                        if let Some(tl) = &self.target_label && target.label != *tl { continue; }
+                        if let Some(tl) = &self.target_label
+                            && (target.label != *tl
+                                || (!self.target_classes && target.kind == crate::types::NodeKind::Class))
+                        {
+                            continue;
+                        }
                         // Filtrar por propiedades inline del nodo destino, e.g. (b {active: true})
                         if !self.target_properties.is_empty()
                             && self.target_properties.iter().any(|(k, v)| target.properties.get(k) != Some(v))
@@ -569,6 +599,10 @@ fn node_leaf(node: &Node, expr: &Expression, expected_var: &str) -> crate::error
         {
             Ok(Some(PropertyValue::Bool(false)))
         }
+        e if super::is_class_call(e).is_some() => {
+            let Some(var) = super::is_class_call(e) else { unreachable!() };
+            Ok((var == expected_var).then(|| PropertyValue::Bool(node.kind == crate::types::NodeKind::Class)))
+        }
         e if is_seeded_predicate(e) => Ok(Some(PropertyValue::Bool(true))),
         other => Err(unsupported_here(other)),
     }
@@ -620,6 +654,11 @@ fn pattern_leaf(m: &PatternMatch, expr: &Expression, source_var: &str, target_va
             if property == "label" { return Ok(Some(PropertyValue::String(node.label.clone()))); }
             if property == "id" { return Ok(Some(PropertyValue::String(node.id.to_string()))); }
             node.properties.get(property).cloned()
+        }
+        e if super::is_class_call(e).is_some() => {
+            let Some(var) = super::is_class_call(e) else { unreachable!() };
+            let node = if var == source_var { &m.source } else if var == target_var { &m.target } else { return Ok(None) };
+            Some(PropertyValue::Bool(node.kind == crate::types::NodeKind::Class))
         }
         e if is_seeded_predicate(e) => Some(PropertyValue::Bool(true)),
         other => return Err(unsupported_here(other)),
