@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.11.5] - unreleased
+## [0.11.5] - 2026-11-25
 
 Un patrón con etiqueta ya no mezcla el esquema con los datos (#411). Cambia
 resultados: `(n:Felino)` deja de devolver el nodo de la clase `Felino` en
