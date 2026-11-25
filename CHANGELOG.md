@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.11.4] - unreleased
+## [0.11.4] - 2026-11-25
 
 ### Added
 - **Camino más corto con nodos y aristas** (#416):
