@@ -2103,6 +2103,16 @@ impl Graph {
         Ok(Some(PastGraph { graph, timestamp, nodes, edges }))
     }
 
+    /// Ejecuta una consulta Cypher de solo lectura (feature `cypher`).
+    ///
+    /// La traduce a NQL con [`crate::query::cypher::to_nql`] y la ejecuta
+    /// con [`Graph::execute_nql`]; lo que Cypher tiene y NQL no (escrituras,
+    /// `OPTIONAL MATCH`, `WITH`, parámetros…) es un error que lo nombra.
+    #[cfg(feature = "cypher")]
+    pub async fn execute_cypher(&self, cypher: &str) -> Result<crate::query::nql::QueryResult> {
+        self.execute_nql(&crate::query::cypher::to_nql(cypher)?).await
+    }
+
     /// Execute NQL query string (backward-compatible, FIND queries only)
     ///
     /// For full statement support (ADD, DELETE, UPDATE, CREATE INDEX, etc.),

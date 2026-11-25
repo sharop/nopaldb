@@ -4,6 +4,8 @@
 
 > What a query **means** (rows per path, which rows a search ranks, order of evaluation, what is exact) is specified in [NQL semantics](../NQL_SEMANTICS.md). This page is the syntax.
 
+> Coming from Cypher? With the `cypher` feature, `Graph::execute_cypher` reads `MATCH … WHERE … RETURN …` and translates it to NQL: [Read-only Cypher](../CYPHER.md) has the table of what maps to what.
+
 ---
 
 ## Table of Contents

@@ -259,6 +259,7 @@ nopaldb = "0.11"
 nopaldb = { version = "0.11", features = ["core"] }        # analytics + ML + algorithms + hypergraph + embeddings/HNSW + full-text + hybrid
 nopaldb = { version = "0.11", features = ["semantic"] }     # + OWL reasoner + SHACL
 nopaldb = { version = "0.11", features = ["full"] }         # complete feature set (includes full-isolation)
+nopaldb = { version = "0.11", features = ["full", "cypher"] } # + read-only Cypher, translated to NQL (docs/CYPHER.md)
 ```
 
 #### Python
@@ -593,6 +594,7 @@ nopaldb = "0.11"
 nopaldb = { version = "0.11", features = ["core"] }        # analytics + ML + algoritmos + hipergrafos + embeddings/HNSW + full-text + híbrida
 nopaldb = { version = "0.11", features = ["semantic"] }     # + reasoner OWL + SHACL
 nopaldb = { version = "0.11", features = ["full"] }         # conjunto completo (incluye full-isolation)
+nopaldb = { version = "0.11", features = ["full", "cypher"] } # + Cypher de solo lectura, traducido a NQL (docs/es/CYPHER.md)
 ```
 
 #### Python

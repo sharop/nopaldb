@@ -25,7 +25,8 @@ jobs:
           echo "MSRV=$MSRV" >> "$GITHUB_ENV"
           rustup toolchain install "$MSRV" --profile minimal
       - name: Check with the minimum supported Rust
-        run: cargo +"$MSRV" check -p nopaldb --features full
+        # `cypher` no está en `full`; open-cypher pide 1.88.
+        run: cargo +"$MSRV" check -p nopaldb --features full,cypher
 
   build-test:
     runs-on: ubuntu-latest
@@ -88,6 +89,14 @@ jobs:
 
       - name: Clippy (semantic)
         run: cargo clippy -p nopaldb --features semantic -- -D warnings
+
+      # Cypher de solo lectura (feature `cypher`, fuera de `full`): ningún
+      # otro paso la compila.
+      - name: Cypher (read-only, translated to NQL)
+        run: |
+          cargo clippy -p nopaldb --features cypher -- -D warnings
+          cargo test -p nopaldb --features cypher --test cypher_read_only_test
+          cargo test -p nopaldb --features cypher --doc cypher
 
       - name: Test core tier
         run: cargo test -p nopaldb --features core --lib

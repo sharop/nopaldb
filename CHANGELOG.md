@@ -38,6 +38,18 @@ las bases con clases (RDF importado o `NodeKind::Class` creados a mano).
   es también lo que deja a `(n:Label)` admitir clases para esa variable:
   `where is_class(n)` da solo la clase, `where not is_class(n)` solo las
   instancias, `where is_class(n) or …` ambas.
+- **Cypher de solo lectura** (feature `cypher`, apagada por defecto y fuera
+  de `full`). `Graph::execute_cypher` lee `MATCH … WHERE … RETURN … ORDER BY
+  … SKIP … LIMIT` y `query::cypher::to_nql` da el NQL equivalente, que corre
+  por el mismo validador y ejecutor. El parser es `open-cypher` 0.5.0 (pin
+  exacto). Patrones con una etiqueta, propiedades literales, tipos y
+  uniones `:A|B`, las tres direcciones y largo variable acotado; `IS [NOT]
+  NULL`, `IN`, aritmética, `count/sum/avg/min/max`, `id`, `type`, `DISTINCT`
+  y agrupación implícita. Lo demás (escrituras, `OPTIONAL MATCH`, `WITH`,
+  `UNWIND`, `UNION`, parámetros, funciones sin equivalente) es un error que
+  cita la parte rechazada. Tabla y diferencias con Cypher (lógica de dos
+  valores ante propiedades ausentes, `RETURN n` como columnas, `sum` de
+  enteros flotante) en `docs/CYPHER.md`.
 
 ## [0.11.4] - 2026-11-25
 
