@@ -759,6 +759,9 @@ fn path_embedding_projection_key(name: &str, args: &[Expression]) -> Result<Stri
 pub struct Executor<'a> {
     graph: &'a Graph,
     path_profile: Mutex<Option<PathProfileCounters>>,
+    /// Qué variables con etiqueta admiten nodos de clase (#411). Lo fija
+    /// `execute` con la consulta entera.
+    class_rule: std::sync::RwLock<ClassRule>,
     /// Scores de cada candidato de la búsqueda vectorial del WHERE de la
     /// consulta en curso, para proyectar `score(var)` (#174c) y, desde #228,
     /// `rank(var)`, `text_score(var)` y `vector_score(var)`. Lo llena
@@ -984,12 +987,18 @@ impl<'a> Executor<'a> {
             search_scores: Mutex::new(HashMap::new()),
             #[cfg(feature = "embeddings-index")]
             pattern_universe: Mutex::new(None),
+            class_rule: std::sync::RwLock::new(ClassRule::default()),
         }
+    }
+
+    fn class_rule(&self) -> ClassRule {
+        self.class_rule.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Execute NQL query
     pub async fn execute(&self, query: Query) -> Result<QueryResult> {
         let query = name_projections(query);
+        *self.class_rule.write().unwrap_or_else(|e| e.into_inner()) = ClassRule::of_query(&query);
         // The schema rules are checked on the projection as written, before
         // computed columns are split into their leaves.
         crate::query::nql::validator::check_result_schema(&query)?;
@@ -1161,6 +1170,15 @@ impl<'a> Executor<'a> {
         // `similar_to`/`hybrid` evalúan a `true` aquí: los candidatos ya son
         // exactamente los suyos (ver `vector_search_candidates`).
         let mut final_node_stream = nodes_stream;
+        // #411: `(n:Felino)` no admite el nodo de la clase `Felino`.
+        if let Some(PatternElement::Node(pattern)) = query.from.patterns.first().and_then(|p| p.elements.first())
+            && pattern.label.is_some()
+        {
+            let (rule, pattern) = (self.class_rule(), pattern.clone());
+            final_node_stream = Box::new(operators::FilterNodesStream::new(final_node_stream, move |n| {
+                Ok(rule.admits_pattern(&pattern, n))
+            }));
+        }
 
         // Bug 1 fix: en single-node queries, separar WHERE algo-bearing
         // predicates (que necesitan algo cache) de los stream-time predicates.
@@ -1642,6 +1660,7 @@ impl<'a> Executor<'a> {
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|n| source_pattern.label.as_deref().is_none_or(|l| l == n.label))
+                .filter(|n| self.class_rule().admits_pattern(source_pattern, n))
                 .collect();
             log::info!("🚀 Pattern pipeline seeded by vector search: {} nodes", nodes.len());
             return Ok(Box::new(operators::VecNodesStream::new(nodes)));
@@ -1654,11 +1673,17 @@ impl<'a> Executor<'a> {
                 .into_iter()
                 .flatten()
                 .filter(|n| source_pattern.label.as_deref().is_none_or(|l| l == n.label))
+                .filter(|n| self.class_rule().admits_pattern(source_pattern, n))
                 .collect();
             log::info!("🚀 Pattern pipeline seeded by id: {} nodes", nodes.len());
             return Ok(Box::new(operators::VecNodesStream::new(nodes)));
         }
-        operators::scan_nodes_stream(self.graph, source_pattern.label.as_deref()).await
+        let stream = operators::scan_nodes_stream(self.graph, source_pattern.label.as_deref()).await?;
+        if source_pattern.label.is_none() {
+            return Ok(stream);
+        }
+        let (rule, pattern) = (self.class_rule(), source_pattern.clone());
+        Ok(Box::new(operators::FilterNodesStream::new(stream, move |n| Ok(rule.admits_pattern(&pattern, n)))))
     }
 
     /// Condición del WHERE que puede sembrar el conjunto de candidatos:
@@ -1734,9 +1759,13 @@ impl<'a> Executor<'a> {
     /// TODO: Implement proper filtering for complex conditions
     fn apply_remaining_filters(
         &self,
-        nodes: Vec<Node>,
+        mut nodes: Vec<Node>,
         query: &Query,
     ) -> Result<Vec<Node>> {
+        if let Some(PatternElement::Node(pattern)) = query.from.patterns.first().and_then(|p| p.elements.first()) {
+            let rule = self.class_rule();
+            nodes.retain(|n| rule.admits_pattern(pattern, n));
+        }
         let root_variable = query.from.patterns.first()
             .and_then(|p| p.elements.first())
             .and_then(|e| match e {
@@ -1847,7 +1876,8 @@ impl<'a> Executor<'a> {
                 target_pattern.properties.clone(),
             )
             .with_edge_properties(rel_pattern.properties.clone())
-            .with_direction(rel_pattern.direction.clone()),
+            .with_direction(rel_pattern.direction.clone())
+            .with_target_classes(self.class_rule().includes(target_pattern.variable.as_deref())),
         );
 
         // 3. Resolve pattern variables (with fallback inference for parser edge cases).
@@ -3645,6 +3675,9 @@ impl<'a> Executor<'a> {
             && node.label != *label {
                 return false;
             }
+        if !self.class_rule().admits_pattern(pattern, node) {
+            return false;
+        }
 
         for (key, expected) in &pattern.properties {
             match node.properties.get(key) {
@@ -3707,6 +3740,10 @@ impl<'a> Executor<'a> {
                 }
 
                 Ok(None)
+            }
+            e if is_class_call(e).is_some() => {
+                let Some(var) = is_class_call(e) else { unreachable!() };
+                Ok(binding.node_vars.get(var).map(|n| PropertyValue::Bool(n.kind == crate::types::NodeKind::Class)))
             }
             e if operators::is_seeded_predicate(e) => Ok(Some(PropertyValue::Bool(true))),
             other => Err(operators::unsupported_here(other)),
@@ -4781,6 +4818,11 @@ impl<'a> Executor<'a> {
                 if matches!(name.to_lowercase().as_str(), "instanceof" | "subclassof") =>
             {
                 Ok(Some(PropertyValue::Bool(self.evaluate_ontology_predicate(node, name, args, variable)?)))
+            }
+            // is_class(n) (#411): lo único que mira es el tipo de nodo.
+            e if is_class_call(e).is_some() => {
+                let Some(var) = is_class_call(e) else { unreachable!() };
+                Ok((var == variable).then(|| PropertyValue::Bool(node.kind == crate::types::NodeKind::Class)))
             }
             _ => self.evaluate_expression(node, expr, variable),
         }
@@ -7912,6 +7954,83 @@ fn early_limit(query: &Query) -> Option<usize> {
 /// Si la consulta agrega: una agregación en `find` o un `group by`.
 fn is_aggregate_query(query: &Query) -> bool {
     has_aggregations(&query.find.projections) || query.group_by.is_some()
+}
+
+/// Qué nodos de clase admite cada patrón con etiqueta (#411). Al importar
+/// RDF, la clase `zoo:Felino` lleva la etiqueta `Felino`, la misma que sus
+/// instancias, así que `(n:Felino)` mezclaba el esquema con los datos. Desde
+/// 0.11.5 un patrón con etiqueta no admite nodos `NodeKind::Class`, salvo que
+/// la consulta pregunte por la clase de esa variable: `is_class(n)` o
+/// `subClassOf(n, …)` en el `where` o el `having` (también bajo `or`/`not`);
+/// `path_*_subClassOf(…)` pregunta por las clases del camino y las admite en
+/// todas las variables. Sin etiqueta, `(n)`, no cambia nada. La regla mira
+/// `node.kind`, no el importador: vale igual para una clase creada a mano.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ClassRule {
+    with_classes: HashSet<String>,
+    /// `path_*_subClassOf(…)` pregunta por las clases del camino: todas las
+    /// variables las admiten.
+    all: bool,
+}
+
+impl ClassRule {
+    pub(crate) fn of<'e>(conditions: impl IntoIterator<Item = &'e Expression>) -> Self {
+        fn collect(expr: &Expression, rule: &mut ClassRule) {
+            match expr {
+                Expression::FunctionCall { name, args } => {
+                    let lower = name.to_lowercase();
+                    if lower.starts_with("path_") && lower.ends_with("_subclassof") {
+                        rule.all = true;
+                    }
+                    if (lower == "is_class" || lower == "subclassof")
+                        && let Some(Expression::Property { variable, property }) = args.first()
+                        && property.is_empty()
+                    {
+                        rule.with_classes.insert(variable.clone());
+                    }
+                    args.iter().for_each(|a| collect(a, rule));
+                }
+                Expression::BinaryOp { left, right, .. } => {
+                    collect(left, rule);
+                    collect(right, rule);
+                }
+                Expression::UnaryOp { expr, .. } => collect(expr, rule),
+                _ => {}
+            }
+        }
+        let mut rule = Self::default();
+        conditions.into_iter().for_each(|c| collect(c, &mut rule));
+        rule
+    }
+
+    /// Para una consulta `find`.
+    pub(crate) fn of_query(query: &Query) -> Self {
+        Self::of(query.filter.iter().map(|f| &f.condition).chain(query.having.iter().map(|h| &h.condition)))
+    }
+
+    /// Si la variable pidió las clases (`is_class(n)`, `subClassOf(n, …)`).
+    pub(crate) fn includes(&self, variable: Option<&str>) -> bool {
+        self.all || variable.is_some_and(|v| self.with_classes.contains(v))
+    }
+
+    pub(crate) fn admits(&self, label: Option<&str>, variable: Option<&str>, node: &Node) -> bool {
+        label.is_none() || node.kind != crate::types::NodeKind::Class || self.includes(variable)
+    }
+
+    pub(crate) fn admits_pattern(&self, pattern: &NodePattern, node: &Node) -> bool {
+        self.admits(pattern.label.as_deref(), pattern.variable.as_deref(), node)
+    }
+}
+
+/// `is_class(n)` (#411): la variable que pregunta, si `expr` es esa llamada.
+pub(crate) fn is_class_call(expr: &Expression) -> Option<&str> {
+    match expr {
+        Expression::FunctionCall { name, args } if name.eq_ignore_ascii_case("is_class") => match args.as_slice() {
+            [Expression::Property { variable, property }] if property.is_empty() => Some(variable),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Una llamada `path(a, b, …)` o `shortestPath(a, b, …)` de `find` (#416):

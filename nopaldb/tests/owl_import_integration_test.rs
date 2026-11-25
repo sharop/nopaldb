@@ -43,9 +43,10 @@ async fn test_import_owl_via_graph_method() {
     let student_nodes = graph.get_nodes_by_label("Student").await.unwrap();
     assert_eq!(student_nodes.len(), 1);
 
-    // NQL: query class nodes
+    // NQL: query class nodes; a labeled pattern asks for them with
+    // `is_class(p)` (#411), without it `(p:Person)` reads the instances.
     let result = graph
-        .execute_nql("find p.label from (p:Person)")
+        .execute_nql("find p.label from (p:Person) where is_class(p)")
         .await
         .unwrap();
     assert!(!result.rows.is_empty(), "NQL query should return Person nodes");

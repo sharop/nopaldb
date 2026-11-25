@@ -76,6 +76,7 @@ Las relaciones conectan nodos. La dirección de la flecha importa.
 - `-[:COLABORA]-` y `--`: también cualquier dirección, como en Cypher.
 - Las puntas no pueden encontrarse: `->[]<-`, `->[]-` y `-[]<-` son error de parseo. (`-> [:T] ->` y `<- [:T] <-` sí valen.)
 - Longitud variable: un cuantificador después de la relación, `-[:CONOCE]->{1,3}` (de uno a tres saltos), `{2}` (exactamente dos). También va en la flecha corta, `->{1,3}`, `<->{1,3}` (0.11.1; antes solo con corchetes: `<-[]->{1,3}`). El límite superior es obligatorio. El `*1..3` de Cypher no es NQL; el error de parseo sugiere la forma NQL.
+- Nodos de clase (0.11.5, #411): un patrón con etiqueta `(n:Felino)` no admite nodos de clase (`NodeKind::Class`, p. ej. un `owl:Class` de RDF importado como `Felino`, que comparte la etiqueta con sus instancias). Se piden con `is_class(n)` en el `where`: `find n.iri from (n:Felino) where is_class(n)` da la clase, `where is_class(n) or …` ambos tipos. `subClassOf(n, …)` también los pide, y `path_*_subClassOf(…)` en todas las variables. Sin etiqueta, `(n)` admite todo, como antes. Lo mismo vale en los patrones de `delete`/`update` y en `get_label_count`; `Graph::get_nodes_by_label` (Rust) es la lectura cruda y los incluye.
 - Unión de tipos de arista: `-[:COME|PERSIGUE]->` sigue una arista de cualquiera de los tipos, con y sin cuantificador (`-[:COME|PERSIGUE]->{1,3}`); `-[r:COME|PERSIGUE]->` liga la arista y `r.type` dice cuál fue (0.11.3). Solo en lecturas: `add` y `upsert` la rechazan, porque una arista nueva tiene un tipo.
 
 ### Ejemplos de Conexiones

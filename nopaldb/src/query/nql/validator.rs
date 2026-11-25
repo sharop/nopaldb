@@ -102,6 +102,49 @@ pub(crate) fn query_expressions(query: &Query) -> Vec<&Expression> {
     exprs
 }
 
+/// `is_class(n)` (#411) is a condition on one node variable, and it is also
+/// the switch that lets `(n:Label)` match class nodes, so it goes in `where`.
+fn check_is_class(query: &Query) -> Result<()> {
+    fn calls<'e>(expr: &'e Expression, out: &mut Vec<&'e Expression>) {
+        match expr {
+            Expression::FunctionCall { name, args } => {
+                if name.eq_ignore_ascii_case("is_class") {
+                    out.push(expr);
+                }
+                args.iter().for_each(|a| calls(a, out));
+            }
+            Expression::BinaryOp { left, right, .. } => {
+                calls(left, out);
+                calls(right, out);
+            }
+            Expression::UnaryOp { expr, .. } => calls(expr, out),
+            _ => {}
+        }
+    }
+    let mut outside = Vec::new();
+    for p in &query.find.projections {
+        if let Projection::Expression { expr, .. } = p {
+            calls(expr, &mut outside);
+        }
+    }
+    query.group_by.iter().flat_map(|g| g.expressions.iter()).for_each(|e| calls(e, &mut outside));
+    query.order_by.iter().flat_map(|o| o.items.iter()).for_each(|i| calls(&i.expression, &mut outside));
+    if let Some(e) = outside.first() {
+        return Err(NopalError::SemanticError(format!("{e}: is_class(n) goes in `where`")));
+    }
+    let mut inside = Vec::new();
+    query.filter.iter().for_each(|f| calls(&f.condition, &mut inside));
+    query.having.iter().for_each(|h| calls(&h.condition, &mut inside));
+    for e in inside {
+        if crate::query::nql::executor::is_class_call(e).is_none() {
+            return Err(NopalError::SemanticError(format!(
+                "{e}: is_class takes one node variable, e.g. is_class(n)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Aggregations: N rows give one value.
 pub(crate) const AGGREGATIONS: &[&str] = &["count", "sum", "avg", "min", "max", "embedding_similarity", "knn_nodes"];
 
@@ -350,6 +393,7 @@ impl SemanticValidator {
             ));
         }
         check_known_functions(query_expressions(query))?;
+        check_is_class(query)?;
         check_result_schema(query)?;
         // Rule 1: HAVING normalmente requiere GROUP BY, EXCEPTO cuando sólo
         // referencia funciones algorítmicas (degree, pagerank, etc.) que son

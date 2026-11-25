@@ -837,6 +837,9 @@ pub(crate) const NQL_FUNCTIONS: &[&str] = &[
     "path",
     // Ontology.
     "instanceOf", "subClassOf",
+    // Whether a node is a class (`NodeKind::Class`), and the switch that lets
+    // `(n:Label)` match class nodes (#411).
+    "is_class",
     // Search and communities.
     "similar_to", "hybrid", "in_community", "has_embedding", "score", "rank", "text_score",
     "vector_score",

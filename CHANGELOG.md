@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+Un patrón con etiqueta ya no mezcla el esquema con los datos (#411). Cambia
+resultados: `(n:Felino)` deja de devolver el nodo de la clase `Felino` en
+las bases con clases (RDF importado o `NodeKind::Class` creados a mano).
+
+### Changed
+- **`(n:Label)` no admite nodos de clase** (#411). Al importar Turtle, la
+  clase `zoo:Felino` lleva el label `Felino`, el mismo que sus instancias, y
+  `find n from (n:Felino)` devolvía la clase junto con los animales. Ahora
+  un patrón con etiqueta deja fuera los nodos `NodeKind::Class`, en `find`
+  (por scan, por índice, por id, como origen o destino de un salto, en
+  cadena y con varios patrones) y en los patrones de `delete`/`update`.
+  `get_label_count` y `nodes_per_label` de `get_stats`/`stats()` cuentan lo
+  mismo. Sin etiqueta, `(n)`, nada cambia. `Graph::get_nodes_by_label` es la
+  lectura cruda y los sigue incluyendo; `upsert` sigue encontrando por su
+  índice único.
+- Si una consulta leía una clase por su label, debe pedirla: `where
+  is_class(n)`. `subClassOf(n, …)` ya la pide, así que `find c from
+  (c:Felino) where subClassOf(c, "zoo:Animal")` no cambia; tampoco
+  `path_*_subClassOf(…)`. El destino de `(i)-[:instanceOf]->(c:Felino)` es
+  una clase: necesita `is_class(c)` o quitar la etiqueta.
+- El esquema persistido pasa al formato 2 (cuenta las clases por label): al
+  abrir una base anterior se reconstruye una vez, como ya pasaba con un
+  esquema ilegible.
+
+### Added
+- **NQL `is_class(n)`** (#411): si el nodo es de clase. Va en el `where`, y
+  es también lo que deja a `(n:Label)` admitir clases para esa variable:
+  `where is_class(n)` da solo la clase, `where not is_class(n)` solo las
+  instancias, `where is_class(n) or …` ambas.
+
 ## [0.11.4] - 2026-11-25
 
 ### Added

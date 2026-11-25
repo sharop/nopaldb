@@ -76,6 +76,7 @@ Relationships connect nodes. The arrow direction matters.
 - `-[:COLLABORATES]-` and `--`: also either direction, as in Cypher.
 - Arrowheads must not point against each other: `->[]<-`, `->[]-` and `-[]<-` are parse errors. (`-> [:T] ->` and `<- [:T] <-` are fine.)
 - Variable length: a quantifier after the relationship, `-[:KNOWS]->{1,3}` (one to three hops), `{2}` (exactly two). It also goes on a short arrow, `->{1,3}`, `<->{1,3}` (0.11.1; before, only with brackets: `<-[]->{1,3}`). The bound is required. The Cypher `*1..3` is not NQL; the parse error suggests the NQL form.
+- Class nodes (0.11.5, #411): a labeled node pattern `(n:Felino)` does not match class nodes (`NodeKind::Class`, e.g. an RDF `owl:Class` imported as `Felino`, which shares its label with its instances). Ask for them with `is_class(n)` in `where`: `find n.iri from (n:Felino) where is_class(n)` gives the class, `where is_class(n) or …` both kinds. `subClassOf(n, …)` asks for them too, and `path_*_subClassOf(…)` for every variable. An unlabeled `(n)` matches everything, as before. The same holds in `delete`/`update` patterns and in `get_label_count`; `Graph::get_nodes_by_label` (Rust) is the raw read and includes them.
 - Union of edge types: `-[:EATS|CHASES]->` follows an edge of either type, with or without a quantifier (`-[:EATS|CHASES]->{1,3}`); `-[r:EATS|CHASES]->` binds the edge, and `r.type` says which one it was (0.11.3). Reads only: `add` and `upsert` reject it, since a new edge has one type.
 
 ### Connection Examples

@@ -294,7 +294,9 @@ async fn comparar(graph: &Graph, modelo: &Modelo, hasta: u64, fase: &str) {
         let esperado_nodos: BTreeMap<String, i64> = (0..N)
             .filter_map(|x| modelo.nodo(x, ts).map(|v| (nid(x).to_string(), v)))
             .collect();
-        let nql = format!("find n.id as id, n.v as v from (n:Ingrediente) at timestamp {ts}");
+        // Los ingredientes son nodos de clase: `(n:Ingrediente)` los pide con
+        // `is_class(n)` (#411).
+        let nql = format!("find n.id as id, n.v as v from (n:Ingrediente) where is_class(n) at timestamp {ts}");
         assert_eq!(filas_id_v(graph, &nql).await, esperado_nodos, "[{fase}] {nql}");
         let esperado_aristas: BTreeMap<String, i64> =
             esperado_tipo.iter().map(|(id, v)| (id.to_string(), *v)).collect();

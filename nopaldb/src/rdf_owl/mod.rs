@@ -23,7 +23,7 @@
 //!
 //! | Turtle | Graph |
 //! |--------|-------|
-//! | `:X a owl:Class` | node `X`, `NodeKind::Class`, `iri` |
+//! | `:X a owl:Class` | node `X`, `NodeKind::Class`, `iri`; it shares the label with the instances of `X`, but `(n:X)` in NQL and `get_label_count("X")` leave it out unless the query asks with `is_class(n)` or `subClassOf(n, …)` (0.11.5, #411) |
 //! | `:X rdfs:subClassOf :Y` | edge `X → Y` of type `subClassOf`, plus the taxonomy index |
 //! | `:x a :X` (every type) | node with label = local name of the **first** type, `iri`; one edge `x → X` of type `instanceOf` per type |
 //! | `:x :p :y` (resource object) | edge `x → y` of type `p` (local name), with the predicate IRI in the edge's `iri` property |
