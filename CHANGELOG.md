@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.11.3] - unreleased
+## [0.11.3] - 2026-11-25
 
 ### Added
 - **Unión de tipos de arista en NQL: `-[:A|B]->`** (#414). Una arista de
