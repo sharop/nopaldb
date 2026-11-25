@@ -665,6 +665,57 @@ impl PyGraph {
         Ok(out.into())
     }
 
+    /// Shortest path, in hops, from `a` to `b`, with its nodes AND edges
+    /// (0.11.4, #416). With several edges between the same pair, the edges
+    /// say which one the path took. Same walk and filters as `neighborhood`:
+    /// `edge_types` keeps only edges of those types, `direction` is "out",
+    /// "in" or "both", and `max_depth` caps the hops (a longer path counts as
+    /// none). Among paths of the same length it returns the first the BFS
+    /// reaches, which depends on adjacency (insertion) order. Each edge is
+    /// returned as stored: with "in" or "both" its source may be the later
+    /// node of the path. Runs with the GIL released.
+    ///
+    /// Returns:
+    ///     dict | None: {"nodes": [node dicts, a to b], "edges": [edge
+    ///     dicts, edges[i] joins nodes[i] and nodes[i+1]], "length": hops};
+    ///     None if there is no path or `a`/`b` does not exist. a == b gives
+    ///     one node, no edges, length 0.
+    ///
+    /// Example:
+    ///     >>> p = graph.shortest_path(a, b, edge_types=["KNOWS"], direction="both")
+    ///     >>> [e["type"] for e in p["edges"]] if p else None
+    #[pyo3(signature = (a, b, edge_types=None, direction="out", max_depth=None))]
+    fn shortest_path(
+        &self,
+        py: Python<'_>,
+        a: &str,
+        b: &str,
+        edge_types: Option<Vec<String>>,
+        direction: &str,
+        max_depth: Option<usize>,
+    ) -> PyResult<Option<Py<PyDict>>> {
+        let graph = self.graph()?;
+        let (a, b) = (parse_uuid(a, "a")?, parse_uuid(b, "b")?);
+        let opts = crate::PathOptions { direction: parse_direction(direction)?, edge_types, max_depth };
+        let path = to_py_result(crate::python::runtime::block_on(py, async move {
+            graph.shortest_path_between(a, b, &opts).await
+        }))?;
+        let Some(path) = path else { return Ok(None) };
+        let out = PyDict::new(py);
+        let nodes = PyList::empty(py);
+        for n in &path.nodes {
+            nodes.append(node_to_pydict(py, n)?)?;
+        }
+        let edges = PyList::empty(py);
+        for e in &path.edges {
+            edges.append(edge_to_pydict(py, e)?)?;
+        }
+        out.set_item("nodes", nodes)?;
+        out.set_item("edges", edges)?;
+        out.set_item("length", path.len())?;
+        Ok(Some(out.into()))
+    }
+
     /// Execute any NQL statement and return a unified result.
     fn execute_nql(&self, py: Python<'_>, query: &str) -> PyResult<PyNqlResult> {
         let graph = self.graph()?;

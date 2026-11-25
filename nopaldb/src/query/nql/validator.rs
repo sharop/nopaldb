@@ -929,11 +929,16 @@ impl SemanticValidator {
                 if name.eq_ignore_ascii_case("in_community") {
                     return Ok(());
                 }
+                // path(a, b, edge_types = [...], direction = "both",
+                // max_depth = 4) (#416): las valida el código que las aplica.
+                if expr.is_path_call() {
+                    return crate::query::nql::executor::validate_path_call(name, args);
+                }
                 if let Some(Expression::NamedArg { name: arg, .. }) =
                     args.iter().find(|a| matches!(a, Expression::NamedArg { .. }))
                 {
                     return Err(NopalError::SemanticError(format!(
-                        "named argument `{arg}` is not accepted by {name}(...): only similar_to(...), hybrid(...) and leiden(...) take named options"
+                        "named argument `{arg}` is not accepted by {name}(...): only similar_to(...), hybrid(...), leiden(...), path(...) and shortestPath(a, b, ...) take named options"
                     )));
                 }
                 for a in args {

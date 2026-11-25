@@ -396,7 +396,7 @@ loading and the result classes. Everything else has a one-line entry in the
 | area | methods | see |
 |---|---|---|
 | Open / close | `open_with_profile`, `in_memory_with_profile`, `close`, `with nopaldb.Graph.open(...) as g:` | [Configuration](CONFIGURATION.md) |
-| Point reads and neighbours | `get_node(s)`, `get_edge(s)`, `neighbors`, `degree`, `neighborhood` | [GraphRAG](../GRAPHRAG.md) |
+| Point reads and neighbours | `get_node(s)`, `get_edge(s)`, `neighbors`, `degree`, `neighborhood`, `shortest_path` | [GraphRAG](../GRAPHRAG.md) |
 | Idempotent writes | `upsert`, `upsert_many`, `delete(label, key, value)` | [API cheat sheet](API_CHEATSHEET.md) |
 | Indexes | `create_index`, `drop_index`, `list_indexes`, `describe_index` | [Configuration](CONFIGURATION.md) |
 | Embeddings and search | `add_node_embedding(s)`, `knn_nodes`, `search_hybrid`, `search_hybrid_explain` | [Embeddings](../EMBEDDINGS.md), [Hybrid search](../HYBRID_SEARCH.md) |

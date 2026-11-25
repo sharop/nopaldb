@@ -5,6 +5,7 @@ pub mod upsert;
 pub(crate) mod unique;
 pub mod stats;
 pub mod neighborhood;
+pub mod path;
 pub mod communities;
 // Bajo `embeddings-index` y no solo `hybrid`: la ruta vectorial con filtro
 // de etiqueta (`knn_in_filter`) la usa también `similar_to` (#174b). Lo que
@@ -17,6 +18,7 @@ pub(crate) mod applier;
 pub use view::{GraphView, Subgraph};
 pub use upsert::{LinkSpec, UpsertOutcome, UpsertRequest, UPSERT_TX_ROWS};
 pub use neighborhood::{ExpandOptions, Neighborhood, Rank};
+pub use path::{GraphPath, PathOptions};
 pub use stats::{
     GcAutoSummary, GcRun, GcSection, GraphSection, IndexSection, OpenPhasesMs, Progress,
     ProgressCallback, RecoverySection, StatsReport, StorageSection, WalSection,

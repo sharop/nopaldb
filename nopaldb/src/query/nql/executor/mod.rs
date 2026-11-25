@@ -835,6 +835,10 @@ struct LinearPatternBinding {
     /// de cada patrón viene esta fila, como (patrón, índice). Vacío fuera de
     /// ella.
     origin: Vec<(usize, usize)>,
+    /// Los valores de `path(a, b)` / `shortestPath(a, b)` de esta fila (#416),
+    /// en el orden de `path_calls`. Se calculan antes de armar las filas
+    /// (`attach_path_values`), porque el BFS es async y el armado no.
+    computed: Vec<PropertyValue>,
 }
 
 impl LinearPatternBinding {
@@ -1020,6 +1024,17 @@ impl<'a> Executor<'a> {
         let has_relationships = query.from.patterns.iter().any(|p| {
             p.elements.iter().any(|e| matches!(e, PatternElement::Relationship(_)))
         });
+        if query_uses_path_calls(&query) {
+            // Las opciones y el lugar se validan antes de leer nada.
+            path_calls(&query)?;
+            if !has_relationships && query.from.patterns.len() < 2 {
+                return Err(NopalError::SemanticError(
+                    "path(a, b) and shortestPath(a, b) take two node variables of the FROM, e.g. \
+                     from (a {…}), (b {…}) or from (a)-[:T]->(b)"
+                        .into(),
+                ));
+            }
+        }
 
         // ========================================
         // OPTIMIZATION: Try to use indexes
@@ -2180,7 +2195,8 @@ impl<'a> Executor<'a> {
     }
 
     fn determine_execution_mode(&self, query: &Query, pattern: &Pattern) -> ExecutionMode {
-        if pattern.elements.len() > 3 {
+        // `path(a, b)` se calcula sobre las ligaduras (#416).
+        if pattern.elements.len() > 3 || query_uses_path_calls(query) {
             return ExecutionMode::LinearBindings;
         }
 
@@ -2285,7 +2301,8 @@ impl<'a> Executor<'a> {
         // final: `from (a:X), (b:X) where … limit 10` sobre 2000 nodos
         // ocupaba 10 GB. El `where` completo se vuelve a aplicar al final.
         let sets = self.multi_pattern_sets(&query).await?;
-        let joined_bindings = self.join_pattern_sets(&query, sets)?;
+        let mut joined_bindings = self.join_pattern_sets(&query, sets)?;
+        self.attach_path_values(&query, &mut joined_bindings).await?;
 
         if is_aggregate_query(&query) {
             return self.aggregate_bindings(joined_bindings, &query);
@@ -2508,10 +2525,11 @@ impl<'a> Executor<'a> {
         }
 
         self.initialize_path_profile();
-        let bindings = self.execute_linear_pattern_bindings(&query, pattern).await?;
+        let mut bindings = self.execute_linear_pattern_bindings(&query, pattern).await?;
         self.update_path_profile(|metrics| {
             metrics.bindings_examined = bindings.len();
         });
+        self.attach_path_values(&query, &mut bindings).await?;
         if is_aggregate_query(&query) {
             return self.aggregate_bindings(bindings, &query);
         }
@@ -2650,6 +2668,61 @@ impl<'a> Executor<'a> {
         })
     }
 
+    /// Calcula `path(a, b)` / `shortestPath(a, b)` de cada fila (#416) y lo
+    /// deja en `binding.computed`, en el orden de `path_calls`. Va antes de
+    /// armar las filas porque el BFS es async. Primero aplica el `where`,
+    /// para no buscar caminos de filas que se van a descartar (el armado lo
+    /// vuelve a aplicar); el BFS corre una vez por par de nodos distinto y
+    /// antes de `limit`, así que el tope es `Graph::max_join_rows`.
+    async fn attach_path_values(&self, query: &Query, bindings: &mut Vec<LinearPatternBinding>) -> Result<()> {
+        let calls = path_calls(query)?;
+        if calls.is_empty() {
+            return Ok(());
+        }
+        if let Some(filter) = &query.filter
+            && !filter_uses_path_vm(&filter.condition)
+        {
+            let mut kept = Vec::with_capacity(bindings.len());
+            for binding in std::mem::take(bindings) {
+                if self.evaluate_linear_pattern_condition(&binding, &filter.condition)? {
+                    kept.push(binding);
+                }
+            }
+            *bindings = kept;
+        }
+        let mut found: HashMap<(usize, NodeId, NodeId), PropertyValue> = HashMap::new();
+        for binding in bindings.iter_mut() {
+            let mut values = Vec::with_capacity(calls.len());
+            for (i, call) in calls.iter().enumerate() {
+                let end = |var: &str| {
+                    binding.node_vars.get(var).map(|n| n.id).ok_or_else(|| {
+                        NopalError::SemanticError(format!(
+                            "{}: `{var}` is not a node variable of the FROM",
+                            call.key
+                        ))
+                    })
+                };
+                let (a, b) = (end(&call.from)?, end(&call.to)?);
+                let value = match found.get(&(i, a, b)) {
+                    Some(v) => v.clone(),
+                    None => {
+                        let path = self.graph.shortest_path_between(a, b, &call.opts).await?;
+                        let v = if call.distance {
+                            PropertyValue::Float(path.map_or(-1.0, |p| p.len() as f64))
+                        } else {
+                            path_value(path.as_ref())
+                        };
+                        found.insert((i, a, b), v.clone());
+                        v
+                    }
+                };
+                values.push(value);
+            }
+            binding.computed = values;
+        }
+        Ok(())
+    }
+
     fn build_query_result_from_bindings(
         &self,
         bindings: Vec<LinearPatternBinding>,
@@ -2766,6 +2839,9 @@ impl<'a> Executor<'a> {
             collected?
         };
 
+        // #416: `path(a, b)` / `shortestPath(a, b)`, ya calculados en `computed`.
+        let path_call_keys: Vec<String> = path_calls(query)?.into_iter().map(|c| c.key).collect();
+
         // F4-C: detect path.start/end/state/result projections
         let path_object_projs: Vec<(String, String, Option<String>)> = query.find.projections.iter()
             .filter_map(|p| match p {
@@ -2825,6 +2901,9 @@ impl<'a> Executor<'a> {
             .iter()
             .map(|(binding, vm_state)| {
                 let mut row = self.project_linear_pattern_binding(binding, &projection_strings);
+                for (key, value) in path_call_keys.iter().zip(&binding.computed) {
+                    row.set(key.clone(), value.clone());
+                }
                 for (key, name, prop) in &path_reducer_projs {
                     let value = Self::evaluate_path_reducer(binding, name, prop)?;
                     row.set(key.clone(), value);
@@ -3021,6 +3100,7 @@ impl<'a> Executor<'a> {
                     node_vars,
                     edge_vars: HashMap::new(),
                     origin: Vec::new(),
+                    computed: Vec::new(),
                 };
                 if !self.binding_passes(&binding, own_filters)? {
                     continue;
@@ -3088,6 +3168,7 @@ impl<'a> Executor<'a> {
                 node_vars,
                 edge_vars: HashMap::new(),
                 origin: Vec::new(),
+                computed: Vec::new(),
             };
             if let Some(var) = &source_pattern.variable
                 && !self.binding_passes(&binding, filters.of_var(var))?
@@ -7833,11 +7914,161 @@ fn is_aggregate_query(query: &Query) -> bool {
     has_aggregations(&query.find.projections) || query.group_by.is_some()
 }
 
+/// Una llamada `path(a, b, …)` o `shortestPath(a, b, …)` de `find` (#416):
+/// el camino entre los dos nodos de cada fila.
+struct PathCall {
+    /// La columna (`name_projections` le dio alias a toda función).
+    key: String,
+    /// `shortestPath`: la distancia (`-1.0` sin camino), no el camino.
+    distance: bool,
+    from: String,
+    to: String,
+    opts: crate::graph::PathOptions,
+}
+
+fn contains_path_call(expr: &Expression) -> bool {
+    match expr {
+        e if e.is_path_call() => true,
+        Expression::FunctionCall { args, .. } => args.iter().any(contains_path_call),
+        Expression::BinaryOp { left, right, .. } => contains_path_call(left) || contains_path_call(right),
+        Expression::UnaryOp { expr, .. } => contains_path_call(expr),
+        Expression::NamedArg { value, .. } => contains_path_call(value),
+        _ => false,
+    }
+}
+
+/// Si la consulta usa `path(a, b)` / `shortestPath(a, b)` en algún sitio.
+fn query_uses_path_calls(query: &Query) -> bool {
+    query.find.projections.iter().any(|p| matches!(p, Projection::Expression { expr, .. } if contains_path_call(expr)))
+        || query.filter.as_ref().is_some_and(|f| contains_path_call(&f.condition))
+        || query.order_by.as_ref().is_some_and(|o| o.items.iter().any(|i| contains_path_call(&i.expression)))
+        || query.having.as_ref().is_some_and(|h| contains_path_call(&h.condition))
+}
+
+/// Las llamadas de camino de `find`, con sus opciones ya validadas. Solo
+/// valen como columna (también dentro de una cuenta, que `split_computed`
+/// convierte en columna): en `where`, `order by` o `having` son un error,
+/// porque se calculan después de filtrar.
+fn path_calls(query: &Query) -> Result<Vec<PathCall>> {
+    let misplaced = query.filter.as_ref().is_some_and(|f| contains_path_call(&f.condition))
+        || query.having.as_ref().is_some_and(|h| contains_path_call(&h.condition))
+        || query.order_by.as_ref().is_some_and(|o| o.items.iter().any(|i| contains_path_call(&i.expression)));
+    if misplaced {
+        return Err(NopalError::SemanticError(
+            "path(a, b) and shortestPath(a, b) go only in `find`; to filter or sort by the length, \
+             name the column and filter the result"
+                .into(),
+        ));
+    }
+    let mut calls = Vec::new();
+    for p in &query.find.projections {
+        let Projection::Expression { expr, alias } = p else { continue };
+        if !expr.is_path_call() {
+            if contains_path_call(expr) {
+                return Err(NopalError::SemanticError(format!(
+                    "{expr}: path(a, b) and shortestPath(a, b) cannot go inside another function"
+                )));
+            }
+            continue;
+        }
+        let Expression::FunctionCall { name, args } = expr else { unreachable!("is_path_call is a call") };
+        calls.push(path_call(name, args, alias.clone().unwrap_or_else(|| expr.to_string()))?);
+    }
+    Ok(calls)
+}
+
+/// La forma y las opciones de `path(a, b, …)`, para el validador: el mismo
+/// código que las aplica.
+pub(crate) fn validate_path_call(name: &str, args: &[Expression]) -> Result<()> {
+    path_call(name, args, String::new()).map(|_| ())
+}
+
+fn path_call(name: &str, args: &[Expression], key: String) -> Result<PathCall> {
+    let bad = |m: String| NopalError::SemanticError(format!("{name}: {m}"));
+    let vars: Vec<&str> = args
+        .iter()
+        .filter(|a| !matches!(a, Expression::NamedArg { .. }))
+        .map(|a| match a {
+            Expression::Property { variable, property } if property.is_empty() => Ok(variable.as_str()),
+            other => Err(bad(format!(
+                "takes two node variables of the FROM, e.g. {name}(a, b); got `{other}`"
+            ))),
+        })
+        .collect::<Result<_>>()?;
+    let [from, to] = vars.as_slice() else {
+        return Err(bad(format!("takes two node variables of the FROM, e.g. {name}(a, b); got {}", vars.len())));
+    };
+    let mut opts = crate::graph::PathOptions::default();
+    for arg in args {
+        let Expression::NamedArg { name: option, value } = arg else { continue };
+        let Expression::Literal(v) = value.as_ref() else {
+            return Err(bad(format!("option `{option}` must be a literal")));
+        };
+        match option.as_str() {
+            "edge_types" => {
+                opts.edge_types = Some(match v {
+                    PropertyValue::List(items) if !items.is_empty() => items
+                        .iter()
+                        .map(|i| match i {
+                            PropertyValue::String(s) if !s.is_empty() => Ok(s.clone()),
+                            _ => Err(bad("option `edge_types` must be a non-empty list of non-empty strings".into())),
+                        })
+                        .collect::<Result<_>>()?,
+                    _ => return Err(bad("option `edge_types` must be a non-empty list of non-empty strings".into())),
+                })
+            }
+            "direction" => {
+                opts.direction = match v {
+                    PropertyValue::String(d) if d == "out" => crate::graph::Direction::Outgoing,
+                    PropertyValue::String(d) if d == "in" => crate::graph::Direction::Incoming,
+                    PropertyValue::String(d) if d == "both" => crate::graph::Direction::Both,
+                    _ => return Err(bad("option `direction` must be \"out\", \"in\" or \"both\"".into())),
+                }
+            }
+            "max_depth" => {
+                opts.max_depth = match v {
+                    PropertyValue::Int(n) if *n >= 0 => Some(*n as usize),
+                    _ => return Err(bad("option `max_depth` must be an integer >= 0".into())),
+                }
+            }
+            other => {
+                return Err(bad(format!(
+                    "unknown option `{other}`; valid options are edge_types, direction, max_depth"
+                )))
+            }
+        }
+    }
+    Ok(PathCall { key, distance: !name.eq_ignore_ascii_case("path"), from: from.to_string(), to: to.to_string(), opts })
+}
+
+/// El valor de `path(a, b)`: `{nodes, edges, length}` con los nodos y aristas
+/// en la forma de `path.nodes` / `path.edges`, o nulo sin camino.
+fn path_value(path: Option<&crate::graph::GraphPath>) -> PropertyValue {
+    let Some(path) = path else { return PropertyValue::Null };
+    let edges = path
+        .edges
+        .iter()
+        .map(|edge| {
+            PropertyValue::Object(vec![
+                ("id".to_string(), PropertyValue::String(edge.id.to_string())),
+                ("type".to_string(), PropertyValue::String(edge.edge_type.clone())),
+                ("source".to_string(), PropertyValue::String(edge.source.to_string())),
+                ("target".to_string(), PropertyValue::String(edge.target.to_string())),
+            ])
+        })
+        .collect();
+    PropertyValue::Object(vec![
+        ("nodes".to_string(), PropertyValue::List(path.nodes.iter().map(build_path_node_object).collect())),
+        ("edges".to_string(), PropertyValue::List(edges)),
+        ("length".to_string(), PropertyValue::Int(path.len() as i64)),
+    ])
+}
+
 /// Lo que la agregación de patrones (#362) aún no evalúa dentro de `find`:
 /// algoritmos por nodo (`avg(degree(r))`) y las funciones de embeddings.
 fn unsupported_in_pattern_aggregate(expr: &Expression) -> Option<&Expression> {
     match expr {
-        e if e.is_algorithm() => Some(e),
+        e if e.is_algorithm() || e.is_path_call() => Some(e),
         Expression::FunctionCall { name, args } => {
             if matches!(name.as_str(), "embedding_similarity" | "knn_nodes") {
                 return Some(expr);
@@ -7906,6 +8137,7 @@ fn in_from_order(rows: Vec<LinearPatternBinding>, sets: &[Vec<LinearPatternBindi
                 node_vars: HashMap::new(),
                 edge_vars: HashMap::new(),
                 origin: Vec::new(),
+                computed: Vec::new(),
             };
             for (p, &i) in idx.iter().enumerate() {
                 let part = &sets[p][i];

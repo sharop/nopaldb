@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Camino más corto con nodos y aristas** (#416):
+  `Graph::shortest_path_between(a, b, &PathOptions)` en Rust y
+  `graph.shortest_path(a, b, edge_types=None, direction="out",
+  max_depth=None)` en Python devuelven el camino (`nodes`, `edges` y su
+  largo), no solo la distancia, o `None` si no hay. Con varias aristas entre
+  el mismo par, las aristas dicen por cuál se pasó. Filtra por tipo y
+  dirección como `neighborhood`, sigue la adyacencia de cada nodo (sin
+  recorrer todas las aristas) y corta en `max_depth` saltos. El
+  `Graph::shortest_path` anterior (solo ids, sin filtro de tipo) no cambia.
+- **NQL: `path(a, b)` y `shortestPath(a, b)` sobre variables del `from`**
+  (#416). Un valor por fila: `find path(a, b) as p from (a {…}), (b {…})`
+  da `{nodes, edges, length}` (o nulo) y `shortestPath(a, b)` la distancia
+  (`-1.0` sin camino), con las mismas opciones con nombre (`edge_types`,
+  `direction`, `max_depth`). Funcionan con varios patrones y con patrones de
+  saltos en el `from`; van solo en `find`, y en `where`, `order by` o una
+  agregación son un error que lo dice. Hasta 0.11.3 `shortestPath` solo
+  aceptaba UUIDs literales, y con dos patrones en el `from` fallaba. Esa
+  forma literal no cambia (calcula sobre todas las aristas, como antes).
+
 ## [0.11.3] - 2026-11-25
 
 ### Added
