@@ -4,6 +4,8 @@
 
 > Qué **significa** una consulta (filas por camino, qué filas ordena una búsqueda, orden de evaluación, qué es exacto) está en [Semántica de NQL](SEMANTICA_NQL.md). Esta página es la sintaxis.
 
+> ¿Vienes de Cypher? Con la feature `cypher`, `Graph::execute_cypher` lee `MATCH … WHERE … RETURN …` y lo traduce a NQL: [Cypher de solo lectura](CYPHER.md) tiene la tabla de qué corresponde a qué.
+
 ---
 
 ## Tabla de Contenidos

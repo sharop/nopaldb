@@ -45,6 +45,10 @@ features = ["full"]
 # importer dejarían de compilar. MSRV de ambos: 1.87 (el piso es 1.89).
 oxttl = { version = "0.2.4", default-features = false, optional = true }
 oxrdf = { version = "0.3.4", default-features = false, optional = true }
+# Cypher de solo lectura (feature `cypher`): solo el parser; la traducción a
+# NQL vive en `query::cypher`. Pin exacto: el AST cambia entre versiones
+# menores y el traductor hace `match` sobre él. MSRV 1.88.
+open-cypher = { version = "=0.5.0", default-features = false, optional = true }
 log = "0.4"
 redb = { version = "4.1", optional = true }                                     # Embedded storage
 serde = { version = "1.0", features = ["derive"] }  # Data serialization
@@ -118,6 +122,7 @@ owl-import = ["reasoner", "dep:oxttl", "dep:oxrdf"]
 shacl = ["regex", "owl-import"]
 fulltext = ["tantivy"]
 hybrid = ["fulltext", "embeddings-index"]   # RRF hybrid search (full-text + vector)
+cypher = ["dep:open-cypher"]               # Cypher de solo lectura, traducido a NQL
 full-isolation = []              # Isolation levels + lock manager + deadlock detection
 
 # Python compound features
@@ -343,3 +348,7 @@ required-features = ["embeddings-index"]
 [[test]]
 name = "hnsw_memory_test"
 required-features = ["embeddings-index"]
+
+[[test]]
+name = "cypher_read_only_test"
+required-features = ["cypher"]

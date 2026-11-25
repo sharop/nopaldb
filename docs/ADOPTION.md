@@ -16,6 +16,7 @@ nopaldb = { version = "0.11", features = ["core"] }
 | `core` | + Arrow/Parquet export, graph algorithms, embeddings + HNSW, full-text and hybrid search, ML helpers, hypergraph types |
 | `semantic` | + OWL-EL reasoner, Turtle import/export, SHACL validation |
 | `full` | + `full-isolation`: isolation levels, per-node lock manager, deadlock detection |
+| `cypher` (opt-in, not in `full`) | read-only Cypher `MATCH … RETURN` translated to NQL ([Read-only Cypher](CYPHER.md)) |
 
 ```rust
 use nopaldb::{Edge, Graph, Node, PropertyValue};

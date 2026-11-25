@@ -7,6 +7,9 @@ pub mod sack;
 
 pub mod nql;
 
+#[cfg(feature = "cypher")]
+pub mod cypher;
+
 pub mod sketch_manager;
 
 pub use step::{TraversalStep, TraversalState};
