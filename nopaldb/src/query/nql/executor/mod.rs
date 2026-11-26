@@ -1686,6 +1686,25 @@ impl<'a> Executor<'a> {
         Ok(Box::new(operators::FilterNodesStream::new(stream, move |n| Ok(rule.admits_pattern(&pattern, n)))))
     }
 
+    /// Los predicados del WHERE sobre el nodo origen de un patrón de un salto
+    /// que se pueden evaluar antes de expandir, unidos con `and`: los de
+    /// `ExpansionFilters` (comparaciones `v.p op literal` de una sola
+    /// variable). Los de algoritmo por nodo (`degree(e) > 3`) no entran: el
+    /// pipeline los evalúa después de proyectar.
+    fn one_hop_source_filter(&self, query: &Query, source: &NodePattern) -> Option<(String, Expression)> {
+        let var = source.variable.as_deref()?;
+        if self.query_uses_quoted_path_vm(query) {
+            return None;
+        }
+        let filters = ExpansionFilters::of(query);
+        let expr = filters.of_var(var).iter().cloned().reduce(|left, right| Expression::BinaryOp {
+            left: Box::new(left),
+            op: BinaryOperator::And,
+            right: Box::new(right),
+        })?;
+        Some((var.to_string(), expr))
+    }
+
     /// Condición del WHERE que puede sembrar el conjunto de candidatos:
     /// `var.prop = literal`, `var.prop in [literales]`, o cualquiera de las
     /// dos dentro de un `AND` raíz (el resto del WHERE se re-aplica entero
@@ -1851,6 +1870,14 @@ impl<'a> Executor<'a> {
                 source_stream,
                 move |node| Ok(props.iter().all(|(k, v)| node.properties.get(k) == Some(v))),
             ));
+        }
+
+        // Los predicados del WHERE que solo leen el origen se aplican antes
+        // de expandir (#389), como en el camino de varios saltos (#214 fase
+        // 2b): un origen que no los cumple no lee sus aristas. El WHERE
+        // entero se re-aplica a cada fila, así que las filas son las mismas.
+        if let Some((var, expr)) = self.one_hop_source_filter(&query, source_pattern) {
+            source_stream = operators::filter_stream_from_expr(source_stream, std::sync::Arc::new(expr), var);
         }
 
         // 2. Setup Traversal
@@ -6439,6 +6466,21 @@ impl<'a> Executor<'a> {
                             parts.join("; ")
                         ));
                     }
+                }
+                // One hop (#389): the source predicates run before expanding.
+                if query.from.patterns.len() == 1
+                    && let Some(pattern) = query.from.patterns.first()
+                    && pattern.elements.len() == 3
+                    && self.determine_execution_mode(&query, pattern) != ExecutionMode::LinearBindings
+                    && let Some(PatternElement::Node(source)) = pattern.elements.first()
+                    && let Some((var, _)) = self.one_hop_source_filter(&query, source)
+                {
+                    let conds: Vec<String> =
+                        ExpansionFilters::of(&query).of_var(&var).iter().map(describe_comparison).collect();
+                    explanation.push_str(&format!(
+                        "\nSource filter: {var}: {}; applied before expanding, the rows do not change",
+                        conds.join(" and ")
+                    ));
                 }
                 if query.from.patterns.len() > 1 && !self.query_uses_quoted_path_vm(&query) {
                     explanation.push_str(&describe_join(&query, self.graph.max_join_rows()));

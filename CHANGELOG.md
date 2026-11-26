@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **Un salto filtra el origen antes de expandir** (#389). En
+  `find c.text from (e:Entity)<-[:MENTIONS]-(c:Chunk) where e.name in [...]`
+  los predicados del `where` que solo leen el origen (`v.p op literal`,
+  unidos con `and`/`or`) se aplican al leer cada origen, como ya hacía el
+  camino de varios saltos desde 0.9.0; antes se leían las aristas y los
+  destinos de todos los orígenes. Con 100k chunks y 20k entidades, desde 2
+  entidades: de 856 ms a 25 ms (bench `retrieval`,
+  `nql/one_hop_source_filtered`). Las filas no cambian: el `where` entero se
+  sigue aplicando a cada fila. Los predicados de algoritmo (`degree(e) > 3`)
+  no se adelantan. EXPLAIN lo dice en `Source filter: …`.
+
 ## [0.11.6] - 2026-11-26
 
 ### Added

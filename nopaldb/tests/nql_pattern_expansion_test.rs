@@ -195,3 +195,117 @@ async fn explain_names_the_expansion_filters() {
     let rows = row_set(&g, &q["explain ".len()..], &["c.name", "f.name"]).await;
     assert_eq!(rows, set(&[&["c1", "tuna"]]));
 }
+
+/// 40 ingredients (every tenth a `fruta`, every seventh without `kind`) and
+/// 400 chunks, each mentioning two of them. Seeded, deterministic.
+async fn mentions_graph() -> Graph {
+    let g = Graph::in_memory().await.unwrap();
+    let mut ents: Vec<NodeId> = Vec::new();
+    for i in 0..40 {
+        let mut n = Node::new("Entity").with_property("name", s(&format!("e{i:02}")));
+        if i % 7 != 0 {
+            n = n.with_property("kind", s(if i % 10 == 0 { "fruta" } else { "hierba" }));
+        }
+        n = n.with_property("n", PropertyValue::Int(i));
+        ents.push(g.add_node(n).await.unwrap());
+    }
+    let mut x: u64 = 389;
+    for i in 0..400 {
+        let c = g.add_node(Node::new("Chunk").with_property("name", s(&format!("c{i:03}")))).await.unwrap();
+        for _ in 0..2 {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let e = ents[(x >> 33) as usize % ents.len()];
+            g.add_edge(Edge::new(c, e, "MENTIONS").with_property("w", PropertyValue::Int((x % 3) as i64))).await.unwrap();
+        }
+    }
+    g
+}
+
+/// #389: one hop applies the source predicates before expanding. Same rows
+/// and same order as the multi-hop path (`{1,1}` routes there), which has
+/// applied them while expanding since 2b.
+#[tokio::test]
+async fn one_hop_source_filter_keeps_the_rows() {
+    let g = mentions_graph().await;
+    let cases: &[(&str, &str, &[&str])] = &[
+        (
+            "find c.name, e.name from (e:Entity){HOP}(c:Chunk) where e.kind = \"fruta\" order by c.name, e.name",
+            "<-[:MENTIONS]-",
+            &["c.name", "e.name"],
+        ),
+        (
+            // A missing `kind` is not `!= "fruta"` in NQL either way.
+            "find c.name, e.name from (e:Entity){HOP}(c:Chunk) where e.kind != \"fruta\" and e.n < 20 order by e.name, c.name",
+            "<-[:MENTIONS]-",
+            &["c.name", "e.name"],
+        ),
+        (
+            "find e.name, c.name from (e:Entity){HOP}(c:Chunk) where (e.kind = \"fruta\" or e.n in [3, 5]) and c.name < \"c100\" order by c.name, e.name",
+            "<-[:MENTIONS]-",
+            &["e.name", "c.name"],
+        ),
+        (
+            "find c.name, e.name from (c:Chunk){HOP}(e:Entity) where c.name >= \"c390\" order by c.name, e.name",
+            "-[:MENTIONS {w: 1}]->",
+            &["c.name", "e.name"],
+        ),
+        (
+            "find e.name, count(*) as k from (e:Entity){HOP}(c:Chunk) where e.kind = \"fruta\" group by e.name order by e.name",
+            "<-[:MENTIONS]-",
+            &["e.name", "k"],
+        ),
+        (
+            "find distinct e.name from (e:Entity {kind: \"hierba\"}){HOP}(c:Chunk) where e.n > 30 order by e.name limit 3",
+            "<-[:MENTIONS]-",
+            &["e.name"],
+        ),
+    ];
+    for (template, hop, cols) in cases {
+        let one = template.replace("{HOP}", hop);
+        let multi = template.replace("{HOP}", &format!("{hop}{{1,1}}"));
+        let got = rows(&g, &one, cols).await;
+        assert!(!got.is_empty(), "{one}: no rows, the case proves nothing");
+        assert_eq!(got, rows(&g, &multi, cols).await, "{one}");
+    }
+
+    let plan = format!(
+        "{:?}",
+        g.execute_nql("explain find c.name from (e:Entity)<-[:MENTIONS]-(c:Chunk) where e.kind = \"fruta\" and c.name != e.name")
+            .await
+            .unwrap()
+            .rows()
+    );
+    assert!(plan.contains(r#"Source filter: e: e.kind = \"fruta\"; applied before expanding"#), "{plan}");
+}
+
+/// Per-node algorithm predicates are not moved before the expansion: the
+/// pipeline evaluates them after projecting.
+#[cfg(feature = "algorithms")]
+#[tokio::test]
+async fn one_hop_source_filter_leaves_algorithm_predicates() {
+    let g = mentions_graph().await;
+    // `degree(e)` goes in the projection too: without it the one-hop
+    // post-filter finds no value and drops every row (already so before
+    // #389).
+    let q = "find c.name, e.name, degree(e) as d from (e:Entity)<-[:MENTIONS]-(c:Chunk) where e.kind = \"fruta\" and degree(e) > 20 order by c.name, e.name";
+    let got: Vec<Vec<String>> = rows(&g, q, &["c.name", "e.name"]).await;
+    let degree: std::collections::HashMap<String, f64> = rows(&g, "find e.name, degree(e) as d from (e:Entity)", &["e.name", "d"])
+        .await
+        .into_iter()
+        .map(|r| {
+            let d: String = r[1].chars().filter(|ch| ch.is_ascii_digit() || *ch == '.').collect();
+            (r[0].clone(), d.parse().unwrap_or_else(|_| panic!("degree: {}", r[1])))
+        })
+        .collect();
+    let expected: Vec<Vec<String>> = rows(&g, "find c.name, e.name from (e:Entity)<-[:MENTIONS]-(c:Chunk) where e.kind = \"fruta\" order by c.name, e.name", &["c.name", "e.name"])
+        .await
+        .into_iter()
+        .filter(|r| degree[&r[1]] > 20.0)
+        .collect();
+    assert!(!expected.is_empty());
+    assert_eq!(got, expected);
+
+    let plan = format!("{:?}", g.execute_nql(&format!("explain {q}")).await.unwrap().rows());
+    assert!(plan.contains(r#"Source filter: e: e.kind = \"fruta\";"#), "{plan}");
+    assert!(!plan.contains("degree(e) > 20; applied"), "{plan}");
+}
