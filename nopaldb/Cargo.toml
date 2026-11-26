@@ -129,7 +129,7 @@ full-isolation = []              # Isolation levels + lock manager + deadlock de
 python-reasoner = ["python", "reasoner"]
 python-owl = ["python", "owl-import"]
 python-shacl = ["python", "shacl"]
-python-full = ["python", "python-reasoner", "python-owl", "python-shacl", "full"]
+python-full = ["python", "python-reasoner", "python-owl", "python-shacl", "full", "cypher"]
 
 # --- Tier meta-features ---
 core       = ["storage-redb", "analytics", "algorithms", "ml", "hypergraph", "embeddings", "embeddings-index", "fulltext", "hybrid"]

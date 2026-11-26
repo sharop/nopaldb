@@ -28,6 +28,18 @@ let resultado = graph.execute_cypher("MATCH (a:Animal) RETURN a.zona, count(*) A
 Lo que queda fuera del subconjunto es un error que nombra la parte
 rechazada. Nada se aproxima ni se descarta.
 
+Desde Python (la wheel trae `cypher` desde 0.11.6):
+
+```python
+nql = nopaldb.Graph.cypher_to_nql("MATCH (a:Animal) WHERE a.edad > 3 RETURN a.nombre")
+for fila in graph.execute_cypher("MATCH (a:Animal) RETURN a.zona, count(*) AS n"):
+    print(fila["a.zona"], fila["n"])
+```
+
+En Python una consulta rechazada lanza `RuntimeError`. El servidor MCP
+[nopaldb-mcp](https://github.com/Anxious-Mind-Group/nopaldb-mcp) la expone
+como la tool `cypher_query`, que además devuelve el NQL que corrió.
+
 ## Qué se acepta
 
 Cada fila se comprueba en `nopaldb/tests/cypher_read_only_test.rs`: el NQL es

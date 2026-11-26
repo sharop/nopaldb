@@ -727,6 +727,23 @@ impl PyGraph {
         to_py_result(result).map(PyNqlResult::new)
     }
 
+    /// Run a read-only Cypher query (`MATCH … WHERE … RETURN … ORDER BY … SKIP …
+    /// LIMIT`), translated to NQL and run like `execute_nql`. Anything outside
+    /// the subset (writes, `OPTIONAL MATCH`, `WITH`, parameters…) raises
+    /// RuntimeError naming the rejected part. See docs/CYPHER.md.
+    #[cfg(feature = "cypher")]
+    fn execute_cypher(&self, py: Python<'_>, query: &str) -> PyResult<PyNqlResult> {
+        let nql = Self::cypher_to_nql(query)?;
+        self.execute_nql(py, &nql)
+    }
+
+    /// The NQL that `execute_cypher` would run, without running it.
+    #[cfg(feature = "cypher")]
+    #[staticmethod]
+    fn cypher_to_nql(query: &str) -> PyResult<String> {
+        to_py_result(crate::query::cypher::to_nql(query))
+    }
+
     /// Begin a transaction
     ///
     /// Returns:
