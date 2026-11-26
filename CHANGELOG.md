@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Cypher de solo lectura en Python.** `graph.execute_cypher(query)` corre
+  el subconjunto de `docs/CYPHER.md` y devuelve un `NqlResult`, como
+  `execute_nql`; `Graph.cypher_to_nql(query)` da el NQL sin ejecutarlo. Lo
+  que queda fuera del subconjunto es un `RuntimeError` que nombra la parte.
+  La wheel trae la feature `cypher` (ahora parte de `python-full`).
+
 ## [0.11.5] - 2026-11-25
 
 Un patrón con etiqueta ya no mezcla el esquema con los datos (#411). Cambia

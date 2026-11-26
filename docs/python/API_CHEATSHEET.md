@@ -67,6 +67,8 @@ g = nopaldb.Graph.open("./data")
 | method | what it does |
 |---|---|
 | `execute_nql(query: str) -> "NqlResult"` | Run any NQL statement; the result has `.kind`, `.query` (rows), `.write`, `.explain`, `.profile`, `.message`, `.summary` and, since 0.9.4, `.data` (the CSV/JSON text of an `export`, or the path it wrote for Arrow/Parquet). |
+| `execute_cypher(query: str) -> "NqlResult"` | Run a read-only Cypher query (`MATCH … WHERE … RETURN … ORDER BY … SKIP … LIMIT`); it is translated to NQL and runs like `execute_nql`. Writes, `OPTIONAL MATCH`, `WITH`, parameters and functions NQL lacks raise `RuntimeError` naming the part. Differences from Cypher in docs/CYPHER.md. Since 0.11.6. |
+| `cypher_to_nql(query: str) -> str` (static) | The NQL `execute_cypher` would run, without running it. Since 0.11.6. |
 
 ## Operations
 
