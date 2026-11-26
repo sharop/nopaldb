@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.11.6] - unreleased
+## [0.11.6] - 2026-11-26
 
 ### Added
 - **Cypher de solo lectura en Python.** `graph.execute_cypher(query)` corre
