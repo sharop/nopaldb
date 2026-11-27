@@ -12,10 +12,10 @@
 #![cfg(unix)]
 
 use nopaldb::{Direction, Edge, Graph, Node, PropertyValue, StorageEngine, StorageOptions};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const ENV_DB_DIR: &str = "NOPAL_CRASH_DB_DIR";
@@ -173,7 +173,7 @@ async fn assert_direct_writes_recovered(graph: &Graph, dir: &std::path::Path) ->
     }
     let _ = intents;
     let nodes: HashSet<Uuid> = graph.get_all_nodes().await?.into_iter().map(|n| n.id).collect();
-    let all_edges = graph.get_all_edges().await?;
+    let all_edges: HashSet<Uuid> = graph.get_all_edges().await?.into_iter().map(|e| e.id).collect();
     for id in &created {
         if deleted.contains(id) {
             if nodes.contains(id) {
@@ -188,7 +188,7 @@ async fn assert_direct_writes_recovered(graph: &Graph, dir: &std::path::Path) ->
         }
     }
     for (eid, src_idx) in &edges {
-        let present = all_edges.iter().any(|e| e.id == *eid);
+        let present = all_edges.contains(eid);
         let src = created.get(*src_idx).copied();
         let src_gone = src.is_some_and(|s| deleted.contains(&s) || maybe_deleted.contains(&s));
         if !present && !src_gone {
@@ -220,27 +220,32 @@ async fn assert_invariants(graph: &Graph) -> nopaldb::Result<()> {
         );
     }
 
+    // Adyacencia de cada nodo, leída una sola vez. Casi todas las aristas
+    // llegan al contador y la base crece entre rondas: pedir `neighbors` por
+    // arista era O(E²) y sacaba el job nightly de su timeout.
+    let mut out_adj: HashMap<Uuid, HashSet<Uuid>> = HashMap::new();
+    let mut in_adj: HashMap<Uuid, HashSet<Uuid>> = HashMap::new();
+    for node in &nodes {
+        let out = graph.neighbors(node.id, Direction::Outgoing).await?;
+        let uniq: HashSet<_> = out.iter().copied().collect();
+        // 3. Sin duplicados en adyacencia (replay idempotente)
+        assert_eq!(out.len(), uniq.len(), "duplicated adjacency entries for {}", node.id);
+        out_adj.insert(node.id, uniq);
+        in_adj.insert(node.id, graph.neighbors(node.id, Direction::Incoming).await?.into_iter().collect());
+    }
+
     // 2. Adyacencia consistente con las aristas (ambas direcciones)
     for edge in &edges {
-        let out = graph.neighbors(edge.source, Direction::Outgoing).await?;
         assert!(
-            out.contains(&edge.target),
+            out_adj[&edge.source].contains(&edge.target),
             "adjacency_out missing edge {} after crash recovery",
             edge.id
         );
-        let inn = graph.neighbors(edge.target, Direction::Incoming).await?;
         assert!(
-            inn.contains(&edge.source),
+            in_adj[&edge.target].contains(&edge.source),
             "adjacency_in missing edge {} after crash recovery",
             edge.id
         );
-    }
-
-    // 3. Sin duplicados en adyacencia (replay idempotente)
-    for node in &nodes {
-        let out = graph.neighbors(node.id, Direction::Outgoing).await?;
-        let uniq: HashSet<_> = out.iter().collect();
-        assert_eq!(out.len(), uniq.len(), "duplicated adjacency entries for {}", node.id);
     }
 
     // 4. Cadena de versiones del contador: exactamente una versión current,
@@ -346,10 +351,22 @@ async fn commit_crash_recovery_survives_sigkill_rounds() -> nopaldb::Result<()> 
         let _ = child.wait();
 
         // Reabrir y verificar invariantes (recovery + redo + rebuild)
+        let t = Instant::now();
         let graph = open(dir.path()).await;
+        let reopen = t.elapsed();
         assert_invariants(&graph).await?;
+        let invariants = t.elapsed() - reopen;
         let direct = assert_direct_writes_recovered(&graph, dir.path()).await;
+        let checked = t.elapsed() - reopen - invariants;
+        let (nodes, edges) = (graph.get_all_nodes().await?.len(), graph.get_all_edges().await?.len());
         drop(graph);
+        // Una línea por ronda: si el job se corta por tiempo, el log dice
+        // hasta qué ronda llegó y dónde se va el tiempo.
+        eprintln!(
+            "ronda {}/{}: kill {ms} ms, reopen {reopen:?}, invariantes {invariants:?}, directas {checked:?}, {nodes} nodos, {edges} aristas",
+            round + 1,
+            rounds()
+        );
         if direct.is_err() && std::env::var_os("NOPAL_CRASH_KEEP").is_some() {
             let _ = dir.into_path();
             return direct;

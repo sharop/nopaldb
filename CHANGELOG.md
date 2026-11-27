@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   todo nodo y arista vivos tengan historia. Nueva regresión: un solo nodo
   creado con `add_nodes_batch` no existe antes de su marca y conserva la
   historia tras un update. Solo cambian tests; el motor no.
+- **Nightly: el crash harness vuelve a caber en su timeout.** La base de
+  `crash_commit_test` y `crash_mixed_load_test` crece entre rondas y casi
+  todas las aristas llegan a un mismo nodo; las comprobaciones de adyacencia
+  pedían `neighbors()` por arista, O(E²): en la ronda 100 verificar costaba
+  9 s y el job `crash-hardening` se cortaba a los 60 minutos sin llegar a la
+  carga mixta. Ahora la adyacencia se lee una vez por nodo (mismas
+  comprobaciones, O(N+E)): 30 ms en la ronda 100, y en local las dos suites
+  de 100 rondas bajan de 330 s y 81 s a 40 s y 45 s. Cada ronda imprime sus
+  tiempos de reapertura y verificación. Solo cambian tests.
 
 ## [0.11.7] - 2026-11-27
 

@@ -14,9 +14,9 @@
 #![cfg(unix)]
 
 use nopaldb::{Direction, Edge, Graph, Node, PropertyValue};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const ENV_DB_DIR: &str = "NOPAL_MIXED_CRASH_DB_DIR";
@@ -144,6 +144,19 @@ async fn assert_invariants(graph: &Graph) -> nopaldb::Result<()> {
     let edges = graph.get_all_edges().await?;
     let node_ids: HashSet<_> = nodes.iter().map(|n| n.id).collect();
 
+    // Adyacencia de cada nodo, leída una sola vez: por arista era O(E²) con
+    // el hub (ver crash_commit_test).
+    let mut out_adj: HashMap<Uuid, HashSet<Uuid>> = HashMap::new();
+    let mut in_adj: HashMap<Uuid, HashSet<Uuid>> = HashMap::new();
+    for node in &nodes {
+        let out = graph.neighbors(node.id, Direction::Outgoing).await?;
+        let uniq: HashSet<_> = out.iter().copied().collect();
+        // 2. Sin duplicados de adyacencia
+        assert_eq!(out.len(), uniq.len(), "duplicated adjacency for {}", node.id);
+        out_adj.insert(node.id, uniq);
+        in_adj.insert(node.id, graph.neighbors(node.id, Direction::Incoming).await?.into_iter().collect());
+    }
+
     // 1. Sin aristas huérfanas y adyacencia ↔ aristas en ambas direcciones
     for edge in &edges {
         assert!(
@@ -151,17 +164,8 @@ async fn assert_invariants(graph: &Graph) -> nopaldb::Result<()> {
             "orphaned edge {} after mixed-load crash",
             edge.id
         );
-        let out = graph.neighbors(edge.source, Direction::Outgoing).await?;
-        assert!(out.contains(&edge.target), "adjacency_out missing {}", edge.id);
-        let inn = graph.neighbors(edge.target, Direction::Incoming).await?;
-        assert!(inn.contains(&edge.source), "adjacency_in missing {}", edge.id);
-    }
-
-    // 2. Sin duplicados de adyacencia
-    for node in &nodes {
-        let out = graph.neighbors(node.id, Direction::Outgoing).await?;
-        let uniq: HashSet<_> = out.iter().collect();
-        assert_eq!(out.len(), uniq.len(), "duplicated adjacency for {}", node.id);
+        assert!(out_adj[&edge.source].contains(&edge.target), "adjacency_out missing {}", edge.id);
+        assert!(in_adj[&edge.target].contains(&edge.source), "adjacency_in missing {}", edge.id);
     }
 
     // 3. Índice de propiedades ↔ datos: todo id indexado existe y conserva el valor
@@ -255,9 +259,19 @@ async fn mixed_load_crash_recovery_rounds() -> nopaldb::Result<()> {
         child.kill().expect("SIGKILL child");
         let _ = child.wait();
 
+        let t = Instant::now();
         let graph = Graph::open(dir.path()).await?;
+        let reopen = t.elapsed();
         assert_invariants(&graph).await?;
+        let invariants = t.elapsed() - reopen;
+        let (nodes, edges) = (graph.get_all_nodes().await?.len(), graph.get_all_edges().await?.len());
         drop(graph);
+        // Una línea por ronda, como en crash_commit_test.
+        eprintln!(
+            "ronda {}/{}: kill {ms} ms, reopen {reopen:?}, invariantes {invariants:?}, {nodes} nodos, {edges} aristas",
+            round + 1,
+            rounds()
+        );
     }
 
     Ok(())
