@@ -1258,9 +1258,14 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                     let q_point = &q.point_ref;
                     let mut q_point_neighbours = q_point.neighbours.write();
                     let n_to_add = PointWithOrder::<T>::new(&Arc::clone(&new_point), q.dist_to_ref);
-                    // must be sure that we add a point at the correct level. See the comment to search_layer!
-                    // this ensures that reverse updating do not add problems.
-                    let l_n = n_to_add.point_ref.p_id.0 as usize;
+                    // nopaldb (#343): the reverse link goes to layer `l`, the
+                    // one where `q` is a neighbour of the new point. Upstream
+                    // uses the new point's top level, so a point of level >= 1
+                    // got its reverse links only at that level and none at
+                    // the layers below: nothing linked to it at layer 0 unless
+                    // a later insert picked it, and ~0.8% of the points of a
+                    // build were never found (20k clustered points: ~150).
+                    let l_n = l as usize;
                     let already = q_point_neighbours[l_n]
                         .iter()
                         .position(|old| old.point_ref.p_id == new_point.p_id);
@@ -1831,5 +1836,41 @@ mod nopaldb_entry_point_tests {
         );
         let hits = hnsw.search(&data[0], 1, 32);
         assert_eq!(hits[0].d_id, 0, "the first point is not found (#343)");
+    }
+
+    /// A point of level >= 1 is also in layer 0, so the reverse update has
+    /// to link to it there. Upstream put every reverse link of such a point
+    /// at its top level: ~1% of the points of a 3000-point build had no
+    /// incoming link at layer 0, and no search found them.
+    #[test]
+    fn a_point_above_layer_zero_gets_reverse_links_at_layer_zero() {
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        let data: Vec<Vec<f32>> = (0..3000)
+            .map(|_| {
+                (0..8)
+                    .map(|_| {
+                        x ^= x >> 12;
+                        x ^= x << 25;
+                        x ^= x >> 27;
+                        (x >> 40) as f32 / (1u64 << 24) as f32
+                    })
+                    .collect()
+            })
+            .collect();
+        let hnsw = Hnsw::<f32, DistL2>::new(16, data.len(), 16, 100, DistL2 {});
+        for (i, v) in data.iter().enumerate() {
+            hnsw.insert((v.as_slice(), i));
+        }
+        let layers = hnsw.layer_indexed_points.points_by_layer.read();
+        let mut linked_at_0 = vec![false; data.len()];
+        for point in layers.iter().flatten() {
+            for n in &point.neighbours.read()[0] {
+                linked_at_0[n.point_ref.origin_id] = true;
+            }
+        }
+        let upper: Vec<usize> = layers.iter().skip(1).flatten().map(|p| p.origin_id).collect();
+        assert!(!upper.is_empty());
+        let unlinked = upper.iter().filter(|&&id| !linked_at_0[id]).count();
+        assert_eq!(unlinked, 0, "{unlinked} of {} points above layer 0 have no link at layer 0 (#343)", upper.len());
     }
 }

@@ -131,7 +131,10 @@ const EF_ESCALATION_FACTOR: usize = 4;
 /// se busca a sí mismo con `REACHABILITY_K` vecinos y este `ef`; el que no
 /// aparece va a los huérfanos (ver [`HnswIndex::orphans`]). Medido sin esto:
 /// ~0.5% de los puntos de un build de 3000 y ~0.8% de uno de 100k × 384 no
-/// los encontraba ninguna búsqueda. `ef = 64` basta: a 100k, de 811 puntos
+/// los encontraba ninguna búsqueda. Casi todos eran puntos de nivel ≥ 1 sin
+/// enlaces inversos en la capa 0, un bug de `hnsw_rs` arreglado en la copia
+/// interna (#343); la verificación queda para lo que la poda todavía deje.
+/// `ef = 64` basta: a 100k, de 811 puntos
 /// que no aparecen con 64, 781 tampoco aparecen con 4096 (no les llega
 /// ningún enlace; no es un fallo de la búsqueda aproximada), y un falso
 /// huérfano solo cuesta una distancia más por búsqueda.

@@ -116,10 +116,12 @@ fn a_large_clustered_build_leaves_few_orphans() {
     let n = 20_000;
     let points = clustered(n, 7);
     let index = HnswIndex::build_batch(points.clone(), "m", DIM).unwrap();
-    // #343: falló una vez bajo carga con 2527 (lo normal, medido en 139
-    // construcciones con y sin carga: 117–183). Si vuelve, el mensaje dice
-    // en qué grupos quedaron: unos pocos grupos enteros apuntan a grupos
-    // desconectados del grafo; repartidos, a puntos sueltos sin enlazar.
+    // #343: falló en CI con 2527 y 2690. Lo normal eran 117–183, los
+    // puntos de nivel ≥ 1 sin enlaces inversos en la capa 0; desde el
+    // arreglo de esa capa son 0. Los fallos son otro defecto, aún abierto:
+    // ~0.3% de los builds (también en serie) deja un subgrafo de ~10% de
+    // los puntos, repartido por todos los grupos, al que no se llega desde
+    // el punto de entrada. El mensaje dice en qué grupos quedaron.
     assert!(
         index.orphans() * 100 <= n * 2,
         "{} de {n} puntos sin enlaces entrantes (#201); por grupo (de {} puntos): {}",
