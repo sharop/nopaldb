@@ -21,6 +21,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sigue aplicando a cada fila. Los predicados de algoritmo (`degree(e) > 3`)
   no se adelantan. EXPLAIN lo dice en `Source filter: …`.
 
+### Fixed
+- **Predicados de algoritmo en el `where`** (#438). `degree(e) > 2` y los
+  demás algoritmos se evalúan después de proyectar, sobre la fila, y
+  fallaban en cuatro casos:
+  - en un salto, sin `degree(e)` en el `find`, la fila no traía `e.id` y
+    no pasaba ninguna (`find c.name from (e)<-[:R]-(c) where degree(e) > 2`
+    daba cero filas);
+  - un `or` que mezcla el algoritmo con una propiedad no proyectada
+    (`degree(e) > 3 or e.industry = "logistics"`) perdía las filas que
+    solo cumplían la propiedad;
+  - sin `order by` ni `distinct`, el `limit` se aplicaba antes del filtro:
+    `where degree(e) < 3 limit 1` podía dar cero filas;
+  - en un salto con `count(*)` o `group by`, el predicado se ignoraba.
+
+  Las columnas que el filtro necesita se proyectan aparte y se retiran
+  antes de `distinct`; las que la consulta pidió con `*` o `all(e)` se
+  conservan (antes, `find * from (e:T) where degree(e) > 3` devolvía las
+  filas sin `e.id`).
+
 ## [0.11.6] - 2026-11-26
 
 ### Added

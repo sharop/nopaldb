@@ -224,3 +224,136 @@ async fn test_validator_still_rejects_count_in_where() -> Result<()> {
         "Expected aggregation-blocked error, got: {}", msg);
     Ok(())
 }
+
+fn names(result: &nopaldb::query::nql::QueryResult, key: &str) -> Vec<String> {
+    let mut names: Vec<String> = result.rows().iter()
+        .filter_map(|row| match row.get(key) {
+            Some(PropertyValue::String(s)) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// #438: en un salto, `degree(e)` en el `where` sin estar en el `find` no
+/// encontraba el id de `e` en la fila y vaciaba el resultado.
+#[tokio::test]
+async fn degree_in_where_without_projecting_it() -> Result<()> {
+    let g = setup_graph().await?;
+    let result = g.execute_nql(r#"
+        find e.name from (e:ShellCompany) -[:REGISTERED_IN]-> (j:Jurisdiction)
+        where degree(e) > 2
+    "#).await?;
+    assert_eq!(names(&result, "e.name"), ["Acme", "Beta"]);
+    assert_eq!(result.columns, ["e.name"], "el id auxiliar no sale en la fila");
+    assert!(result.rows().iter().all(|row| row.get("e.id").is_none()));
+
+    // La variable del predicado puede ser el destino.
+    let result = g.execute_nql(r#"
+        find e.name from (e:ShellCompany) -[:REGISTERED_IN]-> (j:Jurisdiction)
+        where degree(j) > 2
+    "#).await?;
+    assert_eq!(names(&result, "e.name"), ["Acme", "Beta", "Gamma"]);
+    Ok(())
+}
+
+/// #438: un `or` que mezcla `degree` con una propiedad se evalúa entero
+/// después de proyectar; la propiedad tiene que estar en la fila aunque no
+/// se proyecte.
+#[tokio::test]
+async fn degree_or_unprojected_property() -> Result<()> {
+    let g = setup_graph().await?;
+    let pattern = g.execute_nql(r#"
+        find e.name from (e:ShellCompany) -[:REGISTERED_IN]-> (j:Jurisdiction)
+        where degree(e) > 3 or e.industry = "logistics"
+    "#).await?;
+    assert_eq!(names(&pattern, "e.name"), ["Acme", "Gamma"]);
+    assert!(pattern.rows().iter().all(|row| row.get("e.industry").is_none()));
+
+    let single = g.execute_nql(r#"
+        find e.name from (e:ShellCompany)
+        where degree(e) > 3 or e.industry = "logistics"
+    "#).await?;
+    assert_eq!(names(&single, "e.name"), ["Acme", "Gamma"]);
+    assert!(single.rows().iter().all(|row| row.get("e.industry").is_none()));
+    Ok(())
+}
+
+/// #438: sin `order by`, el `limit` se aplicaba al leer las filas, antes del
+/// filtro de algoritmos: `limit 1` podía quedarse con una fila que el
+/// filtro descartaba y devolver cero.
+#[tokio::test]
+async fn degree_in_where_with_limit() -> Result<()> {
+    let g = setup_graph().await?;
+    for (condition, expected) in [("degree(e) > 4", "Acme"), ("degree(e) < 3", "Gamma")] {
+        let pattern = g.execute_nql(&format!(
+            "find e.name from (e:ShellCompany) -[:REGISTERED_IN]-> (j:Jurisdiction) where {condition} limit 1"
+        )).await?;
+        assert_eq!(names(&pattern, "e.name"), [expected], "un salto: {condition}");
+
+        let single = g.execute_nql(&format!(
+            "find e.name from (e:ShellCompany) where {condition} limit 1"
+        )).await?;
+        assert_eq!(names(&single, "e.name"), [expected], "un nodo: {condition}");
+    }
+
+    // `offset` cuenta filas que pasan el filtro.
+    let all = g.execute_nql(
+        "find e.name from (e:ShellCompany) where degree(e) > 2 order by e.name"
+    ).await?;
+    assert_eq!(names(&all, "e.name"), ["Acme", "Beta"]);
+    let skipped = g.execute_nql(
+        "find e.name from (e:ShellCompany) -[:REGISTERED_IN]-> (j:Jurisdiction) where degree(e) > 2 limit 5 offset 1"
+    ).await?;
+    assert_eq!(skipped.len(), 1);
+    let skipped = g.execute_nql(
+        "find e.name from (e:ShellCompany) where degree(e) > 2 limit 5 offset 1"
+    ).await?;
+    assert_eq!(skipped.len(), 1);
+    Ok(())
+}
+
+/// #438: las columnas auxiliares del filtro se retiran antes de `distinct`
+/// y nunca quitan las que la consulta pidió con `*` o `all(e)`.
+#[tokio::test]
+async fn degree_in_where_keeps_requested_columns() -> Result<()> {
+    let g = setup_graph().await?;
+    let distinct = g.execute_nql(r#"
+        find distinct j.name from (e:ShellCompany) -[:REGISTERED_IN]-> (j:Jurisdiction)
+        where degree(e) > 2
+    "#).await?;
+    assert_eq!(names(&distinct, "j.name"), ["Harbor Cay"]);
+
+    for query in [
+        "find * from (e:ShellCompany) where degree(e) > 3",
+        "find all(e) from (e:ShellCompany) where degree(e) > 3",
+        "find all(e) from (e:ShellCompany) -[:REGISTERED_IN]-> (j:Jurisdiction) where degree(e) > 3",
+        "find * from (e:ShellCompany) -[:REGISTERED_IN]-> (j:Jurisdiction) where degree(e) > 3",
+    ] {
+        let result = g.execute_nql(query).await?;
+        assert_eq!(names(&result, "e.name"), ["Acme"], "{query}");
+        let row = &result.rows()[0];
+        assert!(row.get("e.id").is_some(), "{query}: falta e.id");
+        assert!(row.get("e.industry").is_some(), "{query}: falta e.industry");
+    }
+    Ok(())
+}
+
+/// #438: con agregaciones, un salto ignoraba `degree(e)` del `where` y
+/// contaba todos los matches.
+#[tokio::test]
+async fn degree_in_where_with_aggregation() -> Result<()> {
+    let g = setup_graph().await?;
+    for query in [
+        "find count(*) as n from (e:ShellCompany) -[:REGISTERED_IN]-> (j:Jurisdiction) where degree(e) > 2",
+        "find j.name, count(*) as n from (e:ShellCompany) -[:REGISTERED_IN]-> (j:Jurisdiction) where degree(e) > 2 group by j.name",
+        "find count(*) as n from (e:ShellCompany) -[:REGISTERED_IN]-> (j:Jurisdiction) where degree(e) > 3 or e.industry = \"logistics\"",
+        "find count(*) as n from (e:ShellCompany) where degree(e) > 2",
+    ] {
+        let result = g.execute_nql(query).await?;
+        assert_eq!(result.len(), 1, "{query}");
+        assert_eq!(result.rows()[0].get("n"), Some(&PropertyValue::Int(2)), "{query}");
+    }
+    Ok(())
+}
