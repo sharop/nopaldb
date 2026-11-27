@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Nightly: el oráculo de invariantes admite las marcas de MVCC.** Desde
+  0.10.1 (#320) un nodo creado en lote guarda una marca de nacimiento `b` en
+  `history` en vez de una cadena de versiones, y el oráculo la rechazaba como
+  clave desconocida: el job `property-hardening` del nightly fallaba desde
+  entonces y la suite de concurrencia y aislamiento no corría. El oráculo
+  ahora admite los siete namespaces (`v`, `c`, `l`, las marcas `b`/`a` y los
+  suelos `f`/`e`), comprueba que una marca no conviva con una cadena y que
+  todo nodo y arista vivos tengan historia. Nueva regresión: un solo nodo
+  creado con `add_nodes_batch` no existe antes de su marca y conserva la
+  historia tras un update. Solo cambian tests; el motor no.
+
 ## [0.11.7] - 2026-11-27
 
 ### Changed

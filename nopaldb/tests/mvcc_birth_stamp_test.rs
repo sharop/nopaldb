@@ -116,6 +116,38 @@ async fn el_bulk_marca_el_nacimiento_sin_copiar() {
     }
 }
 
+/// El caso mínimo que el oráculo nightly rechazaba (NTL-01): UN nodo con
+/// `Graph::add_nodes_batch`, el mismo camino del `BulkLoader`. No existe
+/// antes de su marca, aparece desde ella, y un update conserva la historia:
+/// la v1 implícita se materializa y la marca se retira.
+#[tokio::test]
+async fn add_nodes_batch_de_un_nodo_nace_con_marca() {
+    let graph = Graph::in_memory().await.unwrap();
+    graph.add_nodes_batch(vec![receta(1, 4)]).await.unwrap();
+    let t = graph.last_commit_timestamp();
+    let x = nid(1);
+
+    assert!(tiene(&graph, "history", &raw_node_key(b'b', x)), "marca de nacimiento");
+    assert!(!tiene(&graph, "history", &raw_node_key(b'c', x)), "sin cadena");
+    assert!(no_existe(graph.get_node_at(x, t - 1).await), "antes de su marca no existía");
+    assert_eq!(porciones(&graph.get_node_at(x, t).await.unwrap()), Some(&PropertyValue::Int(4)));
+    let h = graph.history(x).await.unwrap();
+    assert_eq!((h.len(), h[0].valid_from, h[0].valid_to), (1, t, None));
+
+    graph.add_node(receta(1, 9)).await.unwrap();
+    let u = graph.last_commit_timestamp();
+    let h = graph.history(x).await.unwrap();
+    assert_eq!(h.len(), 2, "el update conserva la historia");
+    let v1 = h.iter().find(|v| v.version == 1).expect("v1 materializada");
+    assert_eq!((v1.valid_from, v1.valid_to), (t, Some(u)));
+    assert_eq!(porciones(&v1.node_data), Some(&PropertyValue::Int(4)));
+    assert!(!tiene(&graph, "history", &raw_node_key(b'b', x)), "la cadena gana: marca fuera");
+    assert!(tiene(&graph, "history", &raw_node_key(b'c', x)));
+    assert!(no_existe(graph.get_node_at(x, t - 1).await), "tampoco existe antes tras el update");
+    assert_eq!(porciones(&graph.get_node_at(x, u - 1).await.unwrap()), Some(&PropertyValue::Int(4)));
+    assert_eq!(porciones(&graph.get_node_at(x, u).await.unwrap()), Some(&PropertyValue::Int(9)));
+}
+
 /// Cada escritor materializa la v1 implícita desde el registro, en el mismo
 /// lote, antes de seguir: tx, `add_node` directo, borrado (y su cascada de
 /// aristas), borrado de arista, re-alta de arista y un segundo bulk.
