@@ -346,6 +346,13 @@ index, and no search returns it, not even with `ef_search` equal to the
 index size. Measured without a fix (384 dims): ~0.5% of the points of a
 3000-point build and ~0.8% of a 100k build.
 
+Most of those points were not lost to pruning: `hnsw_rs` 0.3.4 added the
+reverse links of a point of level 1 or higher at its top layer only, so at
+layer 0 nothing linked to it unless a later insert picked it. The internal
+copy of `hnsw_rs` adds them at every layer since 0.11.8 (#343); with 20k
+clustered points the orphans of a build went from ~150 to 0. The
+verification below stays for what pruning can still leave.
+
 How it is handled since 0.6.11 (#201):
 
 - after a build, and after each insert, every new point searches for itself
