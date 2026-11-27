@@ -16,7 +16,13 @@
 //      idénticos antes y después de reabrir la base.
 //   C. Todo puntero current (`c|uuid` en `history`, u64 LE) apunta a una
 //      versión que existe (`v|uuid|ver BE`), y toda clave de `history`
-//      clasifica en uno de los tres namespaces (v/c/l).
+//      clasifica en uno de sus namespaces: v/c/l, las marcas de nacimiento
+//      `b` (nodo) y `a` (arista) y los suelos `f`/`e` de la adopción (u64
+//      BE). Un nodo con `b` está vivo y sin cadena (`c`/`l`); una arista con
+//      `a`, viva y sin versiones en `versioned_edges`. Y todo nodo y arista
+//      vivos tienen historia: cadena, marca o suelo (#320). Hasta 0.11.7 el
+//      oráculo solo conocía v/c/l y rechazaba la `b` que #320 (0.10.1)
+//      escribe en `add_nodes_batch`: el nightly estuvo en rojo por eso.
 //   D. `get_all_nodes()` == scan del keyspace `entities`, y toda clave de
 //      `entities` es un `n|uuid16` bien formado.
 //
@@ -287,16 +293,65 @@ async fn check_structural_invariants(graph: &Graph) {
         "adjacency != pares O/I exactos de edges (huérfanas o faltantes)"
     );
 
-    // ── C. history: todo current apunta a versión existente ────────────────
+    // ── C. history: namespaces, punteros current y marcas ──────────────────
     let history: BTreeSet<Vec<u8>> = storage
         .debug_raw_keys("history")
         .expect("scan history")
         .into_iter()
         .collect();
+    let has = |tag: u8, id: &Uuid| {
+        let mut k = vec![tag];
+        k.extend_from_slice(id.as_bytes());
+        history.contains(&k)
+    };
+    // Nodos en `entities` (D comprueba aparte que las claves estén bien
+    // formadas), aristas en `edges` y aristas con cadena en
+    // `versioned_edges` (`{id}:v{ver:020}`).
+    let entity_ids: BTreeSet<Uuid> = storage
+        .debug_raw_keys("entities")
+        .expect("scan entities")
+        .into_iter()
+        .filter(|k| k.len() == 17 && k[0] == b'n')
+        .map(|k| Uuid::from_slice(&k[1..17]).unwrap())
+        .collect();
+    let edge_ids: BTreeSet<Uuid> = storage
+        .debug_raw_keys("edges")
+        .expect("scan edges")
+        .into_iter()
+        .map(|k| Uuid::parse_str(std::str::from_utf8(&k).expect("clave de edges utf8")).expect("clave de edges uuid"))
+        .collect();
+    let chained_edges: BTreeSet<Uuid> = storage
+        .debug_raw_keys("versioned_edges")
+        .expect("scan versioned_edges")
+        .into_iter()
+        .map(|k| {
+            let k = String::from_utf8(k).expect("clave de versioned_edges utf8");
+            let (id, _) = k.split_once(":v").unwrap_or_else(|| panic!("clave de versioned_edges sin `:v`: {k}"));
+            Uuid::parse_str(id).expect("clave de versioned_edges uuid")
+        })
+        .collect();
     for k in &history {
         match (k.first(), k.len()) {
-            (Some(b'v'), 25) | (Some(b'c'), 17) | (Some(b'l'), 17) => {}
-            _ => panic!("clave de history fuera de los namespaces v/c/l: {k:02x?}"),
+            (Some(b'v'), 25) | (Some(b'c' | b'l' | b'b' | b'a' | b'f' | b'e'), 17) => {}
+            _ => panic!("clave de history fuera de los namespaces v/c/l/b/a/f/e: {k:02x?}"),
+        }
+        let id = Uuid::from_slice(&k[1..17]).unwrap();
+        // Marcas de nacimiento (`b` nodo, `a` arista) y suelos (`f`, `e`):
+        // u64 BE con el timestamp; el puntero `c` es u64 LE.
+        if matches!(k[0], b'b' | b'a' | b'f' | b'e') {
+            let raw = storage.debug_raw_get("history", k).expect("get marca").expect("marca sin valor");
+            assert_eq!(raw.len(), 8, "marca {} de {id} no es un u64: {raw:02x?}", k[0] as char);
+        }
+        // Un nodo con marca de nacimiento tiene UNA versión implícita, su
+        // registro: está vivo y no tiene cadena. Todo escritor que lo cambia
+        // o lo borra materializa la v1 y retira la marca en el mismo lote.
+        if k[0] == b'b' {
+            assert!(entity_ids.contains(&id), "marca de nacimiento de {id}, que no está en entities");
+            assert!(!has(b'c', &id) && !has(b'l', &id), "nodo {id} con marca de nacimiento y cadena");
+        }
+        if k[0] == b'a' {
+            assert!(edge_ids.contains(&id), "marca de nacimiento de la arista {id}, que no está en edges");
+            assert!(!chained_edges.contains(&id), "arista {id} con marca de nacimiento y cadena");
         }
         if k[0] == b'c' {
             let raw = storage
@@ -313,6 +368,20 @@ async fn check_structural_invariants(graph: &Graph) {
                 Uuid::from_slice(&k[1..17]).unwrap()
             );
         }
+    }
+    // Toda escritura deja historia (#320): cada nodo vivo tiene cadena,
+    // marca de nacimiento o suelo, y cada arista viva igual.
+    for id in &entity_ids {
+        assert!(
+            has(b'c', id) || has(b'b', id) || has(b'f', id),
+            "nodo {id} sin historia: ni cadena, ni marca de nacimiento, ni suelo"
+        );
+    }
+    for id in &edge_ids {
+        assert!(
+            chained_edges.contains(id) || has(b'a', id) || has(b'e', id),
+            "arista {id} sin historia: ni cadena, ni marca de nacimiento, ni suelo"
+        );
     }
 
     // ── D. get_all_nodes() == scan de entities ──────────────────────────────
