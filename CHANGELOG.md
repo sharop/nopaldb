@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.11.7] - unreleased
 
 ### Changed
 - **Un salto filtra el origen antes de expandir** (#389). En
