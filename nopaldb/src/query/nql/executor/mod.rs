@@ -66,6 +66,50 @@ fn try_retain<T>(items: &mut Vec<T>, mut keep: impl FnMut(&T) -> Result<bool>) -
     Ok(())
 }
 
+/// Columnas de la fila que `row_leaf_with_algo` lee al evaluar `expr`:
+/// `var.id` para `var` y para el argumento de un algoritmo, `var.p` para
+/// una propiedad. Cada camino las proyecta aunque la consulta no las pida
+/// y las retira después del filtro (#438: sin `e.id` en la fila,
+/// `where degree(e) > 2` descartaba todas). Sigue los mismos casos que
+/// `row_leaf_with_algo`.
+fn post_filter_row_keys(expr: &Expression, keys: &mut Vec<String>) {
+    let key = match expr {
+        Expression::Property { variable, property } if property.is_empty() => format!("{variable}.id"),
+        Expression::Property { variable, property } => format!("{variable}.{property}"),
+        Expression::FunctionCall { args, .. } if expr.is_algorithm() => match args.first() {
+            Some(Expression::Property { variable, property }) if property.is_empty() => format!("{variable}.id"),
+            _ => return,
+        },
+        Expression::BinaryOp { left, right, .. } => {
+            post_filter_row_keys(left, keys);
+            post_filter_row_keys(right, keys);
+            return;
+        }
+        Expression::UnaryOp { expr, .. } => return post_filter_row_keys(expr, keys),
+        _ => return,
+    };
+    if !keys.contains(&key) {
+        keys.push(key);
+    }
+}
+
+/// Añade a `projections` las columnas de `keys` que no trae ya la fila y
+/// devuelve las añadidas, para retirarlas después. `*` y `var.*` ya traen
+/// `var.id` y todas las propiedades de `var`.
+fn add_aux_keys(projections: &mut Vec<String>, keys: &[String]) -> Vec<String> {
+    let mut added = Vec::new();
+    for key in keys {
+        let var = key.split_once('.').map_or(key.as_str(), |(var, _)| var);
+        let covered = projections.iter()
+            .any(|p| p == key || p == "*" || p.strip_suffix(".*") == Some(var));
+        if !covered {
+            projections.push(key.clone());
+            added.push(key.clone());
+        }
+    }
+    added
+}
+
 fn row_leaf_with_algo(
     row: &result::Row,
     expr: &Expression,
@@ -1266,15 +1310,14 @@ impl<'a> Executor<'a> {
 
         let order_by_extras = self.extract_order_by_extras(&query);
 
-        // Bug 1 fix: si hay post-filter con algos, vamos a necesitar
-        // `<root_variable>.id` como columna auxiliar para hacer lookup en el
-        // algo cache. La declaramos antes del stream para usarla luego al
-        // strip.
-        let single_post_id_aux: Option<String> = if single_where_post_filter.is_some() {
-            Some(format!("{}.id", root_variable))
-        } else {
-            None
-        };
+        // Bug 1 fix: el post-filter con algos lee de la fila `var.id` y las
+        // propiedades que cite (#438); las que la consulta no proyecta se
+        // añaden como columnas auxiliares y se retiran después del filtro.
+        let mut single_post_keys: Vec<String> = Vec::new();
+        if let Some(expr) = &single_where_post_filter {
+            post_filter_row_keys(expr, &mut single_post_keys);
+        }
+        let mut single_post_aux: Vec<String> = Vec::new();
 
         // Columnas `var.id` añadidas solo para resolver `score(var)` (#174c).
         let mut score_aux_ids: Vec<String> = Vec::new();
@@ -1308,12 +1351,8 @@ impl<'a> Executor<'a> {
                 }
             }
 
-            // Add aux id key for Bug 1 post-filter if not already present.
-            if let Some(aux) = &single_post_id_aux
-                && !projection_strings.contains(aux)
-            {
-                projection_strings.push(aux.clone());
-            }
+            // Add aux keys for Bug 1 post-filter if not already present.
+            single_post_aux = add_aux_keys(&mut projection_strings, &single_post_keys);
             // `score(var)` se resuelve por el id del nodo de cada fila; si la
             // consulta no pedía `var.id`, se añade y se retira tras inyectar.
             for (_, var, _) in score_projections(&query) {
@@ -1330,7 +1369,10 @@ impl<'a> Executor<'a> {
         // Optimization: if there is no ORDER BY, apply LIMIT/OFFSET while streaming
         // to avoid materializing all rows in memory. Not with DISTINCT: the
         // limit counts distinct rows (until 0.8.3 it could stop on duplicates).
-        let limit_after = query.order_by.is_some() || query.find.distinct;
+        // Nor with algorithm predicates in the WHERE: they filter after
+        // projecting, and the limit counts the rows that pass them (#438).
+        let limit_after = query.order_by.is_some() || query.find.distinct
+            || single_where_post_filter.is_some();
         let mut rows = Vec::new();
         if !limit_after {
             let (offset, take_limit) = if let Some(limit) = &query.limit {
@@ -1422,17 +1464,10 @@ impl<'a> Executor<'a> {
             try_retain(&mut rows, |row| {
                 eval_row_condition_with_algo(row, post_expr, root_variable, &target, &cache)
             })?;
-            // Strip auxiliary <var>.id if we added it.
-            if let Some(aux) = &single_post_id_aux {
-                let was_in_query_proj = query.find.projections.iter().any(|p| match p {
-                    Projection::Expression { expr: Expression::Property { variable, property }, .. } =>
-                        format!("{}.{}", variable, property) == *aux,
-                    _ => false,
-                });
-                if !was_in_query_proj {
-                    for row in &mut rows {
-                        row.values.remove(aux);
-                    }
+            // Strip the auxiliary keys we added.
+            for row in &mut rows {
+                for key in &single_post_aux {
+                    row.values.remove(key);
                 }
             }
         }
@@ -1974,6 +2009,27 @@ impl<'a> Executor<'a> {
                 let all_nodes = self.graph.get_all_nodes().await?;
                 precompute_for_query(self.graph, &all_nodes, &query).await?
             };
+            // Los predicados con algoritmos del WHERE no corren en el stream;
+            // sin aplicarlos aquí la agregación contaba también los matches
+            // que no los cumplen (#438), como el camino de un nodo antes de #294.
+            if let Some(post_expr) = &where_post_filter {
+                try_retain(&mut matches, |m| {
+                    value_ops::condition(post_expr, &mut |e| match e {
+                        Expression::FunctionCall { name, args } if e.is_algorithm() => {
+                            let node = match args.first() {
+                                Some(Expression::Property { variable, property }) if property.is_empty() => {
+                                    if *variable == source_var { Some(&m.source) }
+                                    else if *variable == target_var { Some(&m.target) }
+                                    else { None }
+                                }
+                                _ => None,
+                            };
+                            Ok(node.map(|n| lookup_algo_value(name, &n.id, &agg_algo_cache)))
+                        }
+                        _ => operators::eval_pattern_expression(m, e, &source_var, &target_var),
+                    })
+                })?;
+            }
             let mut result = self.execute_pattern_aggregations(
                 &matches,
                 &query,
@@ -2076,6 +2132,13 @@ impl<'a> Executor<'a> {
                 algo_extra_id_keys.push(id_key);
             }
         }
+        // El post-filter de algoritmos del WHERE lee de la fila `var.id` y
+        // las propiedades que cite, aunque no se proyecten (#438).
+        if let Some(expr) = &where_post_filter {
+            let mut keys = Vec::new();
+            post_filter_row_keys(expr, &mut keys);
+            algo_extra_id_keys.extend(add_aux_keys(&mut projection_strings, &keys));
+        }
 
         let mut row_stream = operators::ProjectPatternStream::new(
             pattern_stream,
@@ -2089,8 +2152,11 @@ impl<'a> Executor<'a> {
         // Optimization: if there is no ORDER BY, apply LIMIT/OFFSET while streaming.
         // Not with DISTINCT: the limit counts distinct rows, so it applies
         // after deduplicating (until 0.8.3 `find distinct … limit 3` could
-        // stop after three duplicates and return one row).
-        let limit_after = query.order_by.is_some() || query.find.distinct;
+        // stop after three duplicates and return one row). Nor with
+        // algorithm predicates in the WHERE: they filter after projecting,
+        // and the limit counts the rows that pass them (#438).
+        let limit_after = query.order_by.is_some() || query.find.distinct
+            || where_post_filter.is_some();
         let mut rows = Vec::new();
         if !limit_after {
             let (offset, take_limit) = if let Some(limit) = &query.limit {
