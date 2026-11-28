@@ -350,8 +350,12 @@ Most of those points were not lost to pruning: `hnsw_rs` 0.3.4 added the
 reverse links of a point of level 1 or higher at its top layer only, so at
 layer 0 nothing linked to it unless a later insert picked it. The internal
 copy of `hnsw_rs` adds them at every layer since 0.11.8 (#343); with 20k
-clustered points the orphans of a build went from ~150 to 0. The
-verification below stays for what pruning can still leave.
+clustered points the orphans of a build went from ~150 to 0. A second
+defect split layer 0 in two in about 1 build of 576 (when the first two
+points were of level 1 or higher, `hnsw_rs` searched layer 0 as if it were
+empty), leaving ~10% of the points unreachable; it is fixed in the same
+copy (#343). The verification below stays for what pruning can still
+leave.
 
 How it is handled since 0.6.11 (#201):
 
