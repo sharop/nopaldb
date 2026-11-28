@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.11.8] - unreleased
 
 ### Fixed
 - **HNSW: la capa 0 ya no se parte en dos** (#343, cierra el issue). Si los
