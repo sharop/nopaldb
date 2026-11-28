@@ -116,14 +116,16 @@ fn a_large_clustered_build_leaves_few_orphans() {
     let n = 20_000;
     let points = clustered(n, 7);
     let index = HnswIndex::build_batch(points.clone(), "m", DIM).unwrap();
-    // #343: falló en CI con 2527 y 2690. Lo normal eran 117–183, los
-    // puntos de nivel ≥ 1 sin enlaces inversos en la capa 0; desde el
-    // arreglo de esa capa son 0. Los fallos son otro defecto, aún abierto:
-    // ~0.3% de los builds (también en serie) deja un subgrafo de ~10% de
-    // los puntos, repartido por todos los grupos, al que no se llega desde
-    // el punto de entrada. El mensaje dice en qué grupos quedaron.
+    // #343: falló en CI con 2527 y 2690. Eran dos defectos de `hnsw_rs`,
+    // arreglados en la copia interna: lo normal (117–183) eran puntos de
+    // nivel ≥ 1 sin enlaces inversos en la capa 0, y los fallos, builds
+    // cuyos dos primeros puntos eran de nivel ≥ 1 (1 de cada 576), con la
+    // capa 0 partida en dos. Con los dos arreglos, 0 huérfanos en 2400
+    // builds con 3 hilos y en las 7 semillas (de 1800) que partían la capa
+    // 0; las otras 1793 ya daban 0 con el primero. De ahí el 0.1%. El
+    // mensaje dice en qué grupos quedaron.
     assert!(
-        index.orphans() * 100 <= n * 2,
+        index.orphans() * 1000 <= n,
         "{} de {n} puntos sin enlaces entrantes (#201); por grupo (de {} puntos): {}",
         index.orphans(),
         n as u64 / CLUSTERS,

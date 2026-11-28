@@ -934,7 +934,15 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
         // we will store positive distances in this one
         let mut return_points = BinaryHeap::<Arc<PointWithOrder<T>>>::with_capacity(skiplist_size);
         //
-        if self.layer_indexed_points.points_by_layer.read()[layer as usize].is_empty() {
+        // nopaldb (#343): `points_by_layer[l]` holds the points whose top
+        // level is `l`, but a layer also holds every point above it. Upstream
+        // tested `points_by_layer[layer]` alone: while no point of level 0
+        // existed yet, every search at layer 0 came back empty. When the first
+        // two points were both of level >= 1 (1 build in M², 576 with the
+        // M = 24 of `HnswIndex`), they never linked at layer 0, each later
+        // point linked only in the half its descent reached, and layer 0
+        // stayed split in two for good.
+        if self.layer_indexed_points.points_by_layer.read()[layer as usize..].iter().all(|l| l.is_empty()) {
             // at the beginning we can have nothing in layer
             trace!("search layer {:?}, empty layer", layer);
             return return_points;
@@ -1872,5 +1880,57 @@ mod nopaldb_entry_point_tests {
         assert!(!upper.is_empty());
         let unlinked = upper.iter().filter(|&&id| !linked_at_0[id]).count();
         assert_eq!(unlinked, 0, "{unlinked} of {} points above layer 0 have no link at layer 0 (#343)", upper.len());
+    }
+
+    /// When the first two points are both of level 1, layer 0 holds them
+    /// before any point of level 0 exists. Upstream searched layer 0 only if
+    /// a point of level 0 existed, so the two never linked there and every
+    /// later point linked only in the half its descent reached: layer 0
+    /// stayed split, and about half the points could not be reached.
+    #[test]
+    fn layer_zero_stays_connected_when_the_first_points_are_above_it() {
+        let mut x: u64 = 0x2545_F491_4F6C_DD1D;
+        let data: Vec<Vec<f32>> = (0..500)
+            .map(|_| {
+                (0..8)
+                    .map(|_| {
+                        x ^= x >> 12;
+                        x ^= x << 25;
+                        x ^= x >> 27;
+                        (x >> 40) as f32 / (1u64 << 24) as f32
+                    })
+                    .collect()
+            })
+            .collect();
+        let hnsw = Hnsw::<f32, DistL2>::new(16, data.len(), 16, 100, DistL2 {});
+        // `generate_new_point` with the level fixed at 1.
+        for (i, v) in data.iter().enumerate().take(2) {
+            let point = {
+                let mut layers = hnsw.layer_indexed_points.points_by_layer.write();
+                let point = Arc::new(Point::new(v.clone(), i, PointId(1, layers[1].len() as i32)));
+                layers[1].push(Arc::clone(&point));
+                point
+            };
+            *hnsw.layer_indexed_points.nb_point.write() += 1;
+            hnsw.link_new_point(v, point);
+        }
+        for (i, v) in data.iter().enumerate().skip(2) {
+            hnsw.insert((v.as_slice(), i));
+        }
+        // Everything reachable at layer 0 from the entry point.
+        let entry = Arc::clone(hnsw.layer_indexed_points.entry_point.read().as_ref().unwrap());
+        let mut seen = vec![false; data.len()];
+        seen[entry.origin_id] = true;
+        let mut stack = vec![entry];
+        while let Some(p) = stack.pop() {
+            for n in &p.neighbours.read()[0] {
+                if !seen[n.point_ref.origin_id] {
+                    seen[n.point_ref.origin_id] = true;
+                    stack.push(Arc::clone(&n.point_ref));
+                }
+            }
+        }
+        let unreached = seen.iter().filter(|s| !**s).count();
+        assert_eq!(unreached, 0, "{unreached} of {} points unreachable at layer 0 (#343)", data.len());
     }
 }

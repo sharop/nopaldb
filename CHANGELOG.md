@@ -10,7 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- **HNSW: los puntos de nivel ≥ 1 vuelven a ser alcanzables** (#343, parte).
+- **HNSW: la capa 0 ya no se parte en dos** (#343, cierra el issue). Si los
+  dos primeros puntos de un build eran de nivel ≥ 1 (1 build de cada 576),
+  la copia interna de `hnsw_rs` buscaba en la capa 0 como si estuviera
+  vacía, porque solo miraba los puntos cuyo nivel máximo es 0. Esos dos
+  puntos no se enlazaban ahí, cada punto siguiente se enlazaba solo en la
+  mitad a la que lo llevaba el descenso, y alrededor del 10% de los puntos
+  quedaba inalcanzable: era el fallo intermitente de
+  `a_large_clustered_build_leaves_few_orphans` en CI (2527 y 2690
+  huérfanos). Los resultados ya eran correctos, porque esos puntos se
+  comparaban uno por uno desde la lista de huérfanos; lo que se pagaba era
+  esa comparación en cada búsqueda.
+- **HNSW: los puntos de nivel ≥ 1 vuelven a ser alcanzables** (#343).
   La copia interna de `hnsw_rs` 0.3.4 agregaba los enlaces inversos de un
   punto de nivel ≥ 1 solo en su capa más alta, así que en la capa 0 nada lo
   enlazaba salvo que una inserción posterior lo eligiera. Esos puntos eran
@@ -19,9 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agrupados, de ~150 por build a 0, y cada búsqueda deja de pagar esas
   comparaciones. Ningún punto se perdía antes (los huérfanos se comparan
   directamente) y los volcados existentes se cargan igual; un índice
-  guardado se beneficia al reconstruirse. #343 sigue abierto por otro defecto, más raro:
-  ~0.3% de los builds deja un subgrafo inalcanzable desde el punto de
-  entrada.
+  guardado se beneficia al reconstruirse.
 - **Nightly: el oráculo de invariantes admite las marcas de MVCC.** Desde
   0.10.1 (#320) un nodo creado en lote guarda una marca de nacimiento `b` en
   `history` en vez de una cadena de versiones, y el oráculo la rechazaba como

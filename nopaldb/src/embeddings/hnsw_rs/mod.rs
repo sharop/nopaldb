@@ -1,8 +1,9 @@
 //! Copia interna de [`hnsw_rs`](https://crates.io/crates/hnsw_rs) 0.3.4
 //! (Jean-Pierre Both, MIT o Apache-2.0: `LICENSE-MIT`, `LICENSE-APACHE`),
-//! con tres cambios de comportamiento: el orden de los candados en
+//! con cuatro cambios de comportamiento: el orden de los candados en
 //! `Hnsw::reverse_update_neighborhood_simple` (#288), el punto de entrada
-//! con inserciones concurrentes (#343) y la capa del enlace inverso (#343).
+//! con inserciones concurrentes (#343), la capa del enlace inverso (#343) y
+//! cuándo una capa cuenta como vacía en `search_layer` (#343).
 //!
 //! En 0.3.4 (y 0.3.5) la actualización inversa recorre la lista de vecinos
 //! del punto nuevo con su read guard tomado y, dentro del bucle, toma el
@@ -27,6 +28,16 @@
 //! encontraba al ~0.8% de los puntos (los huérfanos de #184/#201; 20k
 //! puntos agrupados: ~150 por build, 0 con el arreglo). Aquí el enlace va a
 //! la capa recorrida (#343).
+//!
+//! En 0.3.4 `search_layer` devuelve vacío si `points_by_layer[capa]` está
+//! vacío, pero esa tabla solo guarda los puntos cuyo nivel máximo es la
+//! capa; los de arriba también están en ella. Si los dos primeros puntos de
+//! un build eran de nivel ≥ 1 (1 build de cada M²: 576 con el M = 24 de
+//! `HnswIndex`), no se enlazaban
+//! en la capa 0, cada punto siguiente se enlazaba solo en la mitad a la que
+//! lo llevaba el descenso, y la capa 0 quedaba partida en dos para siempre:
+//! el ~10% de puntos huérfanos del fallo de CI de #343. Aquí la capa está
+//! vacía solo si no hay ningún punto de ese nivel o más.
 //!
 //! Se descartó insertar en serie: con 16 núcleos la construcción es ~10×
 //! más lenta (50k × 384: 33 s → 318 s). Un fork por git no sirve porque un
